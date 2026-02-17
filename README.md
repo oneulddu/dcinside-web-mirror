@@ -150,6 +150,10 @@ pm2 startup
 | **프론트엔드** | Jinja2 · Vanilla JS · CSS |
 | **배포** | PM2 · systemd |
 
+## 🔗 출처 및 관련 프로젝트
+
+이 프로젝트는 [mirusu400/dcinside-web-mirror](https://github.com/mirusu400/dcinside-web-mirror)의 코드를 기반으로 커스텀 및 개선된 버전입니다.
+
 ---
 
 <div align="center">
