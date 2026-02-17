@@ -4,7 +4,7 @@ install:
 	pip install -r requirements.txt
 
 run:
-	python index.py
+	python run.py
 
 run-prod:
 	gunicorn -c gunicorn.conf.py wsgi:app
