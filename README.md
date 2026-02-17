@@ -8,7 +8,6 @@
 
 [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Flask](https://img.shields.io/badge/Flask-2.0-000000?style=for-the-badge&logo=flask&logoColor=white)](https://flask.palletsprojects.com)
-[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 </div>
 
@@ -150,12 +149,6 @@ pm2 startup
 | **스크래핑** | aiohttp · lxml · BeautifulSoup4 |
 | **프론트엔드** | Jinja2 · Vanilla JS · CSS |
 | **배포** | PM2 · systemd |
-
----
-
-## 📄 라이선스
-
-이 프로젝트는 [MIT License](LICENSE)를 따릅니다.
 
 ---
 
