@@ -4,7 +4,7 @@
 
 **Flask 기반 경량 DCinside 프록시 뷰어**
 
-광고 없이 깔끔한 UI로 DCinside 갤러리를 탐색하세요.
+깔끔한 UI로 DCinside 갤러리를 탐색하세요.
 
 [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Flask](https://img.shields.io/badge/Flask-2.0-000000?style=for-the-badge&logo=flask&logoColor=white)](https://flask.palletsprojects.com)
