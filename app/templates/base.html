@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <title>{{ title or "머숨 미러" }}</title>
+</head>
+<body>
+    <main class="app-shell">
+        <header class="app-header">
+            <div class="header-top">
+                <div class="header-left">
+                    <a class="brand" href="/">머숨 <span>머숨들의 휴식공간</span></a>
+                    <button class="theme-toggle" type="button" aria-label="Toggle Dark Mode">☀</button>
+                </div>
+            </div>
+            <nav class="main-tabs">
+                {% if board is defined and board %}
+                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/board?board={{ board }}&recommend=0&page=1{% if kind %}&kind={{ kind }}{% endif %}">전체</a>
+                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="/board?board={{ board }}&recommend=1&page=1{% if kind %}&kind={{ kind }}{% endif %}">베스트</a>
+                {% else %}
+                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/">전체</a>
+                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="/board?board=dcbest&recommend=0&page=1">베스트</a>
+                {% endif %}
+                <a class="tab-item {% if nav_tab == 'recent' %}active{% endif %}" href="/recent">최근</a>
+                <a class="tab-item" href="/board?board=100toron&recommend=0&page=1">⚔ 토론장</a>
+            </nav>
+        </header>
+
+        <section class="content-wrap">
+            {% block content %}{% endblock %}
+        </section>
+    </main>
+    <script src="{{ url_for('static', filename='javascript/read_state.js') }}"></script>
+</body>
+</html>

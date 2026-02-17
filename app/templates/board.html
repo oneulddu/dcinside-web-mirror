@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="feed-list">
+    <div class="board-head">
+        <h2>{{ board }} 게시판</h2>
+        {% if recommend == 1 %}
+        <a href="?board={{ board }}&recommend=0&page={{ page }}{% if kind %}&kind={{ kind }}{% endif %}{% if nav_mode %}&nav={{ nav_mode }}{% endif %}">전체 보기</a>
+        {% else %}
+        <a href="?board={{ board }}&recommend=1&page={{ page }}{% if kind %}&kind={{ kind }}{% endif %}{% if nav_mode %}&nav={{ nav_mode }}{% endif %}">추천 보기</a>
+        {% endif %}
+    </div>
+    <ul>
+        {% for index in datas %}
+        <li>
+            <a class="feed-item" href="/read?board={{ board }}&pid={{ index.id }}{% if kind %}&kind={{ kind }}{% endif %}">
+                <div class="feed-title-wrap">
+                    <h2 class="feed-title">
+                        {{ index.title }}
+                    </h2>
+                    {% if index.comment_count > 0 %}
+                    <span class="reply-count">[{{ index.comment_count }}]</span>
+                    {% endif %}
+                </div>
+                <div class="feed-meta-row">
+                    <div class="feed-meta-left">
+                        {% if index.subject %}
+                        <span class="post-subject">[{{ index.subject }}]</span>
+                        {% endif %}
+                        <span class="author-text">{{ index.author }}{% if index.author_code %}({{ index.author_code }}){% endif %}</span>
+                        <span class="sep">|</span>
+                        <span>{{ index.time }}</span>
+                    </div>
+                    <div class="feed-meta-right">
+                        <div class="score-box">
+                            <span>추천</span>
+                            <b>{{ index.voteup_count }}</b>
+                            <span>/</span>
+                            <span>0</span>
+                        </div>
+                    </div>
+                </div>
+            </a>
+        </li>
+        {% else %}
+        <li class="empty-row">게시글이 없습니다.</li>
+        {% endfor %}
+    </ul>
+    <div class="pager-row board-pager">
+        <a class="pager-btn pager-home" href="/">갤러리</a>
+        <div class="pager-center">
+            {% if page > 1 %}
+            <a class="pager-btn" href="?board={{ board }}&recommend={{ recommend }}&page={{ page - 1 }}{% if kind %}&kind={{ kind }}{% endif %}{% if nav_mode %}&nav={{ nav_mode }}{% endif %}">이전</a>
+            {% else %}
+            <span class="pager-btn off">이전</span>
+            {% endif %}
+            <span class="pager-current">{{ page }}</span>
+            <a class="pager-btn" href="?board={{ board }}&recommend={{ recommend }}&page={{ page + 1 }}{% if kind %}&kind={{ kind }}{% endif %}{% if nav_mode %}&nav={{ nav_mode }}{% endif %}">다음</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

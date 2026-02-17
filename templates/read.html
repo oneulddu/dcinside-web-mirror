@@ -1,0 +1,70 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
+    <script src="{{ url_for('static', filename='javascript/bootstrap.js') }}"></script>
+    <title>naver</title>
+
+</head>
+
+<body style="background-color: #454d55; color: #fff">
+    <div class="container" >
+        <div style="margin-top: 15px; border:1px solid black;">
+            <h2>
+                {{data.title}}
+            </h2>
+            
+        </div>
+        <div class="row">
+            <div class="col-sm" style="float: left; border:1px solid black;">
+                글작성자: {{data.author}}
+            </div>
+            <div class="col-sm" style="float: left; margin-left: 20px; border:1px solid black;">
+                작성시각: {{data.time}}
+            </div>
+        </div>
+        <br />
+        <div>
+            <!-- {% for image in images %}
+        
+                <img src="data:image/png;base64,{{image}}" />
+            
+            {% endfor %} -->
+            {{data.html | safe}}
+        </div>
+        Comment 개수 : {{ comments|length }}
+        <br />
+        <table class="table table-dark table-bordered">
+
+            {% for comment in comments %}
+            <tr>
+                
+                <td>
+                    {% if comment.dccon != None %}
+                        <img src="{{comment.dccon}}" style="width:100px; height:100px;" />
+                    {% else %}
+                        {{comment.contents}}
+                    {% endif %}
+                    
+                </td>
+                <td>
+                    {{comment.author}}
+                </td>
+                <td>
+                    {{comment.time}}    
+                </td>
+
+            </tr>
+            {% endfor %}
+
+        </table>
+        <div class='taskbar_box' width="90%">
+            <button class="btn btn-dark btn-lg" onclick="history.back()">뒤로가기</button>
+        </div>
+    </div>
+</body>
+</html>

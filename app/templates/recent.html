@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="feed-list">
+    <div class="board-head">
+        <h2>최근 방문 갤러리</h2>
+        <span class="board-head-note">최대 30개</span>
+    </div>
+    <ul>
+        {% for item in recent_items %}
+        <li>
+            <a class="feed-item" href="/board?board={{ item.board }}&recommend=0&page=1{% if item.kind %}&kind={{ item.kind }}{% endif %}">
+                <div class="feed-title-wrap">
+                    <h2 class="feed-title">{{ item.board }}</h2>
+                    {% if item.kind %}
+                    <span class="reply-count">{{ item.kind }}</span>
+                    {% else %}
+                    <span class="reply-count">normal</span>
+                    {% endif %}
+                </div>
+                <div class="feed-meta-row">
+                    <div class="feed-meta-left">
+                        <span>최근 방문</span>
+                        <span class="sep">|</span>
+                        <span>{{ item.visited_at_str }}</span>
+                    </div>
+                    <div class="feed-meta-right soft">바로가기</div>
+                </div>
+            </a>
+        </li>
+        {% else %}
+        <li class="empty-row">최근 방문한 갤러리가 없습니다.</li>
+        {% endfor %}
+    </ul>
+</section>
+{% endblock %}

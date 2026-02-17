@@ -1,0 +1,23 @@
+div.taskbar_box {
+	position: fixed;
+	border: 3px solid black;
+	text-align: center;
+	bottom:1px;
+	right:1px;
+	margin: 10px;
+	background-color:#576069;
+	padding: 10px;
+	
+}
+.tr-gallery:active{
+	color:#37404e !important;
+}
+.tr-gallery:visited{
+	color:#37404e !important;
+}
+a:visited{
+	color:#37404e !important;
+}
+td {
+	padding: 0.35rem !important;
+}

@@ -1,0 +1,89 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
+    <script src="{{ url_for('static', filename='javascript/bootstrap.js') }}"></script>
+    <title>Naver</title>
+
+</head>
+
+<body style="background-color: #454d55; color: #fff">
+    {% if recommend == 1 %}
+    <button style="font-size : 30px;" class="btn btn-dark" type="button"
+        onclick="location.href='?board={{board}}&recommend={{0}}&page={{page}}'">모든글 보기</button>
+    {% else %}
+    <button style="font-size : 30px;" class="btn btn-dark" type="button"
+        onclick="location.href='?board={{board}}&recommend={{1}}&page={{page}}'">개념글 보기</button>
+    {% endif %}
+    <table class="table table-dark table-striped">
+        <tbody>
+        <tr>
+            <td> 번호 </td>
+            <td> 제목 </td>
+            <td> 작성자 </td>
+            <td> 작성시각</td>
+        </tr>
+            
+        
+        {% for index in datas %}
+            <tr style="cursor: pointer; height: 24px;" class="tr-gallery" onclick="location.href='/read?board={{board}}&pid={{index.id}}'">
+                 
+                <td> {{index.id}} </td>
+                <td> 
+                    {% if index.isrecommend %}
+                        {% if index.isimage %}
+                            <img style="width:24px;" src="{{ url_for('static', filename='image/sp-lst-recoimg.png') }}" />
+                        {% else %}
+                            <img style="width:24px;" src="{{ url_for('static', filename='image/sp-lst-recotxt.png') }}" />
+                        {% endif %}
+                    {% elif index.isdcbest %}
+                        <img style="width:24px;" src="{{ url_for('static', filename='image/sp-lst-best.png') }}" />
+                    {% elif index.ishit %}
+                        <img style="width:24px;" src="{{ url_for('static', filename='image/sp-lst-hit.png') }}" />
+                    {% elif index.isimage %}
+                        <img style="width:24px;" src="{{ url_for('static', filename='image/sp-lst-img.png') }}" />
+                    {% else %}
+                        <img style="width:24px;" src="{{ url_for('static', filename='image/sp-lst-msg.png') }}" />
+                    {% endif %}
+
+                    {{index.title}}
+                    <span style="float:right">[{{index.comment_count}}] {{index.voteup_count}}</span></td>
+                    
+                <td> {{index.author}} </td>
+                <td> {{index.time}}</td>
+
+            </tr>
+        
+        {% endfor %}
+        </tbody>
+    </table>
+    <div class='taskbar_box' width="90%">
+            <button class="btn btn-dark btn-lg" onclick="history.back()">뒤로가기</button>
+            {% if page != 1 %}
+            <button style="font-size : 30px;" class="btn btn-dark btn-lg" type="button"
+                onclick="location.href='?board={{board}}&recommend={{recommend}}&page={{page-1}}'">이전</button>
+            {% else %}
+            <button style="font-size : 30px;" class="btn btn-dark btn-lg" type="button"
+                onclick="alert('end of page!')">이전</button>
+            {% endif %}
+            <button style="font-size : 30px;" class="btn btn-dark btn-lg" type="button"
+                onclick="location.href='?board={{board}}&recommend={{recommend}}&page={{page+1}}'">다음</button>
+    
+    
+        <!-- Legacy Codes
+    	<a onclick href='index.php?page=<?PHP echo (($page - 1  > 1) ? $page - 1 : 1); ?>'>◀이전</a>
+    	<a><b><?PHP echo $page; ?></b></a>
+    	<a onclick href='index.php?page=<?PHP echo $page + 1; ?>'>▶다음</a>
+    	
+    	<a onclick href='index.php?page=1'>목록</a>
+    	-->
+    </div>
+    <div style="position:absolute;">
+        
+    </div>
+</body>
+</html>

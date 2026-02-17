@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="read-shell">
+    <div class="article-head">
+        <h1>{{ data.title }}</h1>
+        <div class="article-meta">
+            <span class="author-text">{{ data.author }}{% if data.author_code %}({{ data.author_code }}){% endif %}</span>
+            <span>{{ data.time }}</span>
+            <span>추천 {{ data.voteup_count }}</span>
+        </div>
+    </div>
+
+    <article class="article-body">
+        {{ data.html | safe }}
+    </article>
+
+    <section class="comment-shell">
+        <h2>댓글 {{ comments|length }}</h2>
+        <ul class="comment-list">
+            {% for comment in comments %}
+            <li class="comment-item{% if comment.is_reply %} is-reply{% endif %}"{% if comment.parent_id %} data-parent-id="{{ comment.parent_id }}"{% endif %}>
+                <div class="comment-main">
+                    {% if comment.is_reply %}
+                    <span class="reply-badge">답글</span>
+                    {% endif %}
+                    {% if comment.dccon != None %}
+                    <img class="dccon" src="{{ comment.dccon }}" alt="dccon" loading="lazy" decoding="async">
+                    {% else %}
+                    <p>{{ comment.contents }}</p>
+                    {% endif %}
+                </div>
+                <div class="comment-meta">
+                    <span class="author-text">{{ comment.author }}{% if comment.author_code %}({{ comment.author_code }}){% endif %}</span>
+                    <span>{{ comment.time }}</span>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-limit="12">
+        <div class="board-head">
+            <h2>다른 게시글</h2>
+            <a href="/board?board={{ board }}&recommend=0&page=1{% if kind %}&kind={{ kind }}{% endif %}">목록</a>
+        </div>
+        <ul id="related-list">
+            <li class="empty-row">다른 게시글을 불러오는 중...</li>
+        </ul>
+    </section>
+
+    <div class="pager-row single">
+        <a class="pager-btn" href="/board?board={{ board }}&recommend=0&page=1{% if kind %}&kind={{ kind }}{% endif %}">목록으로</a>
+    </div>
+</section>
+<script src="{{ url_for('static', filename='javascript/read_related_loader.js') }}"></script>
+<script src="{{ url_for('static', filename='javascript/comment_spam_filter.js') }}"></script>
+{% endblock %}

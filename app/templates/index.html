@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="feed-list">
+    <div class="jump-panel">
+        <h2>갤러리 검색</h2>
+        <form class="jump-form" action="/" method="get">
+            <label for="heung_q">검색어</label>
+            <input id="heung_q" name="heung_q" type="text" value="{{ heung_q }}" placeholder="갤러리명 또는 board id">
+            <div class="jump-row">
+                <span></span>
+                <button type="submit">검색</button>
+                {% if heung_q %}
+                <a class="pager-btn" href="/">초기화</a>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+
+    <div class="board-head">
+        <h2>
+            {% if heung_q %}
+            검색 결과 {{ heung_total_items }}건
+            {% else %}
+            흥한 갤러리 {{ heung_start_rank }}~{{ heung_end_rank }}위
+            {% endif %}
+        </h2>
+        <span class="board-head-note">데이터 갱신 {{ heung_updated_at_str }}</span>
+    </div>
+    <ul>
+        {% for item in heung_items %}
+        <li>
+            <a class="feed-item" href="{% if item.internal_supported is defined and not item.internal_supported %}{{ item.source_url }}{% else %}/board?board={{ item.board_id }}&recommend=0&page=1{% if item.board_kind is defined %}&kind={{ item.board_kind }}{% endif %}{% endif %}"{% if item.internal_supported is defined and not item.internal_supported %} target="_blank" rel="noopener"{% endif %}>
+                <div class="feed-title-wrap">
+                    <h2 class="feed-title">{{ item.name }}</h2>
+                    {% if item.rank %}
+                    <span class="reply-count">#{{ item.rank }}</span>
+                    {% else %}
+                    <span class="reply-count">{{ item.kind }}</span>
+                    {% endif %}
+                </div>
+                <div class="feed-meta-row">
+                    <div class="feed-meta-left">
+                        <span>{{ item.board_id }}</span>
+                        {% if item.extra %}
+                        <span class="sep">|</span>
+                        <span>{{ item.extra }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="feed-meta-right soft">
+                        {% if item.rank %}
+                            {% if item.rank <= 20 %}대흥갤{% else %}흥한갤{% endif %}
+                        {% else %}
+                            {% if item.internal_supported is defined and not item.internal_supported %}외부 이동{% else %}검색결과{% endif %}
+                        {% endif %}
+                    </div>
+                </div>
+            </a>
+        </li>
+        {% else %}
+        <li class="empty-row">표시할 흥한 갤러리가 없습니다.</li>
+        {% endfor %}
+    </ul>
+
+    {% if heung_error %}
+    <div class="empty-row">{{ heung_error }}</div>
+    {% endif %}
+
+    <div class="pager-row">
+        {% if heung_page > 1 %}
+        <a class="pager-btn" href="?heung_page={{ heung_page - 1 }}{% if heung_q %}&heung_q={{ heung_q|urlencode }}{% endif %}">이전</a>
+        {% else %}
+        <span class="pager-btn off">이전</span>
+        {% endif %}
+        <span class="pager-current">{{ heung_page }}/{{ heung_total_pages }}</span>
+        {% if heung_page < heung_total_pages %}
+        <a class="pager-btn" href="?heung_page={{ heung_page + 1 }}{% if heung_q %}&heung_q={{ heung_q|urlencode }}{% endif %}">다음</a>
+        {% else %}
+        <span class="pager-btn off">다음</span>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
