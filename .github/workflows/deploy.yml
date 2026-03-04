@@ -1,0 +1,57 @@
+name: Deploy To Server
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          envs: GITHUB_SHA
+          script: |
+            set -e
+            cd /home/ubuntu/mirror
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+
+            if [ -d .venv ]; then
+              . .venv/bin/activate
+              pip install -r requirements.txt
+            fi
+
+            pm2 reload ecosystem.config.js --only dc-mirror --update-env || pm2 start ecosystem.config.js --only dc-mirror
+            pm2 save
+
+      - name: Verify remote commit
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          envs: GITHUB_SHA
+          script: |
+            set -e
+            cd /home/ubuntu/mirror
+            CURRENT=$(git rev-parse HEAD)
+            echo "current=${CURRENT}"
+            echo "target=${GITHUB_SHA}"
+            test "${CURRENT}" = "${GITHUB_SHA}"
