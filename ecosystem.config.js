@@ -5,7 +5,7 @@ module.exports = {
       script: 'gunicorn',
       args: '-c gunicorn.conf.py wsgi:app',
       interpreter: 'none',
-      cwd: '/home/oneul/workspace/mirror',
+      cwd: '/home/ubuntu/mirror',
       watch: true,
       ignore_watch: ['.git', 'logs', '__pycache__', '*.pyc', '.venv', 'venv', 'legacy', 'instance'],
       autorestart: true,
