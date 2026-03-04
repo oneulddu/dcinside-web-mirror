@@ -36,8 +36,17 @@ jobs:
               pip install -r requirements.txt
             fi
 
-            pm2 reload ecosystem.config.js --only dc-mirror --update-env || pm2 start ecosystem.config.js --only dc-mirror
-            pm2 save
+            PM2_BIN="$(command -v pm2 || true)"
+            if [ -z "${PM2_BIN}" ] && [ -x "/home/ubuntu/.nvm/versions/node/v24.11.1/bin/pm2" ]; then
+              PM2_BIN="/home/ubuntu/.nvm/versions/node/v24.11.1/bin/pm2"
+            fi
+            if [ -z "${PM2_BIN}" ]; then
+              echo "pm2 not found on server PATH"
+              exit 1
+            fi
+
+            "${PM2_BIN}" reload ecosystem.config.js --only dc-mirror --update-env || "${PM2_BIN}" start ecosystem.config.js --only dc-mirror
+            "${PM2_BIN}" save
 
       - name: Verify remote commit
         uses: appleboy/ssh-action@v1.2.0
