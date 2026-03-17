@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 import requests
 
 from .services.core import async_index, async_read, async_related_by_position
+from .services import upstream_throttle
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 INSTANCE_DIR = os.path.join(BASE_DIR, "instance")
@@ -84,6 +85,7 @@ def _extract_board_id(href):
 
 
 def _fetch_heung_galleries():
+    upstream_throttle.wait_for_turn_sync()
     headers = {"User-Agent": "Mozilla/5.0"}
     res = requests.get("https://gall.dcinside.com/", headers=headers, timeout=HTTP_TIMEOUT)
     res.raise_for_status()

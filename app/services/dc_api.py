@@ -7,6 +7,8 @@ import aiohttp
 import filetype
 from urllib.parse import parse_qs, urlparse
 
+from . import upstream_throttle
+
 DOCS_PER_PAGE = 200
 
 GET_HEADERS = {
@@ -226,6 +228,8 @@ class API:
         return self.__dedupe_urls(urls)
 
     async def __fetch_parsed_from_urls(self, urls):
+        await upstream_throttle.wait_for_turn_async()
+
         queue = list(urls)
         idx = 0
         while idx < len(queue):
@@ -233,11 +237,26 @@ class API:
             idx += 1
             try:
                 async with self.session.get(url) as res:
+                    if res.status == 429:
+                        retry_after = res.headers.get("Retry-After")
+                        upstream_throttle.register_rate_limit(
+                            int(retry_after) if retry_after and retry_after.isdigit() else None
+                        )
+                        continue
+
                     if res.status >= 400:
                         continue
                     text = await res.text()
+
                 if not text:
                     continue
+
+                if upstream_throttle.is_rate_limited_response(res.status, text[:1000], res.headers):
+                    upstream_throttle.register_rate_limit()
+                    continue
+
+                upstream_throttle.clear_rate_limit_state()
+
                 redirect_match = re.search(r"location\\.href\\s*=\\s*'([^']+)'", text)
                 if redirect_match:
                     redirect_url = redirect_match.group(1).strip()

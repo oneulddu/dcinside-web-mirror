@@ -1,0 +1,133 @@
+import os
+import time
+import random
+import asyncio
+import threading
+from dataclasses import dataclass
+
+
+@dataclass
+class ThrottleConfig:
+    enabled: bool
+    min_interval_ms: int
+    max_concurrency: int
+    jitter_ms: int
+    rate_limit_backoff_ms: int
+    rate_limit_max_backoff_ms: int
+    log_events: bool
+
+
+class ThrottleState:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.next_request_at = 0.0
+        self.blocked_until = 0.0
+        self.consecutive_rate_limits = 0
+
+
+_config = None
+_state = None
+
+
+def init_from_env():
+    global _config, _state
+    _config = ThrottleConfig(
+        enabled=os.getenv("MIRROR_UPSTREAM_THROTTLE_ENABLED", "true").lower() == "true",
+        min_interval_ms=int(os.getenv("MIRROR_UPSTREAM_MIN_INTERVAL_MS", "150")),
+        max_concurrency=int(os.getenv("MIRROR_UPSTREAM_MAX_CONCURRENCY", "2")),
+        jitter_ms=int(os.getenv("MIRROR_UPSTREAM_JITTER_MS", "50")),
+        rate_limit_backoff_ms=int(os.getenv("MIRROR_UPSTREAM_RATE_LIMIT_BACKOFF_MS", "5000")),
+        rate_limit_max_backoff_ms=int(os.getenv("MIRROR_UPSTREAM_RATE_LIMIT_MAX_BACKOFF_MS", "15000")),
+        log_events=os.getenv("MIRROR_UPSTREAM_LOG_EVENTS", "false").lower() == "true",
+    )
+    _state = ThrottleState()
+
+
+def wait_for_turn_sync():
+    if not _config.enabled:
+        return
+
+    with _state.lock:
+        now = time.monotonic()
+
+        if _state.blocked_until > now:
+            wait_time = _state.blocked_until - now
+            if _config.log_events:
+                print(f"[throttle] blocked, waiting {wait_time:.2f}s")
+        else:
+            wait_time = max(0, _state.next_request_at - now)
+
+        jitter = random.uniform(0, _config.jitter_ms / 1000.0) if _config.jitter_ms > 0 else 0
+        total_wait = wait_time + jitter
+
+        _state.next_request_at = time.monotonic() + total_wait + (_config.min_interval_ms / 1000.0)
+
+    if total_wait > 0:
+        time.sleep(total_wait)
+
+
+async def wait_for_turn_async():
+    if not _config.enabled:
+        return
+
+    with _state.lock:
+        now = time.monotonic()
+
+        if _state.blocked_until > now:
+            wait_time = _state.blocked_until - now
+            if _config.log_events:
+                print(f"[throttle] blocked, waiting {wait_time:.2f}s")
+        else:
+            wait_time = max(0, _state.next_request_at - now)
+
+        jitter = random.uniform(0, _config.jitter_ms / 1000.0) if _config.jitter_ms > 0 else 0
+        total_wait = wait_time + jitter
+
+        _state.next_request_at = time.monotonic() + total_wait + (_config.min_interval_ms / 1000.0)
+
+    if total_wait > 0:
+        await asyncio.sleep(total_wait)
+
+
+def register_rate_limit(retry_after_seconds=None):
+    if not _config.enabled:
+        return
+
+    with _state.lock:
+        _state.consecutive_rate_limits += 1
+
+        if retry_after_seconds:
+            backoff = min(retry_after_seconds * 1000, _config.rate_limit_max_backoff_ms)
+        else:
+            backoff = min(
+                _config.rate_limit_backoff_ms * _state.consecutive_rate_limits,
+                _config.rate_limit_max_backoff_ms
+            )
+
+        _state.blocked_until = time.monotonic() + (backoff / 1000.0)
+
+        if _config.log_events:
+            print(f"[throttle] rate limit detected, backoff {backoff}ms")
+
+
+def is_rate_limited_response(status, text, headers):
+    if status == 429:
+        return True
+
+    if text and any(phrase in text for phrase in ["Too Many Requests", "너무 많은 요청", "penalty-box"]):
+        return True
+
+    return False
+
+
+def clear_rate_limit_state():
+    if not _config.enabled:
+        return
+
+    with _state.lock:
+        _state.consecutive_rate_limits = 0
+        _state.blocked_until = 0.0
+
+
+# Initialize on import
+init_from_env()
