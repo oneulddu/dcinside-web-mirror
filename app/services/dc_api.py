@@ -982,12 +982,19 @@ class API:
                 headers=headers,
                 data=payload,
             )
-            if status >= 400 or not body.strip():
-                break
+            if status >= 400:
+                raise RuntimeError(f"pc comment fetch failed: {status}")
+            if not body.strip():
+                raise RuntimeError("pc comment fetch returned empty body")
 
-            data = json.loads(body)
+            try:
+                data = json.loads(body)
+            except Exception as exc:
+                raise RuntimeError("pc comment fetch returned invalid json") from exc
             comments = data.get("comments") or []
             if not comments:
+                if seen_ids:
+                    raise RuntimeError("pc comment fetch ended early")
                 break
 
             yielded_in_page = 0
@@ -1003,6 +1010,8 @@ class API:
                     return
 
             if yielded_in_page == 0:
+                if seen_ids:
+                    raise RuntimeError("pc comment page produced no new comments")
                 break
 
             pagination = str(data.get("pagination") or "")

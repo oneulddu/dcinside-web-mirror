@@ -65,3 +65,17 @@ def test_apply_rate_limit_headers_blocks_when_remaining_is_zero():
     assert blocked is True
     assert upstream_throttle._state.consecutive_rate_limits == 1
     assert upstream_throttle._state.blocked_until > time.monotonic()
+
+
+def test_apply_rate_limit_headers_is_case_insensitive():
+    upstream_throttle._config.enabled = True
+    upstream_throttle._state.blocked_until = 0
+    upstream_throttle._state.consecutive_rate_limits = 0
+
+    blocked = upstream_throttle.apply_rate_limit_headers(
+        {"x-ratelimit-remaining": "0", "retry-after": "7"}
+    )
+
+    assert blocked is True
+    assert upstream_throttle._state.consecutive_rate_limits == 1
+    assert upstream_throttle._state.blocked_until > time.monotonic()

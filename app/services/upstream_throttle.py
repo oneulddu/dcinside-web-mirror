@@ -56,7 +56,14 @@ def _header_value(headers, name, default=None):
     if headers is None:
         return default
     if hasattr(headers, "get"):
-        return headers.get(name, default)
+        value = headers.get(name)
+        if value is not None:
+            return value
+    lowered_name = str(name).lower()
+    if hasattr(headers, "items"):
+        for key, value in headers.items():
+            if str(key).lower() == lowered_name:
+                return value
     return default
 
 

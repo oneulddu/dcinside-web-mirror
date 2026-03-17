@@ -64,3 +64,43 @@ async def test_comments_preserve_remaining_limit_and_skip_duplicates_on_mobile_f
 
     comments = [item.id async for item in api.comments("aoegame", "30150503", num=2, kind="minor")]
     assert comments == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_comments_fallback_to_mobile_after_partial_pc_fetch_with_unlimited_num():
+    api = API.__new__(API)
+
+    class DummyComment:
+        def __init__(self, cid):
+            self.id = cid
+
+    async def fake_context(board_id, document_id, kind=None):
+        return {
+            "referer": "https://gall.dcinside.com/mgallery/board/view/?id=aoegame&no=30150503",
+            "e_s_n_o": "token",
+            "board_type": "",
+            "_GALLTYPE_": "M",
+            "secret_article_key": "",
+        }
+
+    call_state = {"count": 0}
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        call_state["count"] += 1
+        if call_state["count"] == 1:
+            body = (
+                '{"comments":[{"no":"1","parent":"30150503","user_id":"","name":"a","ip":"",'
+                '"reg_date":"02.11 17:42:17","memo":"first","depth":0}],"pagination":"<a>2</a>"}'
+            )
+            return 200, {}, body
+        return 200, {}, ""
+
+    async def fake_mobile(board_id, document_id, num=-1, start_page=1):
+        yield DummyComment("2")
+
+    api._API__get_pc_comment_context = fake_context
+    api._API__request_text = fake_request_text
+    api._API__comments_from_mobile = fake_mobile
+
+    comments = [item.id async for item in api.comments("aoegame", "30150503", num=-1, kind="minor")]
+    assert comments == ["1", "2"]
