@@ -9,6 +9,8 @@ concurrency:
   group: deploy-main
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -16,15 +18,23 @@ jobs:
 
     steps:
       - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          port: ${{ secrets.SSH_PORT }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true
-          envs: GITHUB_SHA
-          script: |
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEY_FILE="${RUNNER_TEMP}/deploy_key"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${KEY_FILE}"
+
+          ssh -i "${KEY_FILE}" \
+            -p "${SSH_PORT}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=accept-new \
+            "${SSH_USER}@${SSH_HOST}" <<'EOF'
             set -e
             cd /home/ubuntu/mirror
             git fetch origin main
@@ -47,20 +57,28 @@ jobs:
 
             "${PM2_BIN}" reload ecosystem.config.js --only dc-mirror --update-env || "${PM2_BIN}" start ecosystem.config.js --only dc-mirror
             "${PM2_BIN}" save
+          EOF
 
       - name: Verify remote commit
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          port: ${{ secrets.SSH_PORT }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true
-          envs: GITHUB_SHA
-          script: |
-            set -e
-            cd /home/ubuntu/mirror
-            CURRENT=$(git rev-parse HEAD)
-            echo "current=${CURRENT}"
-            echo "target=${GITHUB_SHA}"
-            test "${CURRENT}" = "${GITHUB_SHA}"
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEY_FILE="${RUNNER_TEMP}/deploy_key"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${KEY_FILE}"
+
+          CURRENT=$(ssh -i "${KEY_FILE}" \
+            -p "${SSH_PORT}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=accept-new \
+            "${SSH_USER}@${SSH_HOST}" \
+            'cd /home/ubuntu/mirror && git rev-parse HEAD')
+
+          echo "current=${CURRENT}"
+          echo "target=${GITHUB_SHA}"
+          test "${CURRENT}" = "${GITHUB_SHA}"
