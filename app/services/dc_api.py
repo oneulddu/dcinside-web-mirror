@@ -1080,6 +1080,7 @@ class API:
             else: 
                 break 
     async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None):
+        yielded_from_pc = False
         try:
             async for comment in self.__comments_from_pc(
                 board_id,
@@ -1088,8 +1089,10 @@ class API:
                 start_page=start_page,
                 kind=kind,
             ):
+                yielded_from_pc = True
                 yield comment
-            return
+            if yielded_from_pc:
+                return
         except Exception:
             pass
 
