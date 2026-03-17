@@ -256,8 +256,6 @@ class API:
                     upstream_throttle.register_rate_limit()
                     continue
 
-                upstream_throttle.clear_rate_limit_state()
-
                 redirect_match = re.search(r"location\\.href\\s*=\\s*'([^']+)'", text)
                 if redirect_match:
                     redirect_url = redirect_match.group(1).strip()

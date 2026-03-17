@@ -31,15 +31,22 @@ _config = None
 _state = None
 
 
+def _safe_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def init_from_env():
     global _config, _state
     _config = ThrottleConfig(
         enabled=os.getenv("MIRROR_UPSTREAM_THROTTLE_ENABLED", "true").lower() == "true",
-        min_interval_ms=int(os.getenv("MIRROR_UPSTREAM_MIN_INTERVAL_MS", "150")),
-        max_concurrency=int(os.getenv("MIRROR_UPSTREAM_MAX_CONCURRENCY", "2")),
-        jitter_ms=int(os.getenv("MIRROR_UPSTREAM_JITTER_MS", "50")),
-        rate_limit_backoff_ms=int(os.getenv("MIRROR_UPSTREAM_RATE_LIMIT_BACKOFF_MS", "5000")),
-        rate_limit_max_backoff_ms=int(os.getenv("MIRROR_UPSTREAM_RATE_LIMIT_MAX_BACKOFF_MS", "15000")),
+        min_interval_ms=_safe_int(os.getenv("MIRROR_UPSTREAM_MIN_INTERVAL_MS"), 150),
+        max_concurrency=_safe_int(os.getenv("MIRROR_UPSTREAM_MAX_CONCURRENCY"), 2),
+        jitter_ms=_safe_int(os.getenv("MIRROR_UPSTREAM_JITTER_MS"), 50),
+        rate_limit_backoff_ms=_safe_int(os.getenv("MIRROR_UPSTREAM_RATE_LIMIT_BACKOFF_MS"), 5000),
+        rate_limit_max_backoff_ms=_safe_int(os.getenv("MIRROR_UPSTREAM_RATE_LIMIT_MAX_BACKOFF_MS"), 15000),
         log_events=os.getenv("MIRROR_UPSTREAM_LOG_EVENTS", "false").lower() == "true",
     )
     _state = ThrottleState(_config.max_concurrency)
