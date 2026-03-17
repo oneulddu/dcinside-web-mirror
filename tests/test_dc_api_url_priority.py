@@ -39,3 +39,28 @@ async def test_comments_fallback_to_mobile_when_pc_yields_nothing():
 
     comments = [item async for item in api.comments("aoegame", "30150503", kind="minor")]
     assert comments == ["mobile-comment"]
+
+
+@pytest.mark.asyncio
+async def test_comments_preserve_remaining_limit_and_skip_duplicates_on_mobile_fallback():
+    api = API.__new__(API)
+
+    class DummyComment:
+        def __init__(self, cid):
+            self.id = cid
+
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+        yield DummyComment("1")
+        raise RuntimeError("transient pc failure")
+
+    async def fake_mobile(board_id, document_id, num=-1, start_page=1):
+        assert num == -1
+        yield DummyComment("1")
+        yield DummyComment("2")
+        yield DummyComment("3")
+
+    api._API__comments_from_pc = fake_pc
+    api._API__comments_from_mobile = fake_mobile
+
+    comments = [item.id async for item in api.comments("aoegame", "30150503", num=2, kind="minor")]
+    assert comments == ["1", "2"]

@@ -1081,6 +1081,8 @@ class API:
                 break 
     async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None):
         yielded_from_pc = False
+        yielded_ids = set()
+        remaining = num
         try:
             async for comment in self.__comments_from_pc(
                 board_id,
@@ -1090,8 +1092,18 @@ class API:
                 kind=kind,
             ):
                 yielded_from_pc = True
+                comment_id = str(getattr(comment, "id", None) or "").strip()
+                if comment_id:
+                    yielded_ids.add(comment_id)
+                if remaining != -1:
+                    remaining -= 1
                 yield comment
-            if yielded_from_pc:
+                if remaining == 0:
+                    return
+            if yielded_from_pc and remaining != -1:
+                if remaining <= 0:
+                    return
+            elif yielded_from_pc and remaining == -1:
                 return
         except Exception:
             pass
@@ -1099,10 +1111,17 @@ class API:
         async for comment in self.__comments_from_mobile(
             board_id,
             document_id,
-            num=num,
+            num=-1,
             start_page=start_page,
         ):
+            comment_id = str(getattr(comment, "id", None) or "").strip()
+            if comment_id and comment_id in yielded_ids:
+                continue
             yield comment
+            if remaining != -1:
+                remaining -= 1
+                if remaining == 0:
+                    return
     async def write_comment(self, board_id, document_id, contents="", dccon_id="", dccon_src="", parent_comment_id="", name="", password="", is_minor=False):
         url = "https://m.dcinside.com/board/{}/{}".format(board_id, document_id)
         async with self.session.get(url) as res:
