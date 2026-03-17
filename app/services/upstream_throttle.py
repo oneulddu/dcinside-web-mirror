@@ -18,11 +18,13 @@ class ThrottleConfig:
 
 
 class ThrottleState:
-    def __init__(self):
+    def __init__(self, max_concurrency):
         self.lock = threading.Lock()
         self.next_request_at = 0.0
         self.blocked_until = 0.0
         self.consecutive_rate_limits = 0
+        self.semaphore = asyncio.Semaphore(max_concurrency)
+        self.sync_semaphore = threading.Semaphore(max_concurrency)
 
 
 _config = None
@@ -40,7 +42,7 @@ def init_from_env():
         rate_limit_max_backoff_ms=int(os.getenv("MIRROR_UPSTREAM_RATE_LIMIT_MAX_BACKOFF_MS", "15000")),
         log_events=os.getenv("MIRROR_UPSTREAM_LOG_EVENTS", "false").lower() == "true",
     )
-    _state = ThrottleState()
+    _state = ThrottleState(_config.max_concurrency)
 
 
 def wait_for_turn_sync():
@@ -131,3 +133,30 @@ def clear_rate_limit_state():
 
 # Initialize on import
 init_from_env()
+
+
+class AsyncThrottleGuard:
+    """Context manager for async throttle with semaphore"""
+    async def __aenter__(self):
+        if _config.enabled:
+            await _state.semaphore.acquire()
+            await wait_for_turn_async()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if _config.enabled:
+            _state.semaphore.release()
+
+
+class SyncThrottleGuard:
+    """Context manager for sync throttle with semaphore"""
+    def __enter__(self):
+        if _config.enabled:
+            _state.sync_semaphore.acquire()
+            wait_for_turn_sync()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if _config.enabled:
+            _state.sync_semaphore.release()
+

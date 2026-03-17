@@ -228,13 +228,14 @@ class API:
         return self.__dedupe_urls(urls)
 
     async def __fetch_parsed_from_urls(self, urls):
-        await upstream_throttle.wait_for_turn_async()
-
         queue = list(urls)
         idx = 0
         while idx < len(queue):
             url = queue[idx]
             idx += 1
+
+            await upstream_throttle.wait_for_turn_async()
+
             try:
                 async with self.session.get(url) as res:
                     if res.status == 429:
