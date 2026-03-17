@@ -52,6 +52,29 @@ def init_from_env():
     _state = ThrottleState(_config.max_concurrency)
 
 
+def _header_value(headers, name, default=None):
+    if headers is None:
+        return default
+    if hasattr(headers, "get"):
+        value = headers.get(name)
+        if value is not None:
+            return value
+    lowered_name = str(name).lower()
+    if hasattr(headers, "items"):
+        for key, value in headers.items():
+            if str(key).lower() == lowered_name:
+                return value
+    return default
+
+
+def _header_int(headers, name):
+    value = _header_value(headers, name)
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def wait_for_turn_sync():
     if not _config.enabled:
         return
@@ -119,11 +142,44 @@ def register_rate_limit(retry_after_seconds=None):
             print(f"[throttle] rate limit detected, backoff {backoff}ms")
 
 
+def get_retry_after_seconds(headers):
+    retry_after = _header_int(headers, "Retry-After")
+    if retry_after is not None and retry_after >= 0:
+        return retry_after
+
+    reset_at = _header_int(headers, "X-RateLimit-Reset")
+    if reset_at is not None:
+        remaining = max(0, reset_at - int(time.time()))
+        if remaining > 0:
+            return remaining
+    return None
+
+
+def apply_rate_limit_headers(headers):
+    if not _config.enabled:
+        return False
+
+    remaining = _header_int(headers, "X-RateLimit-Remaining")
+    if remaining is None or remaining > 0:
+        return False
+
+    register_rate_limit(get_retry_after_seconds(headers))
+    return True
+
+
 def is_rate_limited_response(status, text, headers):
     if status == 429:
         return True
 
-    if text and any(phrase in text for phrase in ["Too Many Requests", "너무 많은 요청", "penalty-box"]):
+    if text and any(
+        phrase in text
+        for phrase in [
+            "Too Many Requests",
+            "Too Many Attempts",
+            "너무 많은 요청",
+            "penalty-box",
+        ]
+    ):
         return True
 
     return False
@@ -166,4 +222,3 @@ class SyncThrottleGuard:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if _config.enabled:
             _state.sync_semaphore.release()
-

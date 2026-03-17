@@ -10,14 +10,16 @@ from urllib.parse import parse_qs, urlparse
 from . import upstream_throttle
 
 DOCS_PER_PAGE = 200
+MOBILE_USER_AGENT = "Mozilla/5.0 (Linux; Android 7.0; SM-G892A Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/67.0.3396.87 Mobile Safari/537.36"
+PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 GET_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 7.0; SM-G892A Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/67.0.3396.87 Mobile Safari/537.36"
+    "User-Agent": MOBILE_USER_AGENT
      }
 XML_HTTP_REQ_HEADERS = {
     "Accept": "*/*",
     "Connection": "keep-alive",
-    "User-Agent": "Mozilla/5.0 (Linux; Android 7.0; SM-G892A Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/67.0.3396.87 Mobile Safari/537.36",
+    "User-Agent": MOBILE_USER_AGENT,
     "X-Requested-With": "XMLHttpRequest",
     "Accept-Encoding": "gzip, deflate, br",
     "Accept-Language": "en-US,en;q=0.5",
@@ -33,7 +35,7 @@ POST_HEADERS = {
     "Connection": "keep-alive",
     "Pragma": "no-cache",
     "Upgrade-Insecure-Requests": "1",
-    "User-Agent": "Mozilla/5.0 (Linux; Android 7.0; SM-G892A Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/67.0.3396.87 Mobile Safari/537.36",
+    "User-Agent": MOBILE_USER_AGENT,
     }
 
 GALLERY_POSTS_COOKIES = {
@@ -101,7 +103,7 @@ class Document:
         self.logined_voteup_count = logined_voteup_count
         self.comments = comments
         self.time = time
-        self.subject = None
+        self.subject = subject
     def __str__(self):
         return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
 
@@ -176,39 +178,93 @@ class API:
             unique.append(url)
         return unique
 
+    def __prepare_headers(self, url, headers=None):
+        prepared = dict(headers or {})
+        host = (urlparse(url).netloc or "").lower()
+        if host in {"gall.dcinside.com", "search.dcinside.com"}:
+            prepared["User-Agent"] = PC_USER_AGENT
+        else:
+            prepared.setdefault("User-Agent", MOBILE_USER_AGENT)
+        return prepared
+
+    def __is_pc_request(self, url):
+        host = (urlparse(url).netloc or "").lower()
+        return host in {"gall.dcinside.com", "search.dcinside.com"}
+
+    async def __request_text(self, method, url, headers=None, data=None, cookies=None):
+        request_headers = self.__prepare_headers(url, headers)
+        is_pc_request = self.__is_pc_request(url)
+
+        if is_pc_request:
+            async with self.session.request(
+                method,
+                url,
+                headers=request_headers,
+                data=data,
+                cookies=cookies,
+            ) as res:
+                text = await res.text()
+                status = res.status
+                response_headers = dict(res.headers)
+        else:
+            async with upstream_throttle.AsyncThrottleGuard():
+                async with self.session.request(
+                    method,
+                    url,
+                    headers=request_headers,
+                    data=data,
+                    cookies=cookies,
+                ) as res:
+                    text = await res.text()
+                    status = res.status
+                    response_headers = dict(res.headers)
+
+        if upstream_throttle.is_rate_limited_response(status, text[:1000], response_headers):
+            if not is_pc_request:
+                upstream_throttle.register_rate_limit(
+                    upstream_throttle.get_retry_after_seconds(response_headers)
+                )
+            raise RuntimeError(f"rate limited: {status}")
+
+        if not is_pc_request:
+            blocked = upstream_throttle.apply_rate_limit_headers(response_headers)
+            if status < 400 and not blocked:
+                upstream_throttle.clear_rate_limit_state()
+
+        return status, response_headers, text
+
     def __build_list_urls(self, board_id, page, recommend=False, kind=None):
         kind = (kind or "").lower()
         urls = []
+        recommend_suffix = "&recommend=1" if recommend else ""
+
+        kind_urls = {
+            "normal": "https://gall.dcinside.com/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+            "minor": "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+            "mini": "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+            "person": "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+        }
+        if kind in kind_urls:
+            urls.append(kind_urls[kind])
+
+        urls.extend([
+            "https://gall.dcinside.com/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+            "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+            "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+            "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+        ])
+
         if kind == "mini":
             urls.append("https://m.dcinside.com/mini/{}?page={}".format(board_id, page))
         elif recommend:
             urls.append("https://m.dcinside.com/board/{}?recommend=1&page={}".format(board_id, page))
         else:
             urls.append("https://m.dcinside.com/board/{}?page={}".format(board_id, page))
-
-        kind_urls = {
-            "normal": "https://gall.dcinside.com/board/lists/?id={}&page={}".format(board_id, page),
-            "minor": "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}".format(board_id, page),
-            "mini": "https://gall.dcinside.com/mini/board/lists/?id={}&page={}".format(board_id, page),
-            "person": "https://gall.dcinside.com/person/board/lists/?id={}&page={}".format(board_id, page),
-        }
-        if kind in kind_urls:
-            urls.append(kind_urls[kind])
-
-        urls.extend([
-            "https://gall.dcinside.com/board/lists/?id={}&page={}".format(board_id, page),
-            "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}".format(board_id, page),
-            "https://gall.dcinside.com/mini/board/lists/?id={}&page={}".format(board_id, page),
-            "https://gall.dcinside.com/person/board/lists/?id={}&page={}".format(board_id, page),
-        ])
         return self.__dedupe_urls(urls)
 
     def __build_view_urls(self, board_id, document_id, kind=None):
         kind = (kind or "").lower()
-        if kind == "mini":
-            urls = ["https://m.dcinside.com/mini/{}/{}".format(board_id, document_id)]
-        else:
-            urls = ["https://m.dcinside.com/board/{}/{}".format(board_id, document_id)]
+        urls = []
 
         kind_urls = {
             "normal": "https://gall.dcinside.com/board/view/?id={}&no={}".format(board_id, document_id),
@@ -225,6 +281,30 @@ class API:
             "https://gall.dcinside.com/mini/board/view/?id={}&no={}".format(board_id, document_id),
             "https://gall.dcinside.com/person/board/view/?id={}&no={}".format(board_id, document_id),
         ])
+
+        if kind == "mini":
+            urls.append("https://m.dcinside.com/mini/{}/{}".format(board_id, document_id))
+        else:
+            urls.append("https://m.dcinside.com/board/{}/{}".format(board_id, document_id))
+        return self.__dedupe_urls(urls)
+
+    def __build_pc_view_urls(self, board_id, document_id, kind=None):
+        kind = (kind or "").lower()
+        urls = []
+        kind_urls = {
+            "normal": "https://gall.dcinside.com/board/view/?id={}&no={}".format(board_id, document_id),
+            "minor": "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}".format(board_id, document_id),
+            "mini": "https://gall.dcinside.com/mini/board/view/?id={}&no={}".format(board_id, document_id),
+            "person": "https://gall.dcinside.com/person/board/view/?id={}&no={}".format(board_id, document_id),
+        }
+        if kind in kind_urls:
+            urls.append(kind_urls[kind])
+        urls.extend([
+            "https://gall.dcinside.com/board/view/?id={}&no={}".format(board_id, document_id),
+            "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}".format(board_id, document_id),
+            "https://gall.dcinside.com/mini/board/view/?id={}&no={}".format(board_id, document_id),
+            "https://gall.dcinside.com/person/board/view/?id={}&no={}".format(board_id, document_id),
+        ])
         return self.__dedupe_urls(urls)
 
     async def __fetch_parsed_from_urls(self, urls):
@@ -234,29 +314,14 @@ class API:
             url = queue[idx]
             idx += 1
 
-            await upstream_throttle.wait_for_turn_async()
-
             try:
-                async with self.session.get(url) as res:
-                    if res.status == 429:
-                        retry_after = res.headers.get("Retry-After")
-                        upstream_throttle.register_rate_limit(
-                            int(retry_after) if retry_after and retry_after.isdigit() else None
-                        )
-                        continue
-
-                    if res.status >= 400:
-                        continue
-                    text = await res.text()
-
+                status, _, text = await self.__request_text("GET", url)
+                if status >= 400:
+                    continue
                 if not text:
                     continue
 
-                if upstream_throttle.is_rate_limited_response(res.status, text[:1000], res.headers):
-                    upstream_throttle.register_rate_limit()
-                    continue
-
-                redirect_match = re.search(r"location\\.href\\s*=\\s*'([^']+)'", text)
+                redirect_match = re.search(r"location\.href\s*=\s*'([^']+)'", text)
                 if redirect_match:
                     redirect_url = redirect_match.group(1).strip()
                     if redirect_url and redirect_url not in queue:
@@ -282,8 +347,7 @@ class API:
 
     async def __gallery_miner_from_web(self, category, category_code, name=None):
         # Prime ci_c cookie required by search_gallmain endpoint.
-        async with self.session.get("https://gall.dcinside.com/m") as res:
-            await res.text()
+        await self.__request_text("GET", "https://gall.dcinside.com/m")
 
         cookies = self.session.cookie_jar.filter_cookies("https://gall.dcinside.com")
         ci_token = cookies.get("ci_c").value if cookies.get("ci_c") else ""
@@ -291,6 +355,7 @@ class API:
         headers = XML_HTTP_REQ_HEADERS.copy()
         headers["Referer"] = "https://gall.dcinside.com/m"
         headers["Origin"] = "https://gall.dcinside.com"
+        headers["User-Agent"] = PC_USER_AGENT
 
         payload = {
             "ci_t": ci_token,
@@ -300,14 +365,14 @@ class API:
             "galltype": "M",
         }
 
-        async with self.session.post(
+        status, _, text = await self.__request_text(
+            "POST",
             "https://gall.dcinside.com/ajax/gallery_main_ajax/search_gallmain/",
             headers=headers,
             data=payload,
-        ) as res:
-            text = await res.text()
-            if res.status != 200:
-                raise RuntimeError(f"search_gallmain failed: {res.status}")
+        )
+        if status != 200:
+            raise RuntimeError(f"search_gallmain failed: {status}")
 
         parsed = lxml.html.fromstring(text)
         gallerys = {}
@@ -327,9 +392,10 @@ class API:
         gallerys = {}
         lis = []
 
-        async with self.session.get(url) as res:
-            text = await res.text()
-            parsed = lxml.html.fromstring(text)
+        status, _, text = await self.__request_text("GET", url)
+        if status >= 400:
+            raise RuntimeError(f"gallery mobile failed: {status}")
+        parsed = lxml.html.fromstring(text)
         for item in parsed.xpath("/html/body/div/div/div/section[3]/ul/li"):
             lis.append(item)
         for item in parsed.xpath('//*[@id="base-div"]/ul/li'):
@@ -363,9 +429,10 @@ class API:
     async def gallery(self, name=None):
         url = "https://m.dcinside.com/galltotal"
         gallerys={}
-        async with self.session.get(url) as res:
-            text = await res.text()
-            parsed = lxml.html.fromstring(text)
+        status, _, text = await self.__request_text("GET", url)
+        if status >= 400:
+            raise RuntimeError(f"gallery total failed: {status}")
+        parsed = lxml.html.fromstring(text)
         for i in parsed.xpath('//*[@id="total_1"]/li'):
             for e in i.iter():
                 if e.tag == "a":
@@ -672,8 +739,15 @@ class API:
                 return (node.text or "").strip()
 
             # Improved title parsing
+            subject = None
+            title_subject_el = doc_head_container.xpath(".//span[contains(@class, 'title_subject')]")
+            title_headtext_el = doc_head_container.xpath(".//span[contains(@class, 'title_headtext')]")
             title_el = doc_head_container.xpath(".//span[contains(@class, 'tit')]")
-            if title_el:
+            if title_subject_el:
+                title = title_subject_el[0].text_content().strip()
+                if title_headtext_el:
+                    subject = title_headtext_el[0].text_content().strip().strip("[]") or None
+            elif title_el:
                 title = title_el[0].text_content().strip()
             else:
                 title = " ".join(doc_head_container.text_content().split()) if doc_head_container.text_content() else "제목 없음"
@@ -799,7 +873,8 @@ class API:
                     votedown_count= votedown_count,
                     logined_voteup_count= logined_voteup_count,
                     comments= lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
-                    time= self.__parse_time(time_str)
+                    time= self.__parse_time(time_str),
+                    subject=subject,
                     )
         else:
             # fail due to unusual tags in mobile version
@@ -813,12 +888,157 @@ class API:
             doc_content = parsed.xpath("//div[@class='thum-txtin']")[0]
             return '\n'.join(i.strip() for i in doc_content.itertext() if i.strip() and not i.strip().startswith("이미지 광고")), [i.get("src") for i in doc_content.xpath("//img") if not i.get("src","").startswith("https://nstatic")], comments(board_id, document_id, sess=sess)
         '''
-    async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None):
+    async def __get_pc_comment_context(self, board_id, document_id, kind=None):
+        for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
+            try:
+                status, _, text = await self.__request_text("GET", url)
+            except Exception:
+                continue
+            if status >= 400 or not text:
+                continue
+            parsed = lxml.html.fromstring(text)
+            e_s_n_o = parsed.xpath("string(//input[@id='e_s_n_o']/@value)").strip()
+            gall_type = parsed.xpath("string(//input[@id='_GALLTYPE_']/@value)").strip()
+            if not e_s_n_o or not gall_type:
+                continue
+            return {
+                "referer": url,
+                "e_s_n_o": e_s_n_o,
+                "board_type": parsed.xpath("string(//input[@id='board_type']/@value)").strip(),
+                "_GALLTYPE_": gall_type,
+                "secret_article_key": parsed.xpath("string(//input[@id='secret_article_key']/@value)").strip(),
+            }
+        raise RuntimeError("pc comment context not found")
+
+    def __parse_pc_comment(self, raw):
+        memo = raw.get("memo") or ""
+        contents = memo
+        dccon = None
+        voice = raw.get("voice") or None
+
+        if memo and "<" in memo:
+            try:
+                fragment = lxml.html.fragment_fromstring(memo, create_parent="div")
+                dccon_candidates = fragment.xpath(
+                    ".//img[contains(@src, 'dccon') or contains(@src, 'dicad') or contains(@class, 'written_dccon')]"
+                )
+                if dccon_candidates:
+                    dccon = (
+                        dccon_candidates[0].get("data-gif")
+                        or dccon_candidates[0].get("data-original")
+                        or dccon_candidates[0].get("src")
+                    )
+                if not voice:
+                    voice_nodes = fragment.xpath(".//iframe/@src")
+                    if voice_nodes:
+                        voice = voice_nodes[0]
+                contents = "\n".join(i.strip() for i in fragment.itertext() if i.strip())
+            except Exception:
+                contents = re.sub(r"<[^>]+>", "", memo).strip()
+
+        author_id = (raw.get("user_id") or "").strip() or (raw.get("ip") or "").strip() or None
+        parent_id = str(raw.get("c_no") or raw.get("parent") or "").strip() or None
+
+        return Comment(
+            id=str(raw.get("no") or "").strip() or None,
+            parent_id=parent_id,
+            author=(raw.get("name") or "").strip() or "익명",
+            author_id=author_id,
+            contents=contents,
+            dccon=dccon,
+            voice=voice,
+            time=self.__parse_time((raw.get("reg_date") or "").strip()),
+            is_reply=str(raw.get("depth") or "0").strip() != "0",
+        )
+
+    async def __comments_from_pc(self, board_id, document_id, num=-1, start_page=1, kind=None):
+        context = await self.__get_pc_comment_context(board_id, document_id, kind=kind)
+        seen_ids = set()
+
+        for page in range(start_page, 999999):
+            payload = {
+                "id": board_id,
+                "no": document_id,
+                "cmt_id": board_id,
+                "cmt_no": document_id,
+                "focus_cno": "",
+                "focus_pno": "",
+                "e_s_n_o": context["e_s_n_o"],
+                "comment_page": str(page),
+                "sort": "D",
+                "prevCnt": "",
+                "board_type": context["board_type"],
+                "_GALLTYPE_": context["_GALLTYPE_"],
+                "secret_article_key": context["secret_article_key"],
+            }
+            headers = {
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Referer": context["referer"],
+                "X-Requested-With": "XMLHttpRequest",
+            }
+            status, _, body = await self.__request_text(
+                "POST",
+                "https://gall.dcinside.com/board/comment/",
+                headers=headers,
+                data=payload,
+            )
+            if status >= 400:
+                raise RuntimeError(f"pc comment fetch failed: {status}")
+            if not body.strip():
+                raise RuntimeError("pc comment fetch returned empty body")
+
+            try:
+                data = json.loads(body)
+            except Exception as exc:
+                raise RuntimeError("pc comment fetch returned invalid json") from exc
+            comments = data.get("comments") or []
+            if not comments:
+                if seen_ids:
+                    raise RuntimeError("pc comment fetch ended early")
+                break
+
+            yielded_in_page = 0
+            for raw in comments:
+                comment_id = str(raw.get("no") or "").strip()
+                if not comment_id or comment_id in seen_ids:
+                    continue
+                seen_ids.add(comment_id)
+                yield self.__parse_pc_comment(raw)
+                yielded_in_page += 1
+                num -= 1
+                if num == 0:
+                    return
+
+            if yielded_in_page == 0:
+                if seen_ids:
+                    raise RuntimeError("pc comment page produced no new comments")
+                break
+
+            pagination = str(data.get("pagination") or "")
+            max_page = 1
+            for page_no in re.findall(r">(\d+)<", pagination):
+                try:
+                    max_page = max(max_page, int(page_no))
+                except ValueError:
+                    continue
+            if page >= max_page:
+                break
+
+    async def __comments_from_mobile(self, board_id, document_id, num=-1, start_page=1):
         url = "https://m.dcinside.com/ajax/response-comment"
         for page in range(start_page, 999999):
             payload = {"id": board_id, "no": document_id, "cpage": page, "managerskill":"", "del_scope": "1", "csort": ""}
-            async with self.session.post(url, headers=XML_HTTP_REQ_HEADERS, data=payload) as res:
-                body = await res.text()
+            try:
+                status, _, body = await self.__request_text(
+                    "POST",
+                    url,
+                    headers=XML_HTTP_REQ_HEADERS,
+                    data=payload,
+                )
+            except RuntimeError:
+                break
+            if status >= 400:
+                break
             if not body or not body.strip():
                 break
             try:
@@ -868,6 +1088,49 @@ class API:
                     break
             else: 
                 break 
+    async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None):
+        yielded_from_pc = False
+        yielded_ids = set()
+        remaining = num
+        try:
+            async for comment in self.__comments_from_pc(
+                board_id,
+                document_id,
+                num=num,
+                start_page=start_page,
+                kind=kind,
+            ):
+                yielded_from_pc = True
+                comment_id = str(getattr(comment, "id", None) or "").strip()
+                if comment_id:
+                    yielded_ids.add(comment_id)
+                if remaining != -1:
+                    remaining -= 1
+                yield comment
+                if remaining == 0:
+                    return
+            if yielded_from_pc and remaining != -1:
+                if remaining <= 0:
+                    return
+            elif yielded_from_pc and remaining == -1:
+                return
+        except Exception:
+            pass
+
+        async for comment in self.__comments_from_mobile(
+            board_id,
+            document_id,
+            num=-1,
+            start_page=start_page,
+        ):
+            comment_id = str(getattr(comment, "id", None) or "").strip()
+            if comment_id and comment_id in yielded_ids:
+                continue
+            yield comment
+            if remaining != -1:
+                remaining -= 1
+                if remaining == 0:
+                    return
     async def write_comment(self, board_id, document_id, contents="", dccon_id="", dccon_src="", parent_comment_id="", name="", password="", is_minor=False):
         url = "https://m.dcinside.com/board/{}/{}".format(board_id, document_id)
         async with self.session.get(url) as res:
