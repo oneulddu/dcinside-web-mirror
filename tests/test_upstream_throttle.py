@@ -43,5 +43,25 @@ def test_rate_limit_backoff():
 def test_is_rate_limited_response():
     assert upstream_throttle.is_rate_limited_response(429, "", {})
     assert upstream_throttle.is_rate_limited_response(200, "Too Many Requests", {})
+    assert upstream_throttle.is_rate_limited_response(200, "Too Many Attempts.", {})
     assert upstream_throttle.is_rate_limited_response(200, "너무 많은 요청", {})
     assert not upstream_throttle.is_rate_limited_response(200, "OK", {})
+
+
+def test_get_retry_after_seconds_from_headers():
+    headers = {"Retry-After": "54"}
+    assert upstream_throttle.get_retry_after_seconds(headers) == 54
+
+
+def test_apply_rate_limit_headers_blocks_when_remaining_is_zero():
+    upstream_throttle._config.enabled = True
+    upstream_throttle._state.blocked_until = 0
+    upstream_throttle._state.consecutive_rate_limits = 0
+
+    blocked = upstream_throttle.apply_rate_limit_headers(
+        {"X-RateLimit-Remaining": "0", "Retry-After": "12"}
+    )
+
+    assert blocked is True
+    assert upstream_throttle._state.consecutive_rate_limits == 1
+    assert upstream_throttle._state.blocked_until > time.monotonic()

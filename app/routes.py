@@ -14,8 +14,6 @@ from bs4 import BeautifulSoup
 import requests
 
 from .services.core import async_index, async_read, async_related_by_position
-from .services import upstream_throttle
-
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 INSTANCE_DIR = os.path.join(BASE_DIR, "instance")
 os.makedirs(INSTANCE_DIR, exist_ok=True)
@@ -85,7 +83,6 @@ def _extract_board_id(href):
 
 
 def _fetch_heung_galleries():
-    upstream_throttle.wait_for_turn_sync()
     headers = {"User-Agent": "Mozilla/5.0"}
     res = requests.get("https://gall.dcinside.com/", headers=headers, timeout=HTTP_TIMEOUT)
     res.raise_for_status()
@@ -156,6 +153,21 @@ def _format_recent_time(ts):
         return "-"
     kst = timezone(timedelta(hours=9))
     return datetime.fromtimestamp(float(ts), tz=kst).strftime("%Y-%m-%d %H:%M")
+
+
+def _build_pc_view_referer(board, pid, kind=None):
+    board_id = (board or "").strip()
+    doc_id = _safe_int(pid, 0)
+    board_kind = (kind or "").strip().lower()
+    if not board_id or doc_id <= 0:
+        return "https://gall.dcinside.com/"
+    if board_kind == "minor":
+        return f"https://gall.dcinside.com/mgallery/board/view/?id={board_id}&no={doc_id}"
+    if board_kind == "mini":
+        return f"https://gall.dcinside.com/mini/board/view/?id={board_id}&no={doc_id}"
+    if board_kind == "person":
+        return f"https://gall.dcinside.com/person/board/view/?id={board_id}&no={doc_id}"
+    return f"https://gall.dcinside.com/board/view/?id={board_id}&no={doc_id}"
 
 
 def _recent_cache_key():
@@ -422,14 +434,15 @@ def media():
     src = (request.args.get("src") or "").strip()
     board = (request.args.get("board") or "").strip()
     pid = _safe_int(request.args.get("pid", 0), 0)
+    kind = (request.args.get("kind") or "").strip().lower() or None
     if src.startswith("//"):
         src = "https:" + src
     if not src.startswith(("http://", "https://")):
         return ("", 400)
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G960N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36",
-        "Referer": f"https://m.dcinside.com/board/{board}/{pid}" if board and pid else "https://m.dcinside.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": _build_pc_view_referer(board, pid, kind=kind),
     }
     cookies = {"__gat_mobile_search": "1", "list_count": "200"}
     try:
@@ -455,14 +468,14 @@ def read():
     for i in soup.find_all("img", "lazy"):
         if idx >= len(images):
             break
-        i["src"] = url_for("main.media", src=images[idx], board=board, pid=pid)
+        i["src"] = url_for("main.media", src=images[idx], board=board, pid=pid, kind=kind)
         i["loading"] = "lazy"
         i["decoding"] = "async"
         idx += 1
 
     for comment in comments:
         if comment.get("dccon"):
-            comment["dccon"] = url_for("main.media", src=comment["dccon"], board=board, pid=pid)
+            comment["dccon"] = url_for("main.media", src=comment["dccon"], board=board, pid=pid, kind=kind)
 
     data["html"] = str(soup)
     read_nav_tab = "best" if board == "dcbest" else "all"
