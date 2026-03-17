@@ -121,6 +121,21 @@ make run-prod   # Gunicorn 프로덕션 실행
 | `MIRROR_RECENT_MAX_ITEMS` | `30` | 최근 방문 최대 저장 수 |
 | `MIRROR_SECRET_KEY` | `change-me` | Flask 시크릿 키 |
 
+### 업스트림 Throttle 설정
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `MIRROR_UPSTREAM_THROTTLE_ENABLED` | `true` | 업스트림 요청 페이싱 사용 여부 |
+| `MIRROR_UPSTREAM_MIN_INTERVAL_MS` | `150` | 요청 시작 간 최소 간격 (ms) |
+| `MIRROR_UPSTREAM_MAX_CONCURRENCY` | `2` | 프로세스 내 동시 업스트림 요청 수 |
+| `MIRROR_UPSTREAM_JITTER_MS` | `50` | 요청 간 랜덤 지터 (ms) |
+| `MIRROR_UPSTREAM_RATE_LIMIT_BACKOFF_MS` | `5000` | rate limit 감지 시 기본 휴지 시간 (ms) |
+| `MIRROR_UPSTREAM_RATE_LIMIT_MAX_BACKOFF_MS` | `15000` | 연속 rate limit 시 최대 휴지 시간 (ms) |
+| `MIRROR_UPSTREAM_LOG_EVENTS` | `false` | throttle/backoff 이벤트 로그 출력 |
+
+> **참고:** Throttle 기능은 DCinside 업스트림으로의 요청 폭주를 방지합니다. 응답 시간이 약간 증가(+100~200ms)하지만 429 에러를 줄입니다. 자세한 내용은 `docs/throttle/README.md`를 참조하세요.
+
+
 ---
 
 ## 🖥️ 프로덕션 배포
