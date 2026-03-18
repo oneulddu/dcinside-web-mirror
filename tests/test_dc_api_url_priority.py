@@ -158,12 +158,12 @@ async def test_fetch_parsed_from_urls_follows_top_level_redirect_script():
 
 
 @pytest.mark.asyncio
-async def test_fetch_parsed_from_urls_follows_top_level_window_location_redirect():
+async def test_fetch_parsed_from_urls_follows_guarded_top_level_redirect_script():
     api = API.__new__(API)
 
     responses = {
-        "https://example.com/start": "<script>window.location.href='https://example.com/target';</script>",
-        "https://example.com/target": "<html><body><div id='ok'>window-ready</div></body></html>",
+        "https://example.com/start": "<script>if (true) { window.location.href='https://example.com/target'; }</script>",
+        "https://example.com/target": "<html><body><div id='ok'>guarded-ready</div></body></html>",
     }
 
     async def fake_request_text(method, url, headers=None, data=None, cookies=None):
@@ -174,7 +174,7 @@ async def test_fetch_parsed_from_urls_follows_top_level_window_location_redirect
     parsed, _, used_url = await api._API__fetch_parsed_from_urls(["https://example.com/start"])
 
     assert used_url == "https://example.com/target"
-    assert parsed.xpath("string(//*[@id='ok'])") == "window-ready"
+    assert parsed.xpath("string(//*[@id='ok'])") == "guarded-ready"
 
 
 @pytest.mark.asyncio
@@ -198,12 +198,12 @@ async def test_fetch_parsed_from_urls_follows_top_level_window_top_location_redi
 
 
 @pytest.mark.asyncio
-async def test_fetch_parsed_from_urls_follows_top_level_document_location_redirect():
+async def test_fetch_parsed_from_urls_follows_top_level_document_location_assignment():
     api = API.__new__(API)
 
     responses = {
-        "https://example.com/start": "<script>document.location.href='https://example.com/target';</script>",
-        "https://example.com/target": "<html><body><div id='ok'>document-ready</div></body></html>",
+        "https://example.com/start": "<script>document.location='https://example.com/target';</script>",
+        "https://example.com/target": "<html><body><div id='ok'>document-assignment-ready</div></body></html>",
     }
 
     async def fake_request_text(method, url, headers=None, data=None, cookies=None):
@@ -214,7 +214,27 @@ async def test_fetch_parsed_from_urls_follows_top_level_document_location_redire
     parsed, _, used_url = await api._API__fetch_parsed_from_urls(["https://example.com/start"])
 
     assert used_url == "https://example.com/target"
-    assert parsed.xpath("string(//*[@id='ok'])") == "document-ready"
+    assert parsed.xpath("string(//*[@id='ok'])") == "document-assignment-ready"
+
+
+@pytest.mark.asyncio
+async def test_fetch_parsed_from_urls_follows_top_level_location_assign_redirect():
+    api = API.__new__(API)
+
+    responses = {
+        "https://example.com/start": "<script>window.top.location.assign('https://example.com/target');</script>",
+        "https://example.com/target": "<html><body><div id='ok'>assign-ready</div></body></html>",
+    }
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        return 200, {}, responses[url]
+
+    api._API__request_text = fake_request_text
+
+    parsed, _, used_url = await api._API__fetch_parsed_from_urls(["https://example.com/start"])
+
+    assert used_url == "https://example.com/target"
+    assert parsed.xpath("string(//*[@id='ok'])") == "assign-ready"
 
 
 @pytest.mark.asyncio

@@ -340,15 +340,45 @@ class API:
         # document. Only treat a redirect as real when it appears in the initial payload
         # as a top-level redirect script or meta refresh.
         head = text[:4096]
+        try:
+            parsed = lxml.html.fragment_fromstring(head, create_parent="div")
+        except (lxml.etree.ParserError, ValueError):
+            return None
+
+        for meta in parsed.xpath(".//meta"):
+            redirect_url = self.__extract_meta_refresh_url(meta)
+            if redirect_url:
+                return redirect_url
+
+        for script in parsed.xpath(".//script"):
+            redirect_url = self.__extract_script_redirect_url(script.text_content() or "")
+            if redirect_url:
+                return redirect_url
+        return None
+
+    def __extract_meta_refresh_url(self, meta):
+        http_equiv = (meta.get("http-equiv") or "").strip().lower()
+        if http_equiv != "refresh":
+            return None
+        content = (meta.get("content") or "").strip()
+        if not content:
+            return None
+        match = re.search(r"url\s*=\s*([^;]+)", content, re.IGNORECASE)
+        if not match:
+            return None
+        return match.group(1).strip().strip("'\"")
+
+    def __extract_script_redirect_url(self, script_text):
+        if not script_text:
+            return None
+
         location_prefix = r"(?:(?:window|top|document)\.)*location"
         patterns = [
-            rf"<script[^>]*>\s*{location_prefix}\.href\s*=\s*['\"]([^'\"]+)['\"]",
-            rf"<script[^>]*>\s*{location_prefix}\.replace\(\s*['\"]([^'\"]+)['\"]\s*\)",
-            r"<meta[^>]+http-equiv=['\"]refresh['\"][^>]+content=['\"][^'\"]*url=([^'\">]+)",
-            r"<meta[^>]+content=['\"][^'\"]*url=([^'\">]+)[^'\"]*['\"][^>]+http-equiv=['\"]refresh['\"]",
+            rf"{location_prefix}(?:\.href)?\s*=\s*['\"]([^'\"]+)['\"]",
+            rf"{location_prefix}\.(?:replace|assign)\(\s*['\"]([^'\"]+)['\"]\s*\)",
         ]
         for pattern in patterns:
-            match = re.search(pattern, head, re.IGNORECASE)
+            match = re.search(pattern, script_text, re.IGNORECASE)
             if match:
                 return match.group(1).strip()
         return None
