@@ -104,3 +104,54 @@ async def test_comments_fallback_to_mobile_after_partial_pc_fetch_with_unlimited
 
     comments = [item.id async for item in api.comments("aoegame", "30150503", num=-1, kind="minor")]
     assert comments == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_parsed_from_urls_ignores_nested_location_href_inside_real_page():
+    api = API.__new__(API)
+
+    html = """
+    <!doctype html>
+    <html>
+      <head><title>board</title></head>
+      <body>
+        <a href="javascript:if(confirm('login')) location.href='https://m.dcinside.com/auth/login?r_url=';">menu</a>
+        <ul class="gall-detail-lst">
+          <li><div class="gall-detail-lnktb"><a href="https://m.dcinside.com/board/test/1" class="lt"></a></div></li>
+        </ul>
+      </body>
+    </html>
+    """
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        return 200, {}, html
+
+    api._API__request_text = fake_request_text
+
+    parsed, text, used_url = await api._API__fetch_parsed_from_urls(
+        ["https://m.dcinside.com/board/test?page=1"]
+    )
+
+    assert used_url == "https://m.dcinside.com/board/test?page=1"
+    assert "gall-detail-lst" in text
+    assert len(parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_parsed_from_urls_follows_top_level_redirect_script():
+    api = API.__new__(API)
+
+    responses = {
+        "https://example.com/start": "<script>location.href='https://example.com/target';</script>",
+        "https://example.com/target": "<html><body><div id='ok'>ready</div></body></html>",
+    }
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        return 200, {}, responses[url]
+
+    api._API__request_text = fake_request_text
+
+    parsed, _, used_url = await api._API__fetch_parsed_from_urls(["https://example.com/start"])
+
+    assert used_url == "https://example.com/target"
+    assert parsed.xpath("string(//*[@id='ok'])") == "ready"

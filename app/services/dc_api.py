@@ -321,9 +321,8 @@ class API:
                 if not text:
                     continue
 
-                redirect_match = re.search(r"location\.href\s*=\s*'([^']+)'", text)
-                if redirect_match:
-                    redirect_url = redirect_match.group(1).strip()
+                redirect_url = self.__extract_top_level_redirect_url(text)
+                if redirect_url:
                     if redirect_url and redirect_url not in queue:
                         queue.append(redirect_url)
                     continue
@@ -332,6 +331,25 @@ class API:
             except Exception:
                 continue
         return None, "", None
+
+    def __extract_top_level_redirect_url(self, text):
+        if not text:
+            return None
+
+        # Some board pages include login/menu actions with "location.href" deep in the
+        # document. Only treat a redirect as real when it appears in the initial payload
+        # as a top-level redirect script or meta refresh.
+        head = text[:4096]
+        patterns = [
+            r"<script[^>]*>\s*(?:top\.)?location\.href\s*=\s*['\"]([^'\"]+)['\"]",
+            r"<script[^>]*>\s*(?:top\.)?location\.replace\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            r"<meta[^>]+http-equiv=['\"]refresh['\"][^>]+content=['\"][^'\"]*url=([^'\">]+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, head, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return None
 
     def __upsert_gallery(self, gallerys, board_name, board_id):
         if not board_name or not board_id:
