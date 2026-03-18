@@ -340,9 +340,10 @@ class API:
         # document. Only treat a redirect as real when it appears in the initial payload
         # as a top-level redirect script or meta refresh.
         head = text[:4096]
+        location_prefix = r"(?:(?:top|window)\.)?location"
         patterns = [
-            r"<script[^>]*>\s*(?:top\.)?location\.href\s*=\s*['\"]([^'\"]+)['\"]",
-            r"<script[^>]*>\s*(?:top\.)?location\.replace\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            rf"<script[^>]*>\s*{location_prefix}\.href\s*=\s*['\"]([^'\"]+)['\"]",
+            rf"<script[^>]*>\s*{location_prefix}\.replace\(\s*['\"]([^'\"]+)['\"]\s*\)",
             r"<meta[^>]+http-equiv=['\"]refresh['\"][^>]+content=['\"][^'\"]*url=([^'\">]+)",
         ]
         for pattern in patterns:
