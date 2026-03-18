@@ -345,6 +345,7 @@ class API:
             rf"<script[^>]*>\s*{location_prefix}\.href\s*=\s*['\"]([^'\"]+)['\"]",
             rf"<script[^>]*>\s*{location_prefix}\.replace\(\s*['\"]([^'\"]+)['\"]\s*\)",
             r"<meta[^>]+http-equiv=['\"]refresh['\"][^>]+content=['\"][^'\"]*url=([^'\">]+)",
+            r"<meta[^>]+content=['\"][^'\"]*url=([^'\">]+)[^'\"]*['\"][^>]+http-equiv=['\"]refresh['\"]",
         ]
         for pattern in patterns:
             match = re.search(pattern, head, re.IGNORECASE)

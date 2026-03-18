@@ -215,3 +215,23 @@ async def test_fetch_parsed_from_urls_follows_top_level_document_location_redire
 
     assert used_url == "https://example.com/target"
     assert parsed.xpath("string(//*[@id='ok'])") == "document-ready"
+
+
+@pytest.mark.asyncio
+async def test_fetch_parsed_from_urls_follows_meta_refresh_with_content_before_http_equiv():
+    api = API.__new__(API)
+
+    responses = {
+        "https://example.com/start": '<meta content="0;url=https://example.com/target" http-equiv="refresh">',
+        "https://example.com/target": "<html><body><div id='ok'>meta-ready</div></body></html>",
+    }
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        return 200, {}, responses[url]
+
+    api._API__request_text = fake_request_text
+
+    parsed, _, used_url = await api._API__fetch_parsed_from_urls(["https://example.com/start"])
+
+    assert used_url == "https://example.com/target"
+    assert parsed.xpath("string(//*[@id='ok'])") == "meta-ready"
