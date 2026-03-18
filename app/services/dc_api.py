@@ -339,18 +339,17 @@ class API:
         # Some board pages include login/menu actions with "location.href" deep in the
         # document. Only treat a redirect as real when it appears in the initial payload
         # as a top-level redirect script or meta refresh.
-        head = text[:4096]
         try:
-            parsed = lxml.html.fragment_fromstring(head, create_parent="div")
+            parsed = lxml.html.document_fromstring(text)
         except (lxml.etree.ParserError, ValueError):
             return None
 
-        for meta in parsed.xpath(".//meta"):
+        for meta in parsed.xpath("/html/head/meta | /html/body/meta"):
             redirect_url = self.__extract_meta_refresh_url(meta)
             if redirect_url:
                 return redirect_url
 
-        for script in parsed.xpath(".//script"):
+        for script in parsed.xpath("/html/head/script | /html/body/script"):
             redirect_url = self.__extract_script_redirect_url(script.text_content() or "")
             if redirect_url:
                 return redirect_url
