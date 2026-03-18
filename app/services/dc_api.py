@@ -321,9 +321,8 @@ class API:
                 if not text:
                     continue
 
-                redirect_match = re.search(r"location\.href\s*=\s*'([^']+)'", text)
-                if redirect_match:
-                    redirect_url = redirect_match.group(1).strip()
+                redirect_url = self.__extract_top_level_redirect_url(text)
+                if redirect_url:
                     if redirect_url and redirect_url not in queue:
                         queue.append(redirect_url)
                     continue
@@ -332,6 +331,56 @@ class API:
             except Exception:
                 continue
         return None, "", None
+
+    def __extract_top_level_redirect_url(self, text):
+        if not text:
+            return None
+
+        # Some board pages include login/menu actions with "location.href" deep in the
+        # document. Only treat a redirect as real when it appears in the initial payload
+        # as a top-level redirect script or meta refresh.
+        try:
+            parsed = lxml.html.document_fromstring(text)
+        except (lxml.etree.ParserError, ValueError):
+            return None
+
+        for meta in parsed.xpath("/html/head/meta | /html/body/meta"):
+            redirect_url = self.__extract_meta_refresh_url(meta)
+            if redirect_url:
+                return redirect_url
+
+        for script in parsed.xpath("/html/head/script | /html/body/script"):
+            redirect_url = self.__extract_script_redirect_url(script.text_content() or "")
+            if redirect_url:
+                return redirect_url
+        return None
+
+    def __extract_meta_refresh_url(self, meta):
+        http_equiv = (meta.get("http-equiv") or "").strip().lower()
+        if http_equiv != "refresh":
+            return None
+        content = (meta.get("content") or "").strip()
+        if not content:
+            return None
+        match = re.search(r"url\s*=\s*([^;]+)", content, re.IGNORECASE)
+        if not match:
+            return None
+        return match.group(1).strip().strip("'\"")
+
+    def __extract_script_redirect_url(self, script_text):
+        if not script_text:
+            return None
+
+        location_prefix = r"(?:(?:window|top|document)\.)*location"
+        patterns = [
+            rf"{location_prefix}(?:\.href)?\s*=\s*['\"]([^'\"]+)['\"]",
+            rf"{location_prefix}\.(?:replace|assign)\(\s*['\"]([^'\"]+)['\"]\s*\)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, script_text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return None
 
     def __upsert_gallery(self, gallerys, board_name, board_id):
         if not board_name or not board_id:
