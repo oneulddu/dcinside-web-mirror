@@ -279,7 +279,11 @@ async def _read_document_with_api(api, api_id, board, kind=None):
             seen_comment_ids.add(comment_id)
         comments.append(_comment_to_dict(com))
 
-    should_fetch_comments = not embedded_comments or (embedded_total > len(embedded_comments))
+    should_fetch_comments = (
+        not embedded_comments
+        or embedded_total <= 0
+        or embedded_total > len(embedded_comments)
+    )
     if should_fetch_comments:
         async for com in doc.comments():
             comment_id = str(getattr(com, "id", "") or "").strip()

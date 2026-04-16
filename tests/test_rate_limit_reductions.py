@@ -168,6 +168,68 @@ async def test_read_document_uses_complete_embedded_comments_without_extra_fetch
 
 
 @pytest.mark.asyncio
+async def test_read_document_fetches_comments_when_embedded_total_is_unknown():
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>body</p>"
+        images = []
+        related_posts = []
+        embedded_comments = [
+            Comment(
+                id="1",
+                parent_id="1",
+                author="댓글작성자",
+                author_id=None,
+                contents="embedded comment",
+                dccon=None,
+                voice=None,
+                time="-",
+            )
+        ]
+        embedded_comment_total = 0
+
+        async def comments(self):
+            yield Comment(
+                id="1",
+                parent_id="1",
+                author="댓글작성자",
+                author_id=None,
+                contents="embedded comment",
+                dccon=None,
+                voice=None,
+                time="-",
+            )
+            yield Comment(
+                id="2",
+                parent_id="1",
+                author="추가작성자",
+                author_id=None,
+                contents="api comment",
+                dccon=None,
+                voice=None,
+                time="-",
+            )
+
+    class FakeAPI:
+        async def document(self, **kwargs):
+            return FakeDocument()
+
+    data, comments, images = await core._read_document_with_api(
+        FakeAPI(),
+        "123",
+        "test",
+    )
+
+    assert data["title"] == "title"
+    assert [comment["contents"] for comment in comments] == ["embedded comment", "api comment"]
+    assert images == []
+
+
+@pytest.mark.asyncio
 async def test_related_uses_source_page_without_author_backfill(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
