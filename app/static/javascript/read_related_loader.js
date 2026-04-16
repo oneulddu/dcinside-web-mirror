@@ -105,7 +105,7 @@
                 return null;
             }
             var cached = JSON.parse(raw);
-            if (!cached || !Array.isArray(cached.items)) {
+            if (!cached || !Array.isArray(cached.items) || cached.items.length === 0) {
                 return null;
             }
             return cached.items;
@@ -213,9 +213,13 @@
             }
             var payload = await response.json();
             var items = Array.isArray(payload.items) ? payload.items : [];
-            writeSessionCache(context.cacheKey, items);
             renderItems(context.list, items, context.board, context.kind);
-            setButtonState(button, "loaded");
+            if (items.length > 0) {
+                writeSessionCache(context.cacheKey, items);
+                setButtonState(button, "loaded");
+            } else {
+                setButtonState(button, "idle");
+            }
         } catch (err) {
             clearChildren(context.list);
             appendEmptyRow(context.list, "다른 게시글을 불러오지 못했습니다.");

@@ -1,4 +1,5 @@
 from urllib.parse import parse_qs, urlparse
+from pathlib import Path
 
 from bs4 import BeautifulSoup
 
@@ -73,3 +74,43 @@ def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
     assert first_query["src"] == ["https://images.dcinside.com/post-a.jpg"]
     assert second_query["src"] == ["https://images.dcinside.com/post-b.jpg"]
     assert "data-original" not in images[0].attrs
+
+
+def test_board_source_page_hint_is_only_added_for_normal_lists(monkeypatch):
+    async def fake_async_index(page, board, recommend, kind=None):
+        return [
+            {
+                "id": "123",
+                "title": "title",
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            }
+        ]
+
+    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    app = create_app()
+
+    normal_response = app.test_client().get("/board?board=test&recommend=0&page=3")
+    normal_soup = BeautifulSoup(normal_response.data, "html.parser")
+    normal_href = normal_soup.select_one("a.feed-item")["href"]
+    normal_query = parse_qs(urlparse(normal_href).query)
+
+    recommend_response = app.test_client().get("/board?board=test&recommend=1&page=3")
+    recommend_soup = BeautifulSoup(recommend_response.data, "html.parser")
+    recommend_href = recommend_soup.select_one("a.feed-item")["href"]
+    recommend_query = parse_qs(urlparse(recommend_href).query)
+
+    assert normal_query["source_page"] == ["3"]
+    assert "source_page" not in recommend_query
+
+
+def test_related_loader_keeps_empty_results_retryable():
+    script = Path(routes.BASE_DIR, "app/static/javascript/read_related_loader.js").read_text()
+
+    assert "cached.items.length === 0" in script
+    assert "if (items.length > 0)" in script
+    assert 'setButtonState(button, "idle");' in script
