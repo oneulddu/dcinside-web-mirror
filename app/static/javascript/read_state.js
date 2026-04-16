@@ -2,7 +2,38 @@
     "use strict";
 
     var STORAGE_KEY = "read_posts_v1";
+    var THEME_STORAGE_KEY = "mirror_theme_v1";
     var MAX_ENTRIES = 1500;
+    var DEFAULT_THEME = "dark";
+    var LIGHT_THEME_STYLE_ID = "mirror-light-theme-overrides";
+    var THEME_VARIABLES = {
+        dark: {
+            "--page-bg": "#09090b",
+            "--shell-bg": "#18181b",
+            "--shell-border": "rgba(255, 255, 255, 0.08)",
+            "--header-top": "rgba(24, 24, 27, 0.85)",
+            "--header-tab": "#18181b",
+            "--text-main": "#e4e4e7",
+            "--text-title": "#ffffff",
+            "--text-sub": "#a1a1aa",
+            "--text-soft": "#71717a",
+            "--blue": "#3b82f6",
+            "--blue-hover": "#60a5fa"
+        },
+        light: {
+            "--page-bg": "#f4f4f5",
+            "--shell-bg": "#ffffff",
+            "--shell-border": "rgba(24, 24, 27, 0.10)",
+            "--header-top": "rgba(255, 255, 255, 0.88)",
+            "--header-tab": "#ffffff",
+            "--text-main": "#27272a",
+            "--text-title": "#09090b",
+            "--text-sub": "#52525b",
+            "--text-soft": "#71717a",
+            "--blue": "#2563eb",
+            "--blue-hover": "#1d4ed8"
+        }
+    };
 
     function safeParse(jsonText) {
         if (!jsonText) {
@@ -62,6 +93,113 @@
             return null;
         }
         return b + "|" + p;
+    }
+
+    function normalizeTheme(theme) {
+        return theme === "light" ? "light" : "dark";
+    }
+
+    function loadTheme() {
+        try {
+            return normalizeTheme(window.localStorage.getItem(THEME_STORAGE_KEY) || DEFAULT_THEME);
+        } catch (err) {
+            return DEFAULT_THEME;
+        }
+    }
+
+    function saveTheme(theme) {
+        try {
+            window.localStorage.setItem(THEME_STORAGE_KEY, normalizeTheme(theme));
+        } catch (err) {
+        }
+    }
+
+    function ensureLightThemeStyle() {
+        if (document.getElementById(LIGHT_THEME_STYLE_ID)) {
+            return;
+        }
+        var style = document.createElement("style");
+        style.id = LIGHT_THEME_STYLE_ID;
+        style.textContent = [
+            "html[data-theme='light'] .app-shell { box-shadow: 0 18px 48px rgba(24, 24, 27, 0.10); }",
+            "html[data-theme='light'] .jump-panel { background: linear-gradient(180deg, rgba(37, 99, 235, 0.05) 0%, transparent 100%); }",
+            "html[data-theme='light'] .board-head, html[data-theme='light'] .pager-row { background: rgba(244, 244, 245, 0.82); }",
+            "html[data-theme='light'] .article-head { background: linear-gradient(180deg, rgba(37, 99, 235, 0.04) 0%, transparent 100%); }",
+            "html[data-theme='light'] .article-body { color: #3f3f46; }",
+            "html[data-theme='light'] .comment-shell { background: rgba(244, 244, 245, 0.72); }",
+            "html[data-theme='light'] .comment-list li { background: rgba(9, 9, 11, 0.02); }",
+            "html[data-theme='light'] .comment-list li:hover { background: rgba(9, 9, 11, 0.04); }",
+            "html[data-theme='light'] .feed-item:hover { background: rgba(9, 9, 11, 0.03); }",
+            "html[data-theme='light'] .feed-item:active { background: rgba(9, 9, 11, 0.05); }",
+            "html[data-theme='light'] .feed-item::after { background: linear-gradient(90deg, transparent, rgba(9, 9, 11, 0.04), transparent); }",
+            "html[data-theme='light'] .tab-item:hover { background: rgba(9, 9, 11, 0.05); }",
+            "html[data-theme='light'] .tab-item.active { background: rgba(9, 9, 11, 0.08); box-shadow: none; }",
+            "html[data-theme='light'] .theme-toggle:hover { background: rgba(9, 9, 11, 0.07); }",
+            "html[data-theme='light'] .reply-count { background: rgba(37, 99, 235, 0.10); }",
+            "html[data-theme='light'] .score-box, html[data-theme='light'] .related-load-btn, html[data-theme='light'] .pager-btn, html[data-theme='light'] .comment-spam-toggle { background: rgba(9, 9, 11, 0.04); border-color: rgba(9, 9, 11, 0.12); }",
+            "html[data-theme='light'] .jump-form input, html[data-theme='light'] .jump-form select { background: #ffffff; border-color: rgba(9, 9, 11, 0.12); }",
+            "html[data-theme='light'] .jump-form input:focus { background: #ffffff; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16); }",
+            "html[data-theme='light'] .feed-meta-left .sep, html[data-theme='light'] .article-meta span:not(:last-child)::after { background: rgba(9, 9, 11, 0.18); color: rgba(9, 9, 11, 0.18); }"
+        ].join("\n");
+        document.head.appendChild(style);
+    }
+
+    function applyThemeVariables(theme) {
+        var variables = THEME_VARIABLES[theme] || THEME_VARIABLES[DEFAULT_THEME];
+        var rootStyle = document.documentElement.style;
+        var name;
+        for (name in variables) {
+            if (Object.prototype.hasOwnProperty.call(variables, name)) {
+                rootStyle.setProperty(name, variables[name]);
+            }
+        }
+    }
+
+    function updateThemeToggle(theme) {
+        var button = document.querySelector(".theme-toggle");
+        if (!button) {
+            return;
+        }
+        var isLight = theme === "light";
+        button.textContent = isLight ? "☾" : "☀";
+        button.setAttribute("aria-pressed", isLight ? "true" : "false");
+        button.setAttribute(
+            "aria-label",
+            isLight ? "밝은 테마 사용 중, 어두운 테마로 전환" : "어두운 테마 사용 중, 밝은 테마로 전환"
+        );
+        button.title = isLight ? "어두운 테마로 전환" : "밝은 테마로 전환";
+    }
+
+    function applyTheme(theme, shouldSave) {
+        var nextTheme = normalizeTheme(theme);
+        var body = document.body;
+
+        ensureLightThemeStyle();
+        document.documentElement.dataset.theme = nextTheme;
+        document.documentElement.style.colorScheme = nextTheme;
+        applyThemeVariables(nextTheme);
+
+        if (body) {
+            body.dataset.theme = nextTheme;
+            body.classList.toggle("theme-light", nextTheme === "light");
+            body.classList.toggle("theme-dark", nextTheme === "dark");
+        }
+        updateThemeToggle(nextTheme);
+
+        if (shouldSave) {
+            saveTheme(nextTheme);
+        }
+    }
+
+    function wireThemeToggle() {
+        var button = document.querySelector(".theme-toggle");
+        if (!button) {
+            return;
+        }
+        button.addEventListener("click", function () {
+            var currentTheme = normalizeTheme(document.documentElement.dataset.theme || loadTheme());
+            applyTheme(currentTheme === "light" ? "dark" : "light", true);
+        });
     }
 
     function parseReadHref(href) {
@@ -148,6 +286,8 @@
     }
 
     function boot() {
+        applyTheme(loadTheme(), false);
+        wireThemeToggle();
         markCurrentRead();
         applyReadState(document);
         wireClickMarking();

@@ -1,9 +1,11 @@
 import base64
 import json
+import threading
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
 from bs4 import BeautifulSoup
+import pytest
 
 from app import create_app
 from app import routes
@@ -40,12 +42,46 @@ def test_stream_limited_media_yields_chunks_without_prefetching(monkeypatch):
     assert upstream.closed is True
 
 
-def test_stream_limited_media_stops_and_closes_when_limit_exceeded(monkeypatch):
+def test_stream_limited_media_raises_and_closes_when_limit_exceeded(monkeypatch):
     monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 5)
     upstream = DummyUpstream([b"123", b"456"])
 
-    assert list(routes._stream_limited_media(upstream)) == [b"123"]
+    with pytest.raises(routes.RequestEntityTooLarge):
+        list(routes._stream_limited_media(upstream))
     assert upstream.iterated == 2
+    assert upstream.closed is True
+
+
+def test_media_route_rejects_unknown_length_streams_when_limit_exceeded(monkeypatch):
+    monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 5)
+    upstream = DummyUpstream(
+        [b"123", b"456"],
+        headers={"Content-Type": "image/jpeg"},
+    )
+    monkeypatch.setattr(routes, "_fetch_media_response", lambda src, headers, cookies: (upstream, None))
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://images.dcinside.com/test.jpg")
+
+    assert response.status_code == 413
+    assert upstream.iterated == 2
+    assert upstream.closed is True
+
+
+def test_media_route_buffers_unknown_length_streams_within_limit(monkeypatch):
+    monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 10)
+    upstream = DummyUpstream(
+        [b"123", b"456"],
+        headers={"Content-Type": "image/jpeg"},
+    )
+    monkeypatch.setattr(routes, "_fetch_media_response", lambda src, headers, cookies: (upstream, None))
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://images.dcinside.com/test.jpg")
+
+    assert response.status_code == 200
+    assert response.data == b"123456"
+    assert response.content_length == 6
     assert upstream.closed is True
 
 
@@ -143,10 +179,32 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "renderedIds[postId]" in script
     assert "list.appendChild(createItemNode" in script
     assert "clearChildren" not in script
+    assert "function isNoMoreResponse(" in script
+    assert "items.length === 0" in script
+    assert "responseHasNoNextCandidate" in script
+    assert "window.sessionStorage.removeItem(key)" in script
+    assert "cachedResult.items.length > 0" in script
+    assert "payload.ok === false" in script
+    assert 'setButtonState(button, "refresh");' in script
+    assert 'setButtonState(button, "retry");' in script
     assert 'setButtonState(button, "no-more");' in script
-    assert "return cached.items" in script
+    assert "cached.items" in script
     assert "cached.items.length === 0" not in script
     assert 'params.set("recommend", "1")' in script
+
+
+def test_theme_toggle_persists_and_updates_accessibility_state():
+    template = Path(routes.BASE_DIR, "app/templates/base.html").read_text()
+    script = Path(routes.BASE_DIR, "app/static/javascript/read_state.js").read_text()
+
+    assert 'class="theme-toggle"' in template
+    assert 'aria-pressed="false"' in template
+    assert 'THEME_STORAGE_KEY = "mirror_theme_v1"' in script
+    assert "window.localStorage.setItem(THEME_STORAGE_KEY" in script
+    assert "document.documentElement.dataset.theme" in script
+    assert "body.dataset.theme" in script
+    assert "aria-pressed" in script
+    assert "aria-label" in script
 
 
 def test_read_renders_embedded_related_posts_without_extra_related_request(monkeypatch):
@@ -192,10 +250,13 @@ def test_read_renders_embedded_related_posts_without_extra_related_request(monke
     assert soup.select_one("#related-load-button") is not None
 
 
-def test_comment_spam_filter_never_hides_every_comment():
+def test_comment_spam_filter_keeps_summary_even_when_every_comment_is_filtered():
     script = Path(routes.BASE_DIR, "app/static/javascript/comment_spam_filter.js").read_text()
 
-    assert "hidden.length >= items.length" in script
+    assert "hidden.length >= items.length" not in script
+    assert "SHORT_REACTION_REPEAT_THRESHOLD" in script
+    assert "getRepeatThreshold" in script
+    assert "aria-expanded" in script
     assert 'li.classList.add("comment-spam-hidden")' in script
 
 
@@ -256,3 +317,71 @@ def test_recent_gallery_old_cookie_without_recommend_defaults_to_normal():
     assert query["board"] == ["legacy"]
     assert query["recommend"] == ["0"]
     assert query["kind"] == ["minor"]
+
+
+def test_recent_server_cache_prunes_expired_fallback():
+    app = create_app()
+    key = "127.0.0.1|pytest"
+    with routes.RECENT_SERVER_CACHE_LOCK:
+        routes.RECENT_SERVER_CACHE.clear()
+        routes.RECENT_SERVER_CACHE[key] = {
+            "entries": [{"board": "expired", "kind": None, "recommend": 0, "visited_at": 1}],
+            "expires_at": 0,
+            "last_seen": 0,
+        }
+
+    with app.test_request_context("/recent", environ_base={"REMOTE_ADDR": "127.0.0.1", "HTTP_USER_AGENT": "pytest"}):
+        assert routes._load_recent_entries() == []
+
+    assert key not in routes.RECENT_SERVER_CACHE
+
+
+def test_recent_server_cache_limits_total_keys(monkeypatch):
+    monkeypatch.setattr(routes, "RECENT_SERVER_CACHE_TTL", 60)
+    monkeypatch.setattr(routes, "RECENT_SERVER_CACHE_MAX_KEYS", 2)
+    with routes.RECENT_SERVER_CACHE_LOCK:
+        routes.RECENT_SERVER_CACHE.clear()
+
+    routes._set_recent_server_cache("one", [{"board": "one"}])
+    routes._set_recent_server_cache("two", [{"board": "two"}])
+    routes._set_recent_server_cache("three", [{"board": "three"}])
+
+    assert len(routes.RECENT_SERVER_CACHE) <= 2
+
+
+def test_get_heung_galleries_does_not_hold_cache_lock_while_fetching_or_writing(monkeypatch):
+    class TrackingLock:
+        def __init__(self):
+            self.depth = 0
+
+        def __enter__(self):
+            self.depth += 1
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.depth -= 1
+
+    lock = TrackingLock()
+    calls = []
+
+    def fake_fetch():
+        assert lock.depth == 0
+        calls.append("fetch")
+        return [{"rank": 1, "name": "테스트", "board_id": "test"}]
+
+    def fake_write(updated_at, items):
+        assert lock.depth == 0
+        calls.append("write")
+
+    monkeypatch.setattr(routes, "HEUNG_CACHE", {"updated_at": 0.0, "items": []})
+    monkeypatch.setattr(routes, "HEUNG_CACHE_LOCK", lock)
+    monkeypatch.setattr(routes, "HEUNG_REFRESH_LOCK", threading.Lock())
+    monkeypatch.setattr(routes, "_read_heung_cache_file", lambda: None)
+    monkeypatch.setattr(routes, "_fetch_heung_galleries", fake_fetch)
+    monkeypatch.setattr(routes, "_write_heung_cache_file", fake_write)
+
+    items, updated_at = routes._get_heung_galleries()
+
+    assert items == [{"rank": 1, "name": "테스트", "board_id": "test"}]
+    assert updated_at > 0
+    assert calls == ["fetch", "write"]

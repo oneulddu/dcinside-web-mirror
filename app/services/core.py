@@ -30,11 +30,14 @@ RELATED_CACHE_MAX_ITEMS = 2048
 AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
 AUTHOR_CODE_FETCH_CONCURRENCY = max(_env_int("MIRROR_AUTHOR_CODE_FETCH_CONCURRENCY", 5), 1)
 
-_CACHE_LOCK = threading.Lock()
 _BOARD_PAGE_CACHE = {}
 _LATEST_ID_CACHE = {}
 _RELATED_CACHE = {}
 _AUTHOR_CODE_CACHE = {}
+_BOARD_PAGE_CACHE_LOCK = threading.Lock()
+_LATEST_ID_CACHE_LOCK = threading.Lock()
+_RELATED_CACHE_LOCK = threading.Lock()
+_AUTHOR_CODE_CACHE_LOCK = threading.Lock()
 
 
 def _safe_int(value, default=0):
@@ -127,9 +130,9 @@ def _index_item_to_dict(item):
     }
 
 
-def _cache_get(cache, key):
+def _cache_get(cache, lock, key):
     now = time.time()
-    with _CACHE_LOCK:
+    with lock:
         entry = cache.get(key)
         if not entry:
             return None
@@ -151,9 +154,9 @@ def _cache_prune(cache, now, max_items):
         cache.pop(key, None)
 
 
-def _cache_set(cache, key, value, ttl, max_items):
+def _cache_set(cache, lock, key, value, ttl, max_items):
     expires_at = time.time() + max(_safe_int(ttl, 0), 0)
-    with _CACHE_LOCK:
+    with lock:
         _cache_prune(cache, time.time(), max_items)
         cache[key] = {"value": value, "expires_at": expires_at}
 
@@ -173,7 +176,7 @@ async def _fetch_board_page(
         _safe_int(page, 1),
         _safe_int(page_size, RELATED_PAGE_FETCH_SIZE),
     )
-    cached = _cache_get(_BOARD_PAGE_CACHE, cache_key)
+    cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
         return [dict(row) for row in cached]
 
@@ -192,6 +195,7 @@ async def _fetch_board_page(
     if posts:
         _cache_set(
             _BOARD_PAGE_CACHE,
+            _BOARD_PAGE_CACHE_LOCK,
             cache_key,
             [dict(row) for row in posts],
             BOARD_PAGE_CACHE_TTL,
@@ -211,7 +215,7 @@ async def _fill_missing_author_code(api, board, kind, row, recommend=0):
     if not doc_id:
         return row
     cache_key = (board, kind or "", str(doc_id))
-    cached = _cache_get(_AUTHOR_CODE_CACHE, cache_key)
+    cached = _cache_get(_AUTHOR_CODE_CACHE, _AUTHOR_CODE_CACHE_LOCK, cache_key)
     if cached is not None:
         row["author"] = cached.get("author", row.get("author"))
         row["author_code"] = cached.get("author_code")
@@ -227,6 +231,7 @@ async def _fill_missing_author_code(api, board, kind, row, recommend=0):
     row["author_code"] = author_code
     _cache_set(
         _AUTHOR_CODE_CACHE,
+        _AUTHOR_CODE_CACHE_LOCK,
         cache_key,
         {"author": author, "author_code": author_code},
         AUTHOR_CODE_CACHE_TTL,
@@ -374,7 +379,7 @@ async def _related_by_position_with_api(
     source_page_value = _safe_int(source_page, 0)
     recommend_value = _safe_int(recommend, 0)
     related_key = (board, kind or "", recommend_value, target_id, fetch_limit, source_page_value)
-    cached_related = _cache_get(_RELATED_CACHE, related_key)
+    cached_related = _cache_get(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key)
     if cached_related is not None:
         return cached_related
 
@@ -406,22 +411,22 @@ async def _related_by_position_with_api(
                     break
 
             result = related[:fetch_limit]
-            _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+            _cache_set(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
             return result
 
-        _cache_set(_RELATED_CACHE, related_key, [], RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+        _cache_set(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key, [], RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
         return []
 
     board_key = (board, kind or "", recommend_value)
 
     async def estimate_page_from_latest_id():
-        latest_id = _cache_get(_LATEST_ID_CACHE, board_key)
+        latest_id = _cache_get(_LATEST_ID_CACHE, _LATEST_ID_CACHE_LOCK, board_key)
         if latest_id is None:
             first_page = await _fetch_board_page(api, 1, board, recommend_value, kind=kind, page_size=1)
             if not first_page:
                 return None
             latest_id = _safe_int(first_page[0].get("id"), target_id)
-            _cache_set(_LATEST_ID_CACHE, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
+            _cache_set(_LATEST_ID_CACHE, _LATEST_ID_CACHE_LOCK, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
         return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
 
     async def find_target_from_page(start_page, single_page=False):
@@ -501,7 +506,7 @@ async def _related_by_position_with_api(
         related.append(row)
         if len(related) >= fetch_limit:
             result = related[:fetch_limit]
-            _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+            _cache_set(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
             return result
 
     next_page = found_page + 1
@@ -522,7 +527,7 @@ async def _related_by_position_with_api(
 
     result = related[:fetch_limit]
     if result:
-        _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+        _cache_set(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
     return result
 
 

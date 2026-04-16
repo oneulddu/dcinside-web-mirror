@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse
 from flask import Blueprint, Response, jsonify, make_response, render_template, request, stream_with_context, url_for
 from bs4 import BeautifulSoup
 import requests
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from .services.core import async_index, async_read, async_related_by_position
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -45,9 +46,12 @@ HEUNG_CACHE_TTL = _env_int("MIRROR_HEUNG_CACHE_TTL", 3600)
 HEUNG_CACHE_FILE = os.getenv("MIRROR_HEUNG_CACHE_FILE", os.path.join(INSTANCE_DIR, "heung_gallery_cache.json"))
 HEUNG_CACHE = {"updated_at": 0.0, "items": []}
 HEUNG_CACHE_LOCK = threading.Lock()
+HEUNG_REFRESH_LOCK = threading.Lock()
 RECENT_COOKIE_NAME = "recent_galleries"
 RECENT_COOKIE_TTL = _env_int("MIRROR_RECENT_COOKIE_TTL", 60 * 60 * 24 * 30)
 RECENT_MAX_ITEMS = _env_int("MIRROR_RECENT_MAX_ITEMS", 30)
+RECENT_SERVER_CACHE_TTL = _env_int("MIRROR_RECENT_SERVER_CACHE_TTL", min(RECENT_COOKIE_TTL, 60 * 60 * 24))
+RECENT_SERVER_CACHE_MAX_KEYS = _env_int("MIRROR_RECENT_SERVER_CACHE_MAX_KEYS", 2048)
 RECENT_SERVER_CACHE = {}
 RECENT_SERVER_CACHE_LOCK = threading.Lock()
 
@@ -152,6 +156,53 @@ def _write_heung_cache_file(updated_at, items):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
     os.replace(tmp, HEUNG_CACHE_FILE)
+
+
+def _heung_cache_snapshot():
+    with HEUNG_CACHE_LOCK:
+        return list(HEUNG_CACHE["items"]), float(HEUNG_CACHE["updated_at"] or 0.0)
+
+
+def _replace_heung_cache(updated_at, items):
+    cache_items = list(items or [])
+    with HEUNG_CACHE_LOCK:
+        HEUNG_CACHE["updated_at"] = float(updated_at)
+        HEUNG_CACHE["items"] = cache_items
+    return list(cache_items), float(updated_at)
+
+
+def _load_heung_file_cache_if_empty():
+    with HEUNG_CACHE_LOCK:
+        needs_file_cache = not HEUNG_CACHE["items"]
+    if not needs_file_cache:
+        return
+
+    cached = _read_heung_cache_file()
+    if not cached:
+        return
+
+    cached_updated_at = float(cached["updated_at"])
+    cached_items = list(cached["items"])
+    with HEUNG_CACHE_LOCK:
+        if not HEUNG_CACHE["items"] or cached_updated_at > float(HEUNG_CACHE["updated_at"] or 0.0):
+            HEUNG_CACHE["updated_at"] = cached_updated_at
+            HEUNG_CACHE["items"] = cached_items
+
+
+def _is_heung_cache_fresh(items, updated_at, now=None):
+    now = time.time() if now is None else now
+    return bool(items) and (now - float(updated_at or 0.0)) < HEUNG_CACHE_TTL
+
+
+def _refresh_heung_galleries():
+    fresh_items = _fetch_heung_galleries()
+    fetched_at = time.time()
+    fresh_items, fetched_at = _replace_heung_cache(fetched_at, fresh_items)
+    try:
+        _write_heung_cache_file(fetched_at, fresh_items)
+    except Exception:
+        pass
+    return fresh_items, fetched_at
 
 
 def _format_cache_time(ts):
@@ -275,10 +326,27 @@ def _stream_limited_media(upstream):
         for chunk in upstream.iter_content(chunk_size=64 * 1024):
             if not chunk:
                 continue
+            next_total = total + len(chunk)
+            if next_total > MEDIA_MAX_BYTES:
+                raise RequestEntityTooLarge()
+            total = next_total
+            yield chunk
+    finally:
+        upstream.close()
+
+
+def _read_limited_media_body(upstream):
+    total = 0
+    chunks = []
+    try:
+        for chunk in upstream.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
             total += len(chunk)
             if total > MEDIA_MAX_BYTES:
-                break
-            yield chunk
+                return None, 413
+            chunks.append(chunk)
+        return b"".join(chunks), None
     finally:
         upstream.close()
 
@@ -372,6 +440,77 @@ def _recent_cache_key():
     return f"{remote_addr}|{user_agent}"
 
 
+def _copy_recent_entries(entries):
+    return [dict(row) for row in (entries or [])[:RECENT_MAX_ITEMS] if isinstance(row, dict)]
+
+
+def _prune_recent_server_cache_locked(now=None):
+    now = time.time() if now is None else now
+    expired_keys = [
+        key
+        for key, entry in RECENT_SERVER_CACHE.items()
+        if not isinstance(entry, dict) or float(entry.get("expires_at", 0.0) or 0.0) <= now
+    ]
+    for key in expired_keys:
+        RECENT_SERVER_CACHE.pop(key, None)
+
+    max_keys = max(_safe_int(RECENT_SERVER_CACHE_MAX_KEYS, 0), 0)
+    overflow = len(RECENT_SERVER_CACHE) - max_keys
+    if overflow <= 0:
+        return
+
+    oldest_keys = sorted(
+        RECENT_SERVER_CACHE,
+        key=lambda key: float(RECENT_SERVER_CACHE[key].get("last_seen", 0.0) or 0.0),
+    )[:overflow]
+    for key in oldest_keys:
+        RECENT_SERVER_CACHE.pop(key, None)
+
+
+def _get_recent_server_cache(key):
+    now = time.time()
+    with RECENT_SERVER_CACHE_LOCK:
+        _prune_recent_server_cache_locked(now)
+        entry = RECENT_SERVER_CACHE.get(key)
+        if not entry:
+            return []
+
+        # Older in-memory shape was a bare list. Accept it once so tests/dev
+        # reloads do not break, then rewrite it with TTL metadata.
+        if isinstance(entry, list):
+            entry = {
+                "entries": _copy_recent_entries(entry),
+                "expires_at": now + max(_safe_int(RECENT_SERVER_CACHE_TTL, 0), 0),
+                "last_seen": now,
+            }
+            RECENT_SERVER_CACHE[key] = entry
+
+        expires_at = float(entry.get("expires_at", 0.0) or 0.0)
+        if expires_at <= now:
+            RECENT_SERVER_CACHE.pop(key, None)
+            return []
+
+        entry["last_seen"] = now
+        return _copy_recent_entries(entry.get("entries", []))
+
+
+def _set_recent_server_cache(key, entries):
+    ttl = max(_safe_int(RECENT_SERVER_CACHE_TTL, 0), 0)
+    max_keys = max(_safe_int(RECENT_SERVER_CACHE_MAX_KEYS, 0), 0)
+    if ttl <= 0 or max_keys <= 0:
+        return
+
+    now = time.time()
+    with RECENT_SERVER_CACHE_LOCK:
+        _prune_recent_server_cache_locked(now)
+        RECENT_SERVER_CACHE[key] = {
+            "entries": _copy_recent_entries(entries),
+            "expires_at": now + ttl,
+            "last_seen": now,
+        }
+        _prune_recent_server_cache_locked(now)
+
+
 def _load_recent_entries():
     raw = request.cookies.get(RECENT_COOKIE_NAME, "")
     rows = []
@@ -403,10 +542,7 @@ def _load_recent_entries():
     if rows:
         return rows
 
-    key = _recent_cache_key()
-    with RECENT_SERVER_CACHE_LOCK:
-        cached = RECENT_SERVER_CACHE.get(key, [])
-        return list(cached)
+    return _get_recent_server_cache(_recent_cache_key())
 
 
 def _save_recent_cookie(response, entries):
@@ -446,37 +582,49 @@ def _touch_recent_gallery(response, board, kind, recommend=0):
         deduped.append(row)
 
     deduped = deduped[:RECENT_MAX_ITEMS]
-    with RECENT_SERVER_CACHE_LOCK:
-        RECENT_SERVER_CACHE[_recent_cache_key()] = list(deduped)
+    _set_recent_server_cache(_recent_cache_key(), deduped)
 
     _save_recent_cookie(response, deduped)
 
 
 def _get_heung_galleries():
-    now = time.time()
-    with HEUNG_CACHE_LOCK:
-        if not HEUNG_CACHE["items"]:
-            cached = _read_heung_cache_file()
-            if cached:
-                HEUNG_CACHE["updated_at"] = cached["updated_at"]
-                HEUNG_CACHE["items"] = cached["items"]
+    _load_heung_file_cache_if_empty()
 
-        cached_items = HEUNG_CACHE["items"]
-        cached_updated_at = HEUNG_CACHE["updated_at"]
-        if cached_items and (now - cached_updated_at) < HEUNG_CACHE_TTL:
+    cached_items, cached_updated_at = _heung_cache_snapshot()
+    if _is_heung_cache_fresh(cached_items, cached_updated_at):
+        return cached_items, cached_updated_at
+
+    acquired = HEUNG_REFRESH_LOCK.acquire(blocking=False)
+    if not acquired:
+        if cached_items:
+            return cached_items, cached_updated_at
+
+        with HEUNG_REFRESH_LOCK:
+            refreshed_items, refreshed_updated_at = _heung_cache_snapshot()
+            if refreshed_items:
+                return refreshed_items, refreshed_updated_at
+
+        acquired = HEUNG_REFRESH_LOCK.acquire(blocking=False)
+        if not acquired:
+            refreshed_items, refreshed_updated_at = _heung_cache_snapshot()
+            if refreshed_items:
+                return refreshed_items, refreshed_updated_at
+            raise RuntimeError("heung gallery refresh is unavailable")
+
+    try:
+        cached_items, cached_updated_at = _heung_cache_snapshot()
+        if _is_heung_cache_fresh(cached_items, cached_updated_at):
             return cached_items, cached_updated_at
 
         try:
-            fresh_items = _fetch_heung_galleries()
-            fetched_at = time.time()
-            HEUNG_CACHE["updated_at"] = fetched_at
-            HEUNG_CACHE["items"] = fresh_items
-            _write_heung_cache_file(fetched_at, fresh_items)
-            return fresh_items, fetched_at
+            return _refresh_heung_galleries()
         except Exception:
-            if cached_items:
-                return cached_items, cached_updated_at
+            fallback_items, fallback_updated_at = _heung_cache_snapshot()
+            if fallback_items:
+                return fallback_items, fallback_updated_at
             raise
+    finally:
+        HEUNG_REFRESH_LOCK.release()
 
 
 def _search_galleries(query):
@@ -653,10 +801,22 @@ def media():
         upstream.close()
         return ("", 415)
 
-    content_length = _safe_int(upstream.headers.get("Content-Length"), 0)
+    raw_content_length = upstream.headers.get("Content-Length")
+    content_length = _safe_int(raw_content_length, 0)
     if content_length and content_length > MEDIA_MAX_BYTES:
         upstream.close()
         return ("", 413)
+
+    if not content_length:
+        body, error_status = _read_limited_media_body(upstream)
+        if error_status:
+            return ("", error_status)
+        response = Response(body or b"", status=upstream.status_code)
+        response.content_length = len(body or b"")
+        response.headers["Content-Type"] = content_type
+        response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     response = Response(
         stream_with_context(_stream_limited_media(upstream)),
@@ -731,7 +891,7 @@ def read_related():
                 )
             )
         except Exception:
-            posts = []
+            return jsonify({"ok": False, "items": [], "error": "related_fetch_failed"}), 502
 
     return jsonify(
         {

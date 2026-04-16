@@ -40,6 +40,17 @@ def clear_core_caches():
     core._AUTHOR_CODE_CACHE.clear()
 
 
+def test_core_caches_use_separate_locks():
+    locks = {
+        core._BOARD_PAGE_CACHE_LOCK,
+        core._RELATED_CACHE_LOCK,
+        core._LATEST_ID_CACHE_LOCK,
+        core._AUTHOR_CODE_CACHE_LOCK,
+    }
+
+    assert len(locks) == 4
+
+
 @pytest.mark.asyncio
 async def test_fetch_board_page_reuses_short_cache():
     class FakeAPI:
