@@ -2,7 +2,7 @@
     "use strict";
 
     function removeStatusRows(list) {
-        var rows = list.querySelectorAll("[data-related-loader-status='1']");
+        var rows = list.querySelectorAll("[data-related-loader-status='1'], .empty-row");
         for (var i = 0; i < rows.length; i += 1) {
             rows[i].remove();
         }

@@ -138,6 +138,7 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     script = Path(routes.BASE_DIR, "app/static/javascript/read_related_loader.js").read_text()
 
     assert "function appendItems(" in script
+    assert "[data-related-loader-status='1'], .empty-row" in script
     assert "getRenderedPostIds(list)" in script
     assert "renderedIds[postId]" in script
     assert "list.appendChild(createItemNode" in script
