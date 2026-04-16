@@ -399,7 +399,7 @@ async def _related_by_position_with_api(
             related = []
             for row in page_posts[found_index + 1 :]:
                 rid = _safe_int(row.get("id"), 0)
-                if rid <= 0 or rid >= target_id:
+                if rid <= 0:
                     continue
                 related.append(row)
                 if len(related) >= fetch_limit:
