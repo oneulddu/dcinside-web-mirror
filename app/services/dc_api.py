@@ -605,19 +605,18 @@ class API:
             comments.append(comment)
 
         total = 0
+        def parse_count_text(value):
+            digits = re.sub(r"[^0-9]", "", value or "")
+            return int(digits) if digits else 0
+
         total_nodes = parsed.xpath("string((//input[@id='reple_totalCnt'])[1]/@value)")
         if total_nodes:
-            try:
-                total = int(total_nodes)
-            except ValueError:
-                total = 0
+            total = parse_count_text(total_nodes)
         if total <= 0:
             title_text = " ".join(
                 parsed.xpath("//div[contains(@class, 'all-comment-tit')]//*[contains(@class, 'ct')]/text()")
             )
-            match = re.search(r"\d+", title_text)
-            if match:
-                total = int(match.group(0))
+            total = parse_count_text(title_text)
         return comments, total
 
     def __extract_top_level_redirect_url(self, text):

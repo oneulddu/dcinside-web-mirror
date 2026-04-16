@@ -650,6 +650,42 @@ async def test_mobile_comment_rows_accept_classless_comment_items():
 
 
 @pytest.mark.asyncio
+async def test_document_parses_comma_formatted_embedded_comment_total():
+    api = API.__new__(API)
+    mobile_url = "https://m.dcinside.com/board/test/123"
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        assert url == mobile_url
+        return 200, {}, """
+        <html><body>
+          <div class="gall-tit-box">
+            <span class="tit">mobile title</span>
+            <ul class="ginfo2"><li>익명(1.2)</li><li>2026.04.16 12:00</li></ul>
+          </div>
+          <div class="thum-txtin"><p>mobile body</p></div>
+          <div class="all-comment-tit">
+            <span class="ct">[1,234]</span>
+          </div>
+          <ul class="all-comment-lst">
+            <li class="comment" no="1" m_no="1">
+              <div class="ginfo-area"><button class="nick">댓글작성자</button></div>
+              <p class="txt">embedded comment</p>
+              <span class="date">04.16 18:18</span>
+            </li>
+          </ul>
+        </body></html>
+        """
+
+    api._API__request_text = fake_request_text
+
+    doc = await api.document("test", "123", kind="normal")
+
+    assert doc is not None
+    assert doc.embedded_comment_total == 1234
+    assert len(doc.embedded_comments) == 1
+
+
+@pytest.mark.asyncio
 async def test_comments_zero_limit_skips_mobile_and_pc_fetches():
     api = API.__new__(API)
 
