@@ -278,6 +278,13 @@ class API:
         urls = []
         recommend_suffix = "&recommend=1" if recommend else ""
 
+        if kind == "mini":
+            urls.append("https://m.dcinside.com/mini/{}?page={}".format(board_id, page))
+        elif recommend:
+            urls.append("https://m.dcinside.com/board/{}?recommend=1&page={}".format(board_id, page))
+        else:
+            urls.append("https://m.dcinside.com/board/{}?page={}".format(board_id, page))
+
         kind_urls = {
             "normal": "https://gall.dcinside.com/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
             "minor": "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
@@ -293,18 +300,16 @@ class API:
             "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
             "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
         ])
-
-        if kind == "mini":
-            urls.append("https://m.dcinside.com/mini/{}?page={}".format(board_id, page))
-        elif recommend:
-            urls.append("https://m.dcinside.com/board/{}?recommend=1&page={}".format(board_id, page))
-        else:
-            urls.append("https://m.dcinside.com/board/{}?page={}".format(board_id, page))
         return self.__dedupe_urls(urls)
 
     def __build_view_urls(self, board_id, document_id, kind=None):
         kind = (kind or "").lower()
         urls = []
+
+        if kind == "mini":
+            urls.append("https://m.dcinside.com/mini/{}/{}".format(board_id, document_id))
+        else:
+            urls.append("https://m.dcinside.com/board/{}/{}".format(board_id, document_id))
 
         kind_urls = {
             "normal": "https://gall.dcinside.com/board/view/?id={}&no={}".format(board_id, document_id),
@@ -321,11 +326,6 @@ class API:
             "https://gall.dcinside.com/mini/board/view/?id={}&no={}".format(board_id, document_id),
             "https://gall.dcinside.com/person/board/view/?id={}&no={}".format(board_id, document_id),
         ])
-
-        if kind == "mini":
-            urls.append("https://m.dcinside.com/mini/{}/{}".format(board_id, document_id))
-        else:
-            urls.append("https://m.dcinside.com/board/{}/{}".format(board_id, document_id))
         return self.__dedupe_urls(urls)
 
     def __build_pc_view_urls(self, board_id, document_id, kind=None):
@@ -347,7 +347,7 @@ class API:
         ])
         return self.__dedupe_urls(urls)
 
-    async def __fetch_parsed_from_urls(self, urls):
+    async def __fetch_parsed_from_urls(self, urls, validator=None):
         queue = list(urls)
         idx = 0
         while idx < len(queue):
@@ -367,10 +367,33 @@ class API:
                         queue.append(redirect_url)
                     continue
                 parsed = lxml.html.fromstring(text)
+                if validator and not validator(parsed, text, url):
+                    continue
                 return parsed, text, url
             except Exception:
                 continue
         return None, "", None
+
+    def __is_usable_board_page(self, parsed, text, url):
+        if "등록된 게시물이 없습니다." in text:
+            return True
+        mobile_rows = parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")
+        pc_rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")
+        return bool(mobile_rows or pc_rows)
+
+    def __is_usable_document_page(self, parsed, text, url):
+        doc_head_containers = parsed.xpath("//div[contains(@class, 'gallview-tit-box')]")
+        if not doc_head_containers:
+            doc_head_containers = parsed.xpath("//div[@class='gall-tit-box']")
+        if not doc_head_containers:
+            doc_head_containers = parsed.xpath("//div[contains(@class, 'gallview_head')]")
+
+        doc_content_container = parsed.xpath("//div[@class='thum-txtin']")
+        if not doc_content_container:
+            doc_content_container = parsed.xpath("//div[contains(@class, 'writing_view_box')]")
+        if not doc_content_container:
+            doc_content_container = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
+        return bool(doc_head_containers and doc_content_container)
 
     def __extract_top_level_redirect_url(self, text):
         if not text:
@@ -551,7 +574,8 @@ class API:
             if max_scan_pages is not None and scanned_pages >= max_scan_pages:
                 break
             parsed, text, used_url = await self.__fetch_parsed_from_urls(
-                self.__build_list_urls(board_id, page, recommend=recommend, kind=kind)
+                self.__build_list_urls(board_id, page, recommend=recommend, kind=kind),
+                validator=self.__is_usable_board_page,
             )
             scanned_pages += 1
             if parsed is None:
@@ -784,7 +808,8 @@ class API:
 
     async def document(self, board_id, document_id, kind=None):
         parsed, text, used_url = await self.__fetch_parsed_from_urls(
-            self.__build_view_urls(board_id, document_id, kind=kind)
+            self.__build_view_urls(board_id, document_id, kind=kind),
+            validator=self.__is_usable_document_page,
         )
         if parsed is None:
             return None
@@ -1118,7 +1143,7 @@ class API:
             if page >= max_page:
                 break
 
-    async def __comments_from_mobile(self, board_id, document_id, num=-1, start_page=1):
+    async def __comments_from_mobile(self, board_id, document_id, num=-1, start_page=1, fail_fast=False):
         url = "https://m.dcinside.com/ajax/response-comment"
         for page in range(start_page, 999999):
             payload = {"id": board_id, "no": document_id, "cpage": page, "managerskill":"", "del_scope": "1", "csort": ""}
@@ -1130,16 +1155,26 @@ class API:
                     data=payload,
                 )
             except RuntimeError:
+                if fail_fast:
+                    raise
                 break
             if status >= 400:
+                if fail_fast:
+                    raise RuntimeError(f"mobile comment fetch failed: {status}")
                 break
             if not body or not body.strip():
+                if fail_fast:
+                    raise RuntimeError("mobile comment fetch returned empty body")
                 break
             try:
                 parsed = lxml.html.fromstring(body)
             except Exception:
+                if fail_fast:
+                    raise RuntimeError("mobile comment fetch returned invalid html")
                 break
             if len(parsed) < 2:
+                if fail_fast:
+                    raise RuntimeError("mobile comment fetch returned unexpected html")
                 break
             if not len(parsed[1].xpath("li")): break
             #for li in reversed(parsed[1].xpath("li")):
@@ -1184,19 +1219,26 @@ class API:
                     break
             else: 
                 break 
-    async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=False):
+    async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=True):
         yielded_from_pc = False
         yielded_ids = set()
         remaining = num
         if prefer_mobile:
-            async for comment in self.__comments_from_mobile(
-                board_id,
-                document_id,
-                num=num,
-                start_page=start_page,
-            ):
-                yield comment
-            return
+            yielded_from_mobile = False
+            try:
+                async for comment in self.__comments_from_mobile(
+                    board_id,
+                    document_id,
+                    num=num,
+                    start_page=start_page,
+                    fail_fast=True,
+                ):
+                    yielded_from_mobile = True
+                    yield comment
+                return
+            except Exception:
+                if yielded_from_mobile:
+                    return
         try:
             async for comment in self.__comments_from_pc(
                 board_id,
