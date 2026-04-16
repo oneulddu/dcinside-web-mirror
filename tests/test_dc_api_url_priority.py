@@ -307,3 +307,38 @@ async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_fails():
     comments = [item.id async for item in api.comments("aoegame", "30150503", kind="minor")]
 
     assert comments == ["pc-comment"]
+
+
+@pytest.mark.asyncio
+async def test_comments_prefer_mobile_falls_back_to_pc_after_partial_mobile_failure():
+    api = API.__new__(API)
+
+    class DummyComment:
+        def __init__(self, cid):
+            self.id = cid
+
+    async def partial_mobile(board_id, document_id, num=-1, start_page=1, fail_fast=False):
+        yield DummyComment("1")
+        raise RuntimeError("mobile page 2 failed")
+
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+        assert num == -1
+        yield DummyComment("1")
+        yield DummyComment("2")
+        yield DummyComment("3")
+
+    api._API__comments_from_mobile = partial_mobile
+    api._API__comments_from_pc = fake_pc
+
+    comments = [
+        item.id
+        async for item in api.comments(
+            "aoegame",
+            "30150503",
+            num=2,
+            kind="minor",
+            prefer_mobile=True,
+        )
+    ]
+
+    assert comments == ["1", "2"]
