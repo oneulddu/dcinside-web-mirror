@@ -158,7 +158,7 @@ def test_read_renders_embedded_related_posts_without_extra_related_request(monke
     assert soup.select_one("#related-section")["data-recommend"] == "1"
     assert "recommend=1" in related_link["href"]
     assert "source_page=2" in related_link["href"]
-    assert soup.select_one("#related-load-button") is None
+    assert soup.select_one("#related-load-button") is not None
 
 
 def test_comment_spam_filter_never_hides_every_comment():

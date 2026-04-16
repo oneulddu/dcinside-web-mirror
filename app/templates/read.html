@@ -42,9 +42,7 @@
     <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}">
         <div class="board-head">
             <h2>다른 게시글</h2>
-            {% if recommend != 1 %}
             <button class="related-load-btn" id="related-load-button" type="button">{% if embedded_related_posts %}새로 불러오기{% else %}불러오기{% endif %}</button>
-            {% endif %}
         </div>
         <ul id="related-list">
             {% if embedded_related_posts %}

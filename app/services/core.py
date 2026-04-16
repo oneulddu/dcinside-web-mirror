@@ -373,15 +373,46 @@ async def _related_by_position_with_api(
 
     source_page_value = _safe_int(source_page, 0)
     recommend_value = _safe_int(recommend, 0)
-    if recommend_value:
-        # Recommended-read pages already include the recommended post list in the
-        # mobile document HTML. Do not crawl list pages again for this mode.
-        return []
-    board_key = (board, kind or "", recommend_value)
     related_key = (board, kind or "", recommend_value, target_id, fetch_limit, source_page_value)
     cached_related = _cache_get(_RELATED_CACHE, related_key)
     if cached_related is not None:
         return cached_related
+
+    if recommend_value:
+        # Recommended mobile read pages normally include the next recommended
+        # list in their HTML. This path is only a narrow fallback for cases where
+        # the document fetch falls back to PC markup and embedded related posts
+        # are unavailable. Do not estimate or probe broad page ranges here.
+        candidate_pages = []
+        if source_page_value > 0:
+            candidate_pages.append(source_page_value)
+        if 1 not in candidate_pages:
+            candidate_pages.append(1)
+
+        for page in candidate_pages:
+            page_posts = await _fetch_board_page(api, page, board, recommend_value, kind=kind)
+            page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
+            if target_id not in page_ids:
+                continue
+
+            found_index = page_ids.index(target_id)
+            related = []
+            for row in page_posts[found_index + 1 :]:
+                rid = _safe_int(row.get("id"), 0)
+                if rid <= 0 or rid >= target_id:
+                    continue
+                related.append(row)
+                if len(related) >= fetch_limit:
+                    break
+
+            result = related[:fetch_limit]
+            if result:
+                _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+            return result
+
+        return []
+
+    board_key = (board, kind or "", recommend_value)
 
     async def estimate_page_from_latest_id():
         latest_id = _cache_get(_LATEST_ID_CACHE, board_key)

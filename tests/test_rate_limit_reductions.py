@@ -261,7 +261,7 @@ async def test_related_uses_source_page_without_author_backfill(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_related_skips_recommend_board_fetches(monkeypatch):
+async def test_related_recommend_uses_source_page_fallback(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
 
@@ -274,6 +274,7 @@ async def test_related_skips_recommend_board_fetches(monkeypatch):
         async def board(self, **kwargs):
             self.calls.append((kwargs["start_page"], kwargs["num"], kwargs["recommend"]))
             yield _index_item(100)
+            yield _index_item(99)
 
     api = FakeAPI()
 
@@ -286,12 +287,12 @@ async def test_related_skips_recommend_board_fetches(monkeypatch):
         recommend=1,
     )
 
-    assert related == []
-    assert api.calls == []
+    assert [row["id"] for row in related] == ["99"]
+    assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
 
 
 @pytest.mark.asyncio
-async def test_related_skips_recommend_board_fetches_when_source_page_is_stale(monkeypatch):
+async def test_related_recommend_fallback_checks_only_source_page_then_first_page(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
 
@@ -303,7 +304,11 @@ async def test_related_skips_recommend_board_fetches_when_source_page_is_stale(m
 
         async def board(self, **kwargs):
             self.calls.append((kwargs["start_page"], kwargs["num"], kwargs["recommend"]))
-            yield _index_item(100)
+            if kwargs["start_page"] == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+            else:
+                yield _index_item(200)
 
     api = FakeAPI()
 
@@ -316,8 +321,11 @@ async def test_related_skips_recommend_board_fetches_when_source_page_is_stale(m
         recommend=1,
     )
 
-    assert related == []
-    assert api.calls == []
+    assert [row["id"] for row in related] == ["99"]
+    assert api.calls == [
+        (7, core.RELATED_PAGE_FETCH_SIZE, 1),
+        (1, core.RELATED_PAGE_FETCH_SIZE, 1),
+    ]
 
 
 @pytest.mark.asyncio
