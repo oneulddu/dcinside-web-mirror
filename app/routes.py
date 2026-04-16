@@ -687,8 +687,9 @@ def read():
     pid = _safe_int(request.args.get("pid", 0), 0)
     board = str(request.args.get("board", "airforce")).strip() or "airforce"
     kind = (request.args.get("kind") or "").strip().lower() or None
+    recommend = 1 if _safe_int(request.args.get("recommend", 0), 0) == 1 else 0
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
-    data, comments, images = _run_async(async_read(pid, board, kind=kind))
+    data, comments, images = _run_async(async_read(pid, board, kind=kind, recommend=recommend))
     embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
     soup = BeautifulSoup(data.get("html") or "", "html.parser")
     _rewrite_content_images(soup, images, board, pid, kind)
@@ -698,7 +699,7 @@ def read():
             comment["dccon"] = url_for("main.media", src=comment["dccon"], board=board, pid=pid, kind=kind)
 
     data["html"] = _sanitize_html_fragment(str(soup))
-    read_nav_tab = "best" if board == "dcbest" else "all"
+    read_nav_tab = "best" if board == "dcbest" or recommend == 1 else "all"
     response = make_response(
         render_template(
             "read.html",
@@ -708,6 +709,7 @@ def read():
             board=board,
             pid=pid,
             kind=kind,
+            recommend=recommend,
             source_page=source_page,
             embedded_related_posts=embedded_related_posts,
             nav_tab=read_nav_tab,
@@ -722,6 +724,7 @@ def read_related():
     pid = _safe_int(request.args.get("pid", 0), 0)
     board = str(request.args.get("board", "airforce")).strip() or "airforce"
     kind = (request.args.get("kind") or "").strip().lower() or None
+    recommend = 1 if _safe_int(request.args.get("recommend", 0), 0) == 1 else 0
     limit = _safe_int(request.args.get("limit", 12), 12)
     limit = max(1, min(limit, 30))
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
@@ -736,6 +739,7 @@ def read_related():
                     kind=kind,
                     limit=limit,
                     source_page=source_page,
+                    recommend=recommend,
                 )
             )
         except Exception:

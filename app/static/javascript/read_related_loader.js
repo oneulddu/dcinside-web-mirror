@@ -14,9 +14,12 @@
         list.appendChild(li);
     }
 
-    function buildReadHref(board, item, kind) {
+    function buildReadHref(board, item, kind, recommend) {
         var pid = item && item.id;
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(String(pid));
+        if (recommend === "1") {
+            href += "&recommend=1";
+        }
         if (item && item.source_page) {
             href += "&source_page=" + encodeURIComponent(String(item.source_page));
         }
@@ -26,11 +29,11 @@
         return href;
     }
 
-    function createItemNode(item, board, kind) {
+    function createItemNode(item, board, kind, recommend) {
         var li = document.createElement("li");
         var link = document.createElement("a");
         link.className = "feed-item";
-        link.href = buildReadHref(board, item, kind);
+        link.href = buildReadHref(board, item, kind, recommend);
 
         var titleWrap = document.createElement("div");
         titleWrap.className = "feed-title-wrap";
@@ -80,7 +83,7 @@
         return li;
     }
 
-    function renderItems(list, items, board, kind) {
+    function renderItems(list, items, board, kind, recommend) {
         clearChildren(list);
         if (!Array.isArray(items) || items.length === 0) {
             appendEmptyRow(list, "다른 게시글이 없습니다.");
@@ -91,7 +94,7 @@
             if (!item || !item.id) {
                 continue;
             }
-            list.appendChild(createItemNode(item, board, kind));
+            list.appendChild(createItemNode(item, board, kind, recommend));
         }
         if (!list.firstChild) {
             appendEmptyRow(list, "다른 게시글이 없습니다.");
@@ -152,6 +155,7 @@
         var board = section.dataset.board || "";
         var pid = section.dataset.pid || "";
         var kind = section.dataset.kind || "";
+        var recommend = section.dataset.recommend || "";
         var limit = section.dataset.limit || "12";
         var sourcePage = section.dataset.sourcePage || "";
 
@@ -168,6 +172,9 @@
         if (kind) {
             params.set("kind", kind);
         }
+        if (recommend === "1") {
+            params.set("recommend", "1");
+        }
         if (sourcePage) {
             params.set("source_page", sourcePage);
         }
@@ -176,6 +183,7 @@
             board: board,
             pid: pid,
             kind: kind,
+            recommend: recommend,
             list: list,
             params: params,
             cacheKey: "mirror:related:" + params.toString()
@@ -191,7 +199,7 @@
 
         var cachedItems = readSessionCache(context.cacheKey);
         if (cachedItems) {
-            renderItems(context.list, cachedItems, context.board, context.kind);
+            renderItems(context.list, cachedItems, context.board, context.kind, context.recommend);
             setButtonState(button, "loaded");
             return;
         }
@@ -213,7 +221,7 @@
             }
             var payload = await response.json();
             var items = Array.isArray(payload.items) ? payload.items : [];
-            renderItems(context.list, items, context.board, context.kind);
+            renderItems(context.list, items, context.board, context.kind, context.recommend);
             if (items.length > 0) {
                 writeSessionCache(context.cacheKey, items);
                 setButtonState(button, "loaded");

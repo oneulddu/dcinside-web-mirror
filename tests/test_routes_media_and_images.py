@@ -76,7 +76,7 @@ def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
     assert "data-original" not in images[0].attrs
 
 
-def test_board_source_page_hint_is_only_added_for_normal_lists(monkeypatch):
+def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     async def fake_async_index(page, board, recommend, kind=None):
         return [
             {
@@ -105,7 +105,8 @@ def test_board_source_page_hint_is_only_added_for_normal_lists(monkeypatch):
     recommend_query = parse_qs(urlparse(recommend_href).query)
 
     assert normal_query["source_page"] == ["3"]
-    assert "source_page" not in recommend_query
+    assert recommend_query["source_page"] == ["3"]
+    assert recommend_query["recommend"] == ["1"]
 
 
 def test_related_loader_keeps_empty_results_retryable():
@@ -114,10 +115,12 @@ def test_related_loader_keeps_empty_results_retryable():
     assert "cached.items.length === 0" in script
     assert "if (items.length > 0)" in script
     assert 'setButtonState(button, "idle");' in script
+    assert 'params.set("recommend", "1")' in script
 
 
 def test_read_renders_embedded_related_posts_without_extra_related_request(monkeypatch):
-    async def fake_async_read(pid, board, kind=None):
+    async def fake_async_read(pid, board, kind=None, recommend=0):
+        assert recommend == 1
         return (
             {
                 "title": "title",
@@ -146,12 +149,14 @@ def test_read_renders_embedded_related_posts_without_extra_related_request(monke
     monkeypatch.setattr(routes, "async_read", fake_async_read)
     app = create_app()
 
-    response = app.test_client().get("/read?board=test&pid=123&source_page=2")
+    response = app.test_client().get("/read?board=test&pid=123&recommend=1&source_page=2")
     soup = BeautifulSoup(response.data, "html.parser")
     related_link = soup.select_one("#related-list a.feed-item")
 
     assert related_link is not None
     assert "embedded title" in related_link.get_text(" ", strip=True)
+    assert soup.select_one("#related-section")["data-recommend"] == "1"
+    assert "recommend=1" in related_link["href"]
     assert "source_page=2" in related_link["href"]
     assert "새로 불러오기" in response.get_data(as_text=True)
 

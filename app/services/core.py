@@ -200,7 +200,7 @@ async def _fetch_board_page(
     return posts
 
 
-async def _fill_missing_author_code(api, board, kind, row):
+async def _fill_missing_author_code(api, board, kind, row, recommend=0):
     if not row:
         return row
     if row.get("author_code"):
@@ -217,7 +217,7 @@ async def _fill_missing_author_code(api, board, kind, row):
         row["author_code"] = cached.get("author_code")
         return row
     try:
-        doc = await api.document(board_id=board, document_id=doc_id, kind=kind)
+        doc = await api.document(board_id=board, document_id=doc_id, kind=kind, recommend=bool(_safe_int(recommend, 0)))
     except Exception:
         return row
     if not doc:
@@ -235,22 +235,22 @@ async def _fill_missing_author_code(api, board, kind, row):
     return row
 
 
-async def _fill_missing_author_codes(api, board, kind, rows):
+async def _fill_missing_author_codes(api, board, kind, rows, recommend=0):
     semaphore = asyncio.Semaphore(AUTHOR_CODE_FETCH_CONCURRENCY)
 
     async def fill(row):
         async with semaphore:
-            return await _fill_missing_author_code(api, board, kind, row)
+            return await _fill_missing_author_code(api, board, kind, row, recommend=recommend)
 
     await asyncio.gather(*(fill(row) for row in rows))
     return rows
 
 
-async def _read_document_with_api(api, api_id, board, kind=None):
+async def _read_document_with_api(api, api_id, board, kind=None, recommend=0):
     data = {}
     comments = []
     images = []
-    doc = await api.document(board_id=board, document_id=api_id, kind=kind)
+    doc = await api.document(board_id=board, document_id=api_id, kind=kind, recommend=bool(_safe_int(recommend, 0)))
     if doc is None:
         return {
             "title": "삭제되거나 찾을 수 없는 게시글입니다.",
@@ -297,13 +297,14 @@ async def _read_document_with_api(api, api_id, board, kind=None):
     return data, comments, images
 
 
-async def async_read(api_id, board, kind=None):
+async def async_read(api_id, board, kind=None, recommend=0):
     async with dc_api.API() as api:
         return await _read_document_with_api(
             api,
             api_id,
             board,
             kind=kind,
+            recommend=recommend,
         )
 
 
@@ -348,7 +349,7 @@ async def async_index(
         ):
             tdata = _index_item_to_dict(item)
             data.append(tdata)
-        await _fill_missing_author_codes(api, board, kind, data)
+        await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
     return data
 
 
@@ -361,6 +362,7 @@ async def _related_by_position_with_api(
     probe_steps=RELATED_PAGE_PROBE_STEPS,
     tail_pages=RELATED_TAIL_PAGES,
     source_page=None,
+    recommend=0,
 ):
     target_id = _safe_int(api_id, 0)
     fetch_limit = max(_safe_int(limit, RELATED_LIMIT), 0)
@@ -370,8 +372,9 @@ async def _related_by_position_with_api(
         return []
 
     source_page_value = _safe_int(source_page, 0)
-    board_key = (board, kind or "")
-    related_key = (board, kind or "", target_id, fetch_limit, source_page_value)
+    recommend_value = _safe_int(recommend, 0)
+    board_key = (board, kind or "", recommend_value)
+    related_key = (board, kind or "", recommend_value, target_id, fetch_limit, source_page_value)
     cached_related = _cache_get(_RELATED_CACHE, related_key)
     if cached_related is not None:
         return cached_related
@@ -379,7 +382,7 @@ async def _related_by_position_with_api(
     async def estimate_page_from_latest_id():
         latest_id = _cache_get(_LATEST_ID_CACHE, board_key)
         if latest_id is None:
-            first_page = await _fetch_board_page(api, 1, board, 0, kind=kind, page_size=1)
+            first_page = await _fetch_board_page(api, 1, board, recommend_value, kind=kind, page_size=1)
             if not first_page:
                 return None
             latest_id = _safe_int(first_page[0].get("id"), target_id)
@@ -400,7 +403,7 @@ async def _related_by_position_with_api(
             checked.add(page)
             steps += 1
 
-            page_posts = await _fetch_board_page(api, page, board, 0, kind=kind)
+            page_posts = await _fetch_board_page(api, page, board, recommend_value, kind=kind)
             if not page_posts:
                 break
 
@@ -432,10 +435,13 @@ async def _related_by_position_with_api(
             if estimated_page is not None and estimated_page != source_page_value:
                 found_page, found_index, found_posts = await find_target_from_page(estimated_page)
     else:
-        estimated_page = await estimate_page_from_latest_id()
-        if estimated_page is None:
-            return []
-        found_page, found_index, found_posts = await find_target_from_page(estimated_page)
+        if recommend_value:
+            found_page, found_index, found_posts = await find_target_from_page(1)
+        else:
+            estimated_page = await estimate_page_from_latest_id()
+            if estimated_page is None:
+                return []
+            found_page, found_index, found_posts = await find_target_from_page(estimated_page)
 
     if found_page is None:
         return []
@@ -454,7 +460,7 @@ async def _related_by_position_with_api(
     next_page = found_page + 1
     loaded_tail = 0
     while len(related) < fetch_limit and loaded_tail < max_tail:
-        page_posts = await _fetch_board_page(api, next_page, board, 0, kind=kind)
+        page_posts = await _fetch_board_page(api, next_page, board, recommend_value, kind=kind)
         if not page_posts:
             break
         for row in page_posts:
@@ -481,6 +487,7 @@ async def async_related_by_position(
     probe_steps=RELATED_PAGE_PROBE_STEPS,
     tail_pages=RELATED_TAIL_PAGES,
     source_page=None,
+    recommend=0,
 ):
     async with dc_api.API() as api:
         return await _related_by_position_with_api(
@@ -492,4 +499,5 @@ async def async_related_by_position(
             probe_steps=probe_steps,
             tail_pages=tail_pages,
             source_page=source_page,
+            recommend=recommend,
         )

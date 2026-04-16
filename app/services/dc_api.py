@@ -305,29 +305,31 @@ class API:
         ])
         return self.__dedupe_urls(urls)
 
-    def __build_view_urls(self, board_id, document_id, kind=None):
+    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False):
         kind = (kind or "").lower()
         urls = []
+        mobile_recommend_suffix = "?recommend=1" if recommend else ""
+        pc_recommend_suffix = "&recommend=1" if recommend else ""
 
         if kind == "mini":
-            urls.append("https://m.dcinside.com/mini/{}/{}".format(board_id, document_id))
+            urls.append("https://m.dcinside.com/mini/{}/{}{}".format(board_id, document_id, mobile_recommend_suffix))
         else:
-            urls.append("https://m.dcinside.com/board/{}/{}".format(board_id, document_id))
+            urls.append("https://m.dcinside.com/board/{}/{}{}".format(board_id, document_id, mobile_recommend_suffix))
 
         kind_urls = {
-            "normal": "https://gall.dcinside.com/board/view/?id={}&no={}".format(board_id, document_id),
-            "minor": "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}".format(board_id, document_id),
-            "mini": "https://gall.dcinside.com/mini/board/view/?id={}&no={}".format(board_id, document_id),
-            "person": "https://gall.dcinside.com/person/board/view/?id={}&no={}".format(board_id, document_id),
+            "normal": "https://gall.dcinside.com/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "minor": "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "mini": "https://gall.dcinside.com/mini/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "person": "https://gall.dcinside.com/person/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
         }
         if kind in kind_urls:
             urls.append(kind_urls[kind])
 
         urls.extend([
-            "https://gall.dcinside.com/board/view/?id={}&no={}".format(board_id, document_id),
-            "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}".format(board_id, document_id),
-            "https://gall.dcinside.com/mini/board/view/?id={}&no={}".format(board_id, document_id),
-            "https://gall.dcinside.com/person/board/view/?id={}&no={}".format(board_id, document_id),
+            "https://gall.dcinside.com/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "https://gall.dcinside.com/mini/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "https://gall.dcinside.com/person/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
         ])
         return self.__dedupe_urls(urls)
 
@@ -403,7 +405,7 @@ class API:
             doc_content_container = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
         return bool(doc_head_containers and doc_content_container)
 
-    def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True):
+    def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True, recommend=False):
         def to_int(value, default=0):
             if value is None:
                 return default
@@ -498,7 +500,7 @@ class API:
             view_count=view_count,
             voteup_count=voteup_count,
             comment_count=comment_count,
-            document=lambda b=board_id, d=document_id, k=kind: self.document(b, d, kind=k),
+            document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
             comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
             time=post_time,
             subject=subject,
@@ -509,12 +511,18 @@ class API:
             is_mobile_source=is_mobile_source,
         )
 
-    def __parse_embedded_mobile_posts(self, parsed, board_id, current_document_id, kind=None):
+    def __parse_embedded_mobile_posts(self, parsed, board_id, current_document_id, kind=None, recommend=False):
         posts = []
         seen_ids = {str(current_document_id)}
         rows = parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")
         for row in rows:
-            item = self.__parse_mobile_list_item(row, board_id, kind=kind, is_mobile_source=True)
+            item = self.__parse_mobile_list_item(
+                row,
+                board_id,
+                kind=kind,
+                is_mobile_source=True,
+                recommend=recommend,
+            )
             if item is None or item.id in seen_ids:
                 continue
             seen_ids.add(item.id)
@@ -938,7 +946,7 @@ class API:
                         view_count=view_count,
                         voteup_count=voteup_count,
                         comment_count=comment_count,
-                        document=lambda b=board_id, d=document_id, k=kind: self.document(b, d, kind=k),
+                        document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
                         comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
                         time=time,
                         subject=subject,
@@ -1010,7 +1018,7 @@ class API:
                         view_count=view_count,
                         voteup_count=voteup_count,
                         comment_count=comment_count,
-                        document=lambda b=board_id, d=document_id, k=kind: self.document(b, d, kind=k),
+                        document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
                         comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
                         time=self.__parse_time(time_text),
                         subject=None,
@@ -1030,9 +1038,9 @@ class API:
                 break
             page += 1
 
-    async def document(self, board_id, document_id, kind=None):
+    async def document(self, board_id, document_id, kind=None, recommend=False):
         parsed, text, used_url = await self.__fetch_parsed_from_urls(
-            self.__build_view_urls(board_id, document_id, kind=kind),
+            self.__build_view_urls(board_id, document_id, kind=kind, recommend=recommend),
             validator=self.__is_usable_document_page,
         )
         if parsed is None:
@@ -1181,7 +1189,7 @@ class API:
             embedded_comments = []
             embedded_comment_total = 0
             if is_mobile_source:
-                related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind)
+                related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind, recommend=recommend)
                 embedded_comments, embedded_comment_total = self.__parse_embedded_mobile_comments(parsed)
 
             for adv in doc_content.xpath("div[@class='adv-groupin']"):

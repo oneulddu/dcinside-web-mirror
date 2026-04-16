@@ -32,6 +32,13 @@ def test_view_urls_prefer_mobile_before_pc():
     assert any(url.startswith("https://gall.dcinside.com/") for url in urls[1:])
 
 
+def test_view_urls_keep_recommend_flag_on_mobile_first():
+    api = API.__new__(API)
+    urls = api._API__build_view_urls("aoegame", "30389383", kind="minor", recommend=True)
+    assert urls[0] == "https://m.dcinside.com/board/aoegame/30389383?recommend=1"
+    assert any(url.startswith("https://gall.dcinside.com/mgallery/") and "recommend=1" in url for url in urls[1:])
+
+
 @pytest.mark.asyncio
 async def test_comments_fallback_to_mobile_when_pc_yields_nothing():
     api = API.__new__(API)
