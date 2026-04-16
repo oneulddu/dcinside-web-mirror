@@ -279,7 +279,7 @@ class API:
         recommend_suffix = "&recommend=1" if recommend else ""
 
         if kind == "mini":
-            urls.append("https://m.dcinside.com/mini/{}?page={}".format(board_id, page))
+            urls.append("https://m.dcinside.com/mini/{}?page={}{}".format(board_id, page, recommend_suffix))
         elif recommend:
             urls.append("https://m.dcinside.com/board/{}?recommend=1&page={}".format(board_id, page))
         else:

@@ -17,6 +17,14 @@ def test_list_urls_keep_recommend_flag_on_mobile_first():
     assert any(url.startswith("https://gall.dcinside.com/mgallery/") and "recommend=1" in url for url in urls[1:])
 
 
+def test_list_urls_keep_recommend_flag_on_mobile_mini_first():
+    api = API.__new__(API)
+    urls = api._API__build_list_urls("aoegame", 1, recommend=True, kind="mini")
+    assert urls[0].startswith("https://m.dcinside.com/mini/")
+    assert "recommend=1" in urls[0]
+    assert any(url.startswith("https://gall.dcinside.com/mini/") and "recommend=1" in url for url in urls[1:])
+
+
 def test_view_urls_prefer_mobile_before_pc():
     api = API.__new__(API)
     urls = api._API__build_view_urls("aoegame", "30389383", kind="minor")
