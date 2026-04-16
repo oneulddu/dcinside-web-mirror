@@ -30,11 +30,14 @@ RELATED_CACHE_MAX_ITEMS = 2048
 AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
 AUTHOR_CODE_FETCH_CONCURRENCY = max(_env_int("MIRROR_AUTHOR_CODE_FETCH_CONCURRENCY", 5), 1)
 
-_CACHE_LOCK = threading.Lock()
 _BOARD_PAGE_CACHE = {}
 _LATEST_ID_CACHE = {}
 _RELATED_CACHE = {}
 _AUTHOR_CODE_CACHE = {}
+_BOARD_PAGE_CACHE_LOCK = threading.Lock()
+_LATEST_ID_CACHE_LOCK = threading.Lock()
+_RELATED_CACHE_LOCK = threading.Lock()
+_AUTHOR_CODE_CACHE_LOCK = threading.Lock()
 
 
 def _safe_int(value, default=0):
@@ -93,6 +96,20 @@ def _is_reply_comment(parent_id):
         return False
 
 
+def _comment_to_dict(comment):
+    comment_author, comment_author_code = _normalize_author(comment.author, comment.author_id)
+    is_reply = bool(getattr(comment, "is_reply", False)) or _is_reply_comment(comment.parent_id)
+    return {
+        "time": comment.time,
+        "contents": comment.contents,
+        "author": comment_author,
+        "author_code": comment_author_code,
+        "parent_id": comment.parent_id,
+        "is_reply": is_reply,
+        "dccon": comment.dccon,
+    }
+
+
 def _index_item_to_dict(item):
     author, author_code = _normalize_author(item.author, getattr(item, "author_id", None))
     return {
@@ -113,9 +130,9 @@ def _index_item_to_dict(item):
     }
 
 
-def _cache_get(cache, key):
+def _cache_get(cache, lock, key):
     now = time.time()
-    with _CACHE_LOCK:
+    with lock:
         entry = cache.get(key)
         if not entry:
             return None
@@ -137,9 +154,9 @@ def _cache_prune(cache, now, max_items):
         cache.pop(key, None)
 
 
-def _cache_set(cache, key, value, ttl, max_items):
+def _cache_set(cache, lock, key, value, ttl, max_items):
     expires_at = time.time() + max(_safe_int(ttl, 0), 0)
-    with _CACHE_LOCK:
+    with lock:
         _cache_prune(cache, time.time(), max_items)
         cache[key] = {"value": value, "expires_at": expires_at}
 
@@ -159,7 +176,7 @@ async def _fetch_board_page(
         _safe_int(page, 1),
         _safe_int(page_size, RELATED_PAGE_FETCH_SIZE),
     )
-    cached = _cache_get(_BOARD_PAGE_CACHE, cache_key)
+    cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
         return [dict(row) for row in cached]
 
@@ -178,6 +195,7 @@ async def _fetch_board_page(
     if posts:
         _cache_set(
             _BOARD_PAGE_CACHE,
+            _BOARD_PAGE_CACHE_LOCK,
             cache_key,
             [dict(row) for row in posts],
             BOARD_PAGE_CACHE_TTL,
@@ -186,7 +204,7 @@ async def _fetch_board_page(
     return posts
 
 
-async def _fill_missing_author_code(api, board, kind, row):
+async def _fill_missing_author_code(api, board, kind, row, recommend=0):
     if not row:
         return row
     if row.get("author_code"):
@@ -197,13 +215,13 @@ async def _fill_missing_author_code(api, board, kind, row):
     if not doc_id:
         return row
     cache_key = (board, kind or "", str(doc_id))
-    cached = _cache_get(_AUTHOR_CODE_CACHE, cache_key)
+    cached = _cache_get(_AUTHOR_CODE_CACHE, _AUTHOR_CODE_CACHE_LOCK, cache_key)
     if cached is not None:
         row["author"] = cached.get("author", row.get("author"))
         row["author_code"] = cached.get("author_code")
         return row
     try:
-        doc = await api.document(board_id=board, document_id=doc_id, kind=kind)
+        doc = await api.document(board_id=board, document_id=doc_id, kind=kind, recommend=bool(_safe_int(recommend, 0)))
     except Exception:
         return row
     if not doc:
@@ -213,6 +231,7 @@ async def _fill_missing_author_code(api, board, kind, row):
     row["author_code"] = author_code
     _cache_set(
         _AUTHOR_CODE_CACHE,
+        _AUTHOR_CODE_CACHE_LOCK,
         cache_key,
         {"author": author, "author_code": author_code},
         AUTHOR_CODE_CACHE_TTL,
@@ -221,22 +240,22 @@ async def _fill_missing_author_code(api, board, kind, row):
     return row
 
 
-async def _fill_missing_author_codes(api, board, kind, rows):
+async def _fill_missing_author_codes(api, board, kind, rows, recommend=0):
     semaphore = asyncio.Semaphore(AUTHOR_CODE_FETCH_CONCURRENCY)
 
     async def fill(row):
         async with semaphore:
-            return await _fill_missing_author_code(api, board, kind, row)
+            return await _fill_missing_author_code(api, board, kind, row, recommend=recommend)
 
     await asyncio.gather(*(fill(row) for row in rows))
     return rows
 
 
-async def _read_document_with_api(api, api_id, board, kind=None):
+async def _read_document_with_api(api, api_id, board, kind=None, recommend=0):
     data = {}
     comments = []
     images = []
-    doc = await api.document(board_id=board, document_id=api_id, kind=kind)
+    doc = await api.document(board_id=board, document_id=api_id, kind=kind, recommend=bool(_safe_int(recommend, 0)))
     if doc is None:
         return {
             "title": "삭제되거나 찾을 수 없는 게시글입니다.",
@@ -256,32 +275,41 @@ async def _read_document_with_api(api, api_id, board, kind=None):
         "html": doc.html,
         "related_posts": [_index_item_to_dict(item) for item in getattr(doc, "related_posts", [])],
     }
-    async for com in doc.comments():
-        comment_author, comment_author_code = _normalize_author(com.author, com.author_id)
-        is_reply = bool(getattr(com, "is_reply", False)) or _is_reply_comment(com.parent_id)
-        comments.append(
-            {
-                "time": com.time,
-                "contents": com.contents,
-                "author": comment_author,
-                "author_code": comment_author_code,
-                "parent_id": com.parent_id,
-                "is_reply": is_reply,
-                "dccon": com.dccon,
-            }
-        )
+    seen_comment_ids = set()
+    embedded_comments = list(getattr(doc, "embedded_comments", []) or [])
+    embedded_total = _safe_int(getattr(doc, "embedded_comment_total", 0), 0)
+    for com in embedded_comments:
+        comment_id = str(getattr(com, "id", "") or "").strip()
+        if comment_id:
+            seen_comment_ids.add(comment_id)
+        comments.append(_comment_to_dict(com))
+
+    should_fetch_comments = (
+        not embedded_comments
+        or embedded_total <= 0
+        or embedded_total > len(embedded_comments)
+    )
+    if should_fetch_comments:
+        async for com in doc.comments():
+            comment_id = str(getattr(com, "id", "") or "").strip()
+            if comment_id and comment_id in seen_comment_ids:
+                continue
+            if comment_id:
+                seen_comment_ids.add(comment_id)
+            comments.append(_comment_to_dict(com))
     for img in doc.images:
         images.append(img.src)
     return data, comments, images
 
 
-async def async_read(api_id, board, kind=None):
+async def async_read(api_id, board, kind=None, recommend=0):
     async with dc_api.API() as api:
         return await _read_document_with_api(
             api,
             api_id,
             board,
             kind=kind,
+            recommend=recommend,
         )
 
 
@@ -326,7 +354,7 @@ async def async_index(
         ):
             tdata = _index_item_to_dict(item)
             data.append(tdata)
-        await _fill_missing_author_codes(api, board, kind, data)
+        await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
     return data
 
 
@@ -339,6 +367,7 @@ async def _related_by_position_with_api(
     probe_steps=RELATED_PAGE_PROBE_STEPS,
     tail_pages=RELATED_TAIL_PAGES,
     source_page=None,
+    recommend=0,
 ):
     target_id = _safe_int(api_id, 0)
     fetch_limit = max(_safe_int(limit, RELATED_LIMIT), 0)
@@ -348,23 +377,59 @@ async def _related_by_position_with_api(
         return []
 
     source_page_value = _safe_int(source_page, 0)
-    board_key = (board, kind or "")
-    related_key = (board, kind or "", target_id, fetch_limit, source_page_value)
-    cached_related = _cache_get(_RELATED_CACHE, related_key)
+    recommend_value = _safe_int(recommend, 0)
+    related_key = (board, kind or "", recommend_value, target_id, fetch_limit, source_page_value)
+    cached_related = _cache_get(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key)
     if cached_related is not None:
         return cached_related
 
+    if recommend_value:
+        # Recommended mobile read pages normally include the next recommended
+        # list in their HTML. This path is only a narrow fallback for cases where
+        # the document fetch falls back to PC markup and embedded related posts
+        # are unavailable. Do not estimate or probe broad page ranges here.
+        candidate_pages = []
+        if source_page_value > 0:
+            candidate_pages.append(source_page_value)
+        if 1 not in candidate_pages:
+            candidate_pages.append(1)
+
+        for page in candidate_pages:
+            page_posts = await _fetch_board_page(api, page, board, recommend_value, kind=kind)
+            page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
+            if target_id not in page_ids:
+                continue
+
+            found_index = page_ids.index(target_id)
+            related = []
+            for row in page_posts[found_index + 1 :]:
+                rid = _safe_int(row.get("id"), 0)
+                if rid <= 0:
+                    continue
+                related.append(row)
+                if len(related) >= fetch_limit:
+                    break
+
+            result = related[:fetch_limit]
+            _cache_set(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+            return result
+
+        _cache_set(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key, [], RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+        return []
+
+    board_key = (board, kind or "", recommend_value)
+
     async def estimate_page_from_latest_id():
-        latest_id = _cache_get(_LATEST_ID_CACHE, board_key)
+        latest_id = _cache_get(_LATEST_ID_CACHE, _LATEST_ID_CACHE_LOCK, board_key)
         if latest_id is None:
-            first_page = await _fetch_board_page(api, 1, board, 0, kind=kind, page_size=1)
+            first_page = await _fetch_board_page(api, 1, board, recommend_value, kind=kind, page_size=1)
             if not first_page:
                 return None
             latest_id = _safe_int(first_page[0].get("id"), target_id)
-            _cache_set(_LATEST_ID_CACHE, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
+            _cache_set(_LATEST_ID_CACHE, _LATEST_ID_CACHE_LOCK, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
         return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
 
-    async def find_target_from_page(start_page):
+    async def find_target_from_page(start_page, single_page=False):
         found_page = None
         found_index = -1
         found_posts = []
@@ -378,7 +443,7 @@ async def _related_by_position_with_api(
             checked.add(page)
             steps += 1
 
-            page_posts = await _fetch_board_page(api, page, board, 0, kind=kind)
+            page_posts = await _fetch_board_page(api, page, board, recommend_value, kind=kind)
             if not page_posts:
                 break
 
@@ -388,10 +453,15 @@ async def _related_by_position_with_api(
                 found_index = page_ids.index(target_id)
                 found_posts = page_posts
                 break
+            if single_page:
+                break
 
             valid_ids = [pid for pid in page_ids if pid > 0]
             if not valid_ids:
                 break
+            if recommend_value:
+                page += 1
+                continue
             page_max = max(valid_ids)
             page_min = min(valid_ids)
             if target_id > page_max:
@@ -404,16 +474,26 @@ async def _related_by_position_with_api(
         return found_page, found_index, found_posts
 
     if source_page_value > 0:
-        found_page, found_index, found_posts = await find_target_from_page(source_page_value)
+        found_page, found_index, found_posts = await find_target_from_page(
+            source_page_value,
+            single_page=bool(recommend_value),
+        )
         if found_page is None:
-            estimated_page = await estimate_page_from_latest_id()
-            if estimated_page is not None and estimated_page != source_page_value:
-                found_page, found_index, found_posts = await find_target_from_page(estimated_page)
+            if recommend_value:
+                if source_page_value != 1:
+                    found_page, found_index, found_posts = await find_target_from_page(1)
+            else:
+                estimated_page = await estimate_page_from_latest_id()
+                if estimated_page is not None and estimated_page != source_page_value:
+                    found_page, found_index, found_posts = await find_target_from_page(estimated_page)
     else:
-        estimated_page = await estimate_page_from_latest_id()
-        if estimated_page is None:
-            return []
-        found_page, found_index, found_posts = await find_target_from_page(estimated_page)
+        if recommend_value:
+            found_page, found_index, found_posts = await find_target_from_page(1)
+        else:
+            estimated_page = await estimate_page_from_latest_id()
+            if estimated_page is None:
+                return []
+            found_page, found_index, found_posts = await find_target_from_page(estimated_page)
 
     if found_page is None:
         return []
@@ -426,13 +506,13 @@ async def _related_by_position_with_api(
         related.append(row)
         if len(related) >= fetch_limit:
             result = related[:fetch_limit]
-            _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+            _cache_set(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
             return result
 
     next_page = found_page + 1
     loaded_tail = 0
     while len(related) < fetch_limit and loaded_tail < max_tail:
-        page_posts = await _fetch_board_page(api, next_page, board, 0, kind=kind)
+        page_posts = await _fetch_board_page(api, next_page, board, recommend_value, kind=kind)
         if not page_posts:
             break
         for row in page_posts:
@@ -447,7 +527,7 @@ async def _related_by_position_with_api(
 
     result = related[:fetch_limit]
     if result:
-        _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+        _cache_set(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
     return result
 
 
@@ -459,6 +539,7 @@ async def async_related_by_position(
     probe_steps=RELATED_PAGE_PROBE_STEPS,
     tail_pages=RELATED_TAIL_PAGES,
     source_page=None,
+    recommend=0,
 ):
     async with dc_api.API() as api:
         return await _related_by_position_with_api(
@@ -470,4 +551,5 @@ async def async_related_by_position(
             probe_steps=probe_steps,
             tail_pages=tail_pages,
             source_page=source_page,
+            recommend=recommend,
         )

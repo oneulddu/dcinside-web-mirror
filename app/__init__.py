@@ -2,6 +2,10 @@ import os
 
 from flask import Flask
 
+from env_loader import load_dotenv
+
+load_dotenv()
+
 from .config import DevelopmentConfig, ProductionConfig
 from .routes import register_routes
 

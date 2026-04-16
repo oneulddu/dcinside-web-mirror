@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import itertools
 import aiohttp
 import filetype
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
 def env_int(name, default):
     try:
@@ -95,8 +95,8 @@ class DocumentIndex:
         return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count}"
 
 class Document:
-    __slots__ = ["id", "board_id", "title", "author", "author_id", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "is_mobile_source", "related_posts"]
-    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None):
+    __slots__ = ["id", "board_id", "title", "author", "author_id", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total"]
+    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=0):
         self.id = id
         self.board_id = board_id
         self.title = title
@@ -114,6 +114,8 @@ class Document:
         self.subject = subject
         self.is_mobile_source = bool(is_mobile_source)
         self.related_posts = list(related_posts or [])
+        self.embedded_comments = list(embedded_comments or [])
+        self.embedded_comment_total = embedded_comment_total
     def __str__(self):
         return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
 
@@ -303,29 +305,31 @@ class API:
         ])
         return self.__dedupe_urls(urls)
 
-    def __build_view_urls(self, board_id, document_id, kind=None):
+    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False):
         kind = (kind or "").lower()
         urls = []
+        mobile_recommend_suffix = "?recommend=1" if recommend else ""
+        pc_recommend_suffix = "&recommend=1" if recommend else ""
 
         if kind == "mini":
-            urls.append("https://m.dcinside.com/mini/{}/{}".format(board_id, document_id))
+            urls.append("https://m.dcinside.com/mini/{}/{}{}".format(board_id, document_id, mobile_recommend_suffix))
         else:
-            urls.append("https://m.dcinside.com/board/{}/{}".format(board_id, document_id))
+            urls.append("https://m.dcinside.com/board/{}/{}{}".format(board_id, document_id, mobile_recommend_suffix))
 
         kind_urls = {
-            "normal": "https://gall.dcinside.com/board/view/?id={}&no={}".format(board_id, document_id),
-            "minor": "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}".format(board_id, document_id),
-            "mini": "https://gall.dcinside.com/mini/board/view/?id={}&no={}".format(board_id, document_id),
-            "person": "https://gall.dcinside.com/person/board/view/?id={}&no={}".format(board_id, document_id),
+            "normal": "https://gall.dcinside.com/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "minor": "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "mini": "https://gall.dcinside.com/mini/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "person": "https://gall.dcinside.com/person/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
         }
         if kind in kind_urls:
             urls.append(kind_urls[kind])
 
         urls.extend([
-            "https://gall.dcinside.com/board/view/?id={}&no={}".format(board_id, document_id),
-            "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}".format(board_id, document_id),
-            "https://gall.dcinside.com/mini/board/view/?id={}&no={}".format(board_id, document_id),
-            "https://gall.dcinside.com/person/board/view/?id={}&no={}".format(board_id, document_id),
+            "https://gall.dcinside.com/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "https://gall.dcinside.com/mini/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "https://gall.dcinside.com/person/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
         ])
         return self.__dedupe_urls(urls)
 
@@ -364,6 +368,7 @@ class API:
 
                 redirect_url = self.__extract_top_level_redirect_url(text)
                 if redirect_url:
+                    redirect_url = self.__normalize_redirect_url(url, redirect_url)
                     if redirect_url and redirect_url not in queue:
                         queue.append(redirect_url)
                     continue
@@ -374,6 +379,25 @@ class API:
             except Exception:
                 continue
         return None, "", None
+
+    def __normalize_redirect_url(self, current_url, redirect_url):
+        normalized_url = urljoin(current_url, redirect_url)
+        if "1" not in parse_qs(urlparse(current_url).query).get("recommend", []):
+            return normalized_url
+
+        parsed = urlparse(normalized_url)
+        query_items = []
+        recommend_added = False
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key == "recommend":
+                if not recommend_added:
+                    query_items.append(("recommend", "1"))
+                    recommend_added = True
+                continue
+            query_items.append((key, value))
+        if not recommend_added:
+            query_items.append(("recommend", "1"))
+        return parsed._replace(query=urlencode(query_items)).geturl()
 
     def __is_usable_board_page(self, parsed, text, url):
         if "등록된 게시물이 없습니다." in text:
@@ -401,7 +425,7 @@ class API:
             doc_content_container = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
         return bool(doc_head_containers and doc_content_container)
 
-    def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True):
+    def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True, recommend=False):
         def to_int(value, default=0):
             if value is None:
                 return default
@@ -448,19 +472,26 @@ class API:
         if not title:
             return None
 
-        ginfo = link.xpath(".//ul[contains(@class, 'ginfo')]/li")
+        ginfo = [
+            " ".join(node.text_content().split())
+            for node in link.xpath(".//ul[contains(@class, 'ginfo')]/li")
+        ]
         author = "익명"
         post_time = self.__parse_time("")
         view_count = 0
         voteup_count = 0
-        if len(ginfo) >= 1:
-            author = " ".join(ginfo[0].text_content().split()) or "익명"
-        if len(ginfo) >= 2:
-            post_time = self.__parse_time(" ".join(ginfo[1].text_content().split()))
-        if len(ginfo) >= 3:
-            view_count = to_int(" ".join(ginfo[2].text_content().split()), 0)
-        if len(ginfo) >= 4:
-            voteup_count = to_int(" ".join(ginfo[3].text_content().split()), 0)
+        meta_offset = 0
+        if len(ginfo) >= 5:
+            subject = subject or ginfo[0] or None
+            meta_offset = 1
+        if len(ginfo) > meta_offset:
+            author = ginfo[meta_offset] or "익명"
+        if len(ginfo) > meta_offset + 1:
+            post_time = self.__parse_time(ginfo[meta_offset + 1])
+        if len(ginfo) > meta_offset + 2:
+            view_count = to_int(ginfo[meta_offset + 2], 0)
+        if len(ginfo) > meta_offset + 3:
+            voteup_count = to_int(ginfo[meta_offset + 3], 0)
 
         comment_count = 0
         comment_nodes = row.xpath(".//a[contains(@class, 'rt')]//*[contains(@class, 'ct')]")
@@ -496,7 +527,7 @@ class API:
             view_count=view_count,
             voteup_count=voteup_count,
             comment_count=comment_count,
-            document=lambda b=board_id, d=document_id, k=kind: self.document(b, d, kind=k),
+            document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
             comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
             time=post_time,
             subject=subject,
@@ -507,17 +538,124 @@ class API:
             is_mobile_source=is_mobile_source,
         )
 
-    def __parse_embedded_mobile_posts(self, parsed, board_id, current_document_id, kind=None):
+    def __parse_embedded_mobile_posts(self, parsed, board_id, current_document_id, kind=None, recommend=False):
         posts = []
         seen_ids = {str(current_document_id)}
-        rows = parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")
+        rows = parsed.xpath(
+            "//*[@id='view_next' and "
+            "contains(concat(' ', normalize-space(@class), ' '), ' gall-detail-lst ')]/li"
+        )
         for row in rows:
-            item = self.__parse_mobile_list_item(row, board_id, kind=kind, is_mobile_source=True)
+            item = self.__parse_mobile_list_item(
+                row,
+                board_id,
+                kind=kind,
+                is_mobile_source=True,
+                recommend=recommend,
+            )
             if item is None or item.id in seen_ids:
                 continue
             seen_ids.add(item.id)
             posts.append(item)
         return posts
+
+    def __parse_mobile_comment_li(self, li):
+        li_classes = set((li.get("class") or "").split())
+        nick_node = li[0] if len(li) > 0 else None
+        content_node = li[1] if len(li) > 1 else li
+        time_node = li[2] if len(li) > 2 else None
+
+        author_id = None
+        if nick_node is not None:
+            block_id_nodes = nick_node.xpath(".//*[contains(@class, 'blockCommentId')]")
+            if block_id_nodes:
+                author_id = block_id_nodes[0].get("data-info", None)
+            if not author_id:
+                block_ip_nodes = nick_node.xpath(".//*[contains(@class, 'blockCommentIp')]")
+                if block_ip_nodes:
+                    author_id = "".join(block_ip_nodes[0].itertext()).strip()
+
+        author = "익명"
+        if nick_node is not None:
+            nick_buttons = nick_node.xpath(".//*[contains(@class, 'nick')]")
+            if nick_buttons:
+                author = " ".join(nick_buttons[0].itertext()).strip() or "익명"
+            else:
+                author = " ".join(nick_node.itertext()).strip() or "익명"
+
+        dccon_images = content_node.xpath(
+            ".//img[contains(@src, 'dccon') or contains(@data-original, 'dccon') "
+            "or contains(@data-gif, 'dccon') or contains(@src, 'dicad')]"
+        )
+        dccon = None
+        if dccon_images:
+            dccon = (
+                dccon_images[0].get("data-gif")
+                or dccon_images[0].get("data-original")
+                or dccon_images[0].get("src")
+            )
+
+        voice = None
+        voice_nodes = content_node.xpath(".//iframe/@src")
+        if voice_nodes:
+            voice = voice_nodes[0]
+
+        return Comment(
+            id=li.get("no"),
+            parent_id=li.get("m_no"),
+            author=author,
+            author_id=author_id,
+            contents="\n".join(i.strip() for i in content_node.itertext() if i.strip()),
+            dccon=dccon,
+            voice=voice,
+            time=self.__parse_time(time_node.text_content() if time_node is not None else ""),
+            is_reply="comment-add" in li_classes,
+        )
+
+    def __mobile_comment_rows(self, parsed):
+        rows = parsed.xpath(
+            ".//ul[contains(@class, 'all-comment-lst')]/li["
+            "contains(concat(' ', normalize-space(@class), ' '), ' comment ') "
+            "or contains(concat(' ', normalize-space(@class), ' '), ' comment-add ') "
+            "or (@no and @m_no)"
+            "]"
+        )
+        if rows:
+            return rows
+        if len(parsed) >= 2:
+            return parsed[1].xpath(
+                ".//li[contains(concat(' ', normalize-space(@class), ' '), ' comment ') "
+                "or contains(concat(' ', normalize-space(@class), ' '), ' comment-add ') "
+                "or (@no and @m_no)]"
+            )
+        return []
+
+    def __parse_embedded_mobile_comments(self, parsed):
+        comments = []
+        seen_ids = set()
+        for li in self.__mobile_comment_rows(parsed):
+            comment = self.__parse_mobile_comment_li(li)
+            comment_id = str(comment.id or "").strip()
+            if comment_id and comment_id in seen_ids:
+                continue
+            if comment_id:
+                seen_ids.add(comment_id)
+            comments.append(comment)
+
+        total = 0
+        def parse_count_text(value):
+            digits = re.sub(r"[^0-9]", "", value or "")
+            return int(digits) if digits else 0
+
+        total_nodes = parsed.xpath("string((//input[@id='reple_totalCnt'])[1]/@value)")
+        if total_nodes:
+            total = parse_count_text(total_nodes)
+        if total <= 0:
+            title_text = " ".join(
+                parsed.xpath("//div[contains(@class, 'all-comment-tit')]//*[contains(@class, 'ct')]/text()")
+            )
+            total = parse_count_text(title_text)
+        return comments, total
 
     def __extract_top_level_redirect_url(self, text):
         if not text:
@@ -838,7 +976,7 @@ class API:
                         view_count=view_count,
                         voteup_count=voteup_count,
                         comment_count=comment_count,
-                        document=lambda b=board_id, d=document_id, k=kind: self.document(b, d, kind=k),
+                        document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
                         comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
                         time=time,
                         subject=subject,
@@ -910,7 +1048,7 @@ class API:
                         view_count=view_count,
                         voteup_count=voteup_count,
                         comment_count=comment_count,
-                        document=lambda b=board_id, d=document_id, k=kind: self.document(b, d, kind=k),
+                        document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
                         comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
                         time=self.__parse_time(time_text),
                         subject=None,
@@ -930,9 +1068,9 @@ class API:
                 break
             page += 1
 
-    async def document(self, board_id, document_id, kind=None):
+    async def document(self, board_id, document_id, kind=None, recommend=False):
         parsed, text, used_url = await self.__fetch_parsed_from_urls(
-            self.__build_view_urls(board_id, document_id, kind=kind),
+            self.__build_view_urls(board_id, document_id, kind=kind, recommend=recommend),
             validator=self.__is_usable_document_page,
         )
         if parsed is None:
@@ -1078,8 +1216,11 @@ class API:
             
             doc_content = doc_content_container[0]
             related_posts = []
+            embedded_comments = []
+            embedded_comment_total = 0
             if is_mobile_source:
-                related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind)
+                related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind, recommend=recommend)
+                embedded_comments, embedded_comment_total = self.__parse_embedded_mobile_comments(parsed)
 
             for adv in doc_content.xpath("div[@class='adv-groupin']"):
                 adv.getparent().remove(adv)
@@ -1122,6 +1263,8 @@ class API:
                     subject=subject,
                     is_mobile_source=is_mobile_source,
                     related_posts=related_posts,
+                    embedded_comments=embedded_comments,
+                    embedded_comment_total=embedded_comment_total,
                     )
         else:
             # fail due to unusual tags in mobile version
@@ -1304,43 +1447,13 @@ class API:
                 if fail_fast:
                     raise RuntimeError("mobile comment fetch returned invalid html")
                 break
-            if len(parsed) < 2:
-                if fail_fast:
-                    raise RuntimeError("mobile comment fetch returned unexpected html")
-                break
-            if not len(parsed[1].xpath("li")):
+            comment_rows = self.__mobile_comment_rows(parsed)
+            if not comment_rows:
                 if fail_fast:
                     raise RuntimeError("mobile comment page produced no comment rows")
                 break
-            #for li in reversed(parsed[1].xpath("li")):
-            for li in parsed[1].xpath("li"):
-                if not len(li[0]): continue
-                li_classes = set((li.get("class") or "").split())
-                nick_node = li[0]
-                author_id = None
-                block_id_nodes = nick_node.xpath(".//*[contains(@class, 'blockCommentId')]")
-                if block_id_nodes:
-                    author_id = block_id_nodes[0].get("data-info", None)
-                if not author_id:
-                    block_ip_nodes = nick_node.xpath(".//*[contains(@class, 'blockCommentIp')]")
-                    if block_ip_nodes:
-                        author_id = "".join(block_ip_nodes[0].itertext()).strip()
-                yield Comment(
-                    id= li.get("no"),
-                    parent_id= li.get("m_no"),
-                    author= (li[0].text or "") + ("{}".format(li[0][0].text) if len(li[0]) > 0 and li[0][0].text else ""),
-                    author_id= author_id,
-                    contents= '\n'.join(i.strip() for i in li[1].itertext() if i.strip()),
-                    dccon= (
-                        lambda img: (
-                            img[0].get("data-gif")
-                            or img[0].get("data-original")
-                            or img[0].get("src")
-                        ) if img else None
-                    )(li[1].xpath(".//img[contains(@src, 'dccon') or contains(@data-original, 'dccon') or contains(@data-gif, 'dccon') or contains(@src, 'dicad')]")),
-                    voice= li[1][0].get("src", None) if len(li[1]) and li[1][0].tag=="iframe" else None,
-                    time= self.__parse_time(li[2].text if len(li) > 2 else ""),
-                    is_reply="comment-add" in li_classes)
+            for li in comment_rows:
+                yield self.__parse_mobile_comment_li(li)
                 num -= 1
                 if num == 0:
                     return
@@ -1353,8 +1466,6 @@ class API:
                 if page_numbers and page >= max(page_numbers):
                     break
             else:
-                if fail_fast:
-                    raise RuntimeError("mobile comment pagination missing")
                 break
     async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=True):
         if num == 0:
@@ -1510,9 +1621,8 @@ class API:
         header["X-CSRF-TOKEN"] = csrf_token
         url = "https://m.dcinside.com/ajax/pwcheck-board"
         async with self.session.post(url, headers=header, data=payload) as res:
-            res = await res.text()
-            if not res.strip():
-                raise Exception("Error while modifying: maybe the password is incorrect")
+            response_text = await res.text()
+            self.__validate_password_check_response(response_text)
         payload = {
                 "board_pw": password,
                 "id": board_id,
@@ -1649,24 +1759,258 @@ class API:
             response_text = await res.text()
             if res.status >= 400:
                 raise Exception("Error while writing document: " + unquote(str(response_text)))
+            response_headers = dict(getattr(res, "headers", {}) or {})
+            response_url = str(getattr(res, "url", "") or "")
         if document_id:
-            return str(document_id)
-        created_id = self.__extract_document_id_from_write_response(response_text)
+            self.__raise_if_write_response_failed(response_text, "modifying")
+            modified_id = self.__extract_document_id_from_write_response(
+                response_text,
+                response_url=response_url,
+                response_headers=response_headers,
+            )
+            if modified_id and str(modified_id) != str(document_id):
+                raise Exception("Error while modifying document: upstream returned different document id")
+            if modified_id or self.__is_successful_modify_response(response_text):
+                return str(document_id)
+            raise Exception("Error while modifying document: could not verify upstream response")
+        self.__raise_if_write_response_failed(response_text, "writing")
+        created_id = self.__extract_document_id_from_write_response(
+            response_text,
+            response_url=response_url,
+            response_headers=response_headers,
+        )
         if created_id:
             return created_id
         raise Exception("Error while writing document: could not parse upstream response")
 
-    def __extract_document_id_from_write_response(self, response_text):
+    def __validate_password_check_response(self, response_text):
         text = response_text or ""
-        patterns = [
-            r"[?&]no=(\d+)",
-            r"/(?:board|mini)/[^/'\"?]+/(\d+)",
-            r'"no"\s*:\s*"?(\d+)"?',
+        if not text.strip():
+            raise Exception("Error while modifying: maybe the password is incorrect")
+
+        parsed_json = self.__loads_json_or_none(text)
+        if parsed_json is not None:
+            failure_message = self.__json_failure_message(parsed_json)
+            if failure_message:
+                raise Exception("Error while modifying: " + failure_message)
+            if self.__json_success_value(parsed_json) is False:
+                raise Exception("Error while modifying: maybe the password is incorrect")
+            return
+
+        if self.__contains_failure_signal(text, include_alert=True):
+            raise Exception("Error while modifying: " + self.__clean_failure_text(text))
+
+    def __loads_json_or_none(self, text):
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    def __json_success_value(self, value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "ok", "success", "1", "y", "yes"}:
+                return True
+            if normalized in {"false", "fail", "failed", "error", "0", "n", "no"}:
+                return False
+            return None
+        if isinstance(value, dict):
+            for key in ("result", "success", "status", "code", "ok"):
+                if key in value:
+                    result = self.__json_success_value(value[key])
+                    if result is not None:
+                        return result
+            data = value.get("data")
+            if isinstance(data, (bool, int, float, str)):
+                return self.__json_success_value(data)
+        return None
+
+    def __json_failure_message(self, value):
+        if isinstance(value, dict):
+            result = self.__json_success_value(value)
+            message = " ".join(
+                str(value.get(key) or "")
+                for key in ("message", "msg", "error", "reason", "alert")
+                if value.get(key)
+            ).strip()
+            if result is False:
+                return message or "maybe the password is incorrect"
+            if message and self.__contains_failure_signal(message, include_alert=False):
+                return message
+        elif isinstance(value, str):
+            if self.__contains_failure_signal(value, include_alert=True):
+                return value
+        return None
+
+    def __clean_failure_text(self, text):
+        text = unquote(str(text or ""))
+        try:
+            parsed = lxml.html.fromstring(text)
+            text = parsed.text_content()
+        except Exception:
+            pass
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:200] or "upstream rejected the request"
+
+    def __contains_failure_signal(self, text, include_alert=False):
+        raw = unquote(str(text or ""))
+        lowered = raw.lower()
+        alert_messages = self.__extract_alert_messages(raw)
+        success_phrases = [
+            "성공",
+            "완료",
+            "등록되었습니다",
+            "등록 되었습니다",
+            "수정되었습니다",
+            "수정 되었습니다",
+            "작성되었습니다",
+            "작성 되었습니다",
         ]
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                return match.group(1)
+        failure_phrases = [
+            "비밀번호가 틀",
+            "비밀번호를 확인",
+            "비밀번호 확인",
+            "비밀번호가 일치",
+            "잘못된 비밀번호",
+            "패스워드가 틀",
+            "password is incorrect",
+            "incorrect password",
+            "wrong password",
+            "invalid password",
+            "오류",
+            "에러",
+            "실패",
+            "fail",
+            "failed",
+            "error",
+            "invalid",
+            "forbidden",
+            "denied",
+            "권한",
+            "차단",
+            "자동등록방지",
+            "캡차",
+            "captcha",
+            "금지어",
+            "도배",
+        ]
+
+        for alert in alert_messages:
+            normalized_alert = alert.strip().lower()
+            if not normalized_alert:
+                continue
+            if any(phrase in normalized_alert for phrase in success_phrases):
+                continue
+            if include_alert:
+                return True
+            if any(phrase in normalized_alert for phrase in failure_phrases):
+                return True
+
+        return any(phrase in lowered for phrase in failure_phrases)
+
+    def __extract_alert_messages(self, text):
+        messages = []
+        for quote_char, message in re.findall(r"alert\s*\(\s*(['\"])(.*?)\1\s*\)", text or "", flags=re.I | re.S):
+            messages.append(message)
+        return messages
+
+    def __raise_if_write_response_failed(self, response_text, action):
+        if self.__contains_failure_signal(response_text, include_alert=False):
+            raise Exception("Error while {} document: {}".format(action, self.__clean_failure_text(response_text)))
+
+        for alert in self.__extract_alert_messages(response_text or ""):
+            if any(phrase in alert for phrase in ["성공", "완료", "등록", "수정"]):
+                continue
+            raise Exception("Error while {} document: {}".format(action, self.__clean_failure_text(alert)))
+
+        parsed_json = self.__loads_json_or_none(response_text or "")
+        if parsed_json is not None:
+            failure_message = self.__json_failure_message(parsed_json)
+            if failure_message:
+                raise Exception("Error while {} document: {}".format(action, failure_message))
+
+    def __is_successful_modify_response(self, response_text):
+        parsed_json = self.__loads_json_or_none(response_text or "")
+        if parsed_json is not None:
+            success = self.__json_success_value(parsed_json)
+            if success is True:
+                return True
+
+        text = unquote(str(response_text or ""))
+        return any(
+            phrase in text
+            for phrase in [
+                "수정되었습니다",
+                "수정 되었습니다",
+                "수정이 완료",
+                "수정 완료",
+                "modify_success",
+            ]
+        )
+
+    def __extract_document_id_from_write_response(self, response_text, response_url=None, response_headers=None):
+        response_headers = response_headers or {}
+        for url in [
+            response_url,
+            response_headers.get("Location"),
+            response_headers.get("location"),
+        ]:
+            document_id = self.__extract_document_id_from_url(url)
+            if document_id:
+                return document_id
+
+        parsed_json = self.__loads_json_or_none(response_text or "")
+        document_id = self.__extract_document_id_from_json(parsed_json)
+        if document_id:
+            return document_id
+
+        redirect_url = self.__extract_top_level_redirect_url(response_text or "")
+        document_id = self.__extract_document_id_from_url(redirect_url)
+        if document_id:
+            return document_id
+
+        stripped = (response_text or "").strip()
+        if re.match(r"^https?://", stripped):
+            document_id = self.__extract_document_id_from_url(stripped)
+            if document_id:
+                return document_id
+        return None
+
+    def __extract_document_id_from_json(self, value):
+        if isinstance(value, dict):
+            for key in ("no", "document_id", "doc_id", "article_no", "article_id"):
+                document_id = value.get(key)
+                if re.fullmatch(r"\d+", str(document_id or "")):
+                    return str(document_id)
+            data = value.get("data")
+            if isinstance(data, (dict, list)):
+                return self.__extract_document_id_from_json(data)
+            if re.fullmatch(r"\d+", str(data or "")):
+                return str(data)
+        if isinstance(value, list):
+            for item in value:
+                document_id = self.__extract_document_id_from_json(item)
+                if document_id:
+                    return document_id
+        return None
+
+    def __extract_document_id_from_url(self, url):
+        if not url:
+            return None
+        parsed = urlparse(str(url))
+        query = parse_qs(parsed.query)
+        for key in ("no", "document_id", "doc_id"):
+            values = query.get(key)
+            if values and re.fullmatch(r"\d+", str(values[0])):
+                return str(values[0])
+        parts = [part for part in (parsed.path or "").split("/") if part]
+        if len(parts) >= 3 and parts[-1].isdigit() and parts[-3] in {"board", "mini"}:
+            return parts[-1]
         return None
 
     async def __access(self, token_verify, target_url, require_conkey=True, csrf_token=None):

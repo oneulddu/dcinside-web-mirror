@@ -13,7 +13,7 @@
     <ul>
         {% for index in datas %}
         <li>
-            <a class="feed-item" href="/read?board={{ board }}&pid={{ index.id }}{% if recommend == 0 %}&source_page={{ page }}{% endif %}{% if kind %}&kind={{ kind }}{% endif %}">
+            <a class="feed-item" href="/read?board={{ board }}&pid={{ index.id }}{% if recommend == 1 %}&recommend=1{% endif %}&source_page={{ page }}{% if kind %}&kind={{ kind }}{% endif %}">
                 <div class="feed-title-wrap">
                     <h2 class="feed-title">
                         {{ index.title }}

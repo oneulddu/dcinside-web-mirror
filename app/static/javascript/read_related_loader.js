@@ -1,22 +1,63 @@
 (function () {
     "use strict";
 
-    function clearChildren(node) {
-        while (node.firstChild) {
-            node.removeChild(node.firstChild);
+    function removeStatusRows(list) {
+        var rows = list.querySelectorAll("[data-related-loader-status='1'], .empty-row");
+        for (var i = 0; i < rows.length; i += 1) {
+            rows[i].remove();
         }
     }
 
-    function appendEmptyRow(list, text) {
+    function appendStatusRow(list, text) {
+        removeStatusRows(list);
         var li = document.createElement("li");
         li.className = "empty-row";
+        li.dataset.relatedLoaderStatus = "1";
         li.textContent = text;
         list.appendChild(li);
     }
 
-    function buildReadHref(board, item, kind) {
+    function normalizePostId(value) {
+        if (value === null || value === undefined) {
+            return "";
+        }
+        return String(value);
+    }
+
+    function extractPostIdFromHref(href) {
+        if (!href) {
+            return "";
+        }
+        try {
+            return new URL(href, window.location.href).searchParams.get("pid") || "";
+        } catch (err) {
+            return "";
+        }
+    }
+
+    function getRenderedPostIds(list) {
+        var ids = {};
+        var links = list.querySelectorAll("a.feed-item");
+        for (var i = 0; i < links.length; i += 1) {
+            var link = links[i];
+            var postId = normalizePostId(
+                link.dataset.postId ||
+                (link.closest("li") && link.closest("li").dataset.postId) ||
+                extractPostIdFromHref(link.getAttribute("href"))
+            );
+            if (postId) {
+                ids[postId] = true;
+            }
+        }
+        return ids;
+    }
+
+    function buildReadHref(board, item, kind, recommend) {
         var pid = item && item.id;
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(String(pid));
+        if (recommend === "1") {
+            href += "&recommend=1";
+        }
         if (item && item.source_page) {
             href += "&source_page=" + encodeURIComponent(String(item.source_page));
         }
@@ -26,11 +67,13 @@
         return href;
     }
 
-    function createItemNode(item, board, kind) {
+    function createItemNode(item, board, kind, recommend) {
         var li = document.createElement("li");
+        li.dataset.postId = normalizePostId(item && item.id);
         var link = document.createElement("a");
         link.className = "feed-item";
-        link.href = buildReadHref(board, item, kind);
+        link.dataset.postId = li.dataset.postId;
+        link.href = buildReadHref(board, item, kind, recommend);
 
         var titleWrap = document.createElement("div");
         titleWrap.className = "feed-title-wrap";
@@ -80,22 +123,29 @@
         return li;
     }
 
-    function renderItems(list, items, board, kind) {
-        clearChildren(list);
+    function appendItems(list, items, board, kind, recommend) {
+        var appended = 0;
+        var renderedIds = getRenderedPostIds(list);
+
         if (!Array.isArray(items) || items.length === 0) {
-            appendEmptyRow(list, "다른 게시글이 없습니다.");
-            return;
+            return appended;
         }
+
         for (var i = 0; i < items.length; i += 1) {
             var item = items[i];
-            if (!item || !item.id) {
+            var postId = normalizePostId(item && item.id);
+            if (!postId || renderedIds[postId]) {
                 continue;
             }
-            list.appendChild(createItemNode(item, board, kind));
+            list.appendChild(createItemNode(item, board, kind, recommend));
+            renderedIds[postId] = true;
+            appended += 1;
         }
-        if (!list.firstChild) {
-            appendEmptyRow(list, "다른 게시글이 없습니다.");
-        }
+        return appended;
+    }
+
+    function hasRenderedItems(list) {
+        return !!(list && list.querySelector("a.feed-item"));
     }
 
     function readSessionCache(key) {
@@ -105,19 +155,29 @@
                 return null;
             }
             var cached = JSON.parse(raw);
-            if (!cached || !Array.isArray(cached.items) || cached.items.length === 0) {
+            if (!cached || !Array.isArray(cached.items)) {
                 return null;
             }
-            return cached.items;
+            return {
+                items: cached.items,
+                noMore: cached.noMore === true
+            };
         } catch (err) {
             return null;
         }
     }
 
-    function writeSessionCache(key, items) {
+    function writeSessionCache(key, items, noMore) {
         try {
             if (window.sessionStorage) {
-                window.sessionStorage.setItem(key, JSON.stringify({ items: items || [] }));
+                if (!Array.isArray(items) || items.length === 0) {
+                    window.sessionStorage.removeItem(key);
+                    return;
+                }
+                window.sessionStorage.setItem(key, JSON.stringify({
+                    items: items,
+                    noMore: noMore === true
+                }));
             }
         } catch (err) {
             // 저장 공간이 없거나 차단된 환경에서는 캐시 없이 동작한다.
@@ -138,8 +198,72 @@
             button.textContent = "불러옴";
             return;
         }
+        if (state === "no-more") {
+            button.disabled = true;
+            button.textContent = "더 없음";
+            return;
+        }
+        if (state === "refresh") {
+            button.disabled = false;
+            button.textContent = "다시 확인";
+            return;
+        }
+        if (state === "retry") {
+            button.disabled = false;
+            button.textContent = "다시 시도";
+            return;
+        }
         button.disabled = false;
-        button.textContent = "불러오기";
+        button.textContent = button.dataset.defaultLabel || "불러오기";
+    }
+
+    function hasOwn(obj, key) {
+        return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+    }
+
+    function responseHasNoNextCandidate(payload) {
+        if (!payload || typeof payload !== "object") {
+            return false;
+        }
+        if (payload.has_more === false || payload.hasMore === false || payload.has_next === false || payload.hasNext === false) {
+            return true;
+        }
+        if (hasOwn(payload, "next_cursor") && !payload.next_cursor) {
+            return true;
+        }
+        if (hasOwn(payload, "nextCursor") && !payload.nextCursor) {
+            return true;
+        }
+        return false;
+    }
+
+    function isNoMoreResponse(payload, items) {
+        if (!Array.isArray(items) || items.length === 0) {
+            return false;
+        }
+        return responseHasNoNextCandidate(payload);
+    }
+
+    function applyLoadedItems(context, button, items, payload) {
+        var noMore = isNoMoreResponse(payload, items);
+
+        removeStatusRows(context.list);
+        var appended = appendItems(context.list, items, context.board, context.kind, context.recommend);
+
+        if (noMore) {
+            appendStatusRow(context.list, "더 불러올 게시글이 없습니다.");
+            setButtonState(button, "no-more");
+            return { appended: appended, noMore: true };
+        }
+
+        if (appended > 0) {
+            setButtonState(button, "loaded");
+            return { appended: appended, noMore: false };
+        }
+
+        appendStatusRow(context.list, "새로 추가된 게시글은 아직 없습니다. 다시 확인할 수 있어요.");
+        setButtonState(button, "refresh");
+        return { appended: appended, noMore: false };
     }
 
     function buildRequestContext() {
@@ -152,12 +276,14 @@
         var board = section.dataset.board || "";
         var pid = section.dataset.pid || "";
         var kind = section.dataset.kind || "";
+        var recommend = section.dataset.recommend || "";
         var limit = section.dataset.limit || "12";
         var sourcePage = section.dataset.sourcePage || "";
 
         if (!board || !pid) {
-            clearChildren(list);
-            appendEmptyRow(list, "다른 게시글이 없습니다.");
+            if (!list.querySelector("a.feed-item")) {
+                appendStatusRow(list, "다른 게시글이 없습니다.");
+            }
             return null;
         }
 
@@ -168,6 +294,9 @@
         if (kind) {
             params.set("kind", kind);
         }
+        if (recommend === "1") {
+            params.set("recommend", "1");
+        }
         if (sourcePage) {
             params.set("source_page", sourcePage);
         }
@@ -176,6 +305,8 @@
             board: board,
             pid: pid,
             kind: kind,
+            recommend: recommend,
+            limit: limit,
             list: list,
             params: params,
             cacheKey: "mirror:related:" + params.toString()
@@ -189,16 +320,14 @@
             return;
         }
 
-        var cachedItems = readSessionCache(context.cacheKey);
-        if (cachedItems) {
-            renderItems(context.list, cachedItems, context.board, context.kind);
-            setButtonState(button, "loaded");
+        var cachedResult = hasRenderedItems(context.list) ? null : readSessionCache(context.cacheKey);
+        if (cachedResult !== null && cachedResult.items.length > 0) {
+            applyLoadedItems(context, button, cachedResult.items, { has_more: cachedResult.noMore !== true });
             return;
         }
 
         setButtonState(button, "loading");
-        clearChildren(context.list);
-        appendEmptyRow(context.list, "다른 게시글을 불러오는 중...");
+        appendStatusRow(context.list, "다른 게시글을 불러오는 중...");
 
         try {
             var response = await fetch("/read/related?" + context.params.toString(), {
@@ -212,18 +341,15 @@
                 throw new Error("Failed to fetch related posts");
             }
             var payload = await response.json();
-            var items = Array.isArray(payload.items) ? payload.items : [];
-            renderItems(context.list, items, context.board, context.kind);
-            if (items.length > 0) {
-                writeSessionCache(context.cacheKey, items);
-                setButtonState(button, "loaded");
-            } else {
-                setButtonState(button, "idle");
+            if (payload && payload.ok === false) {
+                throw new Error(payload.error || "Failed to fetch related posts");
             }
+            var items = Array.isArray(payload.items) ? payload.items : [];
+            var result = applyLoadedItems(context, button, items, payload);
+            writeSessionCache(context.cacheKey, items, result.noMore);
         } catch (err) {
-            clearChildren(context.list);
-            appendEmptyRow(context.list, "다른 게시글을 불러오지 못했습니다.");
-            setButtonState(button, "idle");
+            appendStatusRow(context.list, "다른 게시글을 불러오지 못했습니다. 다시 시도할 수 있어요.");
+            setButtonState(button, "retry");
         }
     }
 
@@ -231,6 +357,9 @@
         var button = document.getElementById("related-load-button");
         if (!button) {
             return;
+        }
+        if (!button.dataset.defaultLabel) {
+            button.dataset.defaultLabel = button.textContent || "불러오기";
         }
         button.addEventListener("click", loadRelated);
     }

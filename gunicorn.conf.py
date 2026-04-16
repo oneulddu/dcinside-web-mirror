@@ -1,6 +1,10 @@
 import multiprocessing
 import os
 
+from env_loader import load_dotenv
+
+load_dotenv()
+
 
 bind = os.getenv("MIRROR_BIND", "[::]:6100")
 workers = int(os.getenv("MIRROR_WORKERS", str(max(multiprocessing.cpu_count() * 2 + 1, 2))))
