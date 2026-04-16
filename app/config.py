@@ -1,4 +1,5 @@
 import os
+import secrets
 
 
 def _as_bool(value, default=False):
@@ -8,7 +9,7 @@ def _as_bool(value, default=False):
 
 
 class Config:
-    SECRET_KEY = os.getenv("MIRROR_SECRET_KEY", "change-me-in-production")
+    SECRET_KEY = os.getenv("MIRROR_SECRET_KEY") or secrets.token_hex(32)
     JSON_AS_ASCII = False
     TEMPLATES_AUTO_RELOAD = _as_bool(os.getenv("MIRROR_TEMPLATES_AUTO_RELOAD"), False)
     SESSION_COOKIE_HTTPONLY = True

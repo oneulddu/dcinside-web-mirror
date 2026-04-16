@@ -1,15 +1,17 @@
 #-*- coding:utf-8 -*-
 import asyncio
 import base64
+import ipaddress
 import json
 import os
 import re
+import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, quote, urlparse
-from flask import Blueprint, Response, jsonify, make_response, render_template, request, url_for
+from urllib.parse import parse_qs, quote, urljoin, urlparse
+from flask import Blueprint, Response, jsonify, make_response, render_template, request, stream_with_context, url_for
 from bs4 import BeautifulSoup
 import requests
 
@@ -31,6 +33,13 @@ def _env_int(name, default):
 
 HTTP_TIMEOUT = _env_int("MIRROR_HTTP_TIMEOUT", 20)
 MEDIA_CACHE_MAX_AGE = _env_int("MIRROR_MEDIA_CACHE_MAX_AGE", 86400)
+MEDIA_MAX_BYTES = _env_int("MIRROR_MEDIA_MAX_BYTES", 25 * 1024 * 1024)
+MEDIA_REDIRECT_LIMIT = _env_int("MIRROR_MEDIA_REDIRECT_LIMIT", 3)
+MEDIA_ALLOWED_HOST_SUFFIXES = tuple(
+    suffix.strip().lower().lstrip(".")
+    for suffix in os.getenv("MIRROR_MEDIA_ALLOWED_HOST_SUFFIXES", "dcinside.com,dcinside.co.kr").split(",")
+    if suffix.strip()
+)
 HEUNG_CACHE_TTL = _env_int("MIRROR_HEUNG_CACHE_TTL", 3600)
 HEUNG_CACHE_FILE = os.getenv("MIRROR_HEUNG_CACHE_FILE", os.path.join(INSTANCE_DIR, "heung_gallery_cache.json"))
 HEUNG_CACHE = {"updated_at": 0.0, "items": []}
@@ -170,6 +179,165 @@ def _build_pc_view_referer(board, pid, kind=None):
     return f"https://gall.dcinside.com/board/view/?id={board_id}&no={doc_id}"
 
 
+def _is_allowed_media_host(hostname):
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    return any(host == suffix or host.endswith(f".{suffix}") for suffix in MEDIA_ALLOWED_HOST_SUFFIXES)
+
+
+def _is_public_hostname(hostname):
+    try:
+        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+    addresses = {info[4][0] for info in infos if info and info[4]}
+    if not addresses:
+        return False
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            return False
+        if not ip.is_global:
+            return False
+    return True
+
+
+def _validate_media_url(raw_url, base_url=None):
+    url = (raw_url or "").strip()
+    if not url:
+        return None
+    if url.startswith("//"):
+        url = "https:" + url
+    if base_url:
+        url = urljoin(base_url, url)
+
+    try:
+        parsed = urlparse(url)
+        _ = parsed.port
+    except ValueError:
+        return None
+
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.username or parsed.password:
+        return None
+    if not _is_allowed_media_host(parsed.hostname):
+        return None
+    if not _is_public_hostname(parsed.hostname):
+        return None
+    return url
+
+
+def _fetch_media_response(src, headers, cookies):
+    url = _validate_media_url(src)
+    if not url:
+        return None, 400
+
+    for _ in range(MEDIA_REDIRECT_LIMIT + 1):
+        try:
+            upstream = requests.get(
+                url,
+                headers=headers,
+                cookies=cookies,
+                timeout=HTTP_TIMEOUT,
+                stream=True,
+                allow_redirects=False,
+            )
+        except requests.RequestException:
+            return None, 502
+
+        if not upstream.is_redirect:
+            return upstream, None
+
+        location = upstream.headers.get("Location")
+        upstream.close()
+        url = _validate_media_url(location, base_url=url)
+        if not url:
+            return None, 400
+
+    return None, 508
+
+
+def _is_allowed_media_content_type(content_type):
+    value = (content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+    if value == "application/octet-stream":
+        return True
+    return value.startswith(("image/", "video/", "audio/"))
+
+
+def _limited_media_stream(upstream):
+    sent = 0
+    try:
+        for chunk in upstream.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            sent += len(chunk)
+            if sent > MEDIA_MAX_BYTES:
+                break
+            yield chunk
+    finally:
+        upstream.close()
+
+
+HTML_ALLOWED_TAGS = {
+    "a", "abbr", "b", "blockquote", "br", "code", "dd", "del", "div", "dl", "dt",
+    "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i",
+    "img", "li", "ol", "p", "pre", "s", "span", "strong", "sub", "sup", "table",
+    "tbody", "td", "th", "thead", "tr", "u", "ul",
+}
+HTML_DROP_TAGS = {"script", "style", "iframe", "object", "embed", "link", "meta", "base", "form", "input", "button"}
+HTML_GLOBAL_ATTRS = {"class", "title"}
+HTML_TAG_ATTRS = {
+    "a": {"href", "target", "rel"},
+    "img": {"src", "alt", "loading", "decoding", "width", "height"},
+    "td": {"colspan", "rowspan"},
+    "th": {"colspan", "rowspan"},
+}
+
+
+def _is_safe_href(value):
+    url = (value or "").strip()
+    if not url:
+        return False
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        return url.startswith(("#", "/")) and not url.startswith("//")
+    return parsed.scheme in {"http", "https", "mailto"}
+
+
+def _sanitize_html_fragment(raw_html):
+    soup = BeautifulSoup(raw_html or "", "html.parser")
+    for tag in list(soup.find_all(True)):
+        name = (tag.name or "").lower()
+        if name in HTML_DROP_TAGS:
+            tag.decompose()
+            continue
+        if name not in HTML_ALLOWED_TAGS:
+            tag.unwrap()
+            continue
+
+        allowed_attrs = HTML_GLOBAL_ATTRS | HTML_TAG_ATTRS.get(name, set())
+        for attr in list(tag.attrs):
+            attr_name = attr.lower()
+            if attr_name.startswith("on") or attr_name not in allowed_attrs:
+                del tag.attrs[attr]
+                continue
+
+            value = tag.attrs.get(attr)
+            if attr_name == "href":
+                if not _is_safe_href(value):
+                    del tag.attrs[attr]
+                else:
+                    tag["rel"] = "noopener noreferrer"
+            elif attr_name == "src":
+                if name != "img" or not str(value).startswith("/media?"):
+                    tag.decompose()
+                    break
+    return str(soup)
+
+
 def _recent_cache_key():
     remote_addr = (request.remote_addr or "").strip()
     user_agent = (request.headers.get("User-Agent") or "").strip()
@@ -221,6 +389,7 @@ def _save_recent_cookie(response, entries):
         max_age=RECENT_COOKIE_TTL,
         path="/",
         samesite="Lax",
+        secure=request.is_secure,
     )
 
 
@@ -334,7 +503,7 @@ def _search_galleries(query):
             "board_kind": board_kind,
             "extra": " | ".join(details),
             "source_url": href,
-            "internal_supported": board_kind in {"normal", "minor", "mini"},
+            "internal_supported": board_kind in {"normal", "minor", "mini", "person"},
         })
         seen.add(board_id)
     return items
@@ -435,24 +604,32 @@ def media():
     board = (request.args.get("board") or "").strip()
     pid = _safe_int(request.args.get("pid", 0), 0)
     kind = (request.args.get("kind") or "").strip().lower() or None
-    if src.startswith("//"):
-        src = "https:" + src
-    if not src.startswith(("http://", "https://")):
-        return ("", 400)
-
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Referer": _build_pc_view_referer(board, pid, kind=kind),
     }
     cookies = {"__gat_mobile_search": "1", "list_count": "200"}
-    try:
-        upstream = requests.get(src, headers=headers, cookies=cookies, timeout=HTTP_TIMEOUT)
-    except requests.RequestException:
-        return ("", 502)
+    upstream, error_status = _fetch_media_response(src, headers, cookies)
+    if error_status:
+        return ("", error_status)
 
-    response = Response(upstream.content, status=upstream.status_code)
-    response.headers["Content-Type"] = upstream.headers.get("Content-Type", "application/octet-stream")
+    content_type = upstream.headers.get("Content-Type", "application/octet-stream")
+    if not _is_allowed_media_content_type(content_type):
+        upstream.close()
+        return ("", 415)
+
+    content_length = _safe_int(upstream.headers.get("Content-Length"), 0)
+    if content_length and content_length > MEDIA_MAX_BYTES:
+        upstream.close()
+        return ("", 413)
+
+    response = Response(
+        stream_with_context(_limited_media_stream(upstream)),
+        status=upstream.status_code,
+    )
+    response.headers["Content-Type"] = content_type
     response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
+    response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 
@@ -462,22 +639,24 @@ def read():
     board = str(request.args.get("board", "airforce")).strip() or "airforce"
     kind = (request.args.get("kind") or "").strip().lower() or None
     data, comments, images = _run_async(async_read(pid, board, kind=kind))
-    # Parse soup, for image replation
-    soup=BeautifulSoup(data["html"],'html.parser')
+    soup = BeautifulSoup(data.get("html") or "", "html.parser")
     idx = 0
-    for i in soup.find_all("img", "lazy"):
+    for i in soup.find_all("img"):
         if idx >= len(images):
-            break
+            i.decompose()
+            continue
         i["src"] = url_for("main.media", src=images[idx], board=board, pid=pid, kind=kind)
         i["loading"] = "lazy"
         i["decoding"] = "async"
+        for attr in ("data-original", "data-gif", "srcset"):
+            i.attrs.pop(attr, None)
         idx += 1
 
     for comment in comments:
         if comment.get("dccon"):
             comment["dccon"] = url_for("main.media", src=comment["dccon"], board=board, pid=pid, kind=kind)
 
-    data["html"] = str(soup)
+    data["html"] = _sanitize_html_fragment(str(soup))
     read_nav_tab = "best" if board == "dcbest" else "all"
     response = make_response(
         render_template("read.html", data=data, comments=comments, images=images, board=board, pid=pid, kind=kind, nav_tab=read_nav_tab)

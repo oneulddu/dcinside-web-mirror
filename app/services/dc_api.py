@@ -1,15 +1,22 @@
 import asyncio
 import json
 import lxml.html
+import os
 from datetime import datetime, timedelta
 import itertools
 import aiohttp
 import filetype
 from urllib.parse import parse_qs, urlparse
 
-from . import upstream_throttle
+def env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
 
 DOCS_PER_PAGE = 200
+HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 MOBILE_USER_AGENT = "Mozilla/5.0 (Linux; Android 7.0; SM-G892A Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/67.0.3396.87 Mobile Safari/537.36"
 PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
@@ -147,7 +154,16 @@ class Image:
 
 class API:
     def __init__(self):
-        self.session = aiohttp.ClientSession(headers=GET_HEADERS, cookies={"_ga": "GA1.2.693521455.1588839880"})
+        timeout = aiohttp.ClientTimeout(
+            total=HTTP_TIMEOUT,
+            connect=min(10, HTTP_TIMEOUT),
+            sock_read=HTTP_TIMEOUT,
+        )
+        self.session = aiohttp.ClientSession(
+            headers=GET_HEADERS,
+            cookies={"_ga": "GA1.2.693521455.1588839880"},
+            timeout=timeout,
+        )
     async def close(self):
         await self.session.close()
     async def __aenter__(self):
@@ -191,45 +207,63 @@ class API:
         host = (urlparse(url).netloc or "").lower()
         return host in {"gall.dcinside.com", "search.dcinside.com"}
 
+    def __is_rate_limited_response(self, status, text):
+        if status == 429:
+            return True
+        if text and any(
+            phrase in text
+            for phrase in [
+                "Too Many Requests",
+                "Too Many Attempts",
+                "너무 많은 요청",
+                "penalty-box",
+            ]
+        ):
+            return True
+        return False
+
+    def __required_attr(self, parsed, xpath, attr, field_name):
+        nodes = parsed.xpath(xpath)
+        if not nodes:
+            raise RuntimeError(f"required field not found: {field_name}")
+        value = nodes[0].get(attr)
+        if value is None:
+            raise RuntimeError(f"required field is empty: {field_name}")
+        return value
+
+    def __optional_attr(self, parsed, xpath, attr, default=None):
+        nodes = parsed.xpath(xpath)
+        if not nodes:
+            return default
+        value = nodes[0].get(attr)
+        return default if value is None else value
+
+    def __required_text(self, parsed, xpath, field_name):
+        nodes = parsed.xpath(xpath)
+        if not nodes:
+            raise RuntimeError(f"required field not found: {field_name}")
+        text = nodes[0].text_content() if hasattr(nodes[0], "text_content") else str(nodes[0])
+        text = (text or "").strip()
+        if not text:
+            raise RuntimeError(f"required field is empty: {field_name}")
+        return text
+
     async def __request_text(self, method, url, headers=None, data=None, cookies=None):
         request_headers = self.__prepare_headers(url, headers)
-        is_pc_request = self.__is_pc_request(url)
 
-        if is_pc_request:
-            async with self.session.request(
-                method,
-                url,
-                headers=request_headers,
-                data=data,
-                cookies=cookies,
-            ) as res:
-                text = await res.text()
-                status = res.status
-                response_headers = dict(res.headers)
-        else:
-            async with upstream_throttle.AsyncThrottleGuard():
-                async with self.session.request(
-                    method,
-                    url,
-                    headers=request_headers,
-                    data=data,
-                    cookies=cookies,
-                ) as res:
-                    text = await res.text()
-                    status = res.status
-                    response_headers = dict(res.headers)
+        async with self.session.request(
+            method,
+            url,
+            headers=request_headers,
+            data=data,
+            cookies=cookies,
+        ) as res:
+            text = await res.text()
+            status = res.status
+            response_headers = dict(res.headers)
 
-        if upstream_throttle.is_rate_limited_response(status, text[:1000], response_headers):
-            if not is_pc_request:
-                upstream_throttle.register_rate_limit(
-                    upstream_throttle.get_retry_after_seconds(response_headers)
-                )
+        if self.__is_rate_limited_response(status, text[:1000]):
             raise RuntimeError(f"rate limited: {status}")
-
-        if not is_pc_request:
-            blocked = upstream_throttle.apply_rate_limit_headers(response_headers)
-            if status < 400 and not blocked:
-                upstream_throttle.clear_rate_limit_state()
 
         return status, response_headers, text
 
@@ -887,7 +921,7 @@ class API:
 
             for adv in doc_content.xpath("div[@class='adv-groupin']"):
                 adv.getparent().remove(adv)
-            for adv in doc_content.xpath("//img"):
+            for adv in doc_content.xpath(".//img"):
                 if adv.get("src", "").startswith("https://nstatic") and not adv.get("data-original"):
                     adv.getparent().remove(adv)
 
@@ -911,7 +945,7 @@ class API:
                         board_id=board_id, 
                         document_id=document_id, 
                         session=self.session)
-                        for i in doc_content.xpath("//img")
+                        for i in doc_content.xpath(".//img")
                         for src in [pick_image_src(i)]
                             if src
                             and not src.startswith("https://nstatic")
@@ -1129,11 +1163,13 @@ class API:
                 num -= 1
                 if num == 0:
                     return
-            page_num_els = parsed.xpath("span[@class='pgnum']")
+            page_num_els = parsed.xpath(".//span[contains(concat(' ', normalize-space(@class), ' '), ' pgnum ')]")
             if page_num_els:
-                p = page_num_els[0].itertext()
-                next(p)
-                if page == next(p)[1:]: 
+                page_numbers = [
+                    int(value)
+                    for value in re.findall(r"\d+", " ".join(el.text_content() for el in page_num_els))
+                ]
+                if page_numbers and page >= max(page_numbers):
                     break
             else: 
                 break 
@@ -1184,10 +1220,10 @@ class API:
         url = "https://m.dcinside.com/board/{}/{}".format(board_id, document_id)
         async with self.session.get(url) as res:
             parsed = lxml.html.fromstring(await res.text())
-        hide_robot = parsed.xpath("//input[@class='hide-robot']")[0].get("name")
-        csrf_token = parsed.xpath("//meta[@name='csrf-token']")[0].get("content")
-        title = parsed.xpath("//span[@class='tit']")[0].text.strip()
-        board_name = parsed.xpath("//a[@class='gall-tit-lnk']")[0].text.strip()
+        hide_robot = self.__required_attr(parsed, "//input[@class='hide-robot']", "name", "hide robot input")
+        csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
+        title = self.__required_text(parsed, "//span[@class='tit']", "document title")
+        board_name = self.__required_text(parsed, "//a[@class='gall-tit-lnk']", "board name")
         con_key = await self.__access("com_submit", url, require_conkey=False, csrf_token=csrf_token)
         header = XML_HTTP_REQ_HEADERS.copy()
         header["Referer"] = url
@@ -1237,8 +1273,8 @@ class API:
         referer = url
         async with self.session.get(url) as res:
             parsed = lxml.html.fromstring(await res.text())
-        token = parsed.xpath("//input[@name='_token']")[0].get("value", "")
-        csrf_token = parsed.xpath("//meta[@name='csrf-token']")[0].get("content")
+        token = self.__required_attr(parsed, "//input[@name='_token']", "value", "password token")
+        csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
         con_key = await self.__access("Modifypw", url, require_conkey=False, csrf_token=csrf_token)
         payload = {
                 "_token": token,
@@ -1257,7 +1293,7 @@ class API:
         async with self.session.post(url, headers=header, data=payload) as res:
             res = await res.text()
             if not res.strip():
-                Exception("Error while modifing: maybe the password is incorrect")
+                raise Exception("Error while modifying: maybe the password is incorrect")
         payload = {
                 "board_pw": password,
                 "id": board_id,
@@ -1274,7 +1310,7 @@ class API:
             url = "https://m.dcinside.com/board/{}/{}".format(board_id, document_id)
             async with self.session.get(url) as res:
                 parsed = lxml.html.fromstring(await res.text())
-            csrf_token = parsed.xpath("//meta[@name='csrf-token']")[0].get("content")
+            csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
             header = XML_HTTP_REQ_HEADERS.copy()
             header["Referer"] = url
             header["X-CSRF-TOKEN"] = csrf_token
@@ -1290,9 +1326,9 @@ class API:
         referer = url
         async with self.session.get(url) as res:
             parsed = lxml.html.fromstring(await res.text())
-        token = parsed.xpath("//input[@name='_token']")[0].get("value", "")
-        csrf_token = parsed.xpath("//meta[@name='csrf-token']")[0].get("content")
-        board_name = parsed.xpath("//a[@class='gall-tit-lnk']")[0].text.strip()
+        token = self.__required_attr(parsed, "//input[@name='_token']", "value", "password token")
+        csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
+        board_name = self.__required_text(parsed, "//a[@class='gall-tit-lnk']", "board name")
         con_key = await self.__access("board_Del", url, require_conkey=False, csrf_token=csrf_token)
         payload = {
                 "_token": token,
@@ -1327,14 +1363,13 @@ class API:
             parsed = lxml.html.fromstring(intermediate)
             url = intermediate_referer
         first_url = url
-        rand_code = parsed.xpath("//input[@name='code']")
-        rand_code = rand_code[0].get("value") if len(rand_code) else None
-        user_id = parsed.xpath("//input[@name='user_id']")[0].get("value") if not name else None
-        mobile_key = parsed.xpath("//input[@id='mobile_key']")[0].get("value")
-        hide_robot = parsed.xpath("//input[@class='hide-robot']")[0].get("name")
-        csrf_token = parsed.xpath("//meta[@name='csrf-token']")[0].get("content")
+        rand_code = self.__optional_attr(parsed, "//input[@name='code']", "value")
+        user_id = self.__required_attr(parsed, "//input[@name='user_id']", "value", "user id") if not name else None
+        mobile_key = self.__required_attr(parsed, "//input[@id='mobile_key']", "value", "mobile key")
+        hide_robot = self.__required_attr(parsed, "//input[@class='hide-robot']", "name", "hide robot input")
+        csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
         con_key = await self.__access("dc_check2", url, require_conkey=False, csrf_token=csrf_token)
-        board_name = parsed.xpath("//a[@class='gall-tit-lnk']")[0].text.strip()
+        board_name = self.__required_text(parsed, "//a[@class='gall-tit-lnk']", "board name")
         header = XML_HTTP_REQ_HEADERS.copy()
         header["Referer"] = url
         header["X-CSRF-TOKEN"] = csrf_token
@@ -1392,13 +1427,34 @@ class API:
             "_ga": "GA1.2.693521455.1588839880",
             }
         async with self.session.post(url, headers=header, data=payload, cookies=cookies) as res:
-            res = await res.text()
+            response_text = await res.text()
+            if res.status >= 400:
+                raise Exception("Error while writing document: " + unquote(str(response_text)))
+        if document_id:
+            return str(document_id)
+        created_id = self.__extract_document_id_from_write_response(response_text)
+        if created_id:
+            return created_id
+        raise Exception("Error while writing document: could not parse upstream response")
+
+    def __extract_document_id_from_write_response(self, response_text):
+        text = response_text or ""
+        patterns = [
+            r"[?&]no=(\d+)",
+            r"/(?:board|mini)/[^/'\"?]+/(\d+)",
+            r'"no"\s*:\s*"?(\d+)"?',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
+        return None
 
     async def __access(self, token_verify, target_url, require_conkey=True, csrf_token=None):
         if require_conkey:
             async with self.session.get(target_url) as res:
                 parsed = lxml.html.fromstring(await res.text())
-            con_key = parsed.xpath("//input[@id='con_key']")[0].get("value")
+            con_key = self.__required_attr(parsed, "//input[@id='con_key']", "value", "con key")
             payload = { "token_verify": token_verify, "con_key": con_key }
         else:
             payload = { "token_verify": token_verify, }
