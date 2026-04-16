@@ -71,8 +71,8 @@ def peek(iterable):
 
 class DocumentIndex:
     __slots__ = ["id", "subject", "title", "board_id", "has_image", "author", "author_id", "time", "view_count", "comment_count", "voteup_count",
-            "document", "comments", "isimage", "isrecommend", "isdcbest", "ishit"]
-    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit):
+            "document", "comments", "isimage", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
+    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False):
         self.id = id
         self.board_id = board_id
         self.title = title
@@ -90,12 +90,13 @@ class DocumentIndex:
         self.isrecommend = isrecommend
         self.isdcbest = isdcbest
         self.ishit = ishit
+        self.is_mobile_source = bool(is_mobile_source)
     def __str__(self):
         return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count}"
 
 class Document:
-    __slots__ = ["id", "board_id", "title", "author", "author_id", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments"]
-    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None):
+    __slots__ = ["id", "board_id", "title", "author", "author_id", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "is_mobile_source"]
+    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False):
         self.id = id
         self.board_id = board_id
         self.title = title
@@ -111,6 +112,7 @@ class Document:
         self.comments = comments
         self.time = time
         self.subject = subject
+        self.is_mobile_source = bool(is_mobile_source)
     def __str__(self):
         return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
 
@@ -206,6 +208,10 @@ class API:
     def __is_pc_request(self, url):
         host = (urlparse(url).netloc or "").lower()
         return host in {"gall.dcinside.com", "search.dcinside.com"}
+
+    def __is_mobile_request(self, url):
+        host = (urlparse(url).netloc or "").lower()
+        return host == "m.dcinside.com"
 
     def __is_rate_limited_response(self, status, text):
         if status == 429:
@@ -544,7 +550,7 @@ class API:
         while num:
             if max_scan_pages is not None and scanned_pages >= max_scan_pages:
                 break
-            parsed, text, _ = await self.__fetch_parsed_from_urls(
+            parsed, text, used_url = await self.__fetch_parsed_from_urls(
                 self.__build_list_urls(board_id, page, recommend=recommend, kind=kind)
             )
             scanned_pages += 1
@@ -553,6 +559,7 @@ class API:
             if "등록된 게시물이 없습니다." in text:
                 break
             yielded_in_page = 0
+            is_mobile_source = self.__is_mobile_request(used_url)
 
             doc_headers = [i[0] for i in parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li") if not i.get("class", "").startswith("ad")]
             if doc_headers:
@@ -691,6 +698,7 @@ class API:
                         isrecommend=isrecommend,
                         isdcbest=isdcbest,
                         ishit=ishit,
+                        is_mobile_source=is_mobile_source,
                     )
                     yield indexdata
                     yielded_in_page += 1
@@ -761,7 +769,8 @@ class API:
                         isimage=isimage,
                         isrecommend=isrecommend,
                         isdcbest=isdcbest,
-                        ishit=ishit
+                        ishit=ishit,
+                        is_mobile_source=is_mobile_source,
                     )
                     yield indexdata
                     yielded_in_page += 1
@@ -774,11 +783,12 @@ class API:
             page += 1
 
     async def document(self, board_id, document_id, kind=None):
-        parsed, text, _ = await self.__fetch_parsed_from_urls(
+        parsed, text, used_url = await self.__fetch_parsed_from_urls(
             self.__build_view_urls(board_id, document_id, kind=kind)
         )
         if parsed is None:
             return None
+        is_mobile_source = self.__is_mobile_request(used_url)
         # Try various XPaths for title/meta container
         doc_head_containers = parsed.xpath("//div[contains(@class, 'gallview-tit-box')]")
         if not doc_head_containers:
@@ -955,9 +965,10 @@ class API:
                     voteup_count= voteup_count,
                     votedown_count= votedown_count,
                     logined_voteup_count= logined_voteup_count,
-                    comments= lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
+                    comments= lambda b=board_id, d=document_id, k=kind, mobile=is_mobile_source: self.comments(b, d, kind=k, prefer_mobile=mobile),
                     time= self.__parse_time(time_str),
                     subject=subject,
+                    is_mobile_source=is_mobile_source,
                     )
         else:
             # fail due to unusual tags in mobile version
@@ -1173,10 +1184,19 @@ class API:
                     break
             else: 
                 break 
-    async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None):
+    async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=False):
         yielded_from_pc = False
         yielded_ids = set()
         remaining = num
+        if prefer_mobile:
+            async for comment in self.__comments_from_mobile(
+                board_id,
+                document_id,
+                num=num,
+                start_page=start_page,
+            ):
+                yield comment
+            return
         try:
             async for comment in self.__comments_from_pc(
                 board_id,

@@ -106,6 +106,7 @@ def _index_item_to_dict(item):
         "isrecommend": item.isrecommend,
         "isdcbest": item.isdcbest,
         "ishit": item.ishit,
+        "is_mobile_source": bool(getattr(item, "is_mobile_source", False)),
     }
 
 
@@ -165,6 +166,8 @@ async def _fill_missing_author_code(api, board, kind, row):
     if not row:
         return row
     if row.get("author_code"):
+        return row
+    if row.get("is_mobile_source"):
         return row
     doc_id = row.get("id")
     if not doc_id:
