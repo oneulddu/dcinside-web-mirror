@@ -1,9 +1,18 @@
 import asyncio
+import os
 import re
 import threading
 import time
 
 from . import dc_api
+
+
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
 
 MAX_PAGE = 31
 RELATED_LIMIT = 12
@@ -14,6 +23,10 @@ RELATED_TAIL_PAGES = 3
 LATEST_ID_CACHE_TTL = 20
 RELATED_CACHE_TTL = 90
 AUTHOR_CODE_CACHE_TTL = 600
+LATEST_ID_CACHE_MAX_ITEMS = 512
+RELATED_CACHE_MAX_ITEMS = 2048
+AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
+AUTHOR_CODE_FETCH_CONCURRENCY = max(_env_int("MIRROR_AUTHOR_CODE_FETCH_CONCURRENCY", 5), 1)
 
 _CACHE_LOCK = threading.Lock()
 _LATEST_ID_CACHE = {}
@@ -108,9 +121,22 @@ def _cache_get(cache, key):
         return entry["value"]
 
 
-def _cache_set(cache, key, value, ttl):
+def _cache_prune(cache, now, max_items):
+    expired_keys = [key for key, entry in cache.items() if entry["expires_at"] < now]
+    for key in expired_keys:
+        cache.pop(key, None)
+    overflow = len(cache) - max(max_items, 0)
+    if overflow <= 0:
+        return
+    oldest_keys = sorted(cache, key=lambda key: cache[key]["expires_at"])[:overflow]
+    for key in oldest_keys:
+        cache.pop(key, None)
+
+
+def _cache_set(cache, key, value, ttl, max_items):
     expires_at = time.time() + max(_safe_int(ttl, 0), 0)
     with _CACHE_LOCK:
+        _cache_prune(cache, time.time(), max_items)
         cache[key] = {"value": value, "expires_at": expires_at}
 
 
@@ -163,8 +189,20 @@ async def _fill_missing_author_code(api, board, kind, row):
         cache_key,
         {"author": author, "author_code": author_code},
         AUTHOR_CODE_CACHE_TTL,
+        AUTHOR_CODE_CACHE_MAX_ITEMS,
     )
     return row
+
+
+async def _fill_missing_author_codes(api, board, kind, rows):
+    semaphore = asyncio.Semaphore(AUTHOR_CODE_FETCH_CONCURRENCY)
+
+    async def fill(row):
+        async with semaphore:
+            return await _fill_missing_author_code(api, board, kind, row)
+
+    await asyncio.gather(*(fill(row) for row in rows))
+    return rows
 
 
 async def _read_document_with_api(api, api_id, board, kind=None):
@@ -254,8 +292,8 @@ async def async_index(
             max_scan_pages=scan_limit,
         ):
             tdata = _index_item_to_dict(item)
-            await _fill_missing_author_code(api, board, kind, tdata)
             data.append(tdata)
+        await _fill_missing_author_codes(api, board, kind, data)
     return data
 
 
@@ -287,7 +325,7 @@ async def _related_by_position_with_api(
         if not first_page:
             return []
         latest_id = _safe_int(first_page[0].get("id"), target_id)
-        _cache_set(_LATEST_ID_CACHE, board_key, latest_id, LATEST_ID_CACHE_TTL)
+        _cache_set(_LATEST_ID_CACHE, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
 
     estimated_page = max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
     found_page = None
@@ -337,9 +375,8 @@ async def _related_by_position_with_api(
         related.append(row)
         if len(related) >= fetch_limit:
             result = related[:fetch_limit]
-            for item in result:
-                await _fill_missing_author_code(api, board, kind, item)
-            _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL)
+            await _fill_missing_author_codes(api, board, kind, result)
+            _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
             return result
 
     next_page = found_page + 1
@@ -359,9 +396,8 @@ async def _related_by_position_with_api(
         loaded_tail += 1
 
     result = related[:fetch_limit]
-    for row in result:
-        await _fill_missing_author_code(api, board, kind, row)
-    _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL)
+    await _fill_missing_author_codes(api, board, kind, result)
+    _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
     return result
 
 
