@@ -377,7 +377,12 @@ class API:
     def __is_usable_board_page(self, parsed, text, url):
         if "등록된 게시물이 없습니다." in text:
             return True
-        mobile_rows = parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")
+        mobile_rows = parsed.xpath(
+            "//ul[contains(@class, 'gall-detail-lst')]/li["
+            "not(contains(concat(' ', normalize-space(@class), ' '), ' ad ')) and "
+            "(.//a[contains(@class, 'lt') and contains(@href, '/board/')])"
+            "]"
+        )
         pc_rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")
         return bool(mobile_rows or pc_rows)
 
@@ -1176,7 +1181,10 @@ class API:
                 if fail_fast:
                     raise RuntimeError("mobile comment fetch returned unexpected html")
                 break
-            if not len(parsed[1].xpath("li")): break
+            if not len(parsed[1].xpath("li")):
+                if fail_fast:
+                    raise RuntimeError("mobile comment page produced no comment rows")
+                break
             #for li in reversed(parsed[1].xpath("li")):
             for li in parsed[1].xpath("li"):
                 if not len(li[0]): continue
@@ -1247,7 +1255,12 @@ class API:
             except Exception:
                 pass
         try:
-            pc_fetch_num = -1 if yielded_ids else remaining
+            if remaining == -1:
+                pc_fetch_num = -1
+            elif yielded_ids:
+                pc_fetch_num = remaining + len(yielded_ids)
+            else:
+                pc_fetch_num = remaining
             async for comment in self.__comments_from_pc(
                 board_id,
                 document_id,

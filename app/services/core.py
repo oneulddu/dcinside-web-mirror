@@ -445,7 +445,8 @@ async def _related_by_position_with_api(
         loaded_tail += 1
 
     result = related[:fetch_limit]
-    _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+    if result:
+        _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
     return result
 
 

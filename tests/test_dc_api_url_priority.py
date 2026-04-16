@@ -253,6 +253,45 @@ async def test_board_falls_back_to_pc_when_mobile_page_is_not_parseable():
 
 
 @pytest.mark.asyncio
+async def test_board_falls_back_to_pc_when_mobile_list_has_only_ads():
+    api = API.__new__(API)
+    mobile_url = "https://m.dcinside.com/board/test?page=1"
+    pc_url = "https://gall.dcinside.com/board/lists/?id=test&page=1"
+    responses = {
+        mobile_url: """
+        <html><body>
+          <ul class="gall-detail-lst">
+            <li class="ad"><div><a href="https://ad.example.test/">ad</a></div></li>
+          </ul>
+        </body></html>
+        """,
+        pc_url: """
+        <html><body><table><tbody>
+          <tr class="ub-content us-post" data-no="123">
+            <td class="gall_tit"><a href="/board/view/?id=test&no=123">pc title</a></td>
+            <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+            <td class="gall_date" title="2026.04.16 12:00:00"></td>
+            <td class="gall_count">7</td>
+            <td class="gall_recommend">3</td>
+          </tr>
+        </tbody></table></body></html>
+        """,
+    }
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        assert url in responses
+        return 200, {}, responses[url]
+
+    api._API__request_text = fake_request_text
+
+    rows = [item async for item in api.board("test", num=1, start_page=1, kind="normal")]
+
+    assert len(rows) == 1
+    assert rows[0].id == "123"
+    assert rows[0].is_mobile_source is False
+
+
+@pytest.mark.asyncio
 async def test_document_falls_back_to_pc_when_mobile_page_is_not_parseable():
     api = API.__new__(API)
     mobile_url = "https://m.dcinside.com/board/test/123"
@@ -345,7 +384,7 @@ async def test_comments_prefer_mobile_falls_back_to_pc_after_partial_mobile_fail
         raise RuntimeError("mobile page 2 failed")
 
     async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
-        assert num == -1
+        assert num == 2
         yield DummyComment("1")
         yield DummyComment("2")
         yield DummyComment("3")
@@ -365,3 +404,55 @@ async def test_comments_prefer_mobile_falls_back_to_pc_after_partial_mobile_fail
     ]
 
     assert comments == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_comments_prefer_mobile_falls_back_to_pc_after_mobile_ends_prematurely():
+    api = API.__new__(API)
+
+    class DummyComment:
+        def __init__(self, cid):
+            self.id = cid
+
+    calls = {"count": 0}
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return 200, {}, """
+            <html><head></head><body>
+              <li no="1" m_no="0">
+                <div><span>mobile author</span></div>
+                <p>mobile first</p>
+                <span>04.16 12:00:00</span>
+              </li>
+              <span class="pgnum">1 2</span>
+            </body></html>
+            """
+        return 200, {}, """
+        <html><head></head><body>
+          <span class="pgnum">1 2</span>
+        </body></html>
+        """
+
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+        assert num == 3
+        yield DummyComment("1")
+        yield DummyComment("2")
+        yield DummyComment("3")
+
+    api._API__request_text = fake_request_text
+    api._API__comments_from_pc = fake_pc
+
+    comments = [
+        item.id
+        async for item in api.comments(
+            "aoegame",
+            "30150503",
+            num=3,
+            kind="minor",
+            prefer_mobile=True,
+        )
+    ]
+
+    assert comments == ["1", "2", "3"]

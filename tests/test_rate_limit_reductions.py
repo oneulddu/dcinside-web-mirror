@@ -188,3 +188,35 @@ async def test_related_falls_back_to_estimate_when_source_page_hint_misses(monke
         (1, 1),
         (3, core.RELATED_PAGE_FETCH_SIZE),
     ]
+
+
+@pytest.mark.asyncio
+async def test_related_does_not_cache_empty_results(monkeypatch):
+    async def fail_author_backfill(*args, **kwargs):
+        raise AssertionError("related posts should not fetch documents for author code backfill")
+
+    monkeypatch.setattr(core, "_fill_missing_author_codes", fail_author_backfill)
+
+    class FakeAPI:
+        def __init__(self):
+            self.calls = 0
+
+        async def board(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield _index_item(100)
+            elif self.calls == 2:
+                yield _index_item(100)
+            else:
+                yield _index_item(100)
+                yield _index_item(99)
+
+    api = FakeAPI()
+
+    first = await core._related_by_position_with_api(api, "100", "test", limit=1, source_page=1)
+    core._BOARD_PAGE_CACHE.clear()
+    second = await core._related_by_position_with_api(api, "100", "test", limit=1, source_page=1)
+
+    assert first == []
+    assert [row["id"] for row in second] == ["99"]
+    assert api.calls == 3
