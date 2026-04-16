@@ -456,3 +456,44 @@ async def test_comments_prefer_mobile_falls_back_to_pc_after_mobile_ends_prematu
     ]
 
     assert comments == ["1", "2", "3"]
+
+
+@pytest.mark.asyncio
+async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_pagination_is_missing():
+    api = API.__new__(API)
+
+    class DummyComment:
+        def __init__(self, cid):
+            self.id = cid
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        return 200, {}, """
+        <html><head></head><body>
+          <li no="1" m_no="0">
+            <div><span>mobile author</span></div>
+            <p>mobile first</p>
+            <span>04.16 12:00:00</span>
+          </li>
+        </body></html>
+        """
+
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+        assert num == 2
+        yield DummyComment("1")
+        yield DummyComment("2")
+
+    api._API__request_text = fake_request_text
+    api._API__comments_from_pc = fake_pc
+
+    comments = [
+        item.id
+        async for item in api.comments(
+            "aoegame",
+            "30150503",
+            num=2,
+            kind="minor",
+            prefer_mobile=True,
+        )
+    ]
+
+    assert comments == ["1", "2"]

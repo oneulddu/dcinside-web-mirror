@@ -1225,8 +1225,10 @@ class API:
                 ]
                 if page_numbers and page >= max(page_numbers):
                     break
-            else: 
-                break 
+            else:
+                if fail_fast:
+                    raise RuntimeError("mobile comment pagination missing")
+                break
     async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=True):
         yielded_from_pc = False
         yielded_ids = set()
