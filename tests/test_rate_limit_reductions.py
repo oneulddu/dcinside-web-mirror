@@ -261,7 +261,7 @@ async def test_related_uses_source_page_without_author_backfill(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_related_uses_recommend_board_pages(monkeypatch):
+async def test_related_skips_recommend_board_fetches(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
 
@@ -273,9 +273,7 @@ async def test_related_uses_recommend_board_pages(monkeypatch):
 
         async def board(self, **kwargs):
             self.calls.append((kwargs["start_page"], kwargs["num"], kwargs["recommend"]))
-            if kwargs["recommend"] == 1 and kwargs["start_page"] == 1:
-                yield _index_item(100)
-                yield _index_item(99)
+            yield _index_item(100)
 
     api = FakeAPI()
 
@@ -288,12 +286,12 @@ async def test_related_uses_recommend_board_pages(monkeypatch):
         recommend=1,
     )
 
-    assert [row["id"] for row in related] == ["99"]
-    assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
+    assert related == []
+    assert api.calls == []
 
 
 @pytest.mark.asyncio
-async def test_related_recommend_source_page_miss_falls_back_to_first_page(monkeypatch):
+async def test_related_skips_recommend_board_fetches_when_source_page_is_stale(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
 
@@ -305,12 +303,7 @@ async def test_related_recommend_source_page_miss_falls_back_to_first_page(monke
 
         async def board(self, **kwargs):
             self.calls.append((kwargs["start_page"], kwargs["num"], kwargs["recommend"]))
-            if kwargs["recommend"] == 1 and kwargs["start_page"] == 7:
-                yield _index_item(300)
-                yield _index_item(200)
-            elif kwargs["recommend"] == 1 and kwargs["start_page"] == 1:
-                yield _index_item(100)
-                yield _index_item(99)
+            yield _index_item(100)
 
     api = FakeAPI()
 
@@ -323,11 +316,8 @@ async def test_related_recommend_source_page_miss_falls_back_to_first_page(monke
         recommend=1,
     )
 
-    assert [row["id"] for row in related] == ["99"]
-    assert api.calls == [
-        (7, core.RELATED_PAGE_FETCH_SIZE, 1),
-        (1, core.RELATED_PAGE_FETCH_SIZE, 1),
-    ]
+    assert related == []
+    assert api.calls == []
 
 
 @pytest.mark.asyncio

@@ -373,6 +373,10 @@ async def _related_by_position_with_api(
 
     source_page_value = _safe_int(source_page, 0)
     recommend_value = _safe_int(recommend, 0)
+    if recommend_value:
+        # Recommended-read pages already include the recommended post list in the
+        # mobile document HTML. Do not crawl list pages again for this mode.
+        return []
     board_key = (board, kind or "", recommend_value)
     related_key = (board, kind or "", recommend_value, target_id, fetch_limit, source_page_value)
     cached_related = _cache_get(_RELATED_CACHE, related_key)
