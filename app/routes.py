@@ -687,13 +687,8 @@ def read():
     pid = _safe_int(request.args.get("pid", 0), 0)
     board = str(request.args.get("board", "airforce")).strip() or "airforce"
     kind = (request.args.get("kind") or "").strip().lower() or None
-    comment_count_hint = None
-    if "cc" in request.args:
-        comment_count_hint = _safe_int(request.args.get("cc"), 0)
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
-    data, comments, images = _run_async(
-        async_read(pid, board, kind=kind, comment_count_hint=comment_count_hint)
-    )
+    data, comments, images = _run_async(async_read(pid, board, kind=kind))
     soup = BeautifulSoup(data.get("html") or "", "html.parser")
     _rewrite_content_images(soup, images, board, pid, kind)
 

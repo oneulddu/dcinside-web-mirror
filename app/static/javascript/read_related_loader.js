@@ -17,7 +17,6 @@
     function buildReadHref(board, item, kind) {
         var pid = item && item.id;
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(String(pid));
-        href += "&cc=" + encodeURIComponent(String((item && item.comment_count) || 0));
         if (item && item.source_page) {
             href += "&source_page=" + encodeURIComponent(String(item.source_page));
         }

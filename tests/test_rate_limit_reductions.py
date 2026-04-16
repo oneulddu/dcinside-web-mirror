@@ -61,7 +61,16 @@ async def test_fetch_board_page_reuses_short_cache():
 
 
 @pytest.mark.asyncio
-async def test_read_document_skips_comment_request_when_hint_is_zero():
+async def test_read_document_fetches_comments_without_trusting_zero_hint():
+    class FakeComment:
+        author = "익명"
+        author_id = None
+        time = "-"
+        contents = "new comment"
+        parent_id = None
+        dccon = None
+        is_reply = False
+
     class FakeDocument:
         title = "title"
         author = "익명"
@@ -72,9 +81,7 @@ async def test_read_document_skips_comment_request_when_hint_is_zero():
         images = []
 
         async def comments(self):
-            raise AssertionError("comment_count=0 hint should skip comment fetch")
-            if False:
-                yield None
+            yield FakeComment()
 
     class FakeAPI:
         async def document(self, **kwargs):
@@ -84,11 +91,10 @@ async def test_read_document_skips_comment_request_when_hint_is_zero():
         FakeAPI(),
         "123",
         "test",
-        comment_count_hint=0,
     )
 
     assert data["title"] == "title"
-    assert comments == []
+    assert [comment["contents"] for comment in comments] == ["new comment"]
     assert images == []
 
 

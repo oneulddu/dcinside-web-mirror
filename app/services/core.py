@@ -231,7 +231,7 @@ async def _fill_missing_author_codes(api, board, kind, rows):
     return rows
 
 
-async def _read_document_with_api(api, api_id, board, kind=None, comment_count_hint=None):
+async def _read_document_with_api(api, api_id, board, kind=None):
     data = {}
     comments = []
     images = []
@@ -254,35 +254,32 @@ async def _read_document_with_api(api, api_id, board, kind=None, comment_count_h
         "voteup_count": doc.voteup_count,
         "html": doc.html,
     }
-    skip_comments = comment_count_hint is not None and _safe_int(comment_count_hint, -1) <= 0
-    if not skip_comments:
-        async for com in doc.comments():
-            comment_author, comment_author_code = _normalize_author(com.author, com.author_id)
-            is_reply = bool(getattr(com, "is_reply", False)) or _is_reply_comment(com.parent_id)
-            comments.append(
-                {
-                    "time": com.time,
-                    "contents": com.contents,
-                    "author": comment_author,
-                    "author_code": comment_author_code,
-                    "parent_id": com.parent_id,
-                    "is_reply": is_reply,
-                    "dccon": com.dccon,
-                }
-            )
+    async for com in doc.comments():
+        comment_author, comment_author_code = _normalize_author(com.author, com.author_id)
+        is_reply = bool(getattr(com, "is_reply", False)) or _is_reply_comment(com.parent_id)
+        comments.append(
+            {
+                "time": com.time,
+                "contents": com.contents,
+                "author": comment_author,
+                "author_code": comment_author_code,
+                "parent_id": com.parent_id,
+                "is_reply": is_reply,
+                "dccon": com.dccon,
+            }
+        )
     for img in doc.images:
         images.append(img.src)
     return data, comments, images
 
 
-async def async_read(api_id, board, kind=None, comment_count_hint=None):
+async def async_read(api_id, board, kind=None):
     async with dc_api.API() as api:
         return await _read_document_with_api(
             api,
             api_id,
             board,
             kind=kind,
-            comment_count_hint=comment_count_hint,
         )
 
 
