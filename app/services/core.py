@@ -19,6 +19,7 @@ RELATED_LIMIT = 12
 DOCS_PER_PAGE_ESTIMATE = max(int(getattr(dc_api, "DOCS_PER_PAGE", 200)), 1)
 RELATED_PAGE_FETCH_SIZE = DOCS_PER_PAGE_ESTIMATE
 RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1)
+RELATED_RECOMMEND_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_RECOMMEND_PAGE_PROBE_STEPS", 12), RELATED_PAGE_PROBE_STEPS)
 RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
 BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)
 LATEST_ID_CACHE_TTL = 20
@@ -367,6 +368,7 @@ async def _related_by_position_with_api(
     target_id = _safe_int(api_id, 0)
     fetch_limit = max(_safe_int(limit, RELATED_LIMIT), 0)
     max_probe = max(_safe_int(probe_steps, RELATED_PAGE_PROBE_STEPS), 1)
+    max_recommend_probe = max(_safe_int(RELATED_RECOMMEND_PAGE_PROBE_STEPS, 12), max_probe)
     max_tail = max(_safe_int(tail_pages, RELATED_TAIL_PAGES), 0)
     if target_id <= 0 or fetch_limit == 0:
         return []
@@ -389,15 +391,16 @@ async def _related_by_position_with_api(
             _cache_set(_LATEST_ID_CACHE, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
         return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
 
-    async def find_target_from_page(start_page, single_page=False):
+    async def find_target_from_page(start_page, single_page=False, probe_limit=None):
         found_page = None
         found_index = -1
         found_posts = []
         page = start_page
         checked = set()
         steps = 0
+        page_probe_limit = 1 if single_page else max(_safe_int(probe_limit, max_probe), 1)
 
-        while steps < max_probe and page >= 1:
+        while steps < page_probe_limit and page >= 1:
             if page in checked:
                 break
             checked.add(page)
@@ -441,14 +444,20 @@ async def _related_by_position_with_api(
         if found_page is None:
             if recommend_value:
                 if source_page_value != 1:
-                    found_page, found_index, found_posts = await find_target_from_page(1)
+                    found_page, found_index, found_posts = await find_target_from_page(
+                        1,
+                        probe_limit=max_recommend_probe,
+                    )
             else:
                 estimated_page = await estimate_page_from_latest_id()
                 if estimated_page is not None and estimated_page != source_page_value:
                     found_page, found_index, found_posts = await find_target_from_page(estimated_page)
     else:
         if recommend_value:
-            found_page, found_index, found_posts = await find_target_from_page(1)
+            found_page, found_index, found_posts = await find_target_from_page(
+                1,
+                probe_limit=max_recommend_probe,
+            )
         else:
             estimated_page = await estimate_page_from_latest_id()
             if estimated_page is None:
