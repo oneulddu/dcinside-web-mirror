@@ -353,53 +353,66 @@ async def _related_by_position_with_api(
     if cached_related is not None:
         return cached_related
 
-    if source_page_value > 0:
-        estimated_page = source_page_value
-    else:
+    async def estimate_page_from_latest_id():
         latest_id = _cache_get(_LATEST_ID_CACHE, board_key)
         if latest_id is None:
             first_page = await _fetch_board_page(api, 1, board, 0, kind=kind, page_size=1)
             if not first_page:
-                return []
+                return None
             latest_id = _safe_int(first_page[0].get("id"), target_id)
             _cache_set(_LATEST_ID_CACHE, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
+        return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
 
-        estimated_page = max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
-    found_page = None
-    found_index = -1
-    found_posts = []
-    page = estimated_page
-    checked = set()
-    steps = 0
+    async def find_target_from_page(start_page):
+        found_page = None
+        found_index = -1
+        found_posts = []
+        page = start_page
+        checked = set()
+        steps = 0
 
-    while steps < max_probe and page >= 1:
-        if page in checked:
-            break
-        checked.add(page)
-        steps += 1
+        while steps < max_probe and page >= 1:
+            if page in checked:
+                break
+            checked.add(page)
+            steps += 1
 
-        page_posts = await _fetch_board_page(api, page, board, 0, kind=kind)
-        if not page_posts:
-            break
+            page_posts = await _fetch_board_page(api, page, board, 0, kind=kind)
+            if not page_posts:
+                break
 
-        page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
-        if target_id in page_ids:
-            found_page = page
-            found_index = page_ids.index(target_id)
-            found_posts = page_posts
-            break
+            page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
+            if target_id in page_ids:
+                found_page = page
+                found_index = page_ids.index(target_id)
+                found_posts = page_posts
+                break
 
-        valid_ids = [pid for pid in page_ids if pid > 0]
-        if not valid_ids:
-            break
-        page_max = max(valid_ids)
-        page_min = min(valid_ids)
-        if target_id > page_max:
-            page = max(1, page - 1)
-        elif target_id < page_min:
-            page += 1
-        else:
-            page += 1
+            valid_ids = [pid for pid in page_ids if pid > 0]
+            if not valid_ids:
+                break
+            page_max = max(valid_ids)
+            page_min = min(valid_ids)
+            if target_id > page_max:
+                page = max(1, page - 1)
+            elif target_id < page_min:
+                page += 1
+            else:
+                page += 1
+
+        return found_page, found_index, found_posts
+
+    if source_page_value > 0:
+        found_page, found_index, found_posts = await find_target_from_page(source_page_value)
+        if found_page is None:
+            estimated_page = await estimate_page_from_latest_id()
+            if estimated_page is not None and estimated_page != source_page_value:
+                found_page, found_index, found_posts = await find_target_from_page(estimated_page)
+    else:
+        estimated_page = await estimate_page_from_latest_id()
+        if estimated_page is None:
+            return []
+        found_page, found_index, found_posts = await find_target_from_page(estimated_page)
 
     if found_page is None:
         return []
