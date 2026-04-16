@@ -72,6 +72,32 @@ jobs:
             python -m pip install --upgrade pip
             python -m pip install -r requirements.txt
 
+            python - <<'PY'
+            from pathlib import Path
+            import os
+            import secrets
+            import stat
+
+            env_path = Path(".env")
+            lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+
+            def has_non_empty(name):
+              prefix = f"{name}="
+              for line in lines:
+                stripped = line.strip()
+                if stripped.startswith(prefix) and stripped[len(prefix):].strip().strip("'\""):
+                  return True
+              return bool(os.environ.get(name, "").strip())
+
+            if not has_non_empty("MIRROR_ENV"):
+              lines.append("MIRROR_ENV=production")
+            if not has_non_empty("MIRROR_SECRET_KEY"):
+              lines.append(f"MIRROR_SECRET_KEY={secrets.token_urlsafe(48)}")
+
+            env_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+            env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            PY
+
             PM2_BIN="$(command -v pm2 || true)"
             if [ -z "${PM2_BIN}" ] && [ -x "/home/ubuntu/.nvm/versions/node/v24.11.1/bin/pm2" ]; then
               PM2_BIN="/home/ubuntu/.nvm/versions/node/v24.11.1/bin/pm2"
