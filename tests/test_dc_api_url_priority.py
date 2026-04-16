@@ -543,3 +543,25 @@ async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_pagination_is
     ]
 
     assert comments == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_comments_zero_limit_skips_mobile_and_pc_fetches():
+    api = API.__new__(API)
+
+    async def fail_mobile(*args, **kwargs):
+        raise AssertionError("num=0 should not fetch mobile comments")
+        if False:
+            yield None
+
+    async def fail_pc(*args, **kwargs):
+        raise AssertionError("num=0 should not fetch pc comments")
+        if False:
+            yield None
+
+    api._API__comments_from_mobile = fail_mobile
+    api._API__comments_from_pc = fail_pc
+
+    comments = [item async for item in api.comments("aoegame", "30150503", num=0)]
+
+    assert comments == []

@@ -62,7 +62,6 @@
       const repeated = norm && counts[norm] >= 3;
       const patternSpam = raw && hasPatternRepeat(raw);
       if ((repeated || patternSpam || deleted) && !isDcconComment(li)) {
-        li.classList.add("comment-spam-hidden");
         hidden.push(li);
       }
     });
@@ -70,6 +69,13 @@
     if (!hidden.length) {
       return;
     }
+    if (hidden.length >= items.length) {
+      return;
+    }
+
+    hidden.forEach((li) => {
+      li.classList.add("comment-spam-hidden");
+    });
 
     const btn = document.createElement("button");
     btn.type = "button";

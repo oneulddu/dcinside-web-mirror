@@ -1076,6 +1076,8 @@ class API:
         )
 
     async def __comments_from_pc(self, board_id, document_id, num=-1, start_page=1, kind=None):
+        if num == 0:
+            return
         context = await self.__get_pc_comment_context(board_id, document_id, kind=kind)
         seen_ids = set()
 
@@ -1149,6 +1151,8 @@ class API:
                 break
 
     async def __comments_from_mobile(self, board_id, document_id, num=-1, start_page=1, fail_fast=False):
+        if num == 0:
+            return
         url = "https://m.dcinside.com/ajax/response-comment"
         for page in range(start_page, 999999):
             payload = {"id": board_id, "no": document_id, "cpage": page, "managerskill":"", "del_scope": "1", "csort": ""}
@@ -1230,6 +1234,8 @@ class API:
                     raise RuntimeError("mobile comment pagination missing")
                 break
     async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=True):
+        if num == 0:
+            return
         yielded_from_pc = False
         yielded_ids = set()
         remaining = num

@@ -114,3 +114,10 @@ def test_related_loader_keeps_empty_results_retryable():
     assert "cached.items.length === 0" in script
     assert "if (items.length > 0)" in script
     assert 'setButtonState(button, "idle");' in script
+
+
+def test_comment_spam_filter_never_hides_every_comment():
+    script = Path(routes.BASE_DIR, "app/static/javascript/comment_spam_filter.js").read_text()
+
+    assert "hidden.length >= items.length" in script
+    assert 'li.classList.add("comment-spam-hidden")' in script
