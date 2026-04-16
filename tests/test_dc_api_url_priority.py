@@ -371,6 +371,57 @@ async def test_document_falls_back_to_pc_when_mobile_page_is_not_parseable():
 
 
 @pytest.mark.asyncio
+async def test_document_reuses_embedded_mobile_post_list():
+    api = API.__new__(API)
+    mobile_url = "https://m.dcinside.com/board/test/123"
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        assert url == mobile_url
+        return 200, {}, """
+        <html><body>
+          <div class="gall-tit-box">
+            <span class="tit">mobile title</span>
+            <ul class="ginfo2"><li>익명(1.2)</li><li>2026.04.16 12:00</li></ul>
+          </div>
+          <div class="thum-txtin"><p>mobile body</p></div>
+          <ul class="gall-detail-lst">
+            <li>
+              <div class="gall-detail-lnktb">
+                <a class="lt" href="https://m.dcinside.com/board/test/122">
+                  <span class="subject-add">
+                    <span class="sp-lst sp-lst-txt">이미지</span>
+                    <span class="subjectin">embedded title</span>
+                  </span>
+                  <ul class="ginfo">
+                    <li>작성자(3.4)</li>
+                    <li>11:59</li>
+                    <li>조회 7</li>
+                    <li>추천 <span>2</span></li>
+                  </ul>
+                </a>
+                <a class="rt" href="https://m.dcinside.com/board/test/122#comment_box">
+                  <span class="ct">5</span>
+                </a>
+              </div>
+              <span class="blockInfo" data-info="3.4"></span>
+            </li>
+          </ul>
+        </body></html>
+        """
+
+    api._API__request_text = fake_request_text
+
+    doc = await api.document("test", "123", kind="normal")
+
+    assert doc is not None
+    assert doc.is_mobile_source is True
+    assert len(doc.related_posts) == 1
+    assert doc.related_posts[0].id == "122"
+    assert doc.related_posts[0].title == "embedded title"
+    assert doc.related_posts[0].comment_count == 5
+
+
+@pytest.mark.asyncio
 async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_fails():
     api = API.__new__(API)
 
@@ -543,3 +594,25 @@ async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_pagination_is
     ]
 
     assert comments == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_comments_zero_limit_skips_mobile_and_pc_fetches():
+    api = API.__new__(API)
+
+    async def fail_mobile(*args, **kwargs):
+        raise AssertionError("num=0 should not fetch mobile comments")
+        if False:
+            yield None
+
+    async def fail_pc(*args, **kwargs):
+        raise AssertionError("num=0 should not fetch pc comments")
+        if False:
+            yield None
+
+    api._API__comments_from_mobile = fail_mobile
+    api._API__comments_from_pc = fail_pc
+
+    comments = [item async for item in api.comments("aoegame", "30150503", num=0)]
+
+    assert comments == []

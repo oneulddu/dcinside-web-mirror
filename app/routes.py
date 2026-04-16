@@ -689,6 +689,7 @@ def read():
     kind = (request.args.get("kind") or "").strip().lower() or None
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     data, comments, images = _run_async(async_read(pid, board, kind=kind))
+    embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
     soup = BeautifulSoup(data.get("html") or "", "html.parser")
     _rewrite_content_images(soup, images, board, pid, kind)
 
@@ -708,6 +709,7 @@ def read():
             pid=pid,
             kind=kind,
             source_page=source_page,
+            embedded_related_posts=embedded_related_posts,
             nav_tab=read_nav_tab,
         )
     )

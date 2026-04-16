@@ -95,8 +95,8 @@ class DocumentIndex:
         return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count}"
 
 class Document:
-    __slots__ = ["id", "board_id", "title", "author", "author_id", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "is_mobile_source"]
-    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False):
+    __slots__ = ["id", "board_id", "title", "author", "author_id", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "is_mobile_source", "related_posts"]
+    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None):
         self.id = id
         self.board_id = board_id
         self.title = title
@@ -113,6 +113,7 @@ class Document:
         self.time = time
         self.subject = subject
         self.is_mobile_source = bool(is_mobile_source)
+        self.related_posts = list(related_posts or [])
     def __str__(self):
         return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
 
@@ -399,6 +400,124 @@ class API:
         if not doc_content_container:
             doc_content_container = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
         return bool(doc_head_containers and doc_content_container)
+
+    def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True):
+        def to_int(value, default=0):
+            if value is None:
+                return default
+            digits = re.sub(r"[^0-9-]", "", str(value))
+            if not digits:
+                return default
+            try:
+                return int(digits)
+            except ValueError:
+                return default
+
+        row_class = " {} ".format(row.get("class", ""))
+        if " ad " in row_class:
+            return None
+
+        link_nodes = row.xpath(
+            ".//a[contains(@class, 'lt') and "
+            "(contains(@href, '/board/') or contains(@href, '/mini/'))]"
+        )
+        if not link_nodes:
+            link_nodes = row.xpath(
+                ".//a[(contains(@href, '/board/') or contains(@href, '/mini/')) "
+                "and not(contains(@href, '#comment_box'))]"
+            )
+        if not link_nodes:
+            return None
+
+        link = link_nodes[0]
+        href = link.get("href", "")
+        id_match = re.search(r"/(\d+)(?:[?#]|$)", href)
+        if not id_match:
+            return None
+        document_id = id_match.group(1)
+
+        subject = None
+        subject_el = link.xpath(".//span[contains(@class, 'subjectin')]")
+        if subject_el:
+            title = " ".join(subject_el[0].text_content().split())
+            subject_tag = subject_el[0].xpath(".//b")
+            if subject_tag:
+                subject = subject_tag[0].text_content().strip() or None
+        else:
+            title = " ".join(link.text_content().split())
+        if not title:
+            return None
+
+        ginfo = link.xpath(".//ul[contains(@class, 'ginfo')]/li")
+        author = "익명"
+        post_time = self.__parse_time("")
+        view_count = 0
+        voteup_count = 0
+        if len(ginfo) >= 1:
+            author = " ".join(ginfo[0].text_content().split()) or "익명"
+        if len(ginfo) >= 2:
+            post_time = self.__parse_time(" ".join(ginfo[1].text_content().split()))
+        if len(ginfo) >= 3:
+            view_count = to_int(" ".join(ginfo[2].text_content().split()), 0)
+        if len(ginfo) >= 4:
+            voteup_count = to_int(" ".join(ginfo[3].text_content().split()), 0)
+
+        comment_count = 0
+        comment_nodes = row.xpath(".//a[contains(@class, 'rt')]//*[contains(@class, 'ct')]")
+        if comment_nodes:
+            comment_count = to_int(" ".join(comment_nodes[0].text_content().split()), 0)
+
+        author_id = None
+        block_info = row.xpath(".//*[contains(@class, 'blockInfo')]/@data-info")
+        if block_info:
+            author_id = (block_info[0] or "").strip() or None
+        if not author_id:
+            gallog_hrefs = row.xpath(".//a[contains(@href, 'gallog.dcinside.com/')]/@href")
+            if gallog_hrefs:
+                match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", gallog_hrefs[0])
+                if match:
+                    author_id = match.group(1)
+
+        icon_text = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/text()"))
+        icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
+        flags = "{} {}".format(icon_text, icon_class)
+        isimage = ("이미지" in flags) or ("img" in flags)
+        isrecommend = "reco" in flags
+        isdcbest = ("best" in flags) or (board_id == "dcbest")
+        ishit = "hit" in flags
+
+        return DocumentIndex(
+            id=document_id,
+            board_id=board_id,
+            title=title,
+            has_image=isimage,
+            author=author,
+            author_id=author_id,
+            view_count=view_count,
+            voteup_count=voteup_count,
+            comment_count=comment_count,
+            document=lambda b=board_id, d=document_id, k=kind: self.document(b, d, kind=k),
+            comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
+            time=post_time,
+            subject=subject,
+            isimage=isimage,
+            isrecommend=isrecommend,
+            isdcbest=isdcbest,
+            ishit=ishit,
+            is_mobile_source=is_mobile_source,
+        )
+
+    def __parse_embedded_mobile_posts(self, parsed, board_id, current_document_id, kind=None):
+        posts = []
+        seen_ids = {str(current_document_id)}
+        rows = parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")
+        for row in rows:
+            item = self.__parse_mobile_list_item(row, board_id, kind=kind, is_mobile_source=True)
+            if item is None or item.id in seen_ids:
+                continue
+            seen_ids.add(item.id)
+            posts.append(item)
+        return posts
 
     def __extract_top_level_redirect_url(self, text):
         if not text:
@@ -958,6 +1077,9 @@ class API:
                 logined_voteup_count = 0
             
             doc_content = doc_content_container[0]
+            related_posts = []
+            if is_mobile_source:
+                related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind)
 
             for adv in doc_content.xpath("div[@class='adv-groupin']"):
                 adv.getparent().remove(adv)
@@ -999,6 +1121,7 @@ class API:
                     time= self.__parse_time(time_str),
                     subject=subject,
                     is_mobile_source=is_mobile_source,
+                    related_posts=related_posts,
                     )
         else:
             # fail due to unusual tags in mobile version
@@ -1076,6 +1199,8 @@ class API:
         )
 
     async def __comments_from_pc(self, board_id, document_id, num=-1, start_page=1, kind=None):
+        if num == 0:
+            return
         context = await self.__get_pc_comment_context(board_id, document_id, kind=kind)
         seen_ids = set()
 
@@ -1149,6 +1274,8 @@ class API:
                 break
 
     async def __comments_from_mobile(self, board_id, document_id, num=-1, start_page=1, fail_fast=False):
+        if num == 0:
+            return
         url = "https://m.dcinside.com/ajax/response-comment"
         for page in range(start_page, 999999):
             payload = {"id": board_id, "no": document_id, "cpage": page, "managerskill":"", "del_scope": "1", "csort": ""}
@@ -1230,6 +1357,8 @@ class API:
                     raise RuntimeError("mobile comment pagination missing")
                 break
     async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=True):
+        if num == 0:
+            return
         yielded_from_pc = False
         yielded_ids = set()
         remaining = num

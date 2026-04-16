@@ -42,10 +42,33 @@
     <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-limit="12" data-source-page="{{ source_page or '' }}">
         <div class="board-head">
             <h2>다른 게시글</h2>
-            <button class="related-load-btn" id="related-load-button" type="button">불러오기</button>
+            <button class="related-load-btn" id="related-load-button" type="button">{% if embedded_related_posts %}새로 불러오기{% else %}불러오기{% endif %}</button>
         </div>
         <ul id="related-list">
+            {% if embedded_related_posts %}
+            {% for item in embedded_related_posts %}
+            <li>
+                <a class="feed-item" href="/read?board={{ board }}&pid={{ item.id }}{% if source_page %}&source_page={{ source_page }}{% endif %}{% if kind %}&kind={{ kind }}{% endif %}">
+                    <div class="feed-title-wrap">
+                        <h2 class="feed-title">{{ item.title }}</h2>
+                        {% if item.comment_count > 0 %}
+                        <span class="reply-count">[{{ item.comment_count }}]</span>
+                        {% endif %}
+                    </div>
+                    <div class="feed-meta-row">
+                        <div class="feed-meta-left">
+                            <span class="author-text">{{ item.author }}{% if item.author_code %}({{ item.author_code }}){% endif %}</span>
+                            <span class="sep">|</span>
+                            <span>{{ item.time }}</span>
+                        </div>
+                        <div class="feed-meta-right soft">추천 {{ item.voteup_count }}</div>
+                    </div>
+                </a>
+            </li>
+            {% endfor %}
+            {% else %}
             <li class="empty-row">다른 게시글은 버튼을 누르면 불러옵니다.</li>
+            {% endif %}
         </ul>
     </section>
 
