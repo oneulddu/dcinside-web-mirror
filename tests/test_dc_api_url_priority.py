@@ -236,6 +236,49 @@ def _make_fake_request_text(responses):
     return fake_request_text
 
 
+class _FakeResponse:
+    def __init__(self, text, status=200, headers=None, url=""):
+        self._text = text
+        self.status = status
+        self.headers = headers or {}
+        self.url = url
+
+    async def text(self):
+        return self._text
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def post(self, url, headers=None, data=None, cookies=None):
+        self.requests.append(("POST", url, data))
+        if not self.responses:
+            raise AssertionError(f"unexpected POST: {url}")
+        expected_url, response = self.responses.pop(0)
+        assert url == expected_url
+        return response
+
+
+def _write_form_html():
+    return """
+    <html><head>
+      <meta name="csrf-token" content="csrf-token">
+    </head><body>
+      <a class="gall-tit-lnk">테스트갤</a>
+      <input id="mobile_key" value="mobile-key">
+      <input class="hide-robot" name="robot-check">
+    </body></html>
+    """
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("start_html", "expected_text"),
@@ -307,6 +350,100 @@ async def test_fetch_parsed_from_urls_preserves_recommend_on_top_level_redirect(
     assert requested_urls == [start_url, target_url]
     assert used_url == target_url
     assert parsed.xpath("string(//*[@id='ok'])") == "recommend-ready"
+
+
+def test_password_check_response_rejects_json_and_alert_failures():
+    api = API.__new__(API)
+
+    api._API__validate_password_check_response('{"result": true}')
+
+    with pytest.raises(Exception, match="비밀번호"):
+        api._API__validate_password_check_response('{"result": false, "msg": "비밀번호가 틀립니다"}')
+
+    with pytest.raises(Exception, match="오류"):
+        api._API__validate_password_check_response("<script>alert('오류입니다');</script>")
+
+
+def test_write_response_extracts_document_id_only_from_clear_signals():
+    api = API.__new__(API)
+
+    assert (
+        api._API__extract_document_id_from_write_response(
+            "<script>location.href='/board/test/123';</script>"
+        )
+        == "123"
+    )
+    assert api._API__extract_document_id_from_write_response('{"no":"456"}') == "456"
+    assert api._API__extract_document_id_from_write_response("<html>이전 글 no=999</html>") is None
+
+
+@pytest.mark.asyncio
+async def test_modify_document_rejects_2xx_alert_error_page():
+    api = API.__new__(API)
+
+    async def fake_access(*args, **kwargs):
+        return "con-key"
+
+    api._API__access = fake_access
+    api.session = _FakeSession(
+        [
+            (
+                "https://m.dcinside.com/ajax/w_filter",
+                _FakeResponse('{"result": true}'),
+            ),
+            (
+                "https://mupload.dcinside.com/write_new.php",
+                _FakeResponse("<script>alert('오류입니다'); location.href='/board/test/123';</script>"),
+            ),
+        ]
+    )
+
+    with pytest.raises(Exception, match="오류"):
+        await api._API__write_or_modify_document(
+            "test",
+            title="제목",
+            contents="본문",
+            name="닉네임",
+            password="비밀번호",
+            intermediate=_write_form_html(),
+            intermediate_referer="https://m.dcinside.com/write/test/modify/123",
+            document_id="123",
+        )
+
+
+@pytest.mark.asyncio
+async def test_modify_document_requires_clear_success_signal():
+    api = API.__new__(API)
+
+    async def fake_access(*args, **kwargs):
+        return "con-key"
+
+    api._API__access = fake_access
+    api.session = _FakeSession(
+        [
+            (
+                "https://m.dcinside.com/ajax/w_filter",
+                _FakeResponse('{"result": true}'),
+            ),
+            (
+                "https://mupload.dcinside.com/write_new.php",
+                _FakeResponse("<script>alert('수정되었습니다'); location.href='/board/test/123';</script>"),
+            ),
+        ]
+    )
+
+    document_id = await api._API__write_or_modify_document(
+        "test",
+        title="제목",
+        contents="본문",
+        name="닉네임",
+        password="비밀번호",
+        intermediate=_write_form_html(),
+        intermediate_referer="https://m.dcinside.com/write/test/modify/123",
+        document_id="123",
+    )
+
+    assert document_id == "123"
 
 
 @pytest.mark.asyncio
@@ -695,7 +832,7 @@ async def test_comments_prefer_mobile_falls_back_to_pc_after_mobile_ends_prematu
 
 
 @pytest.mark.asyncio
-async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_pagination_is_missing():
+async def test_comments_prefer_mobile_stops_without_pc_fallback_when_pagination_is_missing_after_rows():
     api = API.__new__(API)
 
     class DummyComment:
@@ -714,9 +851,9 @@ async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_pagination_is
         """
 
     async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
-        assert num == 2
-        yield DummyComment("1")
-        yield DummyComment("2")
+        raise AssertionError("mobile comments with parsed rows should not require pc fallback")
+        if False:
+            yield DummyComment("pc")
 
     api._API__request_text = fake_request_text
     api._API__comments_from_pc = fake_pc
@@ -732,7 +869,7 @@ async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_pagination_is
         )
     ]
 
-    assert comments == ["1", "2"]
+    assert comments == ["1"]
 
 
 @pytest.mark.asyncio

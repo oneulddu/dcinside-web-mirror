@@ -1,7 +1,6 @@
 #-*- coding:utf-8 -*-
 import asyncio
 import base64
-import tempfile
 from collections import defaultdict, deque
 import ipaddress
 import json
@@ -270,33 +269,18 @@ def _is_allowed_media_content_type(content_type):
     return value.startswith(("image/", "video/", "audio/"))
 
 
-def _buffer_limited_media(upstream):
+def _stream_limited_media(upstream):
     total = 0
-    body = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)
     try:
         for chunk in upstream.iter_content(chunk_size=64 * 1024):
             if not chunk:
                 continue
             total += len(chunk)
             if total > MEDIA_MAX_BYTES:
-                body.close()
-                return None, total
-            body.write(chunk)
-    finally:
-        upstream.close()
-    body.seek(0)
-    return body, total
-
-
-def _file_stream(file_obj):
-    try:
-        while True:
-            chunk = file_obj.read(64 * 1024)
-            if not chunk:
                 break
             yield chunk
     finally:
-        file_obj.close()
+        upstream.close()
 
 
 HTML_ALLOWED_TAGS = {
@@ -412,8 +396,9 @@ def _load_recent_entries():
                 if not board:
                     continue
                 kind = (item.get("kind") or "").strip().lower() or None
+                recommend = 1 if _safe_int(item.get("recommend", 0), 0) == 1 else 0
                 visited_at = float(item.get("visited_at", 0) or 0)
-                rows.append({"board": board, "kind": kind, "visited_at": visited_at})
+                rows.append({"board": board, "kind": kind, "recommend": recommend, "visited_at": visited_at})
 
     if rows:
         return rows
@@ -437,7 +422,7 @@ def _save_recent_cookie(response, entries):
     )
 
 
-def _touch_recent_gallery(response, board, kind):
+def _touch_recent_gallery(response, board, kind, recommend=0):
     board_id = (board or "").strip()
     if not board_id:
         return
@@ -446,12 +431,17 @@ def _touch_recent_gallery(response, board, kind):
     new_row = {
         "board": board_id,
         "kind": (kind or "").strip().lower() or None,
+        "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
         "visited_at": time.time(),
     }
 
     deduped = [new_row]
     for row in rows:
-        if row.get("board") == new_row["board"] and row.get("kind") == new_row["kind"]:
+        if (
+            row.get("board") == new_row["board"]
+            and row.get("kind") == new_row["kind"]
+            and _safe_int(row.get("recommend", 0), 0) == new_row["recommend"]
+        ):
             continue
         deduped.append(row)
 
@@ -603,6 +593,7 @@ def recent():
             {
                 "board": row["board"],
                 "kind": row.get("kind"),
+                "recommend": 1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
                 "visited_at_str": _format_recent_time(row.get("visited_at")),
             }
         )
@@ -638,7 +629,7 @@ def board():
             nav_mode=nav_mode,
         )
     )
-    _touch_recent_gallery(response, board, kind)
+    _touch_recent_gallery(response, board, kind, recommend=recommend)
     return response
 
 
@@ -667,16 +658,13 @@ def media():
         upstream.close()
         return ("", 413)
 
-    body, body_size = _buffer_limited_media(upstream)
-    if body is None:
-        return ("", 413)
-
     response = Response(
-        stream_with_context(_file_stream(body)),
+        stream_with_context(_stream_limited_media(upstream)),
         status=upstream.status_code,
     )
     response.headers["Content-Type"] = content_type
-    response.content_length = body_size
+    if content_length:
+        response.content_length = content_length
     response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
@@ -715,7 +703,7 @@ def read():
             nav_tab=read_nav_tab,
         )
     )
-    _touch_recent_gallery(response, board, kind)
+    _touch_recent_gallery(response, board, kind, recommend=recommend)
     return response
 
 

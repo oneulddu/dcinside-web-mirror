@@ -1,3 +1,5 @@
+import base64
+import json
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
@@ -8,38 +10,61 @@ from app import routes
 
 
 class DummyUpstream:
-    def __init__(self, chunks):
+    def __init__(self, chunks, headers=None, status_code=200):
         self.chunks = chunks
+        self.headers = headers or {}
+        self.status_code = status_code
         self.closed = False
+        self.iterated = 0
 
     def iter_content(self, chunk_size=1):
-        yield from self.chunks
+        for chunk in self.chunks:
+            self.iterated += 1
+            yield chunk
 
     def close(self):
         self.closed = True
 
 
-def test_buffer_limited_media_rejects_unknown_length_over_limit(monkeypatch):
-    monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 5)
-    upstream = DummyUpstream([b"123", b"456"])
-
-    body, total = routes._buffer_limited_media(upstream)
-
-    assert body is None
-    assert total == 6
-    assert upstream.closed is True
-
-
-def test_buffer_limited_media_keeps_complete_body_when_within_limit(monkeypatch):
+def test_stream_limited_media_yields_chunks_without_prefetching(monkeypatch):
     monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 10)
     upstream = DummyUpstream([b"123", b"456"])
 
-    body, total = routes._buffer_limited_media(upstream)
+    stream = routes._stream_limited_media(upstream)
 
-    assert total == 6
-    assert body.read() == b"123456"
+    assert upstream.iterated == 0
+    assert next(stream) == b"123"
+    assert upstream.iterated == 1
+    assert upstream.closed is False
+    assert list(stream) == [b"456"]
     assert upstream.closed is True
-    body.close()
+
+
+def test_stream_limited_media_stops_and_closes_when_limit_exceeded(monkeypatch):
+    monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 5)
+    upstream = DummyUpstream([b"123", b"456"])
+
+    assert list(routes._stream_limited_media(upstream)) == [b"123"]
+    assert upstream.iterated == 2
+    assert upstream.closed is True
+
+
+def test_media_route_streams_upstream_without_buffering_and_sets_known_length(monkeypatch):
+    monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 10)
+    upstream = DummyUpstream(
+        [b"123", b"456"],
+        headers={"Content-Type": "image/jpeg", "Content-Length": "6"},
+    )
+    monkeypatch.setattr(routes, "_fetch_media_response", lambda src, headers, cookies: (upstream, None))
+    app = create_app()
+
+    with app.test_request_context("/media?src=https://images.dcinside.com/test.jpg"):
+        response = routes.media()
+        assert upstream.iterated == 0
+        assert response.content_length == 6
+        assert list(response.response) == [b"123", b"456"]
+
+    assert upstream.closed is True
 
 
 def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
@@ -171,3 +196,62 @@ def test_comment_spam_filter_never_hides_every_comment():
 
     assert "hidden.length >= items.length" in script
     assert 'li.classList.add("comment-spam-hidden")' in script
+
+
+def _encode_recent_cookie(rows):
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def test_recent_gallery_preserves_recommend_context_from_board(monkeypatch):
+    async def fake_async_index(page, board, recommend, kind=None):
+        return []
+
+    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    app = create_app()
+    client = app.test_client()
+
+    client.get("/board?board=test&recommend=1&page=1&kind=minor")
+    response = client.get("/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    link = soup.select_one("a.feed-item")
+    query = parse_qs(urlparse(link["href"]).query)
+
+    assert query["board"] == ["test"]
+    assert query["recommend"] == ["1"]
+    assert query["kind"] == ["minor"]
+    assert "개념글" in link.get_text(" ", strip=True)
+
+
+def test_recent_gallery_dedupes_by_recommend_context(monkeypatch):
+    async def fake_async_index(page, board, recommend, kind=None):
+        return []
+
+    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    app = create_app()
+    client = app.test_client()
+
+    client.get("/board?board=test&recommend=1&page=1&kind=minor")
+    client.get("/board?board=test&recommend=0&page=1&kind=minor")
+    response = client.get("/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    recommends = [parse_qs(urlparse(link["href"]).query)["recommend"][0] for link in soup.select("a.feed-item")]
+
+    assert recommends[:2] == ["0", "1"]
+
+
+def test_recent_gallery_old_cookie_without_recommend_defaults_to_normal():
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        routes.RECENT_COOKIE_NAME,
+        _encode_recent_cookie([{"board": "legacy", "kind": "minor", "visited_at": 1}]),
+    )
+
+    response = client.get("/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    query = parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)
+
+    assert query["board"] == ["legacy"]
+    assert query["recommend"] == ["0"]
+    assert query["kind"] == ["minor"]

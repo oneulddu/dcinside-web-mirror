@@ -9,13 +9,16 @@
     <ul>
         {% for item in recent_items %}
         <li>
-            <a class="feed-item" href="/board?board={{ item.board }}&recommend=0&page=1{% if item.kind %}&kind={{ item.kind }}{% endif %}">
+            <a class="feed-item" href="/board?board={{ item.board }}&recommend={{ item.recommend or 0 }}&page=1{% if item.kind %}&kind={{ item.kind }}{% endif %}">
                 <div class="feed-title-wrap">
                     <h2 class="feed-title">{{ item.board }}</h2>
                     {% if item.kind %}
                     <span class="reply-count">{{ item.kind }}</span>
                     {% else %}
                     <span class="reply-count">normal</span>
+                    {% endif %}
+                    {% if item.recommend == 1 %}
+                    <span class="reply-count">개념글</span>
                     {% endif %}
                 </div>
                 <div class="feed-meta-row">

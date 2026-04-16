@@ -1466,8 +1466,6 @@ class API:
                 if page_numbers and page >= max(page_numbers):
                     break
             else:
-                if fail_fast:
-                    raise RuntimeError("mobile comment pagination missing")
                 break
     async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=True):
         if num == 0:
@@ -1623,9 +1621,8 @@ class API:
         header["X-CSRF-TOKEN"] = csrf_token
         url = "https://m.dcinside.com/ajax/pwcheck-board"
         async with self.session.post(url, headers=header, data=payload) as res:
-            res = await res.text()
-            if not res.strip():
-                raise Exception("Error while modifying: maybe the password is incorrect")
+            response_text = await res.text()
+            self.__validate_password_check_response(response_text)
         payload = {
                 "board_pw": password,
                 "id": board_id,
@@ -1762,24 +1759,258 @@ class API:
             response_text = await res.text()
             if res.status >= 400:
                 raise Exception("Error while writing document: " + unquote(str(response_text)))
+            response_headers = dict(getattr(res, "headers", {}) or {})
+            response_url = str(getattr(res, "url", "") or "")
         if document_id:
-            return str(document_id)
-        created_id = self.__extract_document_id_from_write_response(response_text)
+            self.__raise_if_write_response_failed(response_text, "modifying")
+            modified_id = self.__extract_document_id_from_write_response(
+                response_text,
+                response_url=response_url,
+                response_headers=response_headers,
+            )
+            if modified_id and str(modified_id) != str(document_id):
+                raise Exception("Error while modifying document: upstream returned different document id")
+            if modified_id or self.__is_successful_modify_response(response_text):
+                return str(document_id)
+            raise Exception("Error while modifying document: could not verify upstream response")
+        self.__raise_if_write_response_failed(response_text, "writing")
+        created_id = self.__extract_document_id_from_write_response(
+            response_text,
+            response_url=response_url,
+            response_headers=response_headers,
+        )
         if created_id:
             return created_id
         raise Exception("Error while writing document: could not parse upstream response")
 
-    def __extract_document_id_from_write_response(self, response_text):
+    def __validate_password_check_response(self, response_text):
         text = response_text or ""
-        patterns = [
-            r"[?&]no=(\d+)",
-            r"/(?:board|mini)/[^/'\"?]+/(\d+)",
-            r'"no"\s*:\s*"?(\d+)"?',
+        if not text.strip():
+            raise Exception("Error while modifying: maybe the password is incorrect")
+
+        parsed_json = self.__loads_json_or_none(text)
+        if parsed_json is not None:
+            failure_message = self.__json_failure_message(parsed_json)
+            if failure_message:
+                raise Exception("Error while modifying: " + failure_message)
+            if self.__json_success_value(parsed_json) is False:
+                raise Exception("Error while modifying: maybe the password is incorrect")
+            return
+
+        if self.__contains_failure_signal(text, include_alert=True):
+            raise Exception("Error while modifying: " + self.__clean_failure_text(text))
+
+    def __loads_json_or_none(self, text):
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    def __json_success_value(self, value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "ok", "success", "1", "y", "yes"}:
+                return True
+            if normalized in {"false", "fail", "failed", "error", "0", "n", "no"}:
+                return False
+            return None
+        if isinstance(value, dict):
+            for key in ("result", "success", "status", "code", "ok"):
+                if key in value:
+                    result = self.__json_success_value(value[key])
+                    if result is not None:
+                        return result
+            data = value.get("data")
+            if isinstance(data, (bool, int, float, str)):
+                return self.__json_success_value(data)
+        return None
+
+    def __json_failure_message(self, value):
+        if isinstance(value, dict):
+            result = self.__json_success_value(value)
+            message = " ".join(
+                str(value.get(key) or "")
+                for key in ("message", "msg", "error", "reason", "alert")
+                if value.get(key)
+            ).strip()
+            if result is False:
+                return message or "maybe the password is incorrect"
+            if message and self.__contains_failure_signal(message, include_alert=False):
+                return message
+        elif isinstance(value, str):
+            if self.__contains_failure_signal(value, include_alert=True):
+                return value
+        return None
+
+    def __clean_failure_text(self, text):
+        text = unquote(str(text or ""))
+        try:
+            parsed = lxml.html.fromstring(text)
+            text = parsed.text_content()
+        except Exception:
+            pass
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:200] or "upstream rejected the request"
+
+    def __contains_failure_signal(self, text, include_alert=False):
+        raw = unquote(str(text or ""))
+        lowered = raw.lower()
+        alert_messages = self.__extract_alert_messages(raw)
+        success_phrases = [
+            "성공",
+            "완료",
+            "등록되었습니다",
+            "등록 되었습니다",
+            "수정되었습니다",
+            "수정 되었습니다",
+            "작성되었습니다",
+            "작성 되었습니다",
         ]
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                return match.group(1)
+        failure_phrases = [
+            "비밀번호가 틀",
+            "비밀번호를 확인",
+            "비밀번호 확인",
+            "비밀번호가 일치",
+            "잘못된 비밀번호",
+            "패스워드가 틀",
+            "password is incorrect",
+            "incorrect password",
+            "wrong password",
+            "invalid password",
+            "오류",
+            "에러",
+            "실패",
+            "fail",
+            "failed",
+            "error",
+            "invalid",
+            "forbidden",
+            "denied",
+            "권한",
+            "차단",
+            "자동등록방지",
+            "캡차",
+            "captcha",
+            "금지어",
+            "도배",
+        ]
+
+        for alert in alert_messages:
+            normalized_alert = alert.strip().lower()
+            if not normalized_alert:
+                continue
+            if any(phrase in normalized_alert for phrase in success_phrases):
+                continue
+            if include_alert:
+                return True
+            if any(phrase in normalized_alert for phrase in failure_phrases):
+                return True
+
+        return any(phrase in lowered for phrase in failure_phrases)
+
+    def __extract_alert_messages(self, text):
+        messages = []
+        for quote_char, message in re.findall(r"alert\s*\(\s*(['\"])(.*?)\1\s*\)", text or "", flags=re.I | re.S):
+            messages.append(message)
+        return messages
+
+    def __raise_if_write_response_failed(self, response_text, action):
+        if self.__contains_failure_signal(response_text, include_alert=False):
+            raise Exception("Error while {} document: {}".format(action, self.__clean_failure_text(response_text)))
+
+        for alert in self.__extract_alert_messages(response_text or ""):
+            if any(phrase in alert for phrase in ["성공", "완료", "등록", "수정"]):
+                continue
+            raise Exception("Error while {} document: {}".format(action, self.__clean_failure_text(alert)))
+
+        parsed_json = self.__loads_json_or_none(response_text or "")
+        if parsed_json is not None:
+            failure_message = self.__json_failure_message(parsed_json)
+            if failure_message:
+                raise Exception("Error while {} document: {}".format(action, failure_message))
+
+    def __is_successful_modify_response(self, response_text):
+        parsed_json = self.__loads_json_or_none(response_text or "")
+        if parsed_json is not None:
+            success = self.__json_success_value(parsed_json)
+            if success is True:
+                return True
+
+        text = unquote(str(response_text or ""))
+        return any(
+            phrase in text
+            for phrase in [
+                "수정되었습니다",
+                "수정 되었습니다",
+                "수정이 완료",
+                "수정 완료",
+                "modify_success",
+            ]
+        )
+
+    def __extract_document_id_from_write_response(self, response_text, response_url=None, response_headers=None):
+        response_headers = response_headers or {}
+        for url in [
+            response_url,
+            response_headers.get("Location"),
+            response_headers.get("location"),
+        ]:
+            document_id = self.__extract_document_id_from_url(url)
+            if document_id:
+                return document_id
+
+        parsed_json = self.__loads_json_or_none(response_text or "")
+        document_id = self.__extract_document_id_from_json(parsed_json)
+        if document_id:
+            return document_id
+
+        redirect_url = self.__extract_top_level_redirect_url(response_text or "")
+        document_id = self.__extract_document_id_from_url(redirect_url)
+        if document_id:
+            return document_id
+
+        stripped = (response_text or "").strip()
+        if re.match(r"^https?://", stripped):
+            document_id = self.__extract_document_id_from_url(stripped)
+            if document_id:
+                return document_id
+        return None
+
+    def __extract_document_id_from_json(self, value):
+        if isinstance(value, dict):
+            for key in ("no", "document_id", "doc_id", "article_no", "article_id"):
+                document_id = value.get(key)
+                if re.fullmatch(r"\d+", str(document_id or "")):
+                    return str(document_id)
+            data = value.get("data")
+            if isinstance(data, (dict, list)):
+                return self.__extract_document_id_from_json(data)
+            if re.fullmatch(r"\d+", str(data or "")):
+                return str(data)
+        if isinstance(value, list):
+            for item in value:
+                document_id = self.__extract_document_id_from_json(item)
+                if document_id:
+                    return document_id
+        return None
+
+    def __extract_document_id_from_url(self, url):
+        if not url:
+            return None
+        parsed = urlparse(str(url))
+        query = parse_qs(parsed.query)
+        for key in ("no", "document_id", "doc_id"):
+            values = query.get(key)
+            if values and re.fullmatch(r"\d+", str(values[0])):
+                return str(values[0])
+        parts = [part for part in (parsed.path or "").split("/") if part]
+        if len(parts) >= 3 and parts[-1].isdigit() and parts[-3] in {"board", "mini"}:
+            return parts[-1]
         return None
 
     async def __access(self, token_verify, target_url, require_conkey=True, csrf_token=None):
