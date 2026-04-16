@@ -293,7 +293,7 @@ async def test_related_uses_recommend_board_pages(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_related_recommend_source_page_miss_scans_past_default_probe(monkeypatch):
+async def test_related_recommend_source_page_miss_falls_back_to_first_page(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
 
@@ -308,10 +308,7 @@ async def test_related_recommend_source_page_miss_scans_past_default_probe(monke
             if kwargs["recommend"] == 1 and kwargs["start_page"] == 7:
                 yield _index_item(300)
                 yield _index_item(200)
-            elif kwargs["recommend"] == 1 and 1 <= kwargs["start_page"] <= core.RELATED_PAGE_PROBE_STEPS:
-                yield _index_item(300 + kwargs["start_page"])
-                yield _index_item(200 + kwargs["start_page"])
-            elif kwargs["recommend"] == 1 and kwargs["start_page"] == core.RELATED_PAGE_PROBE_STEPS + 1:
+            elif kwargs["recommend"] == 1 and kwargs["start_page"] == 1:
                 yield _index_item(100)
                 yield _index_item(99)
 
@@ -329,10 +326,7 @@ async def test_related_recommend_source_page_miss_scans_past_default_probe(monke
     assert [row["id"] for row in related] == ["99"]
     assert api.calls == [
         (7, core.RELATED_PAGE_FETCH_SIZE, 1),
-        *[
-            (page, core.RELATED_PAGE_FETCH_SIZE, 1)
-            for page in range(1, core.RELATED_PAGE_PROBE_STEPS + 2)
-        ],
+        (1, core.RELATED_PAGE_FETCH_SIZE, 1),
     ]
 
 
