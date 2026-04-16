@@ -611,6 +611,45 @@ async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_pagination_is
 
 
 @pytest.mark.asyncio
+async def test_mobile_comment_rows_accept_classless_comment_items():
+    api = API.__new__(API)
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        return 200, {}, """
+        <html><head></head><body>
+          <ul class="all-comment-lst">
+            <li no="1" m_no="0">
+              <div><span>mobile author</span></div>
+              <p>mobile first</p>
+              <span>04.16 12:00:00</span>
+            </li>
+          </ul>
+        </body></html>
+        """
+
+    async def fail_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+        raise AssertionError("classless mobile comments should not require pc fallback")
+        if False:
+            yield None
+
+    api._API__request_text = fake_request_text
+    api._API__comments_from_pc = fail_pc
+
+    comments = [
+        item.id
+        async for item in api.comments(
+            "aoegame",
+            "30150503",
+            num=1,
+            kind="minor",
+            prefer_mobile=True,
+        )
+    ]
+
+    assert comments == ["1"]
+
+
+@pytest.mark.asyncio
 async def test_comments_zero_limit_skips_mobile_and_pc_fetches():
     api = API.__new__(API)
 

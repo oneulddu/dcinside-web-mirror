@@ -578,7 +578,8 @@ class API:
         rows = parsed.xpath(
             ".//ul[contains(@class, 'all-comment-lst')]/li["
             "contains(concat(' ', normalize-space(@class), ' '), ' comment ') "
-            "or contains(concat(' ', normalize-space(@class), ' '), ' comment-add ')"
+            "or contains(concat(' ', normalize-space(@class), ' '), ' comment-add ') "
+            "or (@no and @m_no)"
             "]"
         )
         if rows:
@@ -586,7 +587,8 @@ class API:
         if len(parsed) >= 2:
             return parsed[1].xpath(
                 ".//li[contains(concat(' ', normalize-space(@class), ' '), ' comment ') "
-                "or contains(concat(' ', normalize-space(@class), ' '), ' comment-add ')]"
+                "or contains(concat(' ', normalize-space(@class), ' '), ' comment-add ') "
+                "or (@no and @m_no)]"
             )
         return []
 
