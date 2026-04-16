@@ -389,7 +389,7 @@ async def _related_by_position_with_api(
             _cache_set(_LATEST_ID_CACHE, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
         return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
 
-    async def find_target_from_page(start_page):
+    async def find_target_from_page(start_page, single_page=False):
         found_page = None
         found_index = -1
         found_posts = []
@@ -413,10 +413,15 @@ async def _related_by_position_with_api(
                 found_index = page_ids.index(target_id)
                 found_posts = page_posts
                 break
+            if single_page:
+                break
 
             valid_ids = [pid for pid in page_ids if pid > 0]
             if not valid_ids:
                 break
+            if recommend_value:
+                page += 1
+                continue
             page_max = max(valid_ids)
             page_min = min(valid_ids)
             if target_id > page_max:
@@ -429,11 +434,18 @@ async def _related_by_position_with_api(
         return found_page, found_index, found_posts
 
     if source_page_value > 0:
-        found_page, found_index, found_posts = await find_target_from_page(source_page_value)
+        found_page, found_index, found_posts = await find_target_from_page(
+            source_page_value,
+            single_page=bool(recommend_value),
+        )
         if found_page is None:
-            estimated_page = await estimate_page_from_latest_id()
-            if estimated_page is not None and estimated_page != source_page_value:
-                found_page, found_index, found_posts = await find_target_from_page(estimated_page)
+            if recommend_value:
+                if source_page_value != 1:
+                    found_page, found_index, found_posts = await find_target_from_page(1)
+            else:
+                estimated_page = await estimate_page_from_latest_id()
+                if estimated_page is not None and estimated_page != source_page_value:
+                    found_page, found_index, found_posts = await find_target_from_page(estimated_page)
     else:
         if recommend_value:
             found_page, found_index, found_posts = await find_target_from_page(1)
