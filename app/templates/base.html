@@ -3,6 +3,44 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script>
+        (function () {
+            "use strict";
+
+            var theme = "dark";
+            try {
+                theme = window.localStorage.getItem("mirror_theme_v1") === "light" ? "light" : "dark";
+            } catch (err) {
+                theme = "dark";
+            }
+
+            var root = document.documentElement;
+            root.dataset.theme = theme;
+            root.style.colorScheme = theme;
+
+            if (theme !== "light") {
+                return;
+            }
+
+            var lightVariables = {
+                "--page-bg": "#f4f4f5",
+                "--shell-bg": "#ffffff",
+                "--shell-border": "rgba(24, 24, 27, 0.10)",
+                "--header-top": "rgba(255, 255, 255, 0.88)",
+                "--header-tab": "#ffffff",
+                "--text-main": "#27272a",
+                "--text-title": "#09090b",
+                "--text-sub": "#52525b",
+                "--text-soft": "#71717a",
+                "--blue": "#2563eb",
+                "--blue-hover": "#1d4ed8"
+            };
+
+            Object.keys(lightVariables).forEach(function (name) {
+                root.style.setProperty(name, lightVariables[name]);
+            });
+        })();
+    </script>
     <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
     <title>{{ title or "머숨 미러" }}</title>

@@ -1,58 +1,25 @@
 #-*- coding:utf-8 -*-
-import asyncio
-import base64
-from collections import defaultdict, deque
-import ipaddress
-import json
 import os
-import re
-import socket
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, quote, urljoin, urlparse
-from flask import Blueprint, Response, jsonify, make_response, render_template, request, url_for
+from flask import Blueprint, jsonify, make_response, render_template, request, url_for
 from bs4 import BeautifulSoup
-import requests
 
-from .services.core import async_index, async_read, async_related_by_position
+from .services.async_bridge import run_async
+from .services.core import async_index, async_read, async_related_after_position
+from .services.heung import get_heung_galleries, search_galleries
+from .services.html_sanitizer import rewrite_content_images, sanitize_html_fragment
+from .services.media_proxy import build_media_response
+from .services.recent import (
+    RECENT_MAX_ITEMS,
+    format_recent_time,
+    load_recent_entries,
+    touch_recent_gallery,
+)
+
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-INSTANCE_DIR = os.path.join(BASE_DIR, "instance")
-os.makedirs(INSTANCE_DIR, exist_ok=True)
 
 bp = Blueprint("main", __name__)
-ASYNC_FALLBACK_EXECUTOR = ThreadPoolExecutor(max_workers=2)
-
-
-def _env_int(name, default):
-    try:
-        return int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
-
-
-HTTP_TIMEOUT = _env_int("MIRROR_HTTP_TIMEOUT", 20)
-MEDIA_CACHE_MAX_AGE = _env_int("MIRROR_MEDIA_CACHE_MAX_AGE", 86400)
-MEDIA_MAX_BYTES = _env_int("MIRROR_MEDIA_MAX_BYTES", 25 * 1024 * 1024)
-MEDIA_REDIRECT_LIMIT = _env_int("MIRROR_MEDIA_REDIRECT_LIMIT", 3)
-MEDIA_ALLOWED_HOST_SUFFIXES = tuple(
-    suffix.strip().lower().lstrip(".")
-    for suffix in os.getenv("MIRROR_MEDIA_ALLOWED_HOST_SUFFIXES", "dcinside.com,dcinside.co.kr").split(",")
-    if suffix.strip()
-)
-HEUNG_CACHE_TTL = _env_int("MIRROR_HEUNG_CACHE_TTL", 3600)
-HEUNG_CACHE_FILE = os.getenv("MIRROR_HEUNG_CACHE_FILE", os.path.join(INSTANCE_DIR, "heung_gallery_cache.json"))
-HEUNG_CACHE = {"updated_at": 0.0, "items": []}
-HEUNG_CACHE_LOCK = threading.Lock()
-HEUNG_REFRESH_LOCK = threading.Lock()
-RECENT_COOKIE_NAME = "recent_galleries"
-RECENT_COOKIE_TTL = _env_int("MIRROR_RECENT_COOKIE_TTL", 60 * 60 * 24 * 30)
-RECENT_MAX_ITEMS = _env_int("MIRROR_RECENT_MAX_ITEMS", 30)
-RECENT_SERVER_CACHE_TTL = _env_int("MIRROR_RECENT_SERVER_CACHE_TTL", min(RECENT_COOKIE_TTL, 60 * 60 * 24))
-RECENT_SERVER_CACHE_MAX_KEYS = _env_int("MIRROR_RECENT_SERVER_CACHE_MAX_KEYS", 2048)
-RECENT_SERVER_CACHE = {}
-RECENT_SERVER_CACHE_LOCK = threading.Lock()
 
 
 def _safe_int(value, default):
@@ -60,14 +27,6 @@ def _safe_int(value, default):
         return int(value)
     except (TypeError, ValueError):
         return default
-
-
-def _run_async(coro):
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    return ASYNC_FALLBACK_EXECUTOR.submit(lambda: asyncio.run(coro)).result()
 
 
 def _serialize_related_posts(posts):
@@ -88,591 +47,10 @@ def _serialize_related_posts(posts):
     return rows
 
 
-def _extract_board_id(href):
-    if not href:
-        return None
-    query = parse_qs(urlparse(href).query)
-    ids = query.get("id")
-    return ids[0] if ids else None
-
-
-def _fetch_heung_galleries():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get("https://gall.dcinside.com/", headers=headers, timeout=HTTP_TIMEOUT)
-    res.raise_for_status()
-    soup = BeautifulSoup(res.text, "html.parser")
-    layer = soup.select_one("#heung_gall_all_lyr")
-    if layer is None:
-        raise RuntimeError("heung_gall_all_lyr not found")
-
-    items = []
-    for anchor in layer.select("ul.pop_hotmgall_listbox li > a[href]"):
-        rank_el = anchor.select_one("span.num")
-        if rank_el is None:
-            continue
-        match = re.search(r"\d+", rank_el.get_text(strip=True))
-        if not match:
-            continue
-
-        rank = int(match.group(0))
-        board_id = _extract_board_id(anchor.get("href"))
-        if not board_id:
-            continue
-
-        title = anchor.get_text(" ", strip=True)
-        title = re.sub(r"^\d+\.\s*", "", title).strip()
-        items.append({
-            "rank": rank,
-            "name": title,
-            "board_id": board_id,
-        })
-
-    items.sort(key=lambda row: row["rank"])
-    rank_map = {}
-    for row in items:
-        rank_map[row["rank"]] = row
-    return [rank_map[key] for key in sorted(rank_map.keys())][:300]
-
-
-def _read_heung_cache_file():
-    if not os.path.exists(HEUNG_CACHE_FILE):
-        return None
-    try:
-        with open(HEUNG_CACHE_FILE, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        updated_at = float(payload.get("updated_at", 0.0))
-        items = payload.get("items", [])
-        if updated_at <= 0 or not isinstance(items, list):
-            return None
-        return {"updated_at": updated_at, "items": items}
-    except Exception:
-        return None
-
-
-def _write_heung_cache_file(updated_at, items):
-    payload = {"updated_at": float(updated_at), "items": items}
-    tmp = HEUNG_CACHE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    os.replace(tmp, HEUNG_CACHE_FILE)
-
-
-def _heung_cache_snapshot():
-    with HEUNG_CACHE_LOCK:
-        return list(HEUNG_CACHE["items"]), float(HEUNG_CACHE["updated_at"] or 0.0)
-
-
-def _replace_heung_cache(updated_at, items):
-    cache_items = list(items or [])
-    with HEUNG_CACHE_LOCK:
-        HEUNG_CACHE["updated_at"] = float(updated_at)
-        HEUNG_CACHE["items"] = cache_items
-    return list(cache_items), float(updated_at)
-
-
-def _load_heung_file_cache_if_empty():
-    with HEUNG_CACHE_LOCK:
-        needs_file_cache = not HEUNG_CACHE["items"]
-    if not needs_file_cache:
-        return
-
-    cached = _read_heung_cache_file()
-    if not cached:
-        return
-
-    cached_updated_at = float(cached["updated_at"])
-    cached_items = list(cached["items"])
-    with HEUNG_CACHE_LOCK:
-        if not HEUNG_CACHE["items"] or cached_updated_at > float(HEUNG_CACHE["updated_at"] or 0.0):
-            HEUNG_CACHE["updated_at"] = cached_updated_at
-            HEUNG_CACHE["items"] = cached_items
-
-
-def _is_heung_cache_fresh(items, updated_at, now=None):
-    now = time.time() if now is None else now
-    return bool(items) and (now - float(updated_at or 0.0)) < HEUNG_CACHE_TTL
-
-
-def _refresh_heung_galleries():
-    fresh_items = _fetch_heung_galleries()
-    fetched_at = time.time()
-    fresh_items, fetched_at = _replace_heung_cache(fetched_at, fresh_items)
-    try:
-        _write_heung_cache_file(fetched_at, fresh_items)
-    except Exception:
-        pass
-    return fresh_items, fetched_at
-
-
 def _format_cache_time(ts):
     kst = timezone(timedelta(hours=9))
     return datetime.fromtimestamp(ts, tz=kst).strftime("%Y-%m-%d %H:%M:%S KST")
 
-
-def _format_recent_time(ts):
-    if not ts:
-        return "-"
-    kst = timezone(timedelta(hours=9))
-    return datetime.fromtimestamp(float(ts), tz=kst).strftime("%Y-%m-%d %H:%M")
-
-
-def _build_pc_view_referer(board, pid, kind=None):
-    board_id = (board or "").strip()
-    doc_id = _safe_int(pid, 0)
-    board_kind = (kind or "").strip().lower()
-    if not board_id or doc_id <= 0:
-        return "https://gall.dcinside.com/"
-    if board_kind == "minor":
-        return f"https://gall.dcinside.com/mgallery/board/view/?id={board_id}&no={doc_id}"
-    if board_kind == "mini":
-        return f"https://gall.dcinside.com/mini/board/view/?id={board_id}&no={doc_id}"
-    if board_kind == "person":
-        return f"https://gall.dcinside.com/person/board/view/?id={board_id}&no={doc_id}"
-    return f"https://gall.dcinside.com/board/view/?id={board_id}&no={doc_id}"
-
-
-def _is_allowed_media_host(hostname):
-    host = (hostname or "").strip().lower().rstrip(".")
-    if not host:
-        return False
-    return any(host == suffix or host.endswith(f".{suffix}") for suffix in MEDIA_ALLOWED_HOST_SUFFIXES)
-
-
-def _is_public_hostname(hostname):
-    try:
-        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        return False
-    addresses = {info[4][0] for info in infos if info and info[4]}
-    if not addresses:
-        return False
-    for address in addresses:
-        try:
-            ip = ipaddress.ip_address(address)
-        except ValueError:
-            return False
-        if not ip.is_global:
-            return False
-    return True
-
-
-def _validate_media_url(raw_url, base_url=None):
-    url = (raw_url or "").strip()
-    if not url:
-        return None
-    if url.startswith("//"):
-        url = "https:" + url
-    if base_url:
-        url = urljoin(base_url, url)
-
-    try:
-        parsed = urlparse(url)
-        _ = parsed.port
-    except ValueError:
-        return None
-
-    if parsed.scheme not in {"http", "https"}:
-        return None
-    if parsed.username or parsed.password:
-        return None
-    if not _is_allowed_media_host(parsed.hostname):
-        return None
-    if not _is_public_hostname(parsed.hostname):
-        return None
-    return url
-
-
-def _fetch_media_response(src, headers, cookies):
-    url = _validate_media_url(src)
-    if not url:
-        return None, 400
-
-    for _ in range(MEDIA_REDIRECT_LIMIT + 1):
-        try:
-            upstream = requests.get(
-                url,
-                headers=headers,
-                cookies=cookies,
-                timeout=HTTP_TIMEOUT,
-                stream=True,
-                allow_redirects=False,
-            )
-        except requests.RequestException:
-            return None, 502
-
-        if not upstream.is_redirect:
-            return upstream, None
-
-        location = upstream.headers.get("Location")
-        upstream.close()
-        url = _validate_media_url(location, base_url=url)
-        if not url:
-            return None, 400
-
-    return None, 508
-
-
-def _is_allowed_media_content_type(content_type):
-    value = (content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
-    if value == "application/octet-stream":
-        return True
-    return value.startswith(("image/", "video/", "audio/"))
-
-
-def _read_limited_media_body(upstream):
-    total = 0
-    chunks = []
-    try:
-        for chunk in upstream.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            total += len(chunk)
-            if total > MEDIA_MAX_BYTES:
-                return None, 413
-            chunks.append(chunk)
-        return b"".join(chunks), None
-    finally:
-        upstream.close()
-
-
-HTML_ALLOWED_TAGS = {
-    "a", "abbr", "b", "blockquote", "br", "code", "dd", "del", "div", "dl", "dt",
-    "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i",
-    "img", "li", "ol", "p", "pre", "s", "span", "strong", "sub", "sup", "table",
-    "tbody", "td", "th", "thead", "tr", "u", "ul",
-}
-HTML_DROP_TAGS = {"script", "style", "iframe", "object", "embed", "link", "meta", "base", "form", "input", "button"}
-HTML_GLOBAL_ATTRS = {"class", "title"}
-HTML_TAG_ATTRS = {
-    "a": {"href", "target", "rel"},
-    "img": {"src", "alt", "loading", "decoding", "width", "height"},
-    "td": {"colspan", "rowspan"},
-    "th": {"colspan", "rowspan"},
-}
-
-
-def _is_safe_href(value):
-    url = (value or "").strip()
-    if not url:
-        return False
-    parsed = urlparse(url)
-    if not parsed.scheme:
-        return url.startswith(("#", "/")) and not url.startswith("//")
-    return parsed.scheme in {"http", "https", "mailto"}
-
-
-def _sanitize_html_fragment(raw_html):
-    soup = BeautifulSoup(raw_html or "", "html.parser")
-    for tag in list(soup.find_all(True)):
-        name = (tag.name or "").lower()
-        if name in HTML_DROP_TAGS:
-            tag.decompose()
-            continue
-        if name not in HTML_ALLOWED_TAGS:
-            tag.unwrap()
-            continue
-
-        allowed_attrs = HTML_GLOBAL_ATTRS | HTML_TAG_ATTRS.get(name, set())
-        for attr in list(tag.attrs):
-            attr_name = attr.lower()
-            if attr_name.startswith("on") or attr_name not in allowed_attrs:
-                del tag.attrs[attr]
-                continue
-
-            value = tag.attrs.get(attr)
-            if attr_name == "href":
-                if not _is_safe_href(value):
-                    del tag.attrs[attr]
-                else:
-                    tag["rel"] = "noopener noreferrer"
-            elif attr_name == "src":
-                if name != "img" or not str(value).startswith("/media?"):
-                    tag.decompose()
-                    break
-    return str(soup)
-
-
-def _pick_soup_image_src(tag):
-    for key in ("data-gif", "data-original", "src"):
-        src = tag.get(key)
-        if src:
-            return src
-    return None
-
-
-def _rewrite_content_images(soup, images, board, pid, kind):
-    image_urls = defaultdict(deque)
-    for image_src in images:
-        image_urls[image_src].append(url_for("main.media", src=image_src, board=board, pid=pid, kind=kind))
-
-    for img in soup.find_all("img"):
-        original_src = _pick_soup_image_src(img)
-        if not original_src or not image_urls[original_src]:
-            img.decompose()
-            continue
-        img["src"] = image_urls[original_src].popleft()
-        img["loading"] = "lazy"
-        img["decoding"] = "async"
-        for attr in ("data-original", "data-gif", "srcset"):
-            img.attrs.pop(attr, None)
-    return soup
-
-
-def _recent_cache_key():
-    remote_addr = (request.remote_addr or "").strip()
-    user_agent = (request.headers.get("User-Agent") or "").strip()
-    return f"{remote_addr}|{user_agent}"
-
-
-def _copy_recent_entries(entries):
-    return [dict(row) for row in (entries or [])[:RECENT_MAX_ITEMS] if isinstance(row, dict)]
-
-
-def _prune_recent_server_cache_locked(now=None):
-    now = time.time() if now is None else now
-    expired_keys = [
-        key
-        for key, entry in RECENT_SERVER_CACHE.items()
-        if not isinstance(entry, dict) or float(entry.get("expires_at", 0.0) or 0.0) <= now
-    ]
-    for key in expired_keys:
-        RECENT_SERVER_CACHE.pop(key, None)
-
-    max_keys = max(_safe_int(RECENT_SERVER_CACHE_MAX_KEYS, 0), 0)
-    overflow = len(RECENT_SERVER_CACHE) - max_keys
-    if overflow <= 0:
-        return
-
-    oldest_keys = sorted(
-        RECENT_SERVER_CACHE,
-        key=lambda key: float(RECENT_SERVER_CACHE[key].get("last_seen", 0.0) or 0.0),
-    )[:overflow]
-    for key in oldest_keys:
-        RECENT_SERVER_CACHE.pop(key, None)
-
-
-def _get_recent_server_cache(key):
-    now = time.time()
-    with RECENT_SERVER_CACHE_LOCK:
-        _prune_recent_server_cache_locked(now)
-        entry = RECENT_SERVER_CACHE.get(key)
-        if not entry:
-            return []
-
-        # Older in-memory shape was a bare list. Accept it once so tests/dev
-        # reloads do not break, then rewrite it with TTL metadata.
-        if isinstance(entry, list):
-            entry = {
-                "entries": _copy_recent_entries(entry),
-                "expires_at": now + max(_safe_int(RECENT_SERVER_CACHE_TTL, 0), 0),
-                "last_seen": now,
-            }
-            RECENT_SERVER_CACHE[key] = entry
-
-        expires_at = float(entry.get("expires_at", 0.0) or 0.0)
-        if expires_at <= now:
-            RECENT_SERVER_CACHE.pop(key, None)
-            return []
-
-        entry["last_seen"] = now
-        return _copy_recent_entries(entry.get("entries", []))
-
-
-def _set_recent_server_cache(key, entries):
-    ttl = max(_safe_int(RECENT_SERVER_CACHE_TTL, 0), 0)
-    max_keys = max(_safe_int(RECENT_SERVER_CACHE_MAX_KEYS, 0), 0)
-    if ttl <= 0 or max_keys <= 0:
-        return
-
-    now = time.time()
-    with RECENT_SERVER_CACHE_LOCK:
-        _prune_recent_server_cache_locked(now)
-        RECENT_SERVER_CACHE[key] = {
-            "entries": _copy_recent_entries(entries),
-            "expires_at": now + ttl,
-            "last_seen": now,
-        }
-        _prune_recent_server_cache_locked(now)
-
-
-def _load_recent_entries():
-    raw = request.cookies.get(RECENT_COOKIE_NAME, "")
-    rows = []
-    if raw:
-        raw = raw.strip().strip('"')
-        decoded = raw
-        try:
-            padded = raw + "=" * (-len(raw) % 4)
-            decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
-        except Exception:
-            decoded = raw.replace("\\054", ",")
-        try:
-            parsed = json.loads(decoded)
-        except Exception:
-            parsed = []
-
-        if isinstance(parsed, list):
-            for item in parsed:
-                if not isinstance(item, dict):
-                    continue
-                board = (item.get("board") or "").strip()
-                if not board:
-                    continue
-                kind = (item.get("kind") or "").strip().lower() or None
-                recommend = 1 if _safe_int(item.get("recommend", 0), 0) == 1 else 0
-                visited_at = float(item.get("visited_at", 0) or 0)
-                rows.append({"board": board, "kind": kind, "recommend": recommend, "visited_at": visited_at})
-
-    if rows:
-        return rows
-
-    return _get_recent_server_cache(_recent_cache_key())
-
-
-def _save_recent_cookie(response, entries):
-    payload = json.dumps(entries[:RECENT_MAX_ITEMS], ensure_ascii=False, separators=(",", ":"))
-    encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
-    response.set_cookie(
-        RECENT_COOKIE_NAME,
-        encoded,
-        max_age=RECENT_COOKIE_TTL,
-        path="/",
-        samesite="Lax",
-        secure=request.is_secure,
-    )
-
-
-def _touch_recent_gallery(response, board, kind, recommend=0):
-    board_id = (board or "").strip()
-    if not board_id:
-        return
-
-    rows = _load_recent_entries()
-    new_row = {
-        "board": board_id,
-        "kind": (kind or "").strip().lower() or None,
-        "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
-        "visited_at": time.time(),
-    }
-
-    deduped = [new_row]
-    for row in rows:
-        if (
-            row.get("board") == new_row["board"]
-            and row.get("kind") == new_row["kind"]
-            and _safe_int(row.get("recommend", 0), 0) == new_row["recommend"]
-        ):
-            continue
-        deduped.append(row)
-
-    deduped = deduped[:RECENT_MAX_ITEMS]
-    _set_recent_server_cache(_recent_cache_key(), deduped)
-
-    _save_recent_cookie(response, deduped)
-
-
-def _get_heung_galleries():
-    _load_heung_file_cache_if_empty()
-
-    cached_items, cached_updated_at = _heung_cache_snapshot()
-    if _is_heung_cache_fresh(cached_items, cached_updated_at):
-        return cached_items, cached_updated_at
-
-    acquired = HEUNG_REFRESH_LOCK.acquire(blocking=False)
-    if not acquired:
-        if cached_items:
-            return cached_items, cached_updated_at
-
-        with HEUNG_REFRESH_LOCK:
-            refreshed_items, refreshed_updated_at = _heung_cache_snapshot()
-            if refreshed_items:
-                return refreshed_items, refreshed_updated_at
-
-        acquired = HEUNG_REFRESH_LOCK.acquire(blocking=False)
-        if not acquired:
-            refreshed_items, refreshed_updated_at = _heung_cache_snapshot()
-            if refreshed_items:
-                return refreshed_items, refreshed_updated_at
-            raise RuntimeError("heung gallery refresh is unavailable")
-
-    try:
-        cached_items, cached_updated_at = _heung_cache_snapshot()
-        if _is_heung_cache_fresh(cached_items, cached_updated_at):
-            return cached_items, cached_updated_at
-
-        try:
-            return _refresh_heung_galleries()
-        except Exception:
-            fallback_items, fallback_updated_at = _heung_cache_snapshot()
-            if fallback_items:
-                return fallback_items, fallback_updated_at
-            raise
-    finally:
-        HEUNG_REFRESH_LOCK.release()
-
-
-def _search_galleries(query):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    encoded = quote(query, safe="")
-    url = f"https://search.dcinside.com/gallery/q/{encoded}"
-    res = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT)
-    res.raise_for_status()
-    soup = BeautifulSoup(res.text, "html.parser")
-
-    container = soup.select_one("div.integrate_cont.gallsch_result_all")
-    if container is None:
-        return []
-
-    def infer_kind(href):
-        if "/mgallery/" in href:
-            return "minor"
-        if "/mini/" in href:
-            return "mini"
-        if "/person/" in href:
-            return "person"
-        return "normal"
-
-    items = []
-    seen = set()
-    for li in container.select("ul.integrate_cont_list > li"):
-        anchor = li.select_one("a.gallname_txt[href]")
-        if anchor is None:
-            continue
-        href = anchor.get("href", "")
-        board_id = _extract_board_id(href)
-        if not board_id or board_id in seen:
-            continue
-
-        name = " ".join(anchor.stripped_strings)
-        name = re.sub(r"\s*[ⓜⓝⓟ]$", "", name).strip()
-
-        ranking_el = li.select_one("span.info.ranking")
-        count_el = li.select_one("span.info.txtnum")
-        details = []
-        if ranking_el:
-            details.append(ranking_el.get_text(" ", strip=True))
-        if count_el:
-            details.append(count_el.get_text(" ", strip=True))
-
-        board_kind = infer_kind(href)
-        kind_label = {
-            "normal": "일반",
-            "minor": "마이너",
-            "mini": "미니",
-            "person": "인물",
-        }.get(board_kind, "일반")
-        items.append({
-            "rank": None,
-            "name": name,
-            "board_id": board_id,
-            "kind": kind_label,
-            "board_kind": board_kind,
-            "extra": " | ".join(details),
-            "source_url": href,
-            "internal_supported": board_kind in {"normal", "minor", "mini", "person"},
-        })
-        seen.add(board_id)
-    return items
 
 @bp.route("/")
 def index():
@@ -684,13 +62,13 @@ def index():
     heung_error = None
     if heung_q:
         try:
-            heung_items = _search_galleries(heung_q)
+            heung_items = search_galleries(heung_q)
             heung_updated_at = time.time()
         except Exception:
             heung_error = "갤러리 검색 결과를 가져오지 못했습니다."
     else:
         try:
-            heung_items, heung_updated_at = _get_heung_galleries()
+            heung_items, heung_updated_at = get_heung_galleries()
         except Exception:
             heung_error = "흥한 갤러리 목록을 가져오지 못했습니다."
 
@@ -718,7 +96,7 @@ def index():
 
 @bp.route("/recent")
 def recent():
-    rows = _load_recent_entries()
+    rows = load_recent_entries()
     recent_items = []
     for row in rows[:RECENT_MAX_ITEMS]:
         recent_items.append(
@@ -726,7 +104,7 @@ def recent():
                 "board": row["board"],
                 "kind": row.get("kind"),
                 "recommend": 1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
-                "visited_at_str": _format_recent_time(row.get("visited_at")),
+                "visited_at_str": format_recent_time(row.get("visited_at")),
             }
         )
     return render_template("recent.html", nav_tab="recent", recent_items=recent_items)
@@ -742,7 +120,7 @@ def board():
     recommend = _safe_int(request.args.get("recommend", 0), 0)
     kind = (request.args.get("kind") or "").strip().lower() or None
     nav_mode = (request.args.get("nav") or "").strip().lower() or None
-    ret = _run_async(async_index(page, board, recommend, kind=kind))
+    ret = run_async(async_index(page, board, recommend, kind=kind))
     if nav_mode == "ai":
         nav_tab = "ai"
     elif board == "dcbest" or recommend == 1:
@@ -761,7 +139,7 @@ def board():
             nav_mode=nav_mode,
         )
     )
-    _touch_recent_gallery(response, board, kind, recommend=recommend)
+    touch_recent_gallery(response, board, kind, recommend=recommend)
     return response
 
 
@@ -771,36 +149,7 @@ def media():
     board = (request.args.get("board") or "").strip()
     pid = _safe_int(request.args.get("pid", 0), 0)
     kind = (request.args.get("kind") or "").strip().lower() or None
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": _build_pc_view_referer(board, pid, kind=kind),
-    }
-    cookies = {"__gat_mobile_search": "1", "list_count": "200"}
-    upstream, error_status = _fetch_media_response(src, headers, cookies)
-    if error_status:
-        return ("", error_status)
-
-    content_type = upstream.headers.get("Content-Type", "application/octet-stream")
-    if not _is_allowed_media_content_type(content_type):
-        upstream.close()
-        return ("", 415)
-
-    raw_content_length = upstream.headers.get("Content-Length")
-    content_length = _safe_int(raw_content_length, 0)
-    if content_length and content_length > MEDIA_MAX_BYTES:
-        upstream.close()
-        return ("", 413)
-
-    body, error_status = _read_limited_media_body(upstream)
-    if error_status:
-        return ("", error_status)
-
-    response = Response(body or b"", status=upstream.status_code)
-    response.headers["Content-Type"] = content_type
-    response.content_length = len(body or b"")
-    response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    return response
+    return build_media_response(src, board, pid, kind=kind)
 
 
 @bp.route("/read")
@@ -810,16 +159,16 @@ def read():
     kind = (request.args.get("kind") or "").strip().lower() or None
     recommend = 1 if _safe_int(request.args.get("recommend", 0), 0) == 1 else 0
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
-    data, comments, images = _run_async(async_read(pid, board, kind=kind, recommend=recommend))
+    data, comments, images = run_async(async_read(pid, board, kind=kind, recommend=recommend))
     embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
     soup = BeautifulSoup(data.get("html") or "", "html.parser")
-    _rewrite_content_images(soup, images, board, pid, kind)
+    rewrite_content_images(soup, images, board, pid, kind)
 
     for comment in comments:
         if comment.get("dccon"):
             comment["dccon"] = url_for("main.media", src=comment["dccon"], board=board, pid=pid, kind=kind)
 
-    data["html"] = _sanitize_html_fragment(str(soup))
+    data["html"] = sanitize_html_fragment(str(soup))
     read_nav_tab = "best" if board == "dcbest" or recommend == 1 else "all"
     response = make_response(
         render_template(
@@ -836,7 +185,7 @@ def read():
             nav_tab=read_nav_tab,
         )
     )
-    _touch_recent_gallery(response, board, kind, recommend=recommend)
+    touch_recent_gallery(response, board, kind, recommend=recommend)
     return response
 
 
@@ -849,13 +198,16 @@ def read_related():
     limit = _safe_int(request.args.get("limit", 12), 12)
     limit = max(1, min(limit, 30))
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
+    after_pid = max(_safe_int(request.args.get("after_pid", 0), 0), 0)
 
     posts = []
+    has_more = False
     if pid > 0:
         try:
-            posts = _run_async(
-                async_related_by_position(
+            posts, has_more = run_async(
+                async_related_after_position(
                     pid,
+                    after_pid,
                     board,
                     kind=kind,
                     limit=limit,
@@ -870,6 +222,7 @@ def read_related():
         {
             "ok": True,
             "items": _serialize_related_posts(posts),
+            "has_more": has_more,
         }
     )
 

@@ -710,30 +710,142 @@ a {
     background: rgba(245, 158, 11, 0.05) !important;
 }
 
+
+/* Light theme component overrides are static so they apply before footer JS runs. */
+html[data-theme='light'] .app-shell { box-shadow: 0 18px 48px rgba(24, 24, 27, 0.10); }
+html[data-theme='light'] .jump-panel { background: linear-gradient(180deg, rgba(37, 99, 235, 0.05) 0%, transparent 100%); }
+html[data-theme='light'] .board-head,
+html[data-theme='light'] .pager-row { background: rgba(244, 244, 245, 0.82); }
+html[data-theme='light'] .article-head { background: linear-gradient(180deg, rgba(37, 99, 235, 0.04) 0%, transparent 100%); }
+html[data-theme='light'] .article-body { color: #3f3f46; }
+html[data-theme='light'] .comment-shell { background: rgba(244, 244, 245, 0.72); }
+html[data-theme='light'] .comment-list li { background: rgba(9, 9, 11, 0.02); }
+html[data-theme='light'] .comment-list li:hover { background: rgba(9, 9, 11, 0.04); }
+html[data-theme='light'] .feed-item:hover { background: rgba(9, 9, 11, 0.03); }
+html[data-theme='light'] .feed-item:active { background: rgba(9, 9, 11, 0.05); }
+html[data-theme='light'] .feed-item::after { background: linear-gradient(90deg, transparent, rgba(9, 9, 11, 0.04), transparent); }
+html[data-theme='light'] .tab-item:hover { background: rgba(9, 9, 11, 0.05); }
+html[data-theme='light'] .tab-item.active { background: rgba(9, 9, 11, 0.08); box-shadow: none; }
+html[data-theme='light'] .theme-toggle:hover { background: rgba(9, 9, 11, 0.07); }
+html[data-theme='light'] .reply-count { background: rgba(37, 99, 235, 0.10); }
+html[data-theme='light'] .score-box,
+html[data-theme='light'] .related-load-btn,
+html[data-theme='light'] .related-more-btn,
+html[data-theme='light'] .pager-btn,
+html[data-theme='light'] .comment-spam-toggle {
+    background: rgba(9, 9, 11, 0.04);
+    border-color: rgba(9, 9, 11, 0.12);
+}
+html[data-theme='light'] .related-head {
+    background: radial-gradient(circle at 50% 0%, rgba(37, 99, 235, 0.10), transparent 58%), rgba(244, 244, 245, 0.82);
+}
+html[data-theme='light'] .related-more-wrap {
+    background: linear-gradient(180deg, rgba(9, 9, 11, 0.025), rgba(9, 9, 11, 0.01)), rgba(244, 244, 245, 0.72);
+}
+html[data-theme='light'] .related-more-btn:hover:not(:disabled) { background: rgba(9, 9, 11, 0.055); }
+html[data-theme='light'] .jump-form input,
+html[data-theme='light'] .jump-form select { background: #ffffff; border-color: rgba(9, 9, 11, 0.12); }
+html[data-theme='light'] .jump-form input:focus { background: #ffffff; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16); }
+html[data-theme='light'] .feed-meta-left .sep,
+html[data-theme='light'] .article-meta span:not(:last-child)::after {
+    background: rgba(9, 9, 11, 0.18);
+    color: rgba(9, 9, 11, 0.18);
+}
+
 /* Utility Animations */
 .related-shell {
     animation: fadeIn 0.5s ease;
+    overflow: hidden;
 }
 
-.related-load-btn {
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 999px;
-    padding: 8px 14px;
-    font-size: 0.8125rem;
-    font-weight: 700;
-    color: var(--text-main);
-    background: rgba(255,255,255,0.06);
+.related-head {
+    justify-content: center;
+    background:
+        radial-gradient(circle at 50% 0%, rgba(59, 130, 246, 0.12), transparent 58%),
+        rgba(0, 0, 0, 0.18);
+}
+
+.related-more-wrap {
+    border-bottom: 1px solid var(--shell-border);
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)),
+        rgba(0, 0, 0, 0.12);
+}
+
+.related-more-btn {
+    width: 100%;
+    min-height: 56px;
+    border: 0;
+    border-radius: 0;
+    padding: 12px 20px 14px;
+    color: var(--text-sub);
+    background: transparent;
     cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
     transition: var(--global-transition);
 }
 
-.related-load-btn:hover:not(:disabled) {
-    background: rgba(255,255,255,0.12);
+.related-more-label {
+    font-size: 0.8125rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
 }
 
-.related-load-btn:disabled {
+.related-more-arrow,
+.sp-arrow.arrow-down-lg.related-more-arrow {
+    width: 9px;
+    height: 9px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: translateY(-1px) rotate(45deg);
+    transition: transform 0.24s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.24s ease;
+}
+
+.related-more-btn:hover:not(:disabled) {
+    color: var(--text-title);
+    background: rgba(255,255,255,0.055);
+}
+
+.related-more-btn:hover:not(:disabled) .related-more-arrow {
+    transform: translateY(3px) rotate(45deg);
+}
+
+.related-more-btn:active:not(:disabled) {
+    background: rgba(255,255,255,0.08);
+}
+
+.related-more-btn:focus-visible {
+    outline: 2px solid rgba(96, 165, 250, 0.72);
+    outline-offset: -3px;
+}
+
+.related-more-btn.is-loading .related-more-arrow {
+    animation: relatedArrowPulse 0.8s ease-in-out infinite;
+}
+
+.related-more-btn.is-terminal .related-more-arrow {
+    opacity: 0;
+    transform: translateY(-2px) rotate(45deg) scale(0.7);
+}
+
+.related-more-btn:disabled {
     opacity: 0.6;
     cursor: default;
+}
+
+@keyframes relatedArrowPulse {
+    0%, 100% {
+        transform: translateY(-1px) rotate(45deg);
+        opacity: 0.5;
+    }
+    50% {
+        transform: translateY(4px) rotate(45deg);
+        opacity: 1;
+    }
 }
 
 @keyframes fadeIn {
