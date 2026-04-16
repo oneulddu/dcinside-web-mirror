@@ -18,17 +18,20 @@ MAX_PAGE = 31
 RELATED_LIMIT = 12
 DOCS_PER_PAGE_ESTIMATE = max(int(getattr(dc_api, "DOCS_PER_PAGE", 200)), 1)
 RELATED_PAGE_FETCH_SIZE = DOCS_PER_PAGE_ESTIMATE
-RELATED_PAGE_PROBE_STEPS = 8
-RELATED_TAIL_PAGES = 3
+RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1)
+RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
+BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)
 LATEST_ID_CACHE_TTL = 20
 RELATED_CACHE_TTL = 90
 AUTHOR_CODE_CACHE_TTL = 600
+BOARD_PAGE_CACHE_MAX_ITEMS = 2048
 LATEST_ID_CACHE_MAX_ITEMS = 512
 RELATED_CACHE_MAX_ITEMS = 2048
 AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
 AUTHOR_CODE_FETCH_CONCURRENCY = max(_env_int("MIRROR_AUTHOR_CODE_FETCH_CONCURRENCY", 5), 1)
 
 _CACHE_LOCK = threading.Lock()
+_BOARD_PAGE_CACHE = {}
 _LATEST_ID_CACHE = {}
 _RELATED_CACHE = {}
 _AUTHOR_CODE_CACHE = {}
@@ -149,6 +152,17 @@ async def _fetch_board_page(
     kind=None,
     page_size=RELATED_PAGE_FETCH_SIZE,
 ):
+    cache_key = (
+        board,
+        kind or "",
+        _safe_int(recommend, 0),
+        _safe_int(page, 1),
+        _safe_int(page_size, RELATED_PAGE_FETCH_SIZE),
+    )
+    cached = _cache_get(_BOARD_PAGE_CACHE, cache_key)
+    if cached is not None:
+        return [dict(row) for row in cached]
+
     posts = []
     async for item in api.board(
         board_id=board,
@@ -158,7 +172,16 @@ async def _fetch_board_page(
         kind=kind,
         max_scan_pages=1,
     ):
-        posts.append(_index_item_to_dict(item))
+        row = _index_item_to_dict(item)
+        row["source_page"] = _safe_int(page, 1)
+        posts.append(row)
+    _cache_set(
+        _BOARD_PAGE_CACHE,
+        cache_key,
+        [dict(row) for row in posts],
+        BOARD_PAGE_CACHE_TTL,
+        BOARD_PAGE_CACHE_MAX_ITEMS,
+    )
     return posts
 
 
@@ -208,7 +231,7 @@ async def _fill_missing_author_codes(api, board, kind, rows):
     return rows
 
 
-async def _read_document_with_api(api, api_id, board, kind=None):
+async def _read_document_with_api(api, api_id, board, kind=None, comment_count_hint=None):
     data = {}
     comments = []
     images = []
@@ -231,28 +254,36 @@ async def _read_document_with_api(api, api_id, board, kind=None):
         "voteup_count": doc.voteup_count,
         "html": doc.html,
     }
-    async for com in doc.comments():
-        comment_author, comment_author_code = _normalize_author(com.author, com.author_id)
-        is_reply = bool(getattr(com, "is_reply", False)) or _is_reply_comment(com.parent_id)
-        comments.append(
-            {
-                "time": com.time,
-                "contents": com.contents,
-                "author": comment_author,
-                "author_code": comment_author_code,
-                "parent_id": com.parent_id,
-                "is_reply": is_reply,
-                "dccon": com.dccon,
-            }
-        )
+    skip_comments = comment_count_hint is not None and _safe_int(comment_count_hint, -1) <= 0
+    if not skip_comments:
+        async for com in doc.comments():
+            comment_author, comment_author_code = _normalize_author(com.author, com.author_id)
+            is_reply = bool(getattr(com, "is_reply", False)) or _is_reply_comment(com.parent_id)
+            comments.append(
+                {
+                    "time": com.time,
+                    "contents": com.contents,
+                    "author": comment_author,
+                    "author_code": comment_author_code,
+                    "parent_id": com.parent_id,
+                    "is_reply": is_reply,
+                    "dccon": com.dccon,
+                }
+            )
     for img in doc.images:
         images.append(img.src)
     return data, comments, images
 
 
-async def async_read(api_id, board, kind=None):
+async def async_read(api_id, board, kind=None, comment_count_hint=None):
     async with dc_api.API() as api:
-        return await _read_document_with_api(api, api_id, board, kind=kind)
+        return await _read_document_with_api(
+            api,
+            api_id,
+            board,
+            kind=kind,
+            comment_count_hint=comment_count_hint,
+        )
 
 
 async def async_index(
@@ -308,6 +339,7 @@ async def _related_by_position_with_api(
     limit=RELATED_LIMIT,
     probe_steps=RELATED_PAGE_PROBE_STEPS,
     tail_pages=RELATED_TAIL_PAGES,
+    source_page=None,
 ):
     target_id = _safe_int(api_id, 0)
     fetch_limit = max(_safe_int(limit, RELATED_LIMIT), 0)
@@ -316,21 +348,25 @@ async def _related_by_position_with_api(
     if target_id <= 0 or fetch_limit == 0:
         return []
 
+    source_page_value = _safe_int(source_page, 0)
     board_key = (board, kind or "")
-    related_key = (board, kind or "", target_id, fetch_limit)
+    related_key = (board, kind or "", target_id, fetch_limit, source_page_value)
     cached_related = _cache_get(_RELATED_CACHE, related_key)
     if cached_related is not None:
         return cached_related
 
-    latest_id = _cache_get(_LATEST_ID_CACHE, board_key)
-    if latest_id is None:
-        first_page = await _fetch_board_page(api, 1, board, 0, kind=kind, page_size=1)
-        if not first_page:
-            return []
-        latest_id = _safe_int(first_page[0].get("id"), target_id)
-        _cache_set(_LATEST_ID_CACHE, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
+    if source_page_value > 0:
+        estimated_page = source_page_value
+    else:
+        latest_id = _cache_get(_LATEST_ID_CACHE, board_key)
+        if latest_id is None:
+            first_page = await _fetch_board_page(api, 1, board, 0, kind=kind, page_size=1)
+            if not first_page:
+                return []
+            latest_id = _safe_int(first_page[0].get("id"), target_id)
+            _cache_set(_LATEST_ID_CACHE, board_key, latest_id, LATEST_ID_CACHE_TTL, LATEST_ID_CACHE_MAX_ITEMS)
 
-    estimated_page = max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
+        estimated_page = max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
     found_page = None
     found_index = -1
     found_posts = []
@@ -378,7 +414,6 @@ async def _related_by_position_with_api(
         related.append(row)
         if len(related) >= fetch_limit:
             result = related[:fetch_limit]
-            await _fill_missing_author_codes(api, board, kind, result)
             _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
             return result
 
@@ -399,7 +434,6 @@ async def _related_by_position_with_api(
         loaded_tail += 1
 
     result = related[:fetch_limit]
-    await _fill_missing_author_codes(api, board, kind, result)
     _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
     return result
 
@@ -411,6 +445,7 @@ async def async_related_by_position(
     limit=RELATED_LIMIT,
     probe_steps=RELATED_PAGE_PROBE_STEPS,
     tail_pages=RELATED_TAIL_PAGES,
+    source_page=None,
 ):
     async with dc_api.API() as api:
         return await _related_by_position_with_api(
@@ -421,4 +456,5 @@ async def async_related_by_position(
             limit=limit,
             probe_steps=probe_steps,
             tail_pages=tail_pages,
+            source_page=source_page,
         )

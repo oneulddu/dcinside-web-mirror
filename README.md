@@ -120,6 +120,10 @@ make run-prod   # Gunicorn 프로덕션 실행
 | `MIRROR_MEDIA_CACHE_MAX_AGE` | `86400` | 미디어 프록시 캐시 TTL (초) |
 | `MIRROR_MEDIA_MAX_BYTES` | `26214400` | 미디어 프록시 응답 최대 크기(byte) |
 | `MIRROR_MEDIA_ALLOWED_HOST_SUFFIXES` | `dcinside.com,dcinside.co.kr` | 미디어 프록시 허용 도메인 접미사 |
+| `MIRROR_AUTHOR_CODE_FETCH_CONCURRENCY` | `5` | 작성자 코드 보강용 상세 조회 동시 처리 수 |
+| `MIRROR_RELATED_PAGE_PROBE_STEPS` | `4` | 관련글 위치 탐색 시 확인할 게시판 페이지 수 |
+| `MIRROR_RELATED_TAIL_PAGES` | `1` | 관련글 보충을 위해 추가로 읽을 뒤쪽 페이지 수 |
+| `MIRROR_BOARD_PAGE_CACHE_TTL` | `20` | 관련글 탐색용 게시판 페이지 짧은 캐시 TTL (초) |
 | `MIRROR_RECENT_MAX_ITEMS` | `30` | 최근 방문 최대 저장 수 |
 | `MIRROR_SECRET_KEY` | `change-me` | Flask 시크릿 키 |
 

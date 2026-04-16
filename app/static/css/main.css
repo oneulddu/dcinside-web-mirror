@@ -715,6 +715,27 @@ a {
     animation: fadeIn 0.5s ease;
 }
 
+.related-load-btn {
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    color: var(--text-main);
+    background: rgba(255,255,255,0.06);
+    cursor: pointer;
+    transition: var(--global-transition);
+}
+
+.related-load-btn:hover:not(:disabled) {
+    background: rgba(255,255,255,0.12);
+}
+
+.related-load-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 @keyframes fadeIn {
     from { opacity: 0; }
     to { opacity: 1; }

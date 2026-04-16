@@ -80,6 +80,7 @@ def _serialize_related_posts(posts):
                 "time": str(item.get("time", "")),
                 "comment_count": _safe_int(item.get("comment_count", 0), 0),
                 "voteup_count": _safe_int(item.get("voteup_count", 0), 0),
+                "source_page": _safe_int(item.get("source_page", 0), 0),
             }
         )
     return rows
@@ -686,7 +687,13 @@ def read():
     pid = _safe_int(request.args.get("pid", 0), 0)
     board = str(request.args.get("board", "airforce")).strip() or "airforce"
     kind = (request.args.get("kind") or "").strip().lower() or None
-    data, comments, images = _run_async(async_read(pid, board, kind=kind))
+    comment_count_hint = None
+    if "cc" in request.args:
+        comment_count_hint = _safe_int(request.args.get("cc"), 0)
+    source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
+    data, comments, images = _run_async(
+        async_read(pid, board, kind=kind, comment_count_hint=comment_count_hint)
+    )
     soup = BeautifulSoup(data.get("html") or "", "html.parser")
     _rewrite_content_images(soup, images, board, pid, kind)
 
@@ -697,7 +704,17 @@ def read():
     data["html"] = _sanitize_html_fragment(str(soup))
     read_nav_tab = "best" if board == "dcbest" else "all"
     response = make_response(
-        render_template("read.html", data=data, comments=comments, images=images, board=board, pid=pid, kind=kind, nav_tab=read_nav_tab)
+        render_template(
+            "read.html",
+            data=data,
+            comments=comments,
+            images=images,
+            board=board,
+            pid=pid,
+            kind=kind,
+            source_page=source_page,
+            nav_tab=read_nav_tab,
+        )
     )
     _touch_recent_gallery(response, board, kind)
     return response
@@ -710,11 +727,20 @@ def read_related():
     kind = (request.args.get("kind") or "").strip().lower() or None
     limit = _safe_int(request.args.get("limit", 12), 12)
     limit = max(1, min(limit, 30))
+    source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
 
     posts = []
     if pid > 0:
         try:
-            posts = _run_async(async_related_by_position(pid, board, kind=kind, limit=limit))
+            posts = _run_async(
+                async_related_by_position(
+                    pid,
+                    board,
+                    kind=kind,
+                    limit=limit,
+                    source_page=source_page,
+                )
+            )
         except Exception:
             posts = []
 
