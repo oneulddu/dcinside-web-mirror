@@ -254,6 +254,7 @@ async def _read_document_with_api(api, api_id, board, kind=None):
         "time": doc.time,
         "voteup_count": doc.voteup_count,
         "html": doc.html,
+        "related_posts": [_index_item_to_dict(item) for item in getattr(doc, "related_posts", [])],
     }
     async for com in doc.comments():
         comment_author, comment_author_code = _normalize_author(com.author, com.author_id)

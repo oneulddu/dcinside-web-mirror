@@ -116,6 +116,46 @@ def test_related_loader_keeps_empty_results_retryable():
     assert 'setButtonState(button, "idle");' in script
 
 
+def test_read_renders_embedded_related_posts_without_extra_related_request(monkeypatch):
+    async def fake_async_read(pid, board, kind=None):
+        return (
+            {
+                "title": "title",
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+                "html": "<p>body</p>",
+                "related_posts": [
+                    {
+                        "id": "122",
+                        "title": "embedded title",
+                        "author": "작성자",
+                        "author_code": "3.4",
+                        "time": "-",
+                        "comment_count": 5,
+                        "voteup_count": 2,
+                        "source_page": 0,
+                    }
+                ],
+            },
+            [],
+            [],
+        )
+
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    app = create_app()
+
+    response = app.test_client().get("/read?board=test&pid=123&source_page=2")
+    soup = BeautifulSoup(response.data, "html.parser")
+    related_link = soup.select_one("#related-list a.feed-item")
+
+    assert related_link is not None
+    assert "embedded title" in related_link.get_text(" ", strip=True)
+    assert "source_page=2" in related_link["href"]
+    assert "새로 불러오기" in response.get_data(as_text=True)
+
+
 def test_comment_spam_filter_never_hides_every_comment():
     script = Path(routes.BASE_DIR, "app/static/javascript/comment_spam_filter.js").read_text()
 
