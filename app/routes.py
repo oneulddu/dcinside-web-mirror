@@ -12,10 +12,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, quote, urljoin, urlparse
-from flask import Blueprint, Response, jsonify, make_response, render_template, request, stream_with_context, url_for
+from flask import Blueprint, Response, jsonify, make_response, render_template, request, url_for
 from bs4 import BeautifulSoup
 import requests
-from werkzeug.exceptions import RequestEntityTooLarge
 
 from .services.core import async_index, async_read, async_related_by_position
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -318,21 +317,6 @@ def _is_allowed_media_content_type(content_type):
     if value == "application/octet-stream":
         return True
     return value.startswith(("image/", "video/", "audio/"))
-
-
-def _stream_limited_media(upstream):
-    total = 0
-    try:
-        for chunk in upstream.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            next_total = total + len(chunk)
-            if next_total > MEDIA_MAX_BYTES:
-                raise RequestEntityTooLarge()
-            total = next_total
-            yield chunk
-    finally:
-        upstream.close()
 
 
 def _read_limited_media_body(upstream):
@@ -807,24 +791,13 @@ def media():
         upstream.close()
         return ("", 413)
 
-    if not content_length:
-        body, error_status = _read_limited_media_body(upstream)
-        if error_status:
-            return ("", error_status)
-        response = Response(body or b"", status=upstream.status_code)
-        response.content_length = len(body or b"")
-        response.headers["Content-Type"] = content_type
-        response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
+    body, error_status = _read_limited_media_body(upstream)
+    if error_status:
+        return ("", error_status)
 
-    response = Response(
-        stream_with_context(_stream_limited_media(upstream)),
-        status=upstream.status_code,
-    )
+    response = Response(body or b"", status=upstream.status_code)
     response.headers["Content-Type"] = content_type
-    if content_length:
-        response.content_length = content_length
+    response.content_length = len(body or b"")
     response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response

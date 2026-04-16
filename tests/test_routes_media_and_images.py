@@ -5,7 +5,6 @@ from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
 from bs4 import BeautifulSoup
-import pytest
 
 from app import create_app
 from app import routes
@@ -28,26 +27,26 @@ class DummyUpstream:
         self.closed = True
 
 
-def test_stream_limited_media_yields_chunks_without_prefetching(monkeypatch):
+def test_read_limited_media_body_closes_after_success(monkeypatch):
     monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 10)
     upstream = DummyUpstream([b"123", b"456"])
 
-    stream = routes._stream_limited_media(upstream)
+    body, error_status = routes._read_limited_media_body(upstream)
 
-    assert upstream.iterated == 0
-    assert next(stream) == b"123"
-    assert upstream.iterated == 1
-    assert upstream.closed is False
-    assert list(stream) == [b"456"]
+    assert body == b"123456"
+    assert error_status is None
+    assert upstream.iterated == 2
     assert upstream.closed is True
 
 
-def test_stream_limited_media_raises_and_closes_when_limit_exceeded(monkeypatch):
+def test_read_limited_media_body_returns_413_and_closes_when_limit_exceeded(monkeypatch):
     monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 5)
     upstream = DummyUpstream([b"123", b"456"])
 
-    with pytest.raises(routes.RequestEntityTooLarge):
-        list(routes._stream_limited_media(upstream))
+    body, error_status = routes._read_limited_media_body(upstream)
+
+    assert body is None
+    assert error_status == 413
     assert upstream.iterated == 2
     assert upstream.closed is True
 
@@ -85,7 +84,7 @@ def test_media_route_buffers_unknown_length_streams_within_limit(monkeypatch):
     assert upstream.closed is True
 
 
-def test_media_route_streams_upstream_without_buffering_and_sets_known_length(monkeypatch):
+def test_media_route_buffers_upstream_and_sets_verified_length(monkeypatch):
     monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 10)
     upstream = DummyUpstream(
         [b"123", b"456"],
@@ -96,10 +95,25 @@ def test_media_route_streams_upstream_without_buffering_and_sets_known_length(mo
 
     with app.test_request_context("/media?src=https://images.dcinside.com/test.jpg"):
         response = routes.media()
-        assert upstream.iterated == 0
         assert response.content_length == 6
-        assert list(response.response) == [b"123", b"456"]
+        assert response.get_data() == b"123456"
 
+    assert upstream.closed is True
+
+
+def test_media_route_rejects_mismatched_known_length_when_stream_exceeds_limit(monkeypatch):
+    monkeypatch.setattr(routes, "MEDIA_MAX_BYTES", 5)
+    upstream = DummyUpstream(
+        [b"123", b"456"],
+        headers={"Content-Type": "image/jpeg", "Content-Length": "5"},
+    )
+    monkeypatch.setattr(routes, "_fetch_media_response", lambda src, headers, cookies: (upstream, None))
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://images.dcinside.com/test.jpg")
+
+    assert response.status_code == 413
+    assert upstream.iterated == 2
     assert upstream.closed is True
 
 
