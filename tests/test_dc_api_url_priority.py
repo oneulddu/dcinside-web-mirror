@@ -1,4 +1,5 @@
 from app.services.dc_api import API
+import lxml.html
 import pytest
 
 
@@ -37,6 +38,81 @@ def test_view_urls_keep_recommend_flag_on_mobile_first():
     urls = api._API__build_view_urls("aoegame", "30389383", kind="minor", recommend=True)
     assert urls[0] == "https://m.dcinside.com/board/aoegame/30389383?recommend=1"
     assert any(url.startswith("https://gall.dcinside.com/mgallery/") and "recommend=1" in url for url in urls[1:])
+
+
+def test_parse_mobile_list_item_uses_five_cell_ginfo_offsets():
+    api = API.__new__(API)
+    row = lxml.html.fromstring(
+        """
+        <li>
+          <div class="gall-detail-lnktb">
+            <a class="lt" href="https://m.dcinside.com/board/test/122?recommend=1">
+              <span class="subject-add">
+                <span class="sp-lst sp-lst-txt">텍스트</span>
+                <span class="subjectin"><b>일반</b>embedded title</span>
+              </span>
+              <ul class="ginfo">
+                <li>일반</li>
+                <li>작성자(3.4)</li>
+                <li>04.16 12:00</li>
+                <li>조회 7</li>
+                <li>추천 <span>2</span></li>
+              </ul>
+            </a>
+            <a class="rt" href="https://m.dcinside.com/board/test/122#comment_box">
+              <span class="ct">5</span>
+            </a>
+          </div>
+          <span class="blockInfo" data-info="3.4"></span>
+        </li>
+        """
+    )
+
+    item = api._API__parse_mobile_list_item(row, "test", kind="minor", recommend=True)
+
+    assert item is not None
+    assert item.id == "122"
+    assert item.subject == "일반"
+    assert item.author == "작성자(3.4)"
+    assert item.view_count == 7
+    assert item.voteup_count == 2
+    assert item.comment_count == 5
+
+
+def test_parse_mobile_list_item_keeps_four_cell_ginfo_offsets():
+    api = API.__new__(API)
+    row = lxml.html.fromstring(
+        """
+        <li>
+          <div class="gall-detail-lnktb">
+            <a class="lt" href="https://m.dcinside.com/board/test/122">
+              <span class="subject-add">
+                <span class="sp-lst sp-lst-img">이미지</span>
+                <span class="subjectin">embedded title</span>
+              </span>
+              <ul class="ginfo">
+                <li>작성자(3.4)</li>
+                <li>04.16 12:00</li>
+                <li>조회 7</li>
+                <li>추천 <span>2</span></li>
+              </ul>
+            </a>
+            <a class="rt" href="https://m.dcinside.com/board/test/122#comment_box">
+              <span class="ct">5</span>
+            </a>
+          </div>
+        </li>
+        """
+    )
+
+    item = api._API__parse_mobile_list_item(row, "test", kind="minor")
+
+    assert item is not None
+    assert item.subject is None
+    assert item.author == "작성자(3.4)"
+    assert item.view_count == 7
+    assert item.voteup_count == 2
+    assert item.comment_count == 5
 
 
 @pytest.mark.asyncio
@@ -206,6 +282,31 @@ async def test_fetch_parsed_from_urls_follows_top_level_redirect_after_large_pre
 
     assert used_url == "https://example.com/target"
     assert parsed.xpath("string(//*[@id='ok'])") == "late-meta-ready"
+
+
+@pytest.mark.asyncio
+async def test_fetch_parsed_from_urls_preserves_recommend_on_top_level_redirect():
+    api = API.__new__(API)
+
+    start_url = "https://gall.dcinside.com/mgallery/board/view/?id=test&no=123&recommend=1"
+    target_url = "https://gall.dcinside.com/board/test/123?recommend=1"
+    responses = {
+        start_url: "<html><head><script>location.href='/board/test/123';</script></head></html>",
+        target_url: "<html><body><div id='ok'>recommend-ready</div></body></html>",
+    }
+    requested_urls = []
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        requested_urls.append(url)
+        return 200, {}, responses[url]
+
+    api._API__request_text = fake_request_text
+
+    parsed, _, used_url = await api._API__fetch_parsed_from_urls([start_url])
+
+    assert requested_urls == [start_url, target_url]
+    assert used_url == target_url
+    assert parsed.xpath("string(//*[@id='ok'])") == "recommend-ready"
 
 
 @pytest.mark.asyncio
@@ -403,6 +504,23 @@ async def test_document_reuses_embedded_mobile_post_list():
             </li>
           </ul>
           <ul class="gall-detail-lst">
+            <li>
+              <div class="gall-detail-lnktb">
+                <a class="lt" href="https://m.dcinside.com/board/test/121">
+                  <span class="subject-add">
+                    <span class="subjectin">outside list title</span>
+                  </span>
+                  <ul class="ginfo">
+                    <li>무시작성자</li>
+                    <li>11:58</li>
+                    <li>조회 99</li>
+                    <li>추천 <span>9</span></li>
+                  </ul>
+                </a>
+              </div>
+            </li>
+          </ul>
+          <ul id="view_next" class="gall-detail-lst">
             <li>
               <div class="gall-detail-lnktb">
                 <a class="lt" href="https://m.dcinside.com/board/test/122">

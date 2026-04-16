@@ -109,12 +109,17 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     assert recommend_query["recommend"] == ["1"]
 
 
-def test_related_loader_keeps_empty_results_retryable():
+def test_related_loader_appends_related_results_without_replacing_existing_rows():
     script = Path(routes.BASE_DIR, "app/static/javascript/read_related_loader.js").read_text()
 
-    assert "cached.items.length === 0" in script
-    assert "if (items.length > 0)" in script
-    assert 'setButtonState(button, "idle");' in script
+    assert "function appendItems(" in script
+    assert "getRenderedPostIds(list)" in script
+    assert "renderedIds[postId]" in script
+    assert "list.appendChild(createItemNode" in script
+    assert "clearChildren" not in script
+    assert 'setButtonState(button, "no-more");' in script
+    assert "return cached.items" in script
+    assert "cached.items.length === 0" not in script
     assert 'params.set("recommend", "1")' in script
 
 

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import itertools
 import aiohttp
 import filetype
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
 def env_int(name, default):
     try:
@@ -368,6 +368,7 @@ class API:
 
                 redirect_url = self.__extract_top_level_redirect_url(text)
                 if redirect_url:
+                    redirect_url = self.__normalize_redirect_url(url, redirect_url)
                     if redirect_url and redirect_url not in queue:
                         queue.append(redirect_url)
                     continue
@@ -378,6 +379,25 @@ class API:
             except Exception:
                 continue
         return None, "", None
+
+    def __normalize_redirect_url(self, current_url, redirect_url):
+        normalized_url = urljoin(current_url, redirect_url)
+        if "1" not in parse_qs(urlparse(current_url).query).get("recommend", []):
+            return normalized_url
+
+        parsed = urlparse(normalized_url)
+        query_items = []
+        recommend_added = False
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key == "recommend":
+                if not recommend_added:
+                    query_items.append(("recommend", "1"))
+                    recommend_added = True
+                continue
+            query_items.append((key, value))
+        if not recommend_added:
+            query_items.append(("recommend", "1"))
+        return parsed._replace(query=urlencode(query_items)).geturl()
 
     def __is_usable_board_page(self, parsed, text, url):
         if "등록된 게시물이 없습니다." in text:
@@ -452,19 +472,26 @@ class API:
         if not title:
             return None
 
-        ginfo = link.xpath(".//ul[contains(@class, 'ginfo')]/li")
+        ginfo = [
+            " ".join(node.text_content().split())
+            for node in link.xpath(".//ul[contains(@class, 'ginfo')]/li")
+        ]
         author = "익명"
         post_time = self.__parse_time("")
         view_count = 0
         voteup_count = 0
-        if len(ginfo) >= 1:
-            author = " ".join(ginfo[0].text_content().split()) or "익명"
-        if len(ginfo) >= 2:
-            post_time = self.__parse_time(" ".join(ginfo[1].text_content().split()))
-        if len(ginfo) >= 3:
-            view_count = to_int(" ".join(ginfo[2].text_content().split()), 0)
-        if len(ginfo) >= 4:
-            voteup_count = to_int(" ".join(ginfo[3].text_content().split()), 0)
+        meta_offset = 0
+        if len(ginfo) >= 5:
+            subject = subject or ginfo[0] or None
+            meta_offset = 1
+        if len(ginfo) > meta_offset:
+            author = ginfo[meta_offset] or "익명"
+        if len(ginfo) > meta_offset + 1:
+            post_time = self.__parse_time(ginfo[meta_offset + 1])
+        if len(ginfo) > meta_offset + 2:
+            view_count = to_int(ginfo[meta_offset + 2], 0)
+        if len(ginfo) > meta_offset + 3:
+            voteup_count = to_int(ginfo[meta_offset + 3], 0)
 
         comment_count = 0
         comment_nodes = row.xpath(".//a[contains(@class, 'rt')]//*[contains(@class, 'ct')]")
@@ -514,7 +541,10 @@ class API:
     def __parse_embedded_mobile_posts(self, parsed, board_id, current_document_id, kind=None, recommend=False):
         posts = []
         seen_ids = {str(current_document_id)}
-        rows = parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")
+        rows = parsed.xpath(
+            "//*[@id='view_next' and "
+            "contains(concat(' ', normalize-space(@class), ' '), ' gall-detail-lst ')]/li"
+        )
         for row in rows:
             item = self.__parse_mobile_list_item(
                 row,

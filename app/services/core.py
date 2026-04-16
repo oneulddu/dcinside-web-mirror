@@ -406,10 +406,10 @@ async def _related_by_position_with_api(
                     break
 
             result = related[:fetch_limit]
-            if result:
-                _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
+            _cache_set(_RELATED_CACHE, related_key, result, RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
             return result
 
+        _cache_set(_RELATED_CACHE, related_key, [], RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
         return []
 
     board_key = (board, kind or "", recommend_value)

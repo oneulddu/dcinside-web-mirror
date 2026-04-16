@@ -1,17 +1,55 @@
 (function () {
     "use strict";
 
-    function clearChildren(node) {
-        while (node.firstChild) {
-            node.removeChild(node.firstChild);
+    function removeStatusRows(list) {
+        var rows = list.querySelectorAll("[data-related-loader-status='1']");
+        for (var i = 0; i < rows.length; i += 1) {
+            rows[i].remove();
         }
     }
 
-    function appendEmptyRow(list, text) {
+    function appendStatusRow(list, text) {
+        removeStatusRows(list);
         var li = document.createElement("li");
         li.className = "empty-row";
+        li.dataset.relatedLoaderStatus = "1";
         li.textContent = text;
         list.appendChild(li);
+    }
+
+    function normalizePostId(value) {
+        if (value === null || value === undefined) {
+            return "";
+        }
+        return String(value);
+    }
+
+    function extractPostIdFromHref(href) {
+        if (!href) {
+            return "";
+        }
+        try {
+            return new URL(href, window.location.href).searchParams.get("pid") || "";
+        } catch (err) {
+            return "";
+        }
+    }
+
+    function getRenderedPostIds(list) {
+        var ids = {};
+        var links = list.querySelectorAll("a.feed-item");
+        for (var i = 0; i < links.length; i += 1) {
+            var link = links[i];
+            var postId = normalizePostId(
+                link.dataset.postId ||
+                (link.closest("li") && link.closest("li").dataset.postId) ||
+                extractPostIdFromHref(link.getAttribute("href"))
+            );
+            if (postId) {
+                ids[postId] = true;
+            }
+        }
+        return ids;
     }
 
     function buildReadHref(board, item, kind, recommend) {
@@ -31,8 +69,10 @@
 
     function createItemNode(item, board, kind, recommend) {
         var li = document.createElement("li");
+        li.dataset.postId = normalizePostId(item && item.id);
         var link = document.createElement("a");
         link.className = "feed-item";
+        link.dataset.postId = li.dataset.postId;
         link.href = buildReadHref(board, item, kind, recommend);
 
         var titleWrap = document.createElement("div");
@@ -83,22 +123,25 @@
         return li;
     }
 
-    function renderItems(list, items, board, kind, recommend) {
-        clearChildren(list);
+    function appendItems(list, items, board, kind, recommend) {
+        var appended = 0;
+        var renderedIds = getRenderedPostIds(list);
+
         if (!Array.isArray(items) || items.length === 0) {
-            appendEmptyRow(list, "다른 게시글이 없습니다.");
-            return;
+            return appended;
         }
+
         for (var i = 0; i < items.length; i += 1) {
             var item = items[i];
-            if (!item || !item.id) {
+            var postId = normalizePostId(item && item.id);
+            if (!postId || renderedIds[postId]) {
                 continue;
             }
             list.appendChild(createItemNode(item, board, kind, recommend));
+            renderedIds[postId] = true;
+            appended += 1;
         }
-        if (!list.firstChild) {
-            appendEmptyRow(list, "다른 게시글이 없습니다.");
-        }
+        return appended;
     }
 
     function readSessionCache(key) {
@@ -108,7 +151,7 @@
                 return null;
             }
             var cached = JSON.parse(raw);
-            if (!cached || !Array.isArray(cached.items) || cached.items.length === 0) {
+            if (!cached || !Array.isArray(cached.items)) {
                 return null;
             }
             return cached.items;
@@ -141,8 +184,13 @@
             button.textContent = "불러옴";
             return;
         }
+        if (state === "no-more") {
+            button.disabled = true;
+            button.textContent = "더 없음";
+            return;
+        }
         button.disabled = false;
-        button.textContent = "불러오기";
+        button.textContent = "더보기";
     }
 
     function buildRequestContext() {
@@ -160,8 +208,9 @@
         var sourcePage = section.dataset.sourcePage || "";
 
         if (!board || !pid) {
-            clearChildren(list);
-            appendEmptyRow(list, "다른 게시글이 없습니다.");
+            if (!list.querySelector("a.feed-item")) {
+                appendStatusRow(list, "다른 게시글이 없습니다.");
+            }
             return null;
         }
 
@@ -198,15 +247,26 @@
         }
 
         var cachedItems = readSessionCache(context.cacheKey);
-        if (cachedItems) {
-            renderItems(context.list, cachedItems, context.board, context.kind, context.recommend);
-            setButtonState(button, "loaded");
+        if (cachedItems !== null) {
+            removeStatusRows(context.list);
+            var cachedAppended = appendItems(
+                context.list,
+                cachedItems,
+                context.board,
+                context.kind,
+                context.recommend
+            );
+            if (cachedItems.length === 0 || cachedAppended === 0) {
+                appendStatusRow(context.list, "더 불러올 게시글이 없습니다.");
+                setButtonState(button, "no-more");
+            } else {
+                setButtonState(button, "loaded");
+            }
             return;
         }
 
         setButtonState(button, "loading");
-        clearChildren(context.list);
-        appendEmptyRow(context.list, "다른 게시글을 불러오는 중...");
+        appendStatusRow(context.list, "다른 게시글을 불러오는 중...");
 
         try {
             var response = await fetch("/read/related?" + context.params.toString(), {
@@ -221,16 +281,17 @@
             }
             var payload = await response.json();
             var items = Array.isArray(payload.items) ? payload.items : [];
-            renderItems(context.list, items, context.board, context.kind, context.recommend);
-            if (items.length > 0) {
-                writeSessionCache(context.cacheKey, items);
+            removeStatusRows(context.list);
+            var appended = appendItems(context.list, items, context.board, context.kind, context.recommend);
+            writeSessionCache(context.cacheKey, items);
+            if (items.length > 0 && appended > 0) {
                 setButtonState(button, "loaded");
             } else {
-                setButtonState(button, "idle");
+                appendStatusRow(context.list, "더 불러올 게시글이 없습니다.");
+                setButtonState(button, "no-more");
             }
         } catch (err) {
-            clearChildren(context.list);
-            appendEmptyRow(context.list, "다른 게시글을 불러오지 못했습니다.");
+            appendStatusRow(context.list, "다른 게시글을 불러오지 못했습니다.");
             setButtonState(button, "idle");
         }
     }

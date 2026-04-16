@@ -329,6 +329,46 @@ async def test_related_recommend_fallback_checks_only_source_page_then_first_pag
 
 
 @pytest.mark.asyncio
+async def test_related_recommend_caches_empty_fallback(monkeypatch):
+    async def fail_author_backfill(*args, **kwargs):
+        raise AssertionError("related posts should not fetch documents for author code backfill")
+
+    monkeypatch.setattr(core, "_fill_missing_author_codes", fail_author_backfill)
+
+    class FakeAPI:
+        def __init__(self):
+            self.calls = []
+
+        async def board(self, **kwargs):
+            self.calls.append((kwargs["start_page"], kwargs["num"], kwargs["recommend"]))
+            yield _index_item(200)
+
+    api = FakeAPI()
+
+    first = await core._related_by_position_with_api(
+        api,
+        "100",
+        "test",
+        limit=1,
+        source_page=1,
+        recommend=1,
+    )
+    core._BOARD_PAGE_CACHE.clear()
+    second = await core._related_by_position_with_api(
+        api,
+        "100",
+        "test",
+        limit=1,
+        source_page=1,
+        recommend=1,
+    )
+
+    assert first == []
+    assert second == []
+    assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
+
+
+@pytest.mark.asyncio
 async def test_related_falls_back_to_estimate_when_source_page_hint_misses(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
