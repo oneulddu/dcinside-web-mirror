@@ -380,7 +380,7 @@ class API:
         mobile_rows = parsed.xpath(
             "//ul[contains(@class, 'gall-detail-lst')]/li["
             "not(contains(concat(' ', normalize-space(@class), ' '), ' ad ')) and "
-            "(.//a[contains(@class, 'lt') and contains(@href, '/board/')])"
+            "(.//a[contains(@class, 'lt') and (contains(@href, '/board/') or contains(@href, '/mini/'))])"
             "]"
         )
         pc_rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")

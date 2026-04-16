@@ -292,6 +292,44 @@ async def test_board_falls_back_to_pc_when_mobile_list_has_only_ads():
 
 
 @pytest.mark.asyncio
+async def test_board_accepts_mobile_mini_list_links():
+    api = API.__new__(API)
+    mini_url = "https://m.dcinside.com/mini/test?page=1"
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        assert url == mini_url
+        return 200, {}, """
+        <html><body>
+          <ul class="gall-detail-lst">
+            <li>
+              <div>
+                <a class="lt" href="https://m.dcinside.com/mini/test/123">
+                  <span><span class="sp-lst-txt"></span><span>mini title</span></span>
+                  <span>
+                    <span>mini author</span>
+                    <span>04.16 12:00</span>
+                    <span>조회 7</span>
+                    <span>추천 3</span>
+                  </span>
+                </a>
+              </div>
+              <span><span>0</span></span>
+            </li>
+          </ul>
+        </body></html>
+        """
+
+    api._API__request_text = fake_request_text
+
+    rows = [item async for item in api.board("test", num=1, start_page=1, kind="mini")]
+
+    assert len(rows) == 1
+    assert rows[0].id == "123"
+    assert rows[0].title == "mini title"
+    assert rows[0].is_mobile_source is True
+
+
+@pytest.mark.asyncio
 async def test_document_falls_back_to_pc_when_mobile_page_is_not_parseable():
     api = API.__new__(API)
     mobile_url = "https://m.dcinside.com/board/test/123"
