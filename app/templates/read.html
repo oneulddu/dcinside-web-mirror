@@ -39,18 +39,18 @@
         </ul>
     </section>
 
-    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-limit="12">
+    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-limit="12" data-source-page="{{ source_page or '' }}">
         <div class="board-head">
             <h2>다른 게시글</h2>
-            <a href="/board?board={{ board }}&recommend=0&page=1{% if kind %}&kind={{ kind }}{% endif %}">목록</a>
+            <button class="related-load-btn" id="related-load-button" type="button">불러오기</button>
         </div>
         <ul id="related-list">
-            <li class="empty-row">다른 게시글을 불러오는 중...</li>
+            <li class="empty-row">다른 게시글은 버튼을 누르면 불러옵니다.</li>
         </ul>
     </section>
 
     <div class="pager-row single">
-        <a class="pager-btn" href="/board?board={{ board }}&recommend=0&page=1{% if kind %}&kind={{ kind }}{% endif %}">목록으로</a>
+        <a class="pager-btn" href="/board?board={{ board }}&recommend=0&page={{ source_page or 1 }}{% if kind %}&kind={{ kind }}{% endif %}">목록으로</a>
     </div>
 </section>
 <script src="{{ url_for('static', filename='javascript/read_related_loader.js') }}"></script>
