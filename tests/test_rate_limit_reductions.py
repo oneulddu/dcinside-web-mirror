@@ -1,7 +1,7 @@
 import pytest
 
 from app.services import core
-from app.services.dc_api import DocumentIndex
+from app.services.dc_api import Comment, DocumentIndex
 
 
 def _index_item(doc_id, *, author_id=None, is_mobile_source=False):
@@ -119,6 +119,51 @@ async def test_read_document_fetches_comments_without_trusting_zero_hint():
 
     assert data["title"] == "title"
     assert [comment["contents"] for comment in comments] == ["new comment"]
+    assert images == []
+
+
+@pytest.mark.asyncio
+async def test_read_document_uses_complete_embedded_comments_without_extra_fetch():
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>body</p>"
+        images = []
+        related_posts = []
+        embedded_comments = [
+            Comment(
+                id="1",
+                parent_id="1",
+                author="댓글작성자",
+                author_id=None,
+                contents="embedded comment",
+                dccon=None,
+                voice=None,
+                time="-",
+            )
+        ]
+        embedded_comment_total = 1
+
+        async def comments(self):
+            raise AssertionError("complete embedded comments should skip extra comment fetch")
+            if False:
+                yield None
+
+    class FakeAPI:
+        async def document(self, **kwargs):
+            return FakeDocument()
+
+    data, comments, images = await core._read_document_with_api(
+        FakeAPI(),
+        "123",
+        "test",
+    )
+
+    assert data["title"] == "title"
+    assert [comment["contents"] for comment in comments] == ["embedded comment"]
     assert images == []
 
 

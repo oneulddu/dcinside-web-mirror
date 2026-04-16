@@ -384,6 +384,17 @@ async def test_document_reuses_embedded_mobile_post_list():
             <ul class="ginfo2"><li>익명(1.2)</li><li>2026.04.16 12:00</li></ul>
           </div>
           <div class="thum-txtin"><p>mobile body</p></div>
+          <div class="all-comment-tit">
+            <span class="ct">[1]</span>
+          </div>
+          <ul class="all-comment-lst">
+            <input id="reple_totalCnt" name="reple_totalCnt" type="hidden" value="1">
+            <li class="comment" no="10" m_no="1">
+              <div class="ginfo-area"><button class="nick">댓글작성자</button></div>
+              <p class="txt">embedded comment</p>
+              <span class="date">04.16 18:18</span>
+            </li>
+          </ul>
           <ul class="gall-detail-lst">
             <li>
               <div class="gall-detail-lnktb">
@@ -419,6 +430,9 @@ async def test_document_reuses_embedded_mobile_post_list():
     assert doc.related_posts[0].id == "122"
     assert doc.related_posts[0].title == "embedded title"
     assert doc.related_posts[0].comment_count == 5
+    assert doc.embedded_comment_total == 1
+    assert len(doc.embedded_comments) == 1
+    assert doc.embedded_comments[0].contents == "embedded comment"
 
 
 @pytest.mark.asyncio

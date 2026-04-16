@@ -93,6 +93,20 @@ def _is_reply_comment(parent_id):
         return False
 
 
+def _comment_to_dict(comment):
+    comment_author, comment_author_code = _normalize_author(comment.author, comment.author_id)
+    is_reply = bool(getattr(comment, "is_reply", False)) or _is_reply_comment(comment.parent_id)
+    return {
+        "time": comment.time,
+        "contents": comment.contents,
+        "author": comment_author,
+        "author_code": comment_author_code,
+        "parent_id": comment.parent_id,
+        "is_reply": is_reply,
+        "dccon": comment.dccon,
+    }
+
+
 def _index_item_to_dict(item):
     author, author_code = _normalize_author(item.author, getattr(item, "author_id", None))
     return {
@@ -256,20 +270,24 @@ async def _read_document_with_api(api, api_id, board, kind=None):
         "html": doc.html,
         "related_posts": [_index_item_to_dict(item) for item in getattr(doc, "related_posts", [])],
     }
-    async for com in doc.comments():
-        comment_author, comment_author_code = _normalize_author(com.author, com.author_id)
-        is_reply = bool(getattr(com, "is_reply", False)) or _is_reply_comment(com.parent_id)
-        comments.append(
-            {
-                "time": com.time,
-                "contents": com.contents,
-                "author": comment_author,
-                "author_code": comment_author_code,
-                "parent_id": com.parent_id,
-                "is_reply": is_reply,
-                "dccon": com.dccon,
-            }
-        )
+    seen_comment_ids = set()
+    embedded_comments = list(getattr(doc, "embedded_comments", []) or [])
+    embedded_total = _safe_int(getattr(doc, "embedded_comment_total", 0), 0)
+    for com in embedded_comments:
+        comment_id = str(getattr(com, "id", "") or "").strip()
+        if comment_id:
+            seen_comment_ids.add(comment_id)
+        comments.append(_comment_to_dict(com))
+
+    should_fetch_comments = not embedded_comments or (embedded_total > len(embedded_comments))
+    if should_fetch_comments:
+        async for com in doc.comments():
+            comment_id = str(getattr(com, "id", "") or "").strip()
+            if comment_id and comment_id in seen_comment_ids:
+                continue
+            if comment_id:
+                seen_comment_ids.add(comment_id)
+            comments.append(_comment_to_dict(com))
     for img in doc.images:
         images.append(img.src)
     return data, comments, images

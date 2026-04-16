@@ -95,8 +95,8 @@ class DocumentIndex:
         return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count}"
 
 class Document:
-    __slots__ = ["id", "board_id", "title", "author", "author_id", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "is_mobile_source", "related_posts"]
-    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None):
+    __slots__ = ["id", "board_id", "title", "author", "author_id", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total"]
+    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=0):
         self.id = id
         self.board_id = board_id
         self.title = title
@@ -114,6 +114,8 @@ class Document:
         self.subject = subject
         self.is_mobile_source = bool(is_mobile_source)
         self.related_posts = list(related_posts or [])
+        self.embedded_comments = list(embedded_comments or [])
+        self.embedded_comment_total = embedded_comment_total
     def __str__(self):
         return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
 
@@ -518,6 +520,103 @@ class API:
             seen_ids.add(item.id)
             posts.append(item)
         return posts
+
+    def __parse_mobile_comment_li(self, li):
+        li_classes = set((li.get("class") or "").split())
+        nick_node = li[0] if len(li) > 0 else None
+        content_node = li[1] if len(li) > 1 else li
+        time_node = li[2] if len(li) > 2 else None
+
+        author_id = None
+        if nick_node is not None:
+            block_id_nodes = nick_node.xpath(".//*[contains(@class, 'blockCommentId')]")
+            if block_id_nodes:
+                author_id = block_id_nodes[0].get("data-info", None)
+            if not author_id:
+                block_ip_nodes = nick_node.xpath(".//*[contains(@class, 'blockCommentIp')]")
+                if block_ip_nodes:
+                    author_id = "".join(block_ip_nodes[0].itertext()).strip()
+
+        author = "익명"
+        if nick_node is not None:
+            nick_buttons = nick_node.xpath(".//*[contains(@class, 'nick')]")
+            if nick_buttons:
+                author = " ".join(nick_buttons[0].itertext()).strip() or "익명"
+            else:
+                author = " ".join(nick_node.itertext()).strip() or "익명"
+
+        dccon_images = content_node.xpath(
+            ".//img[contains(@src, 'dccon') or contains(@data-original, 'dccon') "
+            "or contains(@data-gif, 'dccon') or contains(@src, 'dicad')]"
+        )
+        dccon = None
+        if dccon_images:
+            dccon = (
+                dccon_images[0].get("data-gif")
+                or dccon_images[0].get("data-original")
+                or dccon_images[0].get("src")
+            )
+
+        voice = None
+        voice_nodes = content_node.xpath(".//iframe/@src")
+        if voice_nodes:
+            voice = voice_nodes[0]
+
+        return Comment(
+            id=li.get("no"),
+            parent_id=li.get("m_no"),
+            author=author,
+            author_id=author_id,
+            contents="\n".join(i.strip() for i in content_node.itertext() if i.strip()),
+            dccon=dccon,
+            voice=voice,
+            time=self.__parse_time(time_node.text_content() if time_node is not None else ""),
+            is_reply="comment-add" in li_classes,
+        )
+
+    def __mobile_comment_rows(self, parsed):
+        rows = parsed.xpath(
+            ".//ul[contains(@class, 'all-comment-lst')]/li["
+            "contains(concat(' ', normalize-space(@class), ' '), ' comment ') "
+            "or contains(concat(' ', normalize-space(@class), ' '), ' comment-add ')"
+            "]"
+        )
+        if rows:
+            return rows
+        if len(parsed) >= 2:
+            return parsed[1].xpath(
+                ".//li[contains(concat(' ', normalize-space(@class), ' '), ' comment ') "
+                "or contains(concat(' ', normalize-space(@class), ' '), ' comment-add ')]"
+            )
+        return []
+
+    def __parse_embedded_mobile_comments(self, parsed):
+        comments = []
+        seen_ids = set()
+        for li in self.__mobile_comment_rows(parsed):
+            comment = self.__parse_mobile_comment_li(li)
+            comment_id = str(comment.id or "").strip()
+            if comment_id and comment_id in seen_ids:
+                continue
+            if comment_id:
+                seen_ids.add(comment_id)
+            comments.append(comment)
+
+        total = 0
+        total_nodes = parsed.xpath("string((//input[@id='reple_totalCnt'])[1]/@value)")
+        if total_nodes:
+            try:
+                total = int(total_nodes)
+            except ValueError:
+                total = 0
+        if total <= 0:
+            title_text = " ".join(
+                parsed.xpath("//div[contains(@class, 'all-comment-tit')]//*[contains(@class, 'ct')]/text()")
+            )
+            match = re.search(r"\d+", title_text)
+            if match:
+                total = int(match.group(0))
+        return comments, total
 
     def __extract_top_level_redirect_url(self, text):
         if not text:
@@ -1078,8 +1177,11 @@ class API:
             
             doc_content = doc_content_container[0]
             related_posts = []
+            embedded_comments = []
+            embedded_comment_total = 0
             if is_mobile_source:
                 related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind)
+                embedded_comments, embedded_comment_total = self.__parse_embedded_mobile_comments(parsed)
 
             for adv in doc_content.xpath("div[@class='adv-groupin']"):
                 adv.getparent().remove(adv)
@@ -1122,6 +1224,8 @@ class API:
                     subject=subject,
                     is_mobile_source=is_mobile_source,
                     related_posts=related_posts,
+                    embedded_comments=embedded_comments,
+                    embedded_comment_total=embedded_comment_total,
                     )
         else:
             # fail due to unusual tags in mobile version
@@ -1304,43 +1408,13 @@ class API:
                 if fail_fast:
                     raise RuntimeError("mobile comment fetch returned invalid html")
                 break
-            if len(parsed) < 2:
-                if fail_fast:
-                    raise RuntimeError("mobile comment fetch returned unexpected html")
-                break
-            if not len(parsed[1].xpath("li")):
+            comment_rows = self.__mobile_comment_rows(parsed)
+            if not comment_rows:
                 if fail_fast:
                     raise RuntimeError("mobile comment page produced no comment rows")
                 break
-            #for li in reversed(parsed[1].xpath("li")):
-            for li in parsed[1].xpath("li"):
-                if not len(li[0]): continue
-                li_classes = set((li.get("class") or "").split())
-                nick_node = li[0]
-                author_id = None
-                block_id_nodes = nick_node.xpath(".//*[contains(@class, 'blockCommentId')]")
-                if block_id_nodes:
-                    author_id = block_id_nodes[0].get("data-info", None)
-                if not author_id:
-                    block_ip_nodes = nick_node.xpath(".//*[contains(@class, 'blockCommentIp')]")
-                    if block_ip_nodes:
-                        author_id = "".join(block_ip_nodes[0].itertext()).strip()
-                yield Comment(
-                    id= li.get("no"),
-                    parent_id= li.get("m_no"),
-                    author= (li[0].text or "") + ("{}".format(li[0][0].text) if len(li[0]) > 0 and li[0][0].text else ""),
-                    author_id= author_id,
-                    contents= '\n'.join(i.strip() for i in li[1].itertext() if i.strip()),
-                    dccon= (
-                        lambda img: (
-                            img[0].get("data-gif")
-                            or img[0].get("data-original")
-                            or img[0].get("src")
-                        ) if img else None
-                    )(li[1].xpath(".//img[contains(@src, 'dccon') or contains(@data-original, 'dccon') or contains(@data-gif, 'dccon') or contains(@src, 'dicad')]")),
-                    voice= li[1][0].get("src", None) if len(li[1]) and li[1][0].tag=="iframe" else None,
-                    time= self.__parse_time(li[2].text if len(li) > 2 else ""),
-                    is_reply="comment-add" in li_classes)
+            for li in comment_rows:
+                yield self.__parse_mobile_comment_li(li)
                 num -= 1
                 if num == 0:
                     return
