@@ -40,15 +40,14 @@
     </section>
 
     <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}">
-        <div class="board-head">
-            <h2>다른 게시글</h2>
-            <button class="related-load-btn" id="related-load-button" type="button">{% if embedded_related_posts %}새로 불러오기{% else %}불러오기{% endif %}</button>
+        <div class="board-head related-head">
+            <h2>{% if recommend == 1 %}다른 개념글{% else %}다른 게시글{% endif %}</h2>
         </div>
         <ul id="related-list">
             {% if embedded_related_posts %}
             {% for item in embedded_related_posts %}
-            <li>
-                <a class="feed-item" href="/read?board={{ board }}&pid={{ item.id }}{% if recommend == 1 %}&recommend=1{% endif %}{% if source_page %}&source_page={{ source_page }}{% endif %}{% if kind %}&kind={{ kind }}{% endif %}">
+            <li data-post-id="{{ item.id }}">
+                <a class="feed-item" data-post-id="{{ item.id }}" href="/read?board={{ board }}&pid={{ item.id }}{% if recommend == 1 %}&recommend=1{% endif %}{% if source_page %}&source_page={{ source_page }}{% endif %}{% if kind %}&kind={{ kind }}{% endif %}">
                     <div class="feed-title-wrap">
                         <h2 class="feed-title">{{ item.title }}</h2>
                         {% if item.comment_count > 0 %}
@@ -68,12 +67,18 @@
             {% endfor %}
             {% else %}
             {% if recommend == 1 %}
-            <li class="empty-row">다른 개념글 목록이 없습니다.</li>
+            <li class="empty-row">다른 개념글은 더보기를 누르면 불러옵니다.</li>
             {% else %}
-            <li class="empty-row">다른 게시글은 버튼을 누르면 불러옵니다.</li>
+            <li class="empty-row">다른 게시글은 더보기를 누르면 불러옵니다.</li>
             {% endif %}
             {% endif %}
         </ul>
+        <div class="related-more-wrap">
+            <button class="related-more-btn onemore" id="related-load-button" type="button" aria-controls="related-list" data-default-label="더보기">
+                <span class="related-more-label" data-related-more-label>더보기</span>
+                <span class="sp-arrow arrow-down-lg related-more-arrow" aria-hidden="true"></span>
+            </button>
+        </div>
     </section>
 
     <div class="pager-row single">

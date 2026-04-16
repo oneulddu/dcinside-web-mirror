@@ -478,3 +478,35 @@ async def test_related_does_not_cache_empty_results(monkeypatch):
     assert first == []
     assert [row["id"] for row in second] == ["99"]
     assert api.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_respects_zero_tail_pages():
+    class FakeAPI:
+        def __init__(self):
+            self.calls = []
+
+        async def board(self, **kwargs):
+            self.calls.append((kwargs["start_page"], kwargs["num"], kwargs["recommend"]))
+            if kwargs["start_page"] == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+            elif kwargs["start_page"] == 2:
+                yield _index_item(98)
+
+    api = FakeAPI()
+
+    related, has_more = await core._related_after_position_with_api(
+        api,
+        "100",
+        "99",
+        "test",
+        limit=1,
+        source_page=1,
+        recommend=1,
+        tail_pages=0,
+    )
+
+    assert related == []
+    assert has_more is False
+    assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]

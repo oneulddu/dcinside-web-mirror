@@ -23,9 +23,44 @@
 | 📖 **글 읽기** | 본문·이미지·댓글(대댓글 포함) 렌더링 |
 | 🖼️ **미디어 프록시** | 이미지를 서버에서 직접 프록시하여 안정적으로 표시 |
 | 🕐 **최근 방문** | 쿠키 기반 최근 방문 갤러리 기록 (최대 30개) |
-| 🔗 **관련 게시글** | 현재 글 주변 게시글을 자동으로 불러오는 무한 탐색 |
-| 🌙 **다크 모드** | 원클릭 라이트/다크 테마 전환 |
+| 🔗 **관련 게시글** | 글 읽기 화면 하단에서 더보기로 이어지는 주변 게시글 탐색 |
+| 🌙 **테마 전환** | 라이트/다크 테마 전환 및 새 페이지 이동 시 테마 유지 |
 | 🛡️ **스팸 필터** | 댓글 스팸 자동 필터링 |
+| ✅ **읽음 표시** | 읽은 게시글을 로컬에 저장하여 시각적으로 구분 |
+
+---
+
+## 🧭 아키텍처
+
+```
+사용자 요청
+    │
+    ▼
+┌──────────────────────────────────────────────────┐
+│  Flask (routes.py)                               │
+│  ├── /              흥한 갤러리 목록 & 갤러리 검색 │
+│  ├── /board         게시판 목록                   │
+│  ├── /read          게시글 읽기 (HTML 새니타이징)  │
+│  ├── /read/related  관련 게시글 JSON API          │
+│  ├── /media         미디어 프록시 (SSRF 방어)      │
+│  └── /recent        최근 방문 갤러리               │
+├──────────────────────────────────────────────────┤
+│  core.py (비즈니스 로직)                          │
+│  ├── TTL 기반 인메모리 캐시 (게시판/관련글/작성자) │
+│  ├── 작성자 코드 보강 (상세 페이지 비동기 조회)   │
+│  └── 관련글 위치 탐색 (기준 글 위치 탐색 + 보충)  │
+├──────────────────────────────────────────────────┤
+│  dc_api.py (스크래핑 엔진)                        │
+│  ├── 모바일/PC 자동 폴백 (URL 우선순위 기반)      │
+│  ├── 리다이렉트 추적 (meta refresh, JS redirect)  │
+│  └── 댓글 조회 (모바일 → PC 폴백 체인)            │
+└──────────────────────────────────────────────────┘
+    │
+    ▼
+ DCinside (m.dcinside.com / gall.dcinside.com)
+```
+
+**데이터 흐름:** 사용자 요청 → Flask route → `core.py` 캐시·비즈니스 로직 → `dc_api.py` DCinside 스크래핑 → HTML 새니타이징 → 응답
 
 ---
 
@@ -36,12 +71,12 @@ mirror/
 ├── app/
 │   ├── __init__.py          # Flask 앱 팩토리 (create_app)
 │   ├── config.py            # Dev / Production 설정
-│   ├── routes.py            # 라우트 & 비즈니스 로직
+│   ├── routes.py            # 라우트 & 미디어 프록시 & HTML 새니타이징
 │   ├── services/
-│   │   ├── dc_api.py        # DCinside 비동기 스크래핑 API
-│   │   └── core.py          # 게시판 조회·글 읽기·관련글 로직
+│   │   ├── dc_api.py        # DCinside 비동기 스크래핑 API (aiohttp + lxml)
+│   │   └── core.py          # 게시판 조회·글 읽기·관련글·캐시 로직
 │   ├── templates/
-│   │   ├── base.html        # 공통 레이아웃 (헤더·탭·다크모드)
+│   │   ├── base.html        # 공통 레이아웃 (헤더·탭·초기 테마 적용)
 │   │   ├── index.html       # 홈 — 흥한 갤러리 & 검색
 │   │   ├── board.html       # 게시판 목록
 │   │   ├── read.html        # 글 읽기 & 댓글
@@ -49,14 +84,17 @@ mirror/
 │   └── static/
 │       ├── css/main.css     # 전체 스타일시트
 │       └── javascript/
-│           ├── read_state.js            # 다크모드 & UI 상태
+│           ├── read_state.js            # 테마 전환 & 읽음 상태 추적
 │           ├── read_related_loader.js   # 관련 게시글 비동기 로더
 │           └── comment_spam_filter.js   # 댓글 스팸 필터
+├── tests/                   # 테스트
+├── legacy/                  # 이전 버전 코드 (미사용)
 ├── run.py                   # 로컬 개발 서버 엔트리포인트
 ├── wsgi.py                  # Gunicorn/WSGI 엔트리포인트
 ├── gunicorn.conf.py         # Gunicorn 설정
 ├── ecosystem.config.js      # PM2 프로세스 매니저 설정
 ├── Makefile                 # 편의 명령어
+├── Procfile                 # PaaS 배포용
 ├── requirements.txt         # Python 의존성
 └── .env.example             # 환경변수 템플릿
 ```
@@ -146,6 +184,10 @@ pm2 startup
 
 `ecosystem.config.js`는 파일 변경 시 자동 재시작(watch)을 지원합니다.
 
+### GitHub Actions 자동 배포
+
+`main` 브랜치에 push하면 `.github/workflows/deploy.yml`을 통해 테스트 후 SSH로 서버에 자동 배포됩니다.
+
 ---
 
 ## 🛠️ 기술 스택
@@ -154,8 +196,17 @@ pm2 startup
 |------|------|
 | **백엔드** | Python · Flask · Gunicorn |
 | **스크래핑** | aiohttp · lxml · BeautifulSoup4 |
-| **프론트엔드** | Jinja2 · Vanilla JS · CSS |
-| **배포** | PM2 · systemd |
+| **프론트엔드** | Jinja2 · Vanilla JS · CSS · Pretendard |
+| **배포** | PM2 · GitHub Actions · systemd |
+
+---
+
+## 🔒 보안 설계
+
+- **SSRF 방어**: 미디어 프록시에서 호스트 허용 목록, DNS 결과의 공인 IP 검증, 리다이렉트 횟수 제한을 적용합니다.
+- **XSS 방어**: 게시글 HTML은 태그·속성 허용 목록 기반으로 정리하고, `on*` 이벤트 핸들러를 제거합니다.
+- **콘텐츠 타입 검증**: 미디어 프록시는 이미지·비디오·오디오 계열 응답만 허용하고 `X-Content-Type-Options: nosniff` 헤더를 설정합니다.
+- **쿠키 보안**: 최근 방문 쿠키에 `SameSite=Lax`를 적용하고, HTTPS 요청에서는 `Secure` 속성을 사용합니다.
 
 ## 🔗 출처 및 관련 프로젝트
 

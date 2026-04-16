@@ -531,6 +531,146 @@ async def _related_by_position_with_api(
     return result
 
 
+async def _related_after_position_with_api(
+    api,
+    api_id,
+    after_id,
+    board,
+    kind=None,
+    limit=RELATED_LIMIT,
+    probe_steps=RELATED_PAGE_PROBE_STEPS,
+    tail_pages=RELATED_TAIL_PAGES,
+    source_page=None,
+    recommend=0,
+):
+    current_id = _safe_int(api_id, 0)
+    target_id = _safe_int(after_id, 0) or current_id
+    fetch_limit = max(_safe_int(limit, RELATED_LIMIT), 0)
+    max_probe = max(_safe_int(probe_steps, RELATED_PAGE_PROBE_STEPS), 1)
+    max_tail = max(_safe_int(tail_pages, RELATED_TAIL_PAGES), 0)
+    source_page_value = _safe_int(source_page, 0)
+    recommend_value = _safe_int(recommend, 0)
+
+    if target_id <= 0 or fetch_limit == 0:
+        return [], False
+
+    board_key = (board, kind or "", recommend_value)
+
+    async def estimate_page_from_latest_id():
+        if recommend_value:
+            return 1
+
+        latest_id = _cache_get(_LATEST_ID_CACHE, _LATEST_ID_CACHE_LOCK, board_key)
+        if latest_id is None:
+            first_page = await _fetch_board_page(api, 1, board, recommend_value, kind=kind, page_size=1)
+            if not first_page:
+                return None
+            latest_id = _safe_int(first_page[0].get("id"), target_id)
+            _cache_set(
+                _LATEST_ID_CACHE,
+                _LATEST_ID_CACHE_LOCK,
+                board_key,
+                latest_id,
+                LATEST_ID_CACHE_TTL,
+                LATEST_ID_CACHE_MAX_ITEMS,
+            )
+        return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
+
+    async def find_target_from_page(start_page):
+        page = max(_safe_int(start_page, 1), 1)
+        checked = set()
+        steps = 0
+
+        while steps < max_probe and page >= 1:
+            if page in checked:
+                break
+            checked.add(page)
+            steps += 1
+
+            page_posts = await _fetch_board_page(api, page, board, recommend_value, kind=kind)
+            if not page_posts:
+                break
+
+            page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
+            if target_id in page_ids:
+                return page, page_ids.index(target_id), page_posts
+
+            valid_ids = [pid for pid in page_ids if pid > 0]
+            if not valid_ids:
+                break
+
+            if recommend_value:
+                # Recommended posts must follow the actual recommended list
+                # order. Do not infer page movement from numeric post ids.
+                page += 1
+                continue
+
+            page_max = max(valid_ids)
+            page_min = min(valid_ids)
+            if target_id > page_max:
+                page = max(1, page - 1)
+            elif target_id < page_min:
+                page += 1
+            else:
+                page += 1
+
+        return None, -1, []
+
+    candidate_pages = []
+    if source_page_value > 0:
+        candidate_pages.append(source_page_value)
+
+    estimated_page = await estimate_page_from_latest_id()
+    if estimated_page and estimated_page not in candidate_pages:
+        candidate_pages.append(estimated_page)
+
+    if recommend_value and 1 not in candidate_pages:
+        candidate_pages.append(1)
+
+    found_page = None
+    found_index = -1
+    found_posts = []
+    for candidate_page in candidate_pages or [1]:
+        found_page, found_index, found_posts = await find_target_from_page(candidate_page)
+        if found_page is not None:
+            break
+
+    if found_page is None:
+        return [], False
+
+    collect_limit = fetch_limit + 1
+    related = []
+    seen_ids = {str(current_id)}
+
+    def append_rows(rows):
+        for row in rows:
+            rid = _safe_int(row.get("id"), 0)
+            if rid <= 0:
+                continue
+            rid_key = str(rid)
+            if rid_key in seen_ids:
+                continue
+            seen_ids.add(rid_key)
+            related.append(row)
+            if len(related) >= collect_limit:
+                return True
+        return False
+
+    append_rows(found_posts[found_index + 1 :])
+
+    next_page = found_page + 1
+    loaded_tail = 0
+    while len(related) < collect_limit and loaded_tail < max_tail:
+        page_posts = await _fetch_board_page(api, next_page, board, recommend_value, kind=kind)
+        if not page_posts:
+            break
+        append_rows(page_posts)
+        next_page += 1
+        loaded_tail += 1
+
+    return related[:fetch_limit], len(related) > fetch_limit
+
+
 async def async_related_by_position(
     api_id,
     board,
@@ -545,6 +685,32 @@ async def async_related_by_position(
         return await _related_by_position_with_api(
             api,
             api_id,
+            board,
+            kind=kind,
+            limit=limit,
+            probe_steps=probe_steps,
+            tail_pages=tail_pages,
+            source_page=source_page,
+            recommend=recommend,
+        )
+
+
+async def async_related_after_position(
+    api_id,
+    after_id,
+    board,
+    kind=None,
+    limit=RELATED_LIMIT,
+    probe_steps=RELATED_PAGE_PROBE_STEPS,
+    tail_pages=RELATED_TAIL_PAGES,
+    source_page=None,
+    recommend=0,
+):
+    async with dc_api.API() as api:
+        return await _related_after_position_with_api(
+            api,
+            api_id,
+            after_id,
             board,
             kind=kind,
             limit=limit,

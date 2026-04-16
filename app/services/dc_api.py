@@ -15,6 +15,18 @@ def env_int(name, default):
         return default
 
 
+def to_int(value, default=0):
+    if value is None:
+        return default
+    digits = re.sub(r"[^0-9-]", "", str(value))
+    if not digits:
+        return default
+    try:
+        return int(digits)
+    except ValueError:
+        return default
+
+
 DOCS_PER_PAGE = 200
 HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 MOBILE_USER_AGENT = "Mozilla/5.0 (Linux; Android 7.0; SM-G892A Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/67.0.3396.87 Mobile Safari/537.36"
@@ -426,17 +438,6 @@ class API:
         return bool(doc_head_containers and doc_content_container)
 
     def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True, recommend=False):
-        def to_int(value, default=0):
-            if value is None:
-                return default
-            digits = re.sub(r"[^0-9-]", "", str(value))
-            if not digits:
-                return default
-            try:
-                return int(digits)
-            except ValueError:
-                return default
-
         row_class = " {} ".format(row.get("class", ""))
         if " ad " in row_class:
             return None
@@ -818,18 +819,203 @@ class API:
                     else:
                         gallerys[board_name] = board_id
         return gallerys
-    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None):
-        def to_int(value, default=0):
-            if value is None:
-                return default
-            digits = re.sub(r"[^0-9-]", "", str(value))
-            if not digits:
-                return default
-            try:
-                return int(digits)
-            except ValueError:
-                return default
+    def __parse_legacy_mobile_board_row(self, doc, board_id, kind=None, recommend=False, is_mobile_source=True):
+        href = ""
+        title = ""
+        subject = None
+        author = "익명"
+        author_id = None
+        post_time = self.__parse_time("")
+        view_count = 0
+        voteup_count = 0
+        comment_count = 0
+        isimage = False
+        isdcbest = False
+        isrecommend = False
+        ishit = False
+        classname = ""
 
+        try:
+            # Legacy mobile structure
+            href = doc[0].get("href", "")
+            if href:
+                document_id = href.split("/")[-1].split("?")[0]
+            else:
+                document_id = ""
+            if len(doc[0][1]) == 5:
+                subject = doc[0][1][0].text
+                author = " ".join(doc[0][1][1].text_content().split()) if len(doc[0][1]) > 1 else "익명"
+                post_time = self.__parse_time(doc[0][1][2].text or "")
+                view_count = to_int(doc[0][1][3].text.split()[-1] if doc[0][1][3].text else 0, 0)
+                voteup_count = to_int(doc[0][1][4][0].text.split()[-1] if doc[0][1][4][0].text else 0, 0)
+            else:
+                subject = None
+                author = " ".join(doc[0][1][0].text_content().split()) if len(doc[0][1]) > 0 else "익명"
+                post_time = self.__parse_time(doc[0][1][1].text or "")
+                view_count = to_int(doc[0][1][2].text.split()[-1] if doc[0][1][2].text else 0, 0)
+                voteup_count = to_int(doc[0][1][3].text_content().split()[-1], 0)
+            classname = doc[0][0][0].get("class", "")
+            title = (doc[0][0][1].text or "").strip()
+            comment_count = to_int(doc[1][0].text if len(doc) > 1 and len(doc[1]) else 0, 0)
+            author_id_nodes = doc.xpath(".//span[contains(@class, 'blockInfo')]/@data-info")
+            if author_id_nodes:
+                author_id = (author_id_nodes[0] or "").strip() or None
+            if not author_id:
+                gallog_hrefs = doc.xpath(".//a[contains(@href, 'gallog.dcinside.com/')]/@href")
+                if gallog_hrefs:
+                    match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", gallog_hrefs[0])
+                    if match:
+                        author_id = match.group(1)
+            if not author_id:
+                onclick_nodes = doc.xpath(".//*[@onclick]/@onclick")
+                for onclick_text in onclick_nodes:
+                    match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", onclick_text)
+                    if match:
+                        author_id = match.group(1)
+                        break
+            if "sp-lst-img" in classname:
+                isimage = True
+            elif "sp-lst-recoimg" in classname:
+                isimage = True
+                isrecommend = True
+            elif "sp-lst-recotxt" in classname:
+                isrecommend = True
+            elif "sp-lst-best" in classname:
+                isdcbest = True
+            elif "sp-lst-hit" in classname:
+                ishit = True
+        except Exception:
+            # Best board uses a different mobile list markup.
+            lt = doc.xpath(".//a[contains(@class, 'lt')]")
+            if not lt:
+                return None
+            link = lt[0]
+            href = link.get("href", "")
+            id_match = re.search(r"/(\d+)(?:\\?|$)", href)
+            if not id_match:
+                return None
+            document_id = id_match.group(1)
+
+            subject_el = link.xpath(".//span[contains(@class, 'subjectin')]")
+            if subject_el:
+                title = " ".join(subject_el[0].text_content().split())
+                subj_tag = subject_el[0].xpath(".//b")
+                if subj_tag:
+                    subject = subj_tag[0].text_content().strip()
+            if not title:
+                title = " ".join(link.text_content().split())
+
+            ginfo = link.xpath(".//ul[contains(@class, 'ginfo')]/li")
+            if len(ginfo) >= 1:
+                author = " ".join(ginfo[0].text_content().split()) or "익명"
+            if len(ginfo) >= 2:
+                post_time = self.__parse_time(" ".join(ginfo[1].text_content().split()))
+            if len(ginfo) >= 3:
+                view_count = to_int(" ".join(ginfo[2].text_content().split()), 0)
+            if len(ginfo) >= 4:
+                voteup_count = to_int(" ".join(ginfo[3].text_content().split()), 0)
+
+            rt = doc.xpath(".//a[contains(@class, 'rt')]")
+            if rt:
+                comment_count = to_int(" ".join(rt[0].text_content().split()), 0)
+
+            icon_text = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/text()"))
+            icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
+            flags = "{} {}".format(icon_text, icon_class)
+            isimage = ("이미지" in flags) or ("img" in flags)
+            isrecommend = "reco" in flags
+            isdcbest = ("best" in flags) or (board_id == "dcbest")
+            ishit = "hit" in flags
+
+        if not href:
+            return None
+        if not document_id or not document_id.isdigit():
+            return None
+
+        return DocumentIndex(
+            id=document_id,
+            board_id=board_id,
+            title=title,
+            has_image=isimage or classname.endswith("img"),
+            author=author,
+            author_id=author_id,
+            view_count=view_count,
+            voteup_count=voteup_count,
+            comment_count=comment_count,
+            document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
+            comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
+            time=post_time,
+            subject=subject,
+            isimage=isimage,
+            isrecommend=isrecommend,
+            isdcbest=isdcbest,
+            ishit=ishit,
+            is_mobile_source=is_mobile_source,
+        )
+
+    def __parse_pc_board_row(self, row, board_id, kind=None, recommend=False, is_mobile_source=False):
+        data_no = row.get("data-no", "")
+        href_els = row.xpath(".//td[contains(@class, 'gall_tit')]//a[contains(@href, 'view')]")
+        if not href_els:
+            return None
+        href = href_els[0].get("href", "")
+        no_match = re.search(r"[?&]no=(\d+)", href)
+        document_id = no_match.group(1) if no_match else data_no
+        if not document_id or not document_id.isdigit():
+            return None
+
+        title = " ".join(href_els[0].text_content().split())
+        author_el = row.xpath(".//td[contains(@class, 'gall_writer')]")
+        author = "익명"
+        author_id = None
+        if author_el:
+            author = (author_el[0].get("data-nick") or "").strip()
+            if not author:
+                author = " ".join(author_el[0].text_content().split()) or "익명"
+            author_id = (author_el[0].get("data-uid") or "").strip()
+            if not author_id:
+                author_id = (author_el[0].get("data-ip") or "").strip()
+            author_id = author_id or None
+
+        date_el = row.xpath(".//td[contains(@class, 'gall_date')]")
+        time_text = ""
+        if date_el:
+            time_text = (date_el[0].get("title") or date_el[0].text_content() or "").strip()
+        view_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_count')]/text()") or []), 0)
+        voteup_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_recommend')]/text()") or []), 0)
+        comment_count = to_int("".join(row.xpath(".//a[contains(@class, 'reply_numbox')]//span[contains(@class, 'reply_num')]/text()") or []), 0)
+
+        flags = " ".join([
+            row.get("data-type", ""),
+            " ".join(row.xpath(".//td[contains(@class, 'gall_tit')]//em/@class")),
+        ])
+        isimage = ("pic" in flags) or ("img" in flags)
+        isrecommend = "recom" in flags
+        isdcbest = "best" in flags
+        ishit = ("issue" in flags) or ("hit" in flags)
+
+        return DocumentIndex(
+            id=document_id,
+            board_id=board_id,
+            title=title,
+            has_image=isimage,
+            author=author,
+            author_id=author_id,
+            view_count=view_count,
+            voteup_count=voteup_count,
+            comment_count=comment_count,
+            document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
+            comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
+            time=self.__parse_time(time_text),
+            subject=None,
+            isimage=isimage,
+            isrecommend=isrecommend,
+            isdcbest=isdcbest,
+            ishit=ishit,
+            is_mobile_source=is_mobile_source,
+        )
+
+    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None):
         page = start_page
         scanned_pages = 0
         while num:
@@ -850,142 +1036,20 @@ class API:
             doc_headers = [i[0] for i in parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li") if not i.get("class", "").startswith("ad")]
             if doc_headers:
                 for doc in doc_headers:
-                    href = ""
-                    title = ""
-                    subject = None
-                    author = "익명"
-                    author_id = None
-                    time = self.__parse_time("")
-                    view_count = 0
-                    voteup_count = 0
-                    comment_count = 0
-                    isimage = False
-                    isdcbest = False
-                    isrecommend = False
-                    ishit = False
-                    classname = ""
-
-                    try:
-                        # Legacy mobile structure
-                        href = doc[0].get("href", "")
-                        if href:
-                            document_id = href.split("/")[-1].split("?")[0]
-                        else:
-                            document_id = ""
-                        if len(doc[0][1]) == 5:
-                            subject = doc[0][1][0].text
-                            author = " ".join(doc[0][1][1].text_content().split()) if len(doc[0][1]) > 1 else "익명"
-                            time = self.__parse_time(doc[0][1][2].text or "")
-                            view_count = to_int(doc[0][1][3].text.split()[-1] if doc[0][1][3].text else 0, 0)
-                            voteup_count = to_int(doc[0][1][4][0].text.split()[-1] if doc[0][1][4][0].text else 0, 0)
-                        else:
-                            subject = None
-                            author = " ".join(doc[0][1][0].text_content().split()) if len(doc[0][1]) > 0 else "익명"
-                            time = self.__parse_time(doc[0][1][1].text or "")
-                            view_count = to_int(doc[0][1][2].text.split()[-1] if doc[0][1][2].text else 0, 0)
-                            voteup_count = to_int(doc[0][1][3].text_content().split()[-1], 0)
-                        classname = doc[0][0][0].get("class", "")
-                        title = (doc[0][0][1].text or "").strip()
-                        comment_count = to_int(doc[1][0].text if len(doc) > 1 and len(doc[1]) else 0, 0)
-                        author_id_nodes = doc.xpath(".//span[contains(@class, 'blockInfo')]/@data-info")
-                        if author_id_nodes:
-                            author_id = (author_id_nodes[0] or "").strip() or None
-                        if not author_id:
-                            gallog_hrefs = doc.xpath(".//a[contains(@href, 'gallog.dcinside.com/')]/@href")
-                            if gallog_hrefs:
-                                match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", gallog_hrefs[0])
-                                if match:
-                                    author_id = match.group(1)
-                        if not author_id:
-                            onclick_nodes = doc.xpath(".//*[@onclick]/@onclick")
-                            for onclick_text in onclick_nodes:
-                                match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", onclick_text)
-                                if match:
-                                    author_id = match.group(1)
-                                    break
-                        if "sp-lst-img" in classname:
-                            isimage = True
-                        elif "sp-lst-recoimg" in classname:
-                            isimage = True
-                            isrecommend = True
-                        elif "sp-lst-recotxt" in classname:
-                            isrecommend = True
-                        elif "sp-lst-best" in classname:
-                            isdcbest = True
-                        elif "sp-lst-hit" in classname:
-                            ishit = True
-                    except Exception:
-                        # Best board uses a different mobile list markup.
-                        lt = doc.xpath(".//a[contains(@class, 'lt')]")
-                        if not lt:
-                            continue
-                        link = lt[0]
-                        href = link.get("href", "")
-                        id_match = re.search(r"/(\d+)(?:\\?|$)", href)
-                        if not id_match:
-                            continue
-                        document_id = id_match.group(1)
-
-                        subject_el = link.xpath(".//span[contains(@class, 'subjectin')]")
-                        if subject_el:
-                            title = " ".join(subject_el[0].text_content().split())
-                            subj_tag = subject_el[0].xpath(".//b")
-                            if subj_tag:
-                                subject = subj_tag[0].text_content().strip()
-                        if not title:
-                            title = " ".join(link.text_content().split())
-
-                        ginfo = link.xpath(".//ul[contains(@class, 'ginfo')]/li")
-                        if len(ginfo) >= 1:
-                            author = " ".join(ginfo[0].text_content().split()) or "익명"
-                        if len(ginfo) >= 2:
-                            time = self.__parse_time(" ".join(ginfo[1].text_content().split()))
-                        if len(ginfo) >= 3:
-                            view_count = to_int(" ".join(ginfo[2].text_content().split()), 0)
-                        if len(ginfo) >= 4:
-                            voteup_count = to_int(" ".join(ginfo[3].text_content().split()), 0)
-
-                        rt = doc.xpath(".//a[contains(@class, 'rt')]")
-                        if rt:
-                            comment_count = to_int(" ".join(rt[0].text_content().split()), 0)
-
-                        icon_text = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/text()"))
-                        icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
-                        flags = "{} {}".format(icon_text, icon_class)
-                        isimage = ("이미지" in flags) or ("img" in flags)
-                        isrecommend = "reco" in flags
-                        isdcbest = ("best" in flags) or (board_id == "dcbest")
-                        ishit = "hit" in flags
-
-                    if not href:
-                        continue
-                    if not document_id or not document_id.isdigit():
-                        continue
-                    if document_id_upper_limit and int(document_id_upper_limit) <= int(document_id):
-                        continue
-                    if document_id_lower_limit and int(document_id_lower_limit) >= int(document_id):
-                        return
-
-                    indexdata = DocumentIndex(
-                        id=document_id,
-                        board_id=board_id,
-                        title=title,
-                        has_image=isimage or classname.endswith("img"),
-                        author=author,
-                        author_id=author_id,
-                        view_count=view_count,
-                        voteup_count=voteup_count,
-                        comment_count=comment_count,
-                        document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
-                        comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
-                        time=time,
-                        subject=subject,
-                        isimage=isimage,
-                        isrecommend=isrecommend,
-                        isdcbest=isdcbest,
-                        ishit=ishit,
+                    indexdata = self.__parse_legacy_mobile_board_row(
+                        doc,
+                        board_id,
+                        kind=kind,
+                        recommend=recommend,
                         is_mobile_source=is_mobile_source,
                     )
+                    if indexdata is None:
+                        continue
+                    if document_id_upper_limit and int(document_id_upper_limit) <= int(indexdata.id):
+                        continue
+                    if document_id_lower_limit and int(document_id_lower_limit) >= int(indexdata.id):
+                        return
+
                     yield indexdata
                     yielded_in_page += 1
                     num -= 1
@@ -994,70 +1058,20 @@ class API:
             else:
                 rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")
                 for row in rows:
-                    data_no = row.get("data-no", "")
-                    href_els = row.xpath(".//td[contains(@class, 'gall_tit')]//a[contains(@href, 'view')]")
-                    if not href_els:
-                        continue
-                    href = href_els[0].get("href", "")
-                    no_match = re.search(r"[?&]no=(\d+)", href)
-                    document_id = no_match.group(1) if no_match else data_no
-                    if not document_id or not document_id.isdigit():
-                        continue
-                    if document_id_upper_limit and int(document_id_upper_limit) <= int(document_id):
-                        continue
-                    if document_id_lower_limit and int(document_id_lower_limit) >= int(document_id):
-                        return
-
-                    title = " ".join(href_els[0].text_content().split())
-                    author_el = row.xpath(".//td[contains(@class, 'gall_writer')]")
-                    author = "익명"
-                    author_id = None
-                    if author_el:
-                        author = (author_el[0].get("data-nick") or "").strip()
-                        if not author:
-                            author = " ".join(author_el[0].text_content().split()) or "익명"
-                        author_id = (author_el[0].get("data-uid") or "").strip()
-                        if not author_id:
-                            author_id = (author_el[0].get("data-ip") or "").strip()
-                        author_id = author_id or None
-
-                    date_el = row.xpath(".//td[contains(@class, 'gall_date')]")
-                    time_text = ""
-                    if date_el:
-                        time_text = (date_el[0].get("title") or date_el[0].text_content() or "").strip()
-                    view_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_count')]/text()") or []), 0)
-                    voteup_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_recommend')]/text()") or []), 0)
-                    comment_count = to_int("".join(row.xpath(".//a[contains(@class, 'reply_numbox')]//span[contains(@class, 'reply_num')]/text()") or []), 0)
-
-                    flags = " ".join([
-                        row.get("data-type", ""),
-                        " ".join(row.xpath(".//td[contains(@class, 'gall_tit')]//em/@class")),
-                    ])
-                    isimage = ("pic" in flags) or ("img" in flags)
-                    isrecommend = "recom" in flags
-                    isdcbest = "best" in flags
-                    ishit = ("issue" in flags) or ("hit" in flags)
-
-                    indexdata = DocumentIndex(
-                        id=document_id,
-                        board_id=board_id,
-                        title=title,
-                        has_image=isimage,
-                        author=author,
-                        author_id=author_id,
-                        view_count=view_count,
-                        voteup_count=voteup_count,
-                        comment_count=comment_count,
-                        document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
-                        comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
-                        time=self.__parse_time(time_text),
-                        subject=None,
-                        isimage=isimage,
-                        isrecommend=isrecommend,
-                        isdcbest=isdcbest,
-                        ishit=ishit,
+                    indexdata = self.__parse_pc_board_row(
+                        row,
+                        board_id,
+                        kind=kind,
+                        recommend=recommend,
                         is_mobile_source=is_mobile_source,
                     )
+                    if indexdata is None:
+                        continue
+                    if document_id_upper_limit and int(document_id_upper_limit) <= int(indexdata.id):
+                        continue
+                    if document_id_lower_limit and int(document_id_lower_limit) >= int(indexdata.id):
+                        return
+
                     yield indexdata
                     yielded_in_page += 1
                     num -= 1
@@ -1067,6 +1081,154 @@ class API:
             if yielded_in_page == 0:
                 break
             page += 1
+
+    def __first_text(self, parsed, xpath_expr):
+        nodes = parsed.xpath(xpath_expr)
+        if not nodes:
+            return None
+        node = nodes[0]
+        if hasattr(node, "text_content"):
+            return node.text_content().strip()
+        return (node.text or "").strip()
+
+    def __parse_document_header(self, doc_head_container):
+        subject = None
+        title_subject_el = doc_head_container.xpath(".//span[contains(@class, 'title_subject')]")
+        title_headtext_el = doc_head_container.xpath(".//span[contains(@class, 'title_headtext')]")
+        title_el = doc_head_container.xpath(".//span[contains(@class, 'tit')]")
+        if title_subject_el:
+            title = title_subject_el[0].text_content().strip()
+            if title_headtext_el:
+                subject = title_headtext_el[0].text_content().strip().strip("[]") or None
+        elif title_el:
+            title = title_el[0].text_content().strip()
+        else:
+            title = " ".join(doc_head_container.text_content().split()) if doc_head_container.text_content() else "제목 없음"
+
+        author = "익명"
+        author_id = None
+
+        # Mobile view often exposes writer in ginfo2 first item:
+        # <li><a href="/gallog/{id}">닉네임</a></li> or plain "ㅇㅇ(1.2)" text.
+        ginfo_author = doc_head_container.xpath(".//ul[contains(@class, 'ginfo2')]/li[1]")
+        if ginfo_author:
+            author = ginfo_author[0].text_content().strip() or "익명"
+            gallog_href = ginfo_author[0].xpath("string((.//a[contains(@href, '/gallog/')])[1]/@href)")
+            if gallog_href:
+                match = re.search(r"/gallog/([^/?'\"#]+)", gallog_href)
+                if match:
+                    author_id = match.group(1)
+
+        if author == "익명":
+            author_el = doc_head_container.xpath(".//span[@class='nickname'] | .//span[contains(@class, 'nickname')]")
+            if author_el:
+                author = author_el[0].text_content().strip() or "익명"
+
+        author_id_el = doc_head_container.xpath(".//span[@class='ip']")
+        if author_id is None and author_id_el:
+            author_id = author_id_el[0].text_content().strip() or None
+        if not author_id:
+            gallog_hrefs = doc_head_container.xpath(".//a[contains(@href, 'gallog.dcinside.com/')]/@href")
+            if gallog_hrefs:
+                match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", gallog_hrefs[0])
+                if match:
+                    author_id = match.group(1)
+        if not author_id:
+            gallog_hrefs = doc_head_container.xpath(".//a[contains(@href, '/gallog/')]/@href")
+            if gallog_hrefs:
+                match = re.search(r"/gallog/([^/?'\"#]+)", gallog_hrefs[0])
+                if match:
+                    author_id = match.group(1)
+        if not author_id:
+            onclick_nodes = doc_head_container.xpath(".//*[@onclick]/@onclick")
+            for onclick_text in onclick_nodes:
+                match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", onclick_text)
+                if match:
+                    author_id = match.group(1)
+                    break
+
+        meta_text = " ".join(doc_head_container.text_content().split())
+        time_str = None
+        # Mobile markup
+        time_el = doc_head_container.xpath(".//span[@class='date'] | .//span[contains(@class, 'time')]")
+        if time_el:
+            time_str = time_el[0].text_content().strip()
+        # PC markup
+        if not time_str:
+            time_el = doc_head_container.xpath(".//span[@class='gall_date'] | .//span[contains(@class, 'gall_date')]")
+            if time_el:
+                time_str = time_el[0].text_content().strip()
+        # Final fallback: parse date-like text in header block.
+        if not time_str:
+            m = re.search(r"\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}(?::\d{2})?", meta_text)
+            if m:
+                time_str = m.group(0)
+        if not time_str:
+            time_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
+
+        return {
+            "title": title,
+            "subject": subject,
+            "author": author,
+            "author_id": author_id,
+            "time_str": time_str,
+            "meta_text": meta_text,
+        }
+
+    def __parse_document_counts(self, parsed, document_id, meta_text):
+        # Some boards use different markup and omit legacy ids/classes.
+        view_count = to_int(self.__first_text(parsed, "//ul[@class='ginfo2']/li[contains(., '조회')]"), default=-1)
+        voteup_count = to_int(self.__first_text(parsed, "//span[@id='recomm_btn']"), default=-1)
+        votedown_count = to_int(self.__first_text(parsed, "//span[@id='nonrecomm_btn']"), default=-1)
+        logined_voteup_count = to_int(self.__first_text(parsed, "//span[@id='recomm_btn_member']"), default=0)
+
+        if view_count < 0:
+            m = re.search(r"조회\s*([0-9,]+)", meta_text)
+            view_count = to_int(m.group(1), 0) if m else 0
+        if voteup_count < 0:
+            # Newer pages expose up count as recommend_view_up_{document_id}
+            voteup_count = to_int(self.__first_text(parsed, f"//*[@id='recommend_view_up_{document_id}']"), default=-1)
+        if voteup_count < 0:
+            m = re.search(r"추천\s*([0-9,]+)", meta_text)
+            voteup_count = to_int(m.group(1), 0) if m else 0
+        if votedown_count < 0:
+            m = re.search(r"(?:비추|비추천)\s*([0-9,]+)", meta_text)
+            votedown_count = to_int(m.group(1), 0) if m else 0
+        if logined_voteup_count < 0:
+            logined_voteup_count = 0
+
+        return view_count, voteup_count, votedown_count, logined_voteup_count
+
+    def __prepare_document_content(self, doc_content):
+        for adv in doc_content.xpath("div[@class='adv-groupin']"):
+            adv.getparent().remove(adv)
+        for adv in doc_content.xpath(".//img"):
+            if adv.get("src", "").startswith("https://nstatic") and not adv.get("data-original"):
+                adv.getparent().remove(adv)
+        return doc_content
+
+    def __pick_document_image_src(self, el):
+        # Some posts (e.g. gif/mp4 lazy media) keep the real URL in data-gif.
+        for key in ("data-gif", "data-original", "src"):
+            src = el.get(key)
+            if src:
+                return src
+        return None
+
+    def __document_contents_text(self, doc_content):
+        return '\n'.join(i.strip() for i in doc_content.itertext() if i.strip() and not i.strip().startswith("이미지 광고"))
+
+    def __document_images(self, doc_content, board_id, document_id):
+        return [Image(
+            src=src,
+            board_id=board_id,
+            document_id=document_id,
+            session=self.session)
+            for i in doc_content.xpath(".//img")
+            for src in [self.__pick_document_image_src(i)]
+            if src
+            and not src.startswith("https://nstatic")
+            and not src.startswith("https://img.iacstatic.co.kr")]
 
     async def document(self, board_id, document_id, kind=None, recommend=False):
         parsed, text, used_url = await self.__fetch_parsed_from_urls(
@@ -1098,123 +1260,20 @@ class API:
             doc_content_container = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
 
         if len(doc_content_container):
-            def to_int(value, default=0):
-                if value is None:
-                    return default
-                digits = re.sub(r"[^0-9-]", "", str(value))
-                if not digits:
-                    return default
-                try:
-                    return int(digits)
-                except ValueError:
-                    return default
+            header = self.__parse_document_header(doc_head_container)
+            title = header["title"]
+            subject = header["subject"]
+            author = header["author"]
+            author_id = header["author_id"]
+            time_str = header["time_str"]
 
-            def first_text(xpath_expr):
-                nodes = parsed.xpath(xpath_expr)
-                if not nodes:
-                    return None
-                node = nodes[0]
-                if hasattr(node, "text_content"):
-                    return node.text_content().strip()
-                return (node.text or "").strip()
+            view_count, voteup_count, votedown_count, logined_voteup_count = self.__parse_document_counts(
+                parsed,
+                document_id,
+                header["meta_text"],
+            )
 
-            # Improved title parsing
-            subject = None
-            title_subject_el = doc_head_container.xpath(".//span[contains(@class, 'title_subject')]")
-            title_headtext_el = doc_head_container.xpath(".//span[contains(@class, 'title_headtext')]")
-            title_el = doc_head_container.xpath(".//span[contains(@class, 'tit')]")
-            if title_subject_el:
-                title = title_subject_el[0].text_content().strip()
-                if title_headtext_el:
-                    subject = title_headtext_el[0].text_content().strip().strip("[]") or None
-            elif title_el:
-                title = title_el[0].text_content().strip()
-            else:
-                title = " ".join(doc_head_container.text_content().split()) if doc_head_container.text_content() else "제목 없음"
-                
-            author = "익명"
-            author_id = None
-
-            # Mobile view often exposes writer in ginfo2 first item:
-            # <li><a href="/gallog/{id}">닉네임</a></li> or plain "ㅇㅇ(1.2)" text.
-            ginfo_author = doc_head_container.xpath(".//ul[contains(@class, 'ginfo2')]/li[1]")
-            if ginfo_author:
-                author = ginfo_author[0].text_content().strip() or "익명"
-                gallog_href = ginfo_author[0].xpath("string((.//a[contains(@href, '/gallog/')])[1]/@href)")
-                if gallog_href:
-                    match = re.search(r"/gallog/([^/?'\"#]+)", gallog_href)
-                    if match:
-                        author_id = match.group(1)
-
-            if author == "익명":
-                author_el = doc_head_container.xpath(".//span[@class='nickname'] | .//span[contains(@class, 'nickname')]")
-                if author_el:
-                    author = author_el[0].text_content().strip() or "익명"
-
-            author_id_el = doc_head_container.xpath(".//span[@class='ip']")
-            if author_id is None and author_id_el:
-                author_id = author_id_el[0].text_content().strip() or None
-            if not author_id:
-                gallog_hrefs = doc_head_container.xpath(".//a[contains(@href, 'gallog.dcinside.com/')]/@href")
-                if gallog_hrefs:
-                    match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", gallog_hrefs[0])
-                    if match:
-                        author_id = match.group(1)
-            if not author_id:
-                gallog_hrefs = doc_head_container.xpath(".//a[contains(@href, '/gallog/')]/@href")
-                if gallog_hrefs:
-                    match = re.search(r"/gallog/([^/?'\"#]+)", gallog_hrefs[0])
-                    if match:
-                        author_id = match.group(1)
-            if not author_id:
-                onclick_nodes = doc_head_container.xpath(".//*[@onclick]/@onclick")
-                for onclick_text in onclick_nodes:
-                    match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", onclick_text)
-                    if match:
-                        author_id = match.group(1)
-                        break
-            
-            meta_text = " ".join(doc_head_container.text_content().split())
-            time_str = None
-            # Mobile markup
-            time_el = doc_head_container.xpath(".//span[@class='date'] | .//span[contains(@class, 'time')]")
-            if time_el:
-                time_str = time_el[0].text_content().strip()
-            # PC markup
-            if not time_str:
-                time_el = doc_head_container.xpath(".//span[@class='gall_date'] | .//span[contains(@class, 'gall_date')]")
-                if time_el:
-                    time_str = time_el[0].text_content().strip()
-            # Final fallback: parse date-like text in header block.
-            if not time_str:
-                m = re.search(r"\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}(?::\d{2})?", meta_text)
-                if m:
-                    time_str = m.group(0)
-            if not time_str:
-                time_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
-
-            # Some boards use different markup and omit legacy ids/classes.
-            view_count = to_int(first_text("//ul[@class='ginfo2']/li[contains(., '조회')]"), default=-1)
-            voteup_count = to_int(first_text("//span[@id='recomm_btn']"), default=-1)
-            votedown_count = to_int(first_text("//span[@id='nonrecomm_btn']"), default=-1)
-            logined_voteup_count = to_int(first_text("//span[@id='recomm_btn_member']"), default=0)
-
-            if view_count < 0:
-                m = re.search(r"조회\s*([0-9,]+)", meta_text)
-                view_count = to_int(m.group(1), 0) if m else 0
-            if voteup_count < 0:
-                # Newer pages expose up count as recommend_view_up_{document_id}
-                voteup_count = to_int(first_text(f"//*[@id='recommend_view_up_{document_id}']"), default=-1)
-            if voteup_count < 0:
-                m = re.search(r"추천\s*([0-9,]+)", meta_text)
-                voteup_count = to_int(m.group(1), 0) if m else 0
-            if votedown_count < 0:
-                m = re.search(r"(?:비추|비추천)\s*([0-9,]+)", meta_text)
-                votedown_count = to_int(m.group(1), 0) if m else 0
-            if logined_voteup_count < 0:
-                logined_voteup_count = 0
-            
-            doc_content = doc_content_container[0]
+            doc_content = self.__prepare_document_content(doc_content_container[0])
             related_posts = []
             embedded_comments = []
             embedded_comment_total = 0
@@ -1222,37 +1281,14 @@ class API:
                 related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind, recommend=recommend)
                 embedded_comments, embedded_comment_total = self.__parse_embedded_mobile_comments(parsed)
 
-            for adv in doc_content.xpath("div[@class='adv-groupin']"):
-                adv.getparent().remove(adv)
-            for adv in doc_content.xpath(".//img"):
-                if adv.get("src", "").startswith("https://nstatic") and not adv.get("data-original"):
-                    adv.getparent().remove(adv)
-
-            def pick_image_src(el):
-                # Some posts (e.g. gif/mp4 lazy media) keep the real URL in data-gif.
-                for key in ("data-gif", "data-original", "src"):
-                    src = el.get(key)
-                    if src:
-                        return src
-                return None
-
             return Document(
                     id = document_id,
                     board_id = board_id,
                     title= title,
                     author= author,
                     author_id =author_id,
-                    contents= '\n'.join(i.strip() for i in doc_content.itertext() if i.strip() and not i.strip().startswith("이미지 광고")),
-                    images= [Image(
-                        src=src,
-                        board_id=board_id, 
-                        document_id=document_id, 
-                        session=self.session)
-                        for i in doc_content.xpath(".//img")
-                        for src in [pick_image_src(i)]
-                            if src
-                            and not src.startswith("https://nstatic")
-                            and not src.startswith("https://img.iacstatic.co.kr")],
+                    contents= self.__document_contents_text(doc_content),
+                    images= self.__document_images(doc_content, board_id, document_id),
                     html= lxml.html.tostring(doc_content, encoding=str),
                     view_count= view_count,
                     voteup_count= voteup_count,
@@ -2055,145 +2091,3 @@ class API:
                     return datetime.strptime(time, "%Y-%m-%d %H:%M:%S")
         except Exception:
             return datetime.now()
-
-import unittest
-import sys
-
-# Check version info
-version = sys.version_info
-if version.major >= 3 and version.minor >= 8:
-    class Test(unittest.IsolatedAsyncioTestCase):
-        def setUp(self):
-            pass
-        async def asyncSetUp(self):
-            self.api = API()
-        async def asyncTearDown(self):
-            await self.api.close()
-        async def test_async_with(self):
-            async with API() as api:
-                doc = api.board(board_id='aoegame', num=1).__anext__()
-                self.assertNotEqual(doc, None)
-        async def test_read_minor_board_one(self):
-            async for doc in self.api.board(board_id='aoegame', num=1):
-                for attr in doc.__slots__:
-                    if attr == 'subject': continue
-                    val = getattr(doc, attr)
-                    self.assertNotEqual(val, None, attr)
-                    self.assertNotEqual(val, '', attr)
-                self.assertGreater(doc.time, datetime.now() - timedelta(hours=1))
-                self.assertLess(doc.time, datetime.now() + timedelta(hours=1))
-        async def test_read_minor_board_many(self):
-            count = 0
-            async for doc in self.api.board(board_id='aoegame', num=201):
-                for attr in doc.__slots__:
-                    if attr == 'subject': continue
-                    val = getattr(doc, attr)
-                    self.assertNotEqual(val, None, attr)
-                    self.assertNotEqual(val, '', attr)
-                count += 1
-                self.assertGreater(doc.time, datetime.now() - timedelta(hours=1))
-                self.assertLess(doc.time, datetime.now() + timedelta(hours=1))
-            self.assertAlmostEqual(count, 201)
-        async def test_read_minor_recent_comments(self):
-            async for doc in self.api.board(board_id='aoegame'):
-                comments = [comm async for comm in doc.comments()]
-                if not comments: continue
-                for comm in comments:
-                    for attr in comm.__slots__:
-                        if attr in ['contents', 'dccon', 'voice', 'author_id']: continue
-                        val = getattr(comm, attr)
-                        self.assertNotEqual(val, None, attr)
-                        self.assertNotEqual(val, '', attr)
-                    self.assertNotEqual(comm.contents or comm.dccon or comm.voice, None)
-                    self.assertGreater(comm.time, datetime.now() - timedelta(hours=1))
-                    self.assertLess(comm.time, datetime.now() + timedelta(hours=1))
-                break
-        async def test_read_board_one(self):
-            async for doc in self.api.board(board_id='programming', num=1):
-                for attr in doc.__slots__:
-                    if attr == 'subject': continue
-                    val = getattr(doc, attr)
-                    self.assertNotEqual(val, None, attr)
-                    self.assertNotEqual(val, '', attr)
-                self.assertGreater(doc.time, datetime.now() - timedelta(hours=24))
-                self.assertLess(doc.time, datetime.now() + timedelta(hours=1))
-        async def test_read_board_many(self):
-            count = 0
-            async for doc in self.api.board(board_id='programming', num=201):
-                for attr in doc.__slots__:
-                    if attr == 'subject': continue
-                    val = getattr(doc, attr)
-                    self.assertNotEqual(val, None, attr)
-                    self.assertNotEqual(val, '', attr)
-                count += 1
-                self.assertGreater(doc.time, datetime.now() - timedelta(hours=24))
-                self.assertLess(doc.time, datetime.now() + timedelta(hours=1))
-            self.assertAlmostEqual(count, 201)
-        async def test_read_recent_comments(self):
-            async for doc in self.api.board(board_id='aoegame'):
-                comments = [comm async for comm in doc.comments()]
-                if not comments: continue
-                for comm in comments:
-                    for attr in comm.__slots__:
-                        if attr in ['contents', 'dccon', 'voice', 'author_id']: continue
-                        val = getattr(comm, attr)
-                        self.assertNotEqual(val, None, attr)
-                        self.assertNotEqual(val, '', attr)
-                    self.assertNotEqual(comm.contents or comm.dccon or comm.voice, None)
-                    self.assertGreater(comm.time, datetime.now() - timedelta(hours=24))
-                    self.assertLess(comm.time, datetime.now() + timedelta(hours=1))
-                break
-        async def test_minor_document(self):
-            doc = await (await self.api.board(board_id='aoegame', num=1).__anext__()).document()
-            self.assertNotEqual(doc, None)
-            for attr in doc.__slots__:
-                if attr in ['author_id', 'subject']: continue
-                val = getattr(doc, attr)
-                self.assertNotEqual(val, None, attr)
-                self.assertNotEqual(val, '', attr)
-            self.assertGreater(doc.time, datetime.now() - timedelta(hours=1))
-            self.assertLess(doc.time, datetime.now() + timedelta(hours=1))
-        async def test_document(self):
-            doc = await (await self.api.board(board_id='programming', num=1).__anext__()).document()
-            self.assertNotEqual(doc, None)
-            for attr in doc.__slots__:
-                if attr in ['author_id', 'subject']: continue
-                val = getattr(doc, attr)
-                self.assertNotEqual(val, None, attr)
-            self.assertGreater(doc.time, datetime.now() - timedelta(hours=1))
-            self.assertLess(doc.time, datetime.now() + timedelta(hours=1))
-        '''
-        async def test_write_mod_del_document_comment(self):
-            board_id='programming'
-            doc_id = await self.api.write_document(board_id=board_id, title="제목", contents="내용", name="닉네임", password="비밀번호")
-            doc = await self.api.document(board_id=board_id, document_id=doc_id)
-            self.assertEqual(doc.contents, "내용")
-            doc_id = await self.api.modify_document(board_id=board_id, document_id=doc_id, title="수정된 제목", contents="수정된 내용", name="수정된 닉네임", password="비밀번호")
-            doc = await self.api.document(board_id=board_id, document_id=doc_id)
-            self.assertEqual(doc.contents, "수정된 내용")
-            comm_id = await self.api.write_comment(board_id=board_id, document_id=doc_id, contents="댓글", name="닉네임", password="비밀번호")
-            doc = await self.api.document(board_id=board_id, document_id=doc_id)
-            comm = await doc.comments().__anext__()
-            self.assertEqual(comm.contents, "댓글")
-            await self.api.remove_document(board_id=board_id, document_id=doc_id, password="비밀번호")
-            doc = await self.api.document(board_id=board_id, document_id=doc_id)
-            self.assertEqual(doc, None)
-        async def test_minor_write_mod_del_document_comment(self):
-            board_id='stick'
-            doc_id = await self.api.write_document(board_id=board_id, title="제목", contents="내용", name="닉네임", password="비밀번호", is_minor=True)
-            doc = await self.api.document(board_id=board_id, document_id=doc_id)
-            self.assertEqual(doc.contents, "내용")
-            doc_id = await self.api.modify_document(board_id=board_id, document_id=doc_id, title="수정된 제목", contents="수정된 내용", name="수정된 닉네임", password="비밀번호", is_minor=True)
-            doc = await self.api.document(board_id=board_id, document_id=doc_id)
-            self.assertEqual(doc.contents, "수정된 내용")
-            comm_id = await self.api.write_comment(board_id=board_id, document_id=doc_id, contents="댓글", name="닉네임", password="비밀번호")
-            doc = await self.api.document(board_id=board_id, document_id=doc_id)
-            comm = await doc.comments().__anext__()
-            self.assertEqual(comm.contents, "댓글")
-            await self.api.remove_document(board_id=board_id, document_id=doc_id, password="비밀번호")
-            doc = await self.api.document(board_id=board_id, document_id=doc_id)
-            self.assertEqual(doc, None)
-        '''
-
-if __name__ == "__main__":
-    unittest.main()

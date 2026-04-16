@@ -5,7 +5,6 @@
     var THEME_STORAGE_KEY = "mirror_theme_v1";
     var MAX_ENTRIES = 1500;
     var DEFAULT_THEME = "dark";
-    var LIGHT_THEME_STYLE_ID = "mirror-light-theme-overrides";
     var THEME_VARIABLES = {
         dark: {
             "--page-bg": "#09090b",
@@ -114,35 +113,6 @@
         }
     }
 
-    function ensureLightThemeStyle() {
-        if (document.getElementById(LIGHT_THEME_STYLE_ID)) {
-            return;
-        }
-        var style = document.createElement("style");
-        style.id = LIGHT_THEME_STYLE_ID;
-        style.textContent = [
-            "html[data-theme='light'] .app-shell { box-shadow: 0 18px 48px rgba(24, 24, 27, 0.10); }",
-            "html[data-theme='light'] .jump-panel { background: linear-gradient(180deg, rgba(37, 99, 235, 0.05) 0%, transparent 100%); }",
-            "html[data-theme='light'] .board-head, html[data-theme='light'] .pager-row { background: rgba(244, 244, 245, 0.82); }",
-            "html[data-theme='light'] .article-head { background: linear-gradient(180deg, rgba(37, 99, 235, 0.04) 0%, transparent 100%); }",
-            "html[data-theme='light'] .article-body { color: #3f3f46; }",
-            "html[data-theme='light'] .comment-shell { background: rgba(244, 244, 245, 0.72); }",
-            "html[data-theme='light'] .comment-list li { background: rgba(9, 9, 11, 0.02); }",
-            "html[data-theme='light'] .comment-list li:hover { background: rgba(9, 9, 11, 0.04); }",
-            "html[data-theme='light'] .feed-item:hover { background: rgba(9, 9, 11, 0.03); }",
-            "html[data-theme='light'] .feed-item:active { background: rgba(9, 9, 11, 0.05); }",
-            "html[data-theme='light'] .feed-item::after { background: linear-gradient(90deg, transparent, rgba(9, 9, 11, 0.04), transparent); }",
-            "html[data-theme='light'] .tab-item:hover { background: rgba(9, 9, 11, 0.05); }",
-            "html[data-theme='light'] .tab-item.active { background: rgba(9, 9, 11, 0.08); box-shadow: none; }",
-            "html[data-theme='light'] .theme-toggle:hover { background: rgba(9, 9, 11, 0.07); }",
-            "html[data-theme='light'] .reply-count { background: rgba(37, 99, 235, 0.10); }",
-            "html[data-theme='light'] .score-box, html[data-theme='light'] .related-load-btn, html[data-theme='light'] .pager-btn, html[data-theme='light'] .comment-spam-toggle { background: rgba(9, 9, 11, 0.04); border-color: rgba(9, 9, 11, 0.12); }",
-            "html[data-theme='light'] .jump-form input, html[data-theme='light'] .jump-form select { background: #ffffff; border-color: rgba(9, 9, 11, 0.12); }",
-            "html[data-theme='light'] .jump-form input:focus { background: #ffffff; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16); }",
-            "html[data-theme='light'] .feed-meta-left .sep, html[data-theme='light'] .article-meta span:not(:last-child)::after { background: rgba(9, 9, 11, 0.18); color: rgba(9, 9, 11, 0.18); }"
-        ].join("\n");
-        document.head.appendChild(style);
-    }
 
     function applyThemeVariables(theme) {
         var variables = THEME_VARIABLES[theme] || THEME_VARIABLES[DEFAULT_THEME];
@@ -174,7 +144,6 @@
         var nextTheme = normalizeTheme(theme);
         var body = document.body;
 
-        ensureLightThemeStyle();
         document.documentElement.dataset.theme = nextTheme;
         document.documentElement.style.colorScheme = nextTheme;
         applyThemeVariables(nextTheme);
