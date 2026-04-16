@@ -1,6 +1,8 @@
 #-*- coding:utf-8 -*-
 import asyncio
 import base64
+import tempfile
+from collections import defaultdict, deque
 import ipaddress
 import json
 import os
@@ -267,18 +269,33 @@ def _is_allowed_media_content_type(content_type):
     return value.startswith(("image/", "video/", "audio/"))
 
 
-def _limited_media_stream(upstream):
-    sent = 0
+def _buffer_limited_media(upstream):
+    total = 0
+    body = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)
     try:
         for chunk in upstream.iter_content(chunk_size=64 * 1024):
             if not chunk:
                 continue
-            sent += len(chunk)
-            if sent > MEDIA_MAX_BYTES:
+            total += len(chunk)
+            if total > MEDIA_MAX_BYTES:
+                body.close()
+                return None, total
+            body.write(chunk)
+    finally:
+        upstream.close()
+    body.seek(0)
+    return body, total
+
+
+def _file_stream(file_obj):
+    try:
+        while True:
+            chunk = file_obj.read(64 * 1024)
+            if not chunk:
                 break
             yield chunk
     finally:
-        upstream.close()
+        file_obj.close()
 
 
 HTML_ALLOWED_TAGS = {
@@ -336,6 +353,32 @@ def _sanitize_html_fragment(raw_html):
                     tag.decompose()
                     break
     return str(soup)
+
+
+def _pick_soup_image_src(tag):
+    for key in ("data-gif", "data-original", "src"):
+        src = tag.get(key)
+        if src:
+            return src
+    return None
+
+
+def _rewrite_content_images(soup, images, board, pid, kind):
+    image_urls = defaultdict(deque)
+    for image_src in images:
+        image_urls[image_src].append(url_for("main.media", src=image_src, board=board, pid=pid, kind=kind))
+
+    for img in soup.find_all("img"):
+        original_src = _pick_soup_image_src(img)
+        if not original_src or not image_urls[original_src]:
+            img.decompose()
+            continue
+        img["src"] = image_urls[original_src].popleft()
+        img["loading"] = "lazy"
+        img["decoding"] = "async"
+        for attr in ("data-original", "data-gif", "srcset"):
+            img.attrs.pop(attr, None)
+    return soup
 
 
 def _recent_cache_key():
@@ -623,11 +666,16 @@ def media():
         upstream.close()
         return ("", 413)
 
+    body, body_size = _buffer_limited_media(upstream)
+    if body is None:
+        return ("", 413)
+
     response = Response(
-        stream_with_context(_limited_media_stream(upstream)),
+        stream_with_context(_file_stream(body)),
         status=upstream.status_code,
     )
     response.headers["Content-Type"] = content_type
+    response.content_length = body_size
     response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
@@ -640,17 +688,7 @@ def read():
     kind = (request.args.get("kind") or "").strip().lower() or None
     data, comments, images = _run_async(async_read(pid, board, kind=kind))
     soup = BeautifulSoup(data.get("html") or "", "html.parser")
-    idx = 0
-    for i in soup.find_all("img"):
-        if idx >= len(images):
-            i.decompose()
-            continue
-        i["src"] = url_for("main.media", src=images[idx], board=board, pid=pid, kind=kind)
-        i["loading"] = "lazy"
-        i["decoding"] = "async"
-        for attr in ("data-original", "data-gif", "srcset"):
-            i.attrs.pop(attr, None)
-        idx += 1
+    _rewrite_content_images(soup, images, board, pid, kind)
 
     for comment in comments:
         if comment.get("dccon"):
