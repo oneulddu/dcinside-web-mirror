@@ -175,13 +175,14 @@ async def _fetch_board_page(
         row = _index_item_to_dict(item)
         row["source_page"] = _safe_int(page, 1)
         posts.append(row)
-    _cache_set(
-        _BOARD_PAGE_CACHE,
-        cache_key,
-        [dict(row) for row in posts],
-        BOARD_PAGE_CACHE_TTL,
-        BOARD_PAGE_CACHE_MAX_ITEMS,
-    )
+    if posts:
+        _cache_set(
+            _BOARD_PAGE_CACHE,
+            cache_key,
+            [dict(row) for row in posts],
+            BOARD_PAGE_CACHE_TTL,
+            BOARD_PAGE_CACHE_MAX_ITEMS,
+        )
     return posts
 
 

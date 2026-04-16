@@ -61,6 +61,30 @@ async def test_fetch_board_page_reuses_short_cache():
 
 
 @pytest.mark.asyncio
+async def test_fetch_board_page_does_not_cache_empty_results():
+    class FakeAPI:
+        def __init__(self):
+            self.calls = 0
+
+        async def board(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                if False:
+                    yield None
+                return
+            yield _index_item(123, is_mobile_source=True)
+
+    api = FakeAPI()
+
+    first = await core._fetch_board_page(api, 1, "test", 0, kind="minor", page_size=1)
+    second = await core._fetch_board_page(api, 1, "test", 0, kind="minor", page_size=1)
+
+    assert first == []
+    assert [row["id"] for row in second] == ["123"]
+    assert api.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_read_document_fetches_comments_without_trusting_zero_hint():
     class FakeComment:
         author = "익명"

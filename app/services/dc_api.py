@@ -1224,6 +1224,7 @@ class API:
         yielded_ids = set()
         remaining = num
         if prefer_mobile:
+            yielded_from_mobile = False
             try:
                 async for comment in self.__comments_from_mobile(
                     board_id,
@@ -1232,6 +1233,7 @@ class API:
                     start_page=start_page,
                     fail_fast=True,
                 ):
+                    yielded_from_mobile = True
                     comment_id = str(getattr(comment, "id", None) or "").strip()
                     if comment_id:
                         yielded_ids.add(comment_id)
@@ -1240,7 +1242,8 @@ class API:
                     yield comment
                     if remaining == 0:
                         return
-                return
+                if yielded_from_mobile:
+                    return
             except Exception:
                 pass
         try:
