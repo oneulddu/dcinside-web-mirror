@@ -547,11 +547,44 @@ class API:
             doc_content_container = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
         return bool(doc_head_containers and doc_content_container)
 
-    def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True, recommend=False):
-        row_class = " {} ".format(row.get("class", ""))
-        if " ad " in row_class:
-            return None
+    def __compact_text(self, node):
+        if node is None:
+            return ""
+        if hasattr(node, "text_content"):
+            return " ".join(node.text_content().split())
+        return " ".join(str(node).split())
 
+    def __mobile_document_id_from_href(self, href):
+        match = re.search(r"/(\d+)(?:[?#]|$)", href or "")
+        return match.group(1) if match else None
+
+    def __extract_gallog_author_id(self, value):
+        match = re.search(r"(?:gallog\.dcinside\.com/|/gallog/)([^/?'\"#]+)", value or "")
+        return match.group(1) if match else None
+
+    def __extract_mobile_author_id(self, row, include_onclick=False):
+        block_info = row.xpath(".//*[contains(@class, 'blockInfo')]/@data-info")
+        if block_info:
+            author_id = (block_info[0] or "").strip()
+            if author_id:
+                return author_id
+
+        gallog_hrefs = row.xpath(
+            ".//a[contains(@href, 'gallog.dcinside.com/') or contains(@href, '/gallog/')]/@href"
+        )
+        for href in gallog_hrefs:
+            author_id = self.__extract_gallog_author_id(href)
+            if author_id:
+                return author_id
+
+        if include_onclick:
+            for onclick_text in row.xpath(".//*[@onclick]/@onclick"):
+                author_id = self.__extract_gallog_author_id(onclick_text)
+                if author_id:
+                    return author_id
+        return None
+
+    def __find_mobile_list_link(self, row):
         link_nodes = row.xpath(
             ".//a[contains(@class, 'lt') and "
             "(contains(@href, '/board/') or contains(@href, '/mini/'))]"
@@ -561,34 +594,27 @@ class API:
                 ".//a[(contains(@href, '/board/') or contains(@href, '/mini/')) "
                 "and not(contains(@href, '#comment_box'))]"
             )
-        if not link_nodes:
-            return None
+        return link_nodes[0] if link_nodes else None
 
-        link = link_nodes[0]
-        href = link.get("href", "")
-        id_match = re.search(r"/(\d+)(?:[?#]|$)", href)
-        if not id_match:
-            return None
-        document_id = id_match.group(1)
-
+    def __extract_mobile_title_subject(self, link, prefer_icon_sibling=True):
         subject = None
         subject_el = link.xpath(".//span[contains(@class, 'subjectin')]")
         if subject_el:
-            title = " ".join(subject_el[0].text_content().split())
+            title = self.__compact_text(subject_el[0])
             subject_tag = subject_el[0].xpath(".//b")
             if subject_tag:
-                subject = subject_tag[0].text_content().strip() or None
-        else:
+                subject = self.__compact_text(subject_tag[0]) or None
+            return title, subject
+
+        if prefer_icon_sibling:
             title_nodes = link.xpath(".//*[contains(@class,'sp-lst')]/following-sibling::*[1]")
             if title_nodes:
-                title = " ".join(title_nodes[0].text_content().split())
-            else:
-                title = " ".join(link.text_content().split())
-        if not title:
-            return None
+                return self.__compact_text(title_nodes[0]), None
+        return self.__compact_text(link), None
 
+    def __extract_mobile_ginfo(self, link, subject=None, allow_subject_cell=True):
         ginfo = [
-            " ".join(node.text_content().split())
+            self.__compact_text(node)
             for node in link.xpath(".//ul[contains(@class, 'ginfo')]/li")
         ]
         author = "익명"
@@ -596,7 +622,7 @@ class API:
         view_count = 0
         voteup_count = 0
         meta_offset = 0
-        if len(ginfo) >= 5:
+        if allow_subject_cell and len(ginfo) >= 5:
             subject = subject or ginfo[0] or None
             meta_offset = 1
         if len(ginfo) > meta_offset:
@@ -607,37 +633,64 @@ class API:
             view_count = to_int(ginfo[meta_offset + 2], 0)
         if len(ginfo) > meta_offset + 3:
             voteup_count = to_int(ginfo[meta_offset + 3], 0)
+        return subject, author, post_time, view_count, voteup_count
 
-        comment_count = 0
+    def __extract_mobile_comment_count(self, row, full_text_fallback=False):
         comment_nodes = row.xpath(".//a[contains(@class, 'rt')]//*[contains(@class, 'ct')]")
         if comment_nodes:
-            comment_count = to_int(" ".join(comment_nodes[0].text_content().split()), 0)
+            return to_int(self.__compact_text(comment_nodes[0]), 0)
+        if full_text_fallback:
+            rt_nodes = row.xpath(".//a[contains(@class, 'rt')]")
+            if rt_nodes:
+                return to_int(self.__compact_text(rt_nodes[0]), 0)
+        return 0
 
-        author_id = None
-        block_info = row.xpath(".//*[contains(@class, 'blockInfo')]/@data-info")
-        if block_info:
-            author_id = (block_info[0] or "").strip() or None
-        if not author_id:
-            gallog_hrefs = row.xpath(".//a[contains(@href, 'gallog.dcinside.com/')]/@href")
-            if gallog_hrefs:
-                match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", gallog_hrefs[0])
-                if match:
-                    author_id = match.group(1)
+    def __mobile_icon_flags(self, link):
+        return " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
 
-        icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
-        flags = icon_class
-        isimage = has_gallery_image_icon(flags)
-        isvideo = has_gallery_video_icon(flags)
-        isrecommend = "reco" in flags
-        isdcbest = ("best" in flags) or (board_id == "dcbest")
-        ishit = "hit" in flags
+    def __gallery_flags(self, flags, board_id=None, recommend_marker="reco", include_board_best=True, include_issue_hit=False):
+        flags = flags or ""
+        return {
+            "isimage": has_gallery_image_icon(flags),
+            "isvideo": has_gallery_video_icon(flags),
+            "isrecommend": recommend_marker in flags,
+            "isdcbest": ("best" in flags) or (include_board_best and board_id == "dcbest"),
+            "ishit": ("hit" in flags) or (include_issue_hit and "issue" in flags),
+        }
 
+    def __make_board_index(
+        self,
+        document_id,
+        board_id,
+        title,
+        author,
+        author_id,
+        post_time,
+        view_count,
+        voteup_count,
+        comment_count,
+        subject,
+        flags,
+        kind=None,
+        recommend=False,
+        is_mobile_source=False,
+        recommend_marker="reco",
+        include_board_best=True,
+        include_issue_hit=False,
+    ):
+        parsed_flags = self.__gallery_flags(
+            flags,
+            board_id=board_id,
+            recommend_marker=recommend_marker,
+            include_board_best=include_board_best,
+            include_issue_hit=include_issue_hit,
+        )
         return DocumentIndex(
             id=document_id,
             board_id=board_id,
             title=title,
-            has_image=isimage,
-            has_video=isvideo,
+            has_image=parsed_flags["isimage"],
+            has_video=parsed_flags["isvideo"],
             author=author,
             author_id=author_id,
             view_count=view_count,
@@ -647,11 +700,51 @@ class API:
             comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
             time=post_time,
             subject=subject,
-            isimage=isimage,
-            isvideo=isvideo,
-            isrecommend=isrecommend,
-            isdcbest=isdcbest,
-            ishit=ishit,
+            isimage=parsed_flags["isimage"],
+            isvideo=parsed_flags["isvideo"],
+            isrecommend=parsed_flags["isrecommend"],
+            isdcbest=parsed_flags["isdcbest"],
+            ishit=parsed_flags["ishit"],
+            is_mobile_source=is_mobile_source,
+        )
+
+    def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True, recommend=False):
+        row_class = " {} ".format(row.get("class", ""))
+        if " ad " in row_class:
+            return None
+
+        link = self.__find_mobile_list_link(row)
+        if link is None:
+            return None
+
+        href = link.get("href", "")
+        document_id = self.__mobile_document_id_from_href(href)
+        if not document_id:
+            return None
+
+        title, subject = self.__extract_mobile_title_subject(link)
+        if not title:
+            return None
+
+        subject, author, post_time, view_count, voteup_count = self.__extract_mobile_ginfo(
+            link,
+            subject=subject,
+            allow_subject_cell=True,
+        )
+        return self.__make_board_index(
+            document_id=document_id,
+            board_id=board_id,
+            title=title,
+            author=author,
+            author_id=self.__extract_mobile_author_id(row),
+            post_time=post_time,
+            view_count=view_count,
+            voteup_count=voteup_count,
+            comment_count=self.__extract_mobile_comment_count(row),
+            subject=subject,
+            flags=self.__mobile_icon_flags(link),
+            kind=kind,
+            recommend=recommend,
             is_mobile_source=is_mobile_source,
         )
 
@@ -945,12 +1038,8 @@ class API:
         view_count = 0
         voteup_count = 0
         comment_count = 0
-        isimage = False
-        isvideo = False
-        isdcbest = False
-        isrecommend = False
-        ishit = False
         classname = ""
+        flags = ""
 
         try:
             # Legacy mobile structure
@@ -973,110 +1062,78 @@ class API:
                 voteup_count = to_int(doc[0][1][3].text_content().split()[-1], 0)
             classname = doc[0][0][0].get("class", "")
             title_node = doc[0][0][1]
-            title = " ".join(title_node.text_content().split()) if hasattr(title_node, "text_content") else (title_node.text or "").strip()
+            title = self.__compact_text(title_node)
             comment_count = to_int(doc[1][0].text if len(doc) > 1 and len(doc[1]) else 0, 0)
-            author_id_nodes = doc.xpath(".//span[contains(@class, 'blockInfo')]/@data-info")
-            if author_id_nodes:
-                author_id = (author_id_nodes[0] or "").strip() or None
-            if not author_id:
-                gallog_hrefs = doc.xpath(".//a[contains(@href, 'gallog.dcinside.com/')]/@href")
-                if gallog_hrefs:
-                    match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", gallog_hrefs[0])
-                    if match:
-                        author_id = match.group(1)
-            if not author_id:
-                onclick_nodes = doc.xpath(".//*[@onclick]/@onclick")
-                for onclick_text in onclick_nodes:
-                    match = re.search(r"gallog\.dcinside\.com/([^/?'\"#]+)", onclick_text)
-                    if match:
-                        author_id = match.group(1)
-                        break
-            if "sp-lst-img" in classname:
-                isimage = True
-            elif "sp-lst-recoimg" in classname:
-                isimage = True
-                isrecommend = True
-            elif "sp-lst-play" in classname:
-                isvideo = True
-            elif "sp-lst-recoplay" in classname:
-                isvideo = True
-                isrecommend = True
-            elif "sp-lst-recotxt" in classname:
-                isrecommend = True
-            elif "sp-lst-best" in classname:
-                isdcbest = True
-            elif "sp-lst-hit" in classname:
-                ishit = True
+            author_id = self.__extract_mobile_author_id(doc, include_onclick=True)
+            flags = classname
         except Exception:
             # Best board uses a different mobile list markup.
-            lt = doc.xpath(".//a[contains(@class, 'lt')]")
-            if not lt:
+            link = self.__find_mobile_list_link(doc)
+            if link is None:
                 return None
-            link = lt[0]
             href = link.get("href", "")
-            id_match = re.search(r"/(\d+)(?:\\?|$)", href)
-            if not id_match:
+            document_id = self.__mobile_document_id_from_href(href)
+            if not document_id:
                 return None
-            document_id = id_match.group(1)
 
-            subject_el = link.xpath(".//span[contains(@class, 'subjectin')]")
-            if subject_el:
-                title = " ".join(subject_el[0].text_content().split())
-                subj_tag = subject_el[0].xpath(".//b")
-                if subj_tag:
-                    subject = subj_tag[0].text_content().strip()
+            title, subject = self.__extract_mobile_title_subject(link, prefer_icon_sibling=False)
             if not title:
-                title = " ".join(link.text_content().split())
-
-            ginfo = link.xpath(".//ul[contains(@class, 'ginfo')]/li")
-            if len(ginfo) >= 1:
-                author = " ".join(ginfo[0].text_content().split()) or "익명"
-            if len(ginfo) >= 2:
-                post_time = self.__parse_time(" ".join(ginfo[1].text_content().split()))
-            if len(ginfo) >= 3:
-                view_count = to_int(" ".join(ginfo[2].text_content().split()), 0)
-            if len(ginfo) >= 4:
-                voteup_count = to_int(" ".join(ginfo[3].text_content().split()), 0)
-
-            rt = doc.xpath(".//a[contains(@class, 'rt')]")
-            if rt:
-                comment_count = to_int(" ".join(rt[0].text_content().split()), 0)
-
-            icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
-            flags = icon_class
-            isimage = has_gallery_image_icon(flags)
-            isvideo = has_gallery_video_icon(flags)
-            isrecommend = "reco" in flags
-            isdcbest = ("best" in flags) or (board_id == "dcbest")
-            ishit = "hit" in flags
+                title = self.__compact_text(link)
+            subject, author, post_time, view_count, voteup_count = self.__extract_mobile_ginfo(
+                link,
+                subject=subject,
+                allow_subject_cell=False,
+            )
+            comment_count = self.__extract_mobile_comment_count(doc, full_text_fallback=True)
+            flags = self.__mobile_icon_flags(link)
 
         if not href:
             return None
         if not document_id or not document_id.isdigit():
             return None
 
-        return DocumentIndex(
-            id=document_id,
+        return self.__make_board_index(
+            document_id=document_id,
             board_id=board_id,
             title=title,
-            has_image=isimage,
-            has_video=isvideo,
             author=author,
             author_id=author_id,
+            post_time=post_time,
             view_count=view_count,
             voteup_count=voteup_count,
             comment_count=comment_count,
-            document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
-            comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
-            time=post_time,
             subject=subject,
-            isimage=isimage,
-            isvideo=isvideo,
-            isrecommend=isrecommend,
-            isdcbest=isdcbest,
-            ishit=ishit,
+            flags=flags,
+            kind=kind,
+            recommend=recommend,
             is_mobile_source=is_mobile_source,
         )
+
+    def __extract_pc_board_author(self, row):
+        author_el = row.xpath(".//td[contains(@class, 'gall_writer')]")
+        author = "익명"
+        author_id = None
+        if author_el:
+            author = (author_el[0].get("data-nick") or "").strip()
+            if not author:
+                author = self.__compact_text(author_el[0]) or "익명"
+            author_id = (author_el[0].get("data-uid") or "").strip()
+            if not author_id:
+                author_id = (author_el[0].get("data-ip") or "").strip()
+            author_id = author_id or None
+        return author, author_id
+
+    def __extract_pc_board_counts(self, row):
+        view_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_count')]/text()") or []), 0)
+        voteup_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_recommend')]/text()") or []), 0)
+        comment_count = to_int("".join(row.xpath(".//a[contains(@class, 'reply_numbox')]//span[contains(@class, 'reply_num')]/text()") or []), 0)
+        return view_count, voteup_count, comment_count
+
+    def __pc_board_flags(self, row):
+        return " ".join([
+            row.get("data-type", ""),
+            " ".join(row.xpath(".//td[contains(@class, 'gall_tit')]//em/@class")),
+        ])
 
     def __parse_pc_board_row(self, row, board_id, kind=None, recommend=False, is_mobile_source=False):
         data_no = row.get("data-no", "")
@@ -1089,58 +1146,33 @@ class API:
         if not document_id or not document_id.isdigit():
             return None
 
-        title = " ".join(href_els[0].text_content().split())
-        author_el = row.xpath(".//td[contains(@class, 'gall_writer')]")
-        author = "익명"
-        author_id = None
-        if author_el:
-            author = (author_el[0].get("data-nick") or "").strip()
-            if not author:
-                author = " ".join(author_el[0].text_content().split()) or "익명"
-            author_id = (author_el[0].get("data-uid") or "").strip()
-            if not author_id:
-                author_id = (author_el[0].get("data-ip") or "").strip()
-            author_id = author_id or None
+        title = self.__compact_text(href_els[0])
+        author, author_id = self.__extract_pc_board_author(row)
 
         date_el = row.xpath(".//td[contains(@class, 'gall_date')]")
         time_text = ""
         if date_el:
             time_text = (date_el[0].get("title") or date_el[0].text_content() or "").strip()
-        view_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_count')]/text()") or []), 0)
-        voteup_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_recommend')]/text()") or []), 0)
-        comment_count = to_int("".join(row.xpath(".//a[contains(@class, 'reply_numbox')]//span[contains(@class, 'reply_num')]/text()") or []), 0)
+        view_count, voteup_count, comment_count = self.__extract_pc_board_counts(row)
 
-        flags = " ".join([
-            row.get("data-type", ""),
-            " ".join(row.xpath(".//td[contains(@class, 'gall_tit')]//em/@class")),
-        ])
-        isimage = has_gallery_image_icon(flags)
-        isvideo = has_gallery_video_icon(flags)
-        isrecommend = "recom" in flags
-        isdcbest = "best" in flags
-        ishit = ("issue" in flags) or ("hit" in flags)
-
-        return DocumentIndex(
-            id=document_id,
+        return self.__make_board_index(
+            document_id=document_id,
             board_id=board_id,
             title=title,
-            has_image=isimage,
-            has_video=isvideo,
             author=author,
             author_id=author_id,
+            post_time=self.__parse_time(time_text),
             view_count=view_count,
             voteup_count=voteup_count,
             comment_count=comment_count,
-            document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
-            comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
-            time=self.__parse_time(time_text),
             subject=None,
-            isimage=isimage,
-            isvideo=isvideo,
-            isrecommend=isrecommend,
-            isdcbest=isdcbest,
-            ishit=ishit,
+            flags=self.__pc_board_flags(row),
+            kind=kind,
+            recommend=recommend,
             is_mobile_source=is_mobile_source,
+            recommend_marker="recom",
+            include_board_best=False,
+            include_issue_hit=True,
         )
 
     async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None):
