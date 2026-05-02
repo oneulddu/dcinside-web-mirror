@@ -451,8 +451,10 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
     assert items[1].select_one(".feed-image-icon") is None
     assert items[1].select_one(".feed-recommend-icon") is None
     assert items[2].select_one(".feed-recommend-icon.is-plain") is not None
+    assert items[2].select_one(".feed-recommend-icon .flame-outer") is not None
     assert items[2].select_one(".feed-image-icon") is None
     assert items[3].select_one(".feed-recommend-icon.is-hot") is not None
+    assert items[3].select_one(".feed-recommend-icon .flame-inner") is not None
     assert items[3].select_one(".feed-image-icon") is None
 
 

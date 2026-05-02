@@ -360,19 +360,27 @@ a {
     stroke-linejoin: round;
 }
 
-.feed-recommend-icon path {
+.feed-recommend-icon .flame-outer,
+.feed-recommend-icon .flame-inner {
+    fill: none;
     stroke: currentColor;
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
 }
 
-.feed-recommend-icon.is-plain path {
-    fill: none;
+.feed-recommend-icon .flame-inner {
+    stroke-width: 1.7;
 }
 
-.feed-recommend-icon.is-hot path {
+.feed-recommend-icon.is-hot .flame-outer {
     fill: currentColor;
+    stroke: #fb923c;
+}
+
+.feed-recommend-icon.is-hot .flame-inner {
+    fill: #fde68a;
+    stroke: #fef3c7;
 }
 
 .feed-title {
