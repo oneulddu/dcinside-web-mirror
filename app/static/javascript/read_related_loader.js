@@ -77,7 +77,37 @@
         return "";
     }
 
-    function buildReadHref(board, item, kind, recommend, sourcePage) {
+    function escapeHtml(value) {
+        return String(value || "").replace(/[&<>"']/g, function (char) {
+            return {
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                "\"": "&quot;",
+                "'": "&#39;"
+            }[char];
+        });
+    }
+
+    function escapeRegExp(value) {
+        return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function highlightSearchTerm(value, keyword) {
+        var text = String(value || "제목 없음");
+        var term = String(keyword || "").trim();
+        if (!term) {
+            return escapeHtml(text);
+        }
+        return escapeHtml(text).replace(
+            new RegExp(escapeRegExp(escapeHtml(term)), "gi"),
+            function (matched) {
+                return '<mark class="search-highlight">' + matched + "</mark>";
+            }
+        );
+    }
+
+    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword) {
         var pid = getItemPostId(item);
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
@@ -90,10 +120,14 @@
         if (kind) {
             href += "&kind=" + encodeURIComponent(kind);
         }
+        if (searchKeyword) {
+            href += "&s_type=" + encodeURIComponent(searchType || "subject_m");
+            href += "&serval=" + encodeURIComponent(searchKeyword);
+        }
         return href;
     }
 
-    function createItemNode(item, board, kind, recommend, sourcePage) {
+    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword) {
         var postId = getItemPostId(item);
         var li = document.createElement("li");
         li.dataset.postId = postId;
@@ -101,14 +135,14 @@
         var link = document.createElement("a");
         link.className = "feed-item";
         link.dataset.postId = postId;
-        link.href = buildReadHref(board, item, kind, recommend, sourcePage);
+        link.href = buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword);
 
         var titleWrap = document.createElement("div");
         titleWrap.className = "feed-title-wrap";
 
         var title = document.createElement("h2");
         title.className = "feed-title";
-        title.textContent = item.title || "제목 없음";
+        title.innerHTML = highlightSearchTerm(item.title || "제목 없음", searchKeyword);
         titleWrap.appendChild(title);
 
         if ((item.comment_count || 0) > 0) {
@@ -151,7 +185,7 @@
         return li;
     }
 
-    function appendItems(list, items, board, kind, recommend, sourcePage) {
+    function appendItems(list, items, board, kind, recommend, sourcePage, searchType, searchKeyword) {
         var appended = 0;
         var renderedIds = getRenderedPostIds(list);
 
@@ -165,7 +199,7 @@
             if (!postId || renderedIds[postId]) {
                 continue;
             }
-            list.appendChild(createItemNode(item, board, kind, recommend, sourcePage));
+            list.appendChild(createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword));
             renderedIds[postId] = true;
             appended += 1;
         }
@@ -259,7 +293,9 @@
             context.board,
             context.kind,
             context.recommend,
-            context.sourcePage
+            context.sourcePage,
+            context.searchType,
+            context.searchKeyword
         );
         var hasMore = responseHasMore(payload || {});
 
@@ -298,6 +334,8 @@
         var recommend = section.dataset.recommend || "";
         var limit = section.dataset.limit || "12";
         var sourcePage = section.dataset.sourcePage || "";
+        var searchType = section.dataset.searchType || "";
+        var searchKeyword = section.dataset.searchKeyword || "";
         var afterPid = getLastRenderedPostId(list);
 
         if (!board || !pid) {
@@ -323,6 +361,10 @@
         if (afterPid) {
             params.set("after_pid", afterPid);
         }
+        if (searchKeyword) {
+            params.set("s_type", searchType || "subject_m");
+            params.set("serval", searchKeyword);
+        }
 
         return {
             board: board,
@@ -331,6 +373,8 @@
             recommend: recommend,
             limit: limit,
             sourcePage: sourcePage,
+            searchType: searchType,
+            searchKeyword: searchKeyword,
             afterPid: afterPid,
             list: list,
             params: params

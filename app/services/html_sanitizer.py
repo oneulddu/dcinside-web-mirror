@@ -7,14 +7,15 @@ from flask import url_for
 
 HTML_ALLOWED_TAGS = {
     "a", "abbr", "b", "blockquote", "br", "code", "dd", "del", "div", "dl", "dt",
-    "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i",
+    "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "iframe",
     "img", "li", "ol", "p", "pre", "s", "span", "strong", "sub", "sup", "table",
     "tbody", "td", "th", "thead", "tr", "u", "ul",
 }
-HTML_DROP_TAGS = {"script", "style", "iframe", "object", "embed", "link", "meta", "base", "form", "input", "button"}
+HTML_DROP_TAGS = {"script", "style", "object", "embed", "link", "meta", "base", "form", "input", "button"}
 HTML_GLOBAL_ATTRS = {"class", "title"}
 HTML_TAG_ATTRS = {
     "a": {"href", "target", "rel"},
+    "iframe": {"src", "title", "loading", "width", "height", "frameborder", "scrolling"},
     "img": {"src", "alt", "loading", "decoding", "width", "height"},
     "td": {"colspan", "rowspan"},
     "th": {"colspan", "rowspan"},
@@ -29,6 +30,16 @@ def is_safe_href(value):
     if not parsed.scheme:
         return url.startswith(("#", "/")) and not url.startswith("//")
     return parsed.scheme in {"http", "https", "mailto"}
+
+
+def is_safe_iframe_src(value):
+    url = (value or "").strip()
+    if not url:
+        return False
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        return not parsed.netloc and parsed.path == "/poll"
+    return parsed.scheme == "https" and parsed.netloc == "m.dcinside.com" and parsed.path == "/poll"
 
 
 def sanitize_html_fragment(raw_html):
@@ -56,7 +67,17 @@ def sanitize_html_fragment(raw_html):
                 else:
                     tag["rel"] = "noopener noreferrer"
             elif attr_name == "src":
-                if name != "img" or not str(value).startswith("/media?"):
+                if name == "img":
+                    if not str(value).startswith("/media?"):
+                        tag.decompose()
+                        break
+                elif name == "iframe":
+                    if not is_safe_iframe_src(value):
+                        tag.decompose()
+                        break
+                    tag["loading"] = "lazy"
+                    tag["title"] = tag.get("title") or "DCInside 투표"
+                else:
                     tag.decompose()
                     break
     return str(soup)

@@ -72,10 +72,10 @@ def is_public_hostname(hostname):
     return True
 
 
-def validate_media_url(raw_url, base_url=None):
+def _parse_media_url(raw_url, base_url=None):
     url = (raw_url or "").strip()
     if not url:
-        return None
+        return None, None
     if url.startswith("//"):
         url = "https:" + url
     if base_url:
@@ -85,14 +85,27 @@ def validate_media_url(raw_url, base_url=None):
         parsed = urlparse(url)
         _ = parsed.port
     except ValueError:
-        return None
+        return None, None
 
     if parsed.scheme not in {"http", "https"}:
-        return None
+        return None, None
     if parsed.username or parsed.password:
-        return None
+        return None, None
     if not is_allowed_media_host(parsed.hostname):
+        return None, None
+    return url, parsed
+
+
+def normalize_media_url_shape(raw_url, base_url=None):
+    url, _ = _parse_media_url(raw_url, base_url=base_url)
+    return url
+
+
+def validate_media_url(raw_url, base_url=None):
+    url, parsed = _parse_media_url(raw_url, base_url=base_url)
+    if not url:
         return None
+
     if not is_public_hostname(parsed.hostname):
         return None
     return url
@@ -147,6 +160,8 @@ def read_limited_media_body(upstream):
                 return None, 413
             chunks.append(chunk)
         return b"".join(chunks), None
+    except (requests.RequestException, OSError):
+        return None, 502
     finally:
         upstream.close()
 

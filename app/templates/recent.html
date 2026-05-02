@@ -9,7 +9,7 @@
     <ul>
         {% for item in recent_items %}
         <li>
-            <a class="feed-item" href="/board?board={{ item.board }}&recommend={{ item.recommend or 0 }}&page=1{% if item.kind %}&kind={{ item.kind }}{% endif %}">
+            <a class="feed-item" href="{{ board_url(item.board, recommend=item.recommend or 0, page=1, kind=item.kind) }}">
                 <div class="feed-title-wrap">
                     <h2 class="feed-title">{{ item.board }}</h2>
                     {% if item.kind %}

@@ -5,18 +5,43 @@
     <div class="board-head">
         <h2>{{ board }} 게시판</h2>
         {% if recommend == 1 %}
-        <a href="?board={{ board }}&recommend=0&page={{ page }}{% if kind %}&kind={{ kind }}{% endif %}{% if nav_mode %}&nav={{ nav_mode }}{% endif %}">전체 보기</a>
+        <a href="{{ board_url(board, recommend=0, page=page, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword) }}">전체 보기</a>
         {% else %}
-        <a href="?board={{ board }}&recommend=1&page={{ page }}{% if kind %}&kind={{ kind }}{% endif %}{% if nav_mode %}&nav={{ nav_mode }}{% endif %}">추천 보기</a>
+        <a href="{{ board_url(board, recommend=1, page=page, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword) }}">추천 보기</a>
         {% endif %}
     </div>
+    <form class="board-search-form" method="get" action="/board" role="search">
+        <input type="hidden" name="board" value="{{ board }}">
+        <input type="hidden" name="recommend" value="{{ recommend }}">
+        <input type="hidden" name="page" value="1">
+        {% if kind %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
+        {% if nav_mode %}<input type="hidden" name="nav" value="{{ nav_mode }}">{% endif %}
+        <label class="board-search-label" for="board-search-type">검색</label>
+        <select class="board-search-select" id="board-search-type" name="s_type" aria-label="검색 범위">
+            <option value="subject_m" {% if search_type == 'subject_m' %}selected{% endif %}>제목+내용</option>
+            <option value="subject" {% if search_type == 'subject' %}selected{% endif %}>제목</option>
+            <option value="memo" {% if search_type == 'memo' %}selected{% endif %}>내용</option>
+            <option value="name" {% if search_type == 'name' %}selected{% endif %}>글쓴이</option>
+            <option value="comment" {% if search_type == 'comment' %}selected{% endif %}>댓글</option>
+        </select>
+        <input class="board-search-input" type="search" name="serval" value="{{ search_keyword or '' }}" placeholder="검색어를 입력하세요." autocomplete="off" required>
+        {% if search_keyword %}
+        <a class="board-search-clear" href="{{ board_url(board, recommend=recommend, page=1, kind=kind, nav=nav_mode) }}" aria-label="검색 해제">×</a>
+        {% endif %}
+        <button class="board-search-submit" type="submit" aria-label="검색">검색</button>
+    </form>
+    {% if search_keyword %}
+    <div class="board-search-summary">
+        <b>{{ search_keyword }}</b> 검색 결과
+    </div>
+    {% endif %}
     <ul>
         {% for index in datas %}
         <li>
-            <a class="feed-item" href="/read?board={{ board }}&pid={{ index.id }}{% if recommend == 1 %}&recommend=1{% endif %}&source_page={{ page }}{% if kind %}&kind={{ kind }}{% endif %}">
+            <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword) }}">
                 <div class="feed-title-wrap">
                     <h2 class="feed-title">
-                        {{ index.title }}
+                        {{ index.title|highlight_search(search_keyword) }}
                     </h2>
                     {% if index.comment_count > 0 %}
                     <span class="reply-count">[{{ index.comment_count }}]</span>
@@ -50,12 +75,12 @@
         <a class="pager-btn pager-home" href="/">갤러리</a>
         <div class="pager-center">
             {% if page > 1 %}
-            <a class="pager-btn" href="?board={{ board }}&recommend={{ recommend }}&page={{ page - 1 }}{% if kind %}&kind={{ kind }}{% endif %}{% if nav_mode %}&nav={{ nav_mode }}{% endif %}">이전</a>
+            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page - 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword) }}">이전</a>
             {% else %}
             <span class="pager-btn off">이전</span>
             {% endif %}
             <span class="pager-current">{{ page }}</span>
-            <a class="pager-btn" href="?board={{ board }}&recommend={{ recommend }}&page={{ page + 1 }}{% if kind %}&kind={{ kind }}{% endif %}{% if nav_mode %}&nav={{ nav_mode }}{% endif %}">다음</a>
+            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page + 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword) }}">다음</a>
         </div>
     </div>
 </section>

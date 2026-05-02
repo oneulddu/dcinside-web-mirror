@@ -39,17 +39,17 @@
         </ul>
     </section>
 
-    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}">
+    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
         <div class="board-head related-head">
-            <h2>{% if recommend == 1 %}다른 개념글{% else %}다른 게시글{% endif %}</h2>
+            <h2>{% if search_keyword %}다른 검색 결과{% elif recommend == 1 %}다른 개념글{% else %}다른 게시글{% endif %}</h2>
         </div>
         <ul id="related-list">
             {% if embedded_related_posts %}
             {% for item in embedded_related_posts %}
             <li data-post-id="{{ item.id }}">
-                <a class="feed-item" data-post-id="{{ item.id }}" href="/read?board={{ board }}&pid={{ item.id }}{% if recommend == 1 %}&recommend=1{% endif %}{% if source_page %}&source_page={{ source_page }}{% endif %}{% if kind %}&kind={{ kind }}{% endif %}">
+                <a class="feed-item" data-post-id="{{ item.id }}" href="{{ read_url(board, item.id, recommend=recommend, source_page=source_page, kind=kind, search_type=search_type, search_keyword=search_keyword) }}">
                     <div class="feed-title-wrap">
-                        <h2 class="feed-title">{{ item.title }}</h2>
+                        <h2 class="feed-title">{{ item.title|highlight_search(search_keyword) }}</h2>
                         {% if item.comment_count > 0 %}
                         <span class="reply-count">[{{ item.comment_count }}]</span>
                         {% endif %}
@@ -66,10 +66,14 @@
             </li>
             {% endfor %}
             {% else %}
+            {% if search_keyword %}
+            <li class="empty-row">다른 검색 결과는 더보기를 누르면 불러옵니다.</li>
+            {% else %}
             {% if recommend == 1 %}
             <li class="empty-row">다른 개념글은 더보기를 누르면 불러옵니다.</li>
             {% else %}
             <li class="empty-row">다른 게시글은 더보기를 누르면 불러옵니다.</li>
+            {% endif %}
             {% endif %}
             {% endif %}
         </ul>
@@ -82,7 +86,7 @@
     </section>
 
     <div class="pager-row single">
-        <a class="pager-btn" href="/board?board={{ board }}&recommend={{ recommend or 0 }}&page={{ source_page or 1 }}{% if kind %}&kind={{ kind }}{% endif %}">목록으로</a>
+        <a class="pager-btn" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword) }}">목록으로</a>
     </div>
 </section>
 <script src="{{ url_for('static', filename='javascript/read_related_loader.js') }}"></script>

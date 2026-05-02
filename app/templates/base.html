@@ -56,14 +56,14 @@
             </div>
             <nav class="main-tabs">
                 {% if board is defined and board %}
-                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/board?board={{ board }}&recommend=0&page=1{% if kind %}&kind={{ kind }}{% endif %}">전체</a>
-                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="/board?board={{ board }}&recommend=1&page=1{% if kind %}&kind={{ kind }}{% endif %}">베스트</a>
+                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind) }}">전체</a>
+                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind) }}">베스트</a>
                 {% else %}
                 <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/">전체</a>
-                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="/board?board=dcbest&recommend=0&page=1">베스트</a>
+                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url('dcbest', recommend=0, page=1) }}">베스트</a>
                 {% endif %}
                 <a class="tab-item {% if nav_tab == 'recent' %}active{% endif %}" href="/recent">최근</a>
-                <a class="tab-item" href="/board?board=100toron&recommend=0&page=1">⚔ 토론장</a>
+                <a class="tab-item" href="{{ board_url('100toron', recommend=0, page=1) }}">⚔ 토론장</a>
             </nav>
         </header>
 

@@ -31,6 +31,12 @@ class DummyUpstream:
         self.closed = True
 
 
+class ExplodingUpstream(DummyUpstream):
+    def iter_content(self, chunk_size=1):
+        self.iterated += 1
+        raise OSError("upstream disconnected")
+
+
 def test_read_limited_media_body_closes_after_success(monkeypatch):
     monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 10)
     upstream = DummyUpstream([b"123", b"456"])
@@ -52,6 +58,17 @@ def test_read_limited_media_body_returns_413_and_closes_when_limit_exceeded(monk
     assert body is None
     assert error_status == 413
     assert upstream.iterated == 2
+    assert upstream.closed is True
+
+
+def test_read_limited_media_body_returns_502_and_closes_on_stream_error():
+    upstream = ExplodingUpstream([], headers={"Content-Type": "image/jpeg"})
+
+    body, error_status = media_proxy.read_limited_media_body(upstream)
+
+    assert body is None
+    assert error_status == 502
+    assert upstream.iterated == 1
     assert upstream.closed is True
 
 
@@ -121,6 +138,18 @@ def test_media_route_rejects_mismatched_known_length_when_stream_exceeds_limit(m
     assert upstream.closed is True
 
 
+def test_media_route_rejects_non_dcinside_source_before_fetch(monkeypatch):
+    def fail_fetch(*args, **kwargs):
+        raise AssertionError("invalid media source must be rejected before fetch")
+
+    monkeypatch.setattr(media_proxy, "fetch_media_response", fail_fetch)
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://example.com/test.jpg")
+
+    assert response.status_code == 400
+
+
 def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
     app = create_app()
     soup = BeautifulSoup(
@@ -182,6 +211,22 @@ def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
     assert "onerror" not in images[0].attrs
 
 
+def test_sanitize_html_fragment_rejects_scheme_relative_iframe_src():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="//evil.com/poll"></iframe>
+          <iframe src="/poll"></iframe>
+          <iframe src="https://m.dcinside.com/poll"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
+
+    assert iframe_sources == ["/poll", "https://m.dcinside.com/poll"]
+
+
 def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     async def fake_async_index(page, board, recommend, kind=None):
         return [
@@ -213,6 +258,43 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     assert normal_query["source_page"] == ["3"]
     assert recommend_query["source_page"] == ["3"]
     assert recommend_query["recommend"] == ["1"]
+
+
+def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
+    async def fake_async_index(page, board, recommend, kind=None):
+        assert page == 1
+        assert board == "test"
+        assert recommend == 0
+        return []
+
+    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    app = create_app()
+
+    response = app.test_client().get("/board?board=test&recommend=2&page=0")
+
+    assert response.status_code == 200
+
+
+def test_board_rejects_invalid_board_and_kind(monkeypatch):
+    async def fail_async_index(*args, **kwargs):
+        raise AssertionError("invalid board input must be rejected before upstream fetch")
+
+    monkeypatch.setattr(routes, "async_index", fail_async_index)
+    app = create_app()
+    client = app.test_client()
+
+    assert client.get("/board?board=../secret").status_code == 400
+    assert client.get("/board?board=test&kind=weird").status_code == 400
+
+
+def test_read_rejects_non_positive_pid(monkeypatch):
+    async def fail_async_read(*args, **kwargs):
+        raise AssertionError("invalid pid must be rejected before upstream fetch")
+
+    monkeypatch.setattr(routes, "async_read", fail_async_read)
+    app = create_app()
+
+    assert app.test_client().get("/read?board=test&pid=0").status_code == 404
 
 
 def test_related_loader_appends_related_results_without_replacing_existing_rows():
@@ -374,9 +456,22 @@ def test_recent_gallery_old_cookie_without_recommend_defaults_to_normal():
     assert query["kind"] == ["minor"]
 
 
+def test_recent_gallery_ignores_bad_visited_at_in_cookie():
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie([{"board": "legacy", "kind": "minor", "visited_at": "bad"}]),
+    )
+
+    response = client.get("/recent")
+
+    assert response.status_code == 200
+
+
 def test_recent_server_cache_prunes_expired_fallback():
     app = create_app()
-    key = "127.0.0.1|pytest"
+    key = "visitor-test-key"
     with recent.RECENT_SERVER_CACHE_LOCK:
         recent.RECENT_SERVER_CACHE.clear()
         recent.RECENT_SERVER_CACHE[key] = {
@@ -385,7 +480,10 @@ def test_recent_server_cache_prunes_expired_fallback():
             "last_seen": 0,
         }
 
-    with app.test_request_context("/recent", environ_base={"REMOTE_ADDR": "127.0.0.1", "HTTP_USER_AGENT": "pytest"}):
+    with app.test_request_context(
+        "/recent",
+        headers={"Cookie": f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={key}"},
+    ):
         assert recent.load_recent_entries() == []
 
     assert key not in recent.RECENT_SERVER_CACHE
@@ -393,17 +491,49 @@ def test_recent_server_cache_prunes_expired_fallback():
 
 def test_recent_server_cache_accepts_legacy_list_shape():
     app = create_app()
-    key = "127.0.0.1|pytest"
+    key = "visitor-test-key"
     rows = [{"board": "legacy", "kind": None, "recommend": 0, "visited_at": 1}]
     with recent.RECENT_SERVER_CACHE_LOCK:
         recent.RECENT_SERVER_CACHE.clear()
         recent.RECENT_SERVER_CACHE[key] = rows
 
-    with app.test_request_context("/recent", environ_base={"REMOTE_ADDR": "127.0.0.1", "HTTP_USER_AGENT": "pytest"}):
+    with app.test_request_context(
+        "/recent",
+        headers={"Cookie": f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={key}"},
+    ):
         assert recent.load_recent_entries() == rows
 
     with recent.RECENT_SERVER_CACHE_LOCK:
         assert isinstance(recent.RECENT_SERVER_CACHE[key], dict)
+
+
+def test_recent_server_cache_does_not_share_by_ip_and_user_agent():
+    app = create_app()
+    old_shared_key = "127.0.0.1|pytest"
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        recent.RECENT_SERVER_CACHE.clear()
+        recent.RECENT_SERVER_CACHE[old_shared_key] = {
+            "entries": [{"board": "private", "kind": None, "recommend": 0, "visited_at": 1}],
+            "expires_at": 9999999999,
+            "last_seen": 0,
+        }
+
+    with app.test_request_context("/recent", environ_base={"REMOTE_ADDR": "127.0.0.1", "HTTP_USER_AGENT": "pytest"}):
+        assert recent.load_recent_entries() == []
+
+
+def test_touch_recent_gallery_sets_private_fallback_key_cookie(monkeypatch):
+    async def fake_async_index(page, board, recommend, kind=None):
+        return []
+
+    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    app = create_app()
+    response = app.test_client().get("/board?board=test")
+
+    set_cookie_headers = response.headers.getlist("Set-Cookie")
+
+    assert any(header.startswith(f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}=") for header in set_cookie_headers)
+    assert any("HttpOnly" in header for header in set_cookie_headers if header.startswith(f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}="))
 
 
 def test_recent_server_cache_limits_total_keys(monkeypatch):

@@ -116,6 +116,50 @@ def test_parse_mobile_list_item_keeps_four_cell_ginfo_offsets():
 
 
 @pytest.mark.asyncio
+async def test_board_ignores_invalid_document_id_limits_instead_of_crashing():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <html><body>
+          <ul class="gall-detail-lst">
+            <li>
+              <div class="gall-detail-lnktb">
+                <a class="lt" href="https://m.dcinside.com/board/test/122">
+                  <span class="subject-add">
+                    <span class="subjectin">embedded title</span>
+                  </span>
+                  <ul class="ginfo">
+                    <li>작성자</li>
+                    <li>04.16 12:00</li>
+                    <li>조회 7</li>
+                    <li>추천 <span>2</span></li>
+                  </ul>
+                </a>
+              </div>
+            </li>
+          </ul>
+        </body></html>
+        """
+    )
+
+    async def fake_fetch(*args, **kwargs):
+        return parsed, "ready", "https://m.dcinside.com/board/test?page=1"
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+
+    items = [
+        item async for item in api.board(
+            "test",
+            num=1,
+            document_id_upper_limit="not-a-number",
+            document_id_lower_limit="",
+        )
+    ]
+
+    assert [item.id for item in items] == ["122"]
+
+
+@pytest.mark.asyncio
 async def test_comments_fallback_to_mobile_when_pc_yields_nothing():
     api = API.__new__(API)
 
