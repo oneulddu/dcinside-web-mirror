@@ -102,14 +102,29 @@ def has_gallery_image_icon(value):
     )
 
 
+def has_gallery_video_icon(value):
+    classes = set(str(value or "").split())
+    return bool(
+        classes.intersection({
+            "sp-lst-play",
+            "sp-lst-recoplay",
+            "icon_play",
+            "icon_movie",
+            "icon_video",
+        })
+        or any(token.startswith(("icon_play", "icon_movie", "icon_video")) for token in classes)
+    )
+
+
 class DocumentIndex:
-    __slots__ = ["id", "subject", "title", "board_id", "has_image", "author", "author_id", "time", "view_count", "comment_count", "voteup_count",
-            "document", "comments", "isimage", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
-    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False):
+    __slots__ = ["id", "subject", "title", "board_id", "has_image", "has_video", "author", "author_id", "time", "view_count", "comment_count", "voteup_count",
+            "document", "comments", "isimage", "isvideo", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
+    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False, has_video=False, isvideo=False):
         self.id = id
         self.board_id = board_id
         self.title = title
         self.has_image = has_image
+        self.has_video = has_video
         self.author = author
         self.author_id = author_id
         self.time = time
@@ -120,6 +135,7 @@ class DocumentIndex:
         self.comments = comments
         self.subject = subject
         self.isimage = isimage
+        self.isvideo = isvideo
         self.isrecommend = isrecommend
         self.isdcbest = isdcbest
         self.ishit = ishit
@@ -611,6 +627,7 @@ class API:
         icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
         flags = icon_class
         isimage = has_gallery_image_icon(flags)
+        isvideo = has_gallery_video_icon(flags)
         isrecommend = "reco" in flags
         isdcbest = ("best" in flags) or (board_id == "dcbest")
         ishit = "hit" in flags
@@ -620,6 +637,7 @@ class API:
             board_id=board_id,
             title=title,
             has_image=isimage,
+            has_video=isvideo,
             author=author,
             author_id=author_id,
             view_count=view_count,
@@ -630,6 +648,7 @@ class API:
             time=post_time,
             subject=subject,
             isimage=isimage,
+            isvideo=isvideo,
             isrecommend=isrecommend,
             isdcbest=isdcbest,
             ishit=ishit,
@@ -927,6 +946,7 @@ class API:
         voteup_count = 0
         comment_count = 0
         isimage = False
+        isvideo = False
         isdcbest = False
         isrecommend = False
         ishit = False
@@ -976,6 +996,11 @@ class API:
             elif "sp-lst-recoimg" in classname:
                 isimage = True
                 isrecommend = True
+            elif "sp-lst-play" in classname:
+                isvideo = True
+            elif "sp-lst-recoplay" in classname:
+                isvideo = True
+                isrecommend = True
             elif "sp-lst-recotxt" in classname:
                 isrecommend = True
             elif "sp-lst-best" in classname:
@@ -1020,6 +1045,7 @@ class API:
             icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
             flags = icon_class
             isimage = has_gallery_image_icon(flags)
+            isvideo = has_gallery_video_icon(flags)
             isrecommend = "reco" in flags
             isdcbest = ("best" in flags) or (board_id == "dcbest")
             ishit = "hit" in flags
@@ -1034,6 +1060,7 @@ class API:
             board_id=board_id,
             title=title,
             has_image=isimage,
+            has_video=isvideo,
             author=author,
             author_id=author_id,
             view_count=view_count,
@@ -1044,6 +1071,7 @@ class API:
             time=post_time,
             subject=subject,
             isimage=isimage,
+            isvideo=isvideo,
             isrecommend=isrecommend,
             isdcbest=isdcbest,
             ishit=ishit,
@@ -1087,6 +1115,7 @@ class API:
             " ".join(row.xpath(".//td[contains(@class, 'gall_tit')]//em/@class")),
         ])
         isimage = has_gallery_image_icon(flags)
+        isvideo = has_gallery_video_icon(flags)
         isrecommend = "recom" in flags
         isdcbest = "best" in flags
         ishit = ("issue" in flags) or ("hit" in flags)
@@ -1096,6 +1125,7 @@ class API:
             board_id=board_id,
             title=title,
             has_image=isimage,
+            has_video=isvideo,
             author=author,
             author_id=author_id,
             view_count=view_count,
@@ -1106,6 +1136,7 @@ class API:
             time=self.__parse_time(time_text),
             subject=None,
             isimage=isimage,
+            isvideo=isvideo,
             isrecommend=isrecommend,
             isdcbest=isdcbest,
             ishit=ishit,

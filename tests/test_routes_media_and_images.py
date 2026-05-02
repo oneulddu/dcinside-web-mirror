@@ -414,6 +414,19 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
             },
             {
                 "id": "125",
+                "title": "동영상 글",
+                "has_image": False,
+                "has_video": True,
+                "isrecommend": False,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "126",
                 "title": "사진 없는 개념글",
                 "has_image": False,
                 "isrecommend": True,
@@ -425,9 +438,22 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
                 "voteup_count": 0,
             },
             {
-                "id": "126",
+                "id": "127",
                 "title": "사진 있는 개념글",
                 "has_image": True,
+                "isrecommend": True,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "128",
+                "title": "동영상 있는 개념글",
+                "has_image": False,
+                "has_video": True,
                 "isrecommend": True,
                 "comment_count": 0,
                 "subject": None,
@@ -450,12 +476,16 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
     assert items[0].select_one(".feed-image-icon + .feed-title") is not None
     assert items[1].select_one(".feed-image-icon") is None
     assert items[1].select_one(".feed-recommend-icon") is None
-    assert items[2].select_one(".feed-recommend-icon.is-plain") is not None
-    assert items[2].select_one(".feed-recommend-icon .flame-outer") is not None
+    assert items[2].select_one(".feed-play-icon") is not None
     assert items[2].select_one(".feed-image-icon") is None
-    assert items[3].select_one(".feed-recommend-icon.is-hot") is not None
-    assert items[3].select_one(".feed-recommend-icon .flame-inner") is not None
+    assert items[3].select_one(".feed-recommend-icon.is-plain") is not None
+    assert items[3].select_one(".feed-recommend-icon .flame-outer") is not None
     assert items[3].select_one(".feed-image-icon") is None
+    assert items[4].select_one(".feed-recommend-icon.is-hot") is not None
+    assert items[4].select_one(".feed-recommend-icon .flame-inner") is not None
+    assert items[4].select_one(".feed-image-icon") is None
+    assert items[5].select_one(".feed-recommend-icon.is-hot") is not None
+    assert items[5].select_one(".feed-play-icon") is None
 
 
 def test_board_normalizes_page_and_recommend_inputs(monkeypatch):

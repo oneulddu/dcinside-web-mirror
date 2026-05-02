@@ -145,6 +145,39 @@ def test_parse_mobile_list_item_ignores_text_icon_named_image():
     assert item is not None
     assert item.title == "text-only title"
     assert item.isimage is False
+    assert item.isvideo is False
+
+
+def test_parse_mobile_list_item_tracks_play_icon_as_video():
+    api = API.__new__(API)
+    row = lxml.html.fromstring(
+        """
+        <li>
+          <div class="gall-detail-lnktb">
+            <a class="lt" href="https://m.dcinside.com/board/test/124">
+              <span class="subject-add">
+                <span class="sp-lst sp-lst-play">동영상</span>
+                <span class="subjectin">video title</span>
+              </span>
+              <ul class="ginfo">
+                <li>작성자</li>
+                <li>04.16 12:00</li>
+                <li>조회 7</li>
+                <li>추천 <span>2</span></li>
+              </ul>
+            </a>
+          </div>
+        </li>
+        """
+    )
+
+    item = api._API__parse_mobile_list_item(row, "test", kind="minor")
+
+    assert item is not None
+    assert item.title == "video title"
+    assert item.isimage is False
+    assert item.isvideo is True
+    assert item.has_video is True
 
 
 def test_parse_pc_board_row_uses_pic_icon_not_generic_icon_img():
@@ -177,14 +210,35 @@ def test_parse_pc_board_row_uses_pic_icon_not_generic_icon_img():
         </tr>
         """
     )
+    video_row = lxml.html.fromstring(
+        """
+        <tr class="ub-content us-post" data-no="125" data-type="icon_movie">
+          <td class="gall_tit">
+            <em class="icon_img icon_movie"></em>
+            <a href="/mgallery/board/view/?id=test&no=125">video title</a>
+          </td>
+          <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+          <td class="gall_date" title="2026.04.16 12:00:00"></td>
+          <td class="gall_count">7</td>
+          <td class="gall_recommend">3</td>
+        </tr>
+        """
+    )
 
     text_item = api._API__parse_pc_board_row(text_row, "test", kind="minor")
     image_item = api._API__parse_pc_board_row(image_row, "test", kind="minor")
+    video_item = api._API__parse_pc_board_row(video_row, "test", kind="minor")
 
     assert text_item.isimage is False
     assert text_item.has_image is False
+    assert text_item.isvideo is False
     assert image_item.isimage is True
     assert image_item.has_image is True
+    assert image_item.isvideo is False
+    assert video_item.isimage is False
+    assert video_item.has_image is False
+    assert video_item.isvideo is True
+    assert video_item.has_video is True
 
 
 @pytest.mark.asyncio
