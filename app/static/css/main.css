@@ -683,14 +683,44 @@ a {
     margin: 20px 0;
 }
 
-.article-body iframe[src*="/poll"] {
+.article-body a {
+    color: #93c5fd;
+    text-decoration: underline;
+    text-decoration-color: rgba(147, 197, 253, 0.42);
+    text-underline-offset: 0.16em;
+}
+
+.article-body a:hover {
+    color: #bfdbfe;
+    text-decoration-color: rgba(191, 219, 254, 0.72);
+}
+
+.article-body iframe {
     display: block;
     width: 100%;
-    min-height: 400px;
     margin: 18px 0;
     border: 1px solid var(--shell-border);
     border-radius: var(--radius-md);
+}
+
+.article-body iframe[src*="/poll"] {
+    min-height: 400px;
     background: #fff;
+}
+
+.article-body iframe[src*="/board/movie/movie_view"],
+.article-body iframe[src*="/movie/player"] {
+    aspect-ratio: 9 / 16;
+    height: auto;
+    max-height: min(82vh, 820px);
+    background: #05070b;
+}
+
+.article-body iframe[src*="youtube.com/embed"],
+.article-body iframe[src*="youtube-nocookie.com/embed"] {
+    aspect-ratio: 16 / 9;
+    height: auto;
+    background: #05070b;
 }
 
 .dc-poll-card {
@@ -985,6 +1015,14 @@ html[data-theme='light'] .board-head,
 html[data-theme='light'] .pager-row { background: rgba(244, 244, 245, 0.82); }
 html[data-theme='light'] .article-head { background: linear-gradient(180deg, rgba(37, 99, 235, 0.04) 0%, transparent 100%); }
 html[data-theme='light'] .article-body { color: #3f3f46; }
+html[data-theme='light'] .article-body a {
+    color: var(--blue);
+    text-decoration-color: rgba(37, 99, 235, 0.36);
+}
+html[data-theme='light'] .article-body a:hover {
+    color: var(--blue-hover);
+    text-decoration-color: rgba(29, 78, 216, 0.58);
+}
 html[data-theme='light'] .comment-shell { background: rgba(244, 244, 245, 0.72); }
 html[data-theme='light'] .comment-list li { background: rgba(9, 9, 11, 0.02); }
 html[data-theme='light'] .comment-list li:hover { background: rgba(9, 9, 11, 0.04); }

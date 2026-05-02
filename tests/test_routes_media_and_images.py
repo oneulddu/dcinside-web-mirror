@@ -227,6 +227,29 @@ def test_sanitize_html_fragment_rejects_scheme_relative_iframe_src():
     assert iframe_sources == ["/poll", "https://m.dcinside.com/poll"]
 
 
+def test_sanitize_html_fragment_keeps_dc_movie_and_youtube_iframes():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="https://gall.dcinside.com/board/movie/movie_view?no=6499427" allowfullscreen></iframe>
+          <iframe src="https://m.dcinside.com/movie/player?no=6499430&amp;mobile=M"></iframe>
+          <iframe src="//www.youtube.com/embed/abc123" allow="autoplay; encrypted-media"></iframe>
+          <iframe src="https://www.youtube.com/watch?v=abc123"></iframe>
+          <iframe src="https://gall.dcinside.com/board/movie/movie_view?no=bad"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
+
+    assert iframe_sources == [
+        "https://gall.dcinside.com/board/movie/movie_view?no=6499427",
+        "https://m.dcinside.com/movie/player?no=6499430&mobile=M",
+        "https://www.youtube.com/embed/abc123",
+    ]
+    assert soup.find("iframe", src="https://www.youtube.com/embed/abc123").get("allow") == "autoplay; encrypted-media"
+
+
 def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     async def fake_async_index(page, board, recommend, kind=None):
         return [

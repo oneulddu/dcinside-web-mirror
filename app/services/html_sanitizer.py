@@ -1,5 +1,5 @@
 from collections import defaultdict, deque
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 from flask import url_for
@@ -15,11 +15,12 @@ HTML_DROP_TAGS = {"script", "style", "object", "embed", "link", "meta", "base", 
 HTML_GLOBAL_ATTRS = {"class", "title"}
 HTML_TAG_ATTRS = {
     "a": {"href", "target", "rel"},
-    "iframe": {"src", "title", "loading", "width", "height", "frameborder", "scrolling"},
+    "iframe": {"src", "title", "loading", "width", "height", "frameborder", "scrolling", "allow", "allowfullscreen"},
     "img": {"src", "alt", "loading", "decoding", "width", "height"},
     "td": {"colspan", "rowspan"},
     "th": {"colspan", "rowspan"},
 }
+YOUTUBE_IFRAME_HOSTS = {"youtube.com", "www.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com"}
 
 
 def is_safe_href(value):
@@ -32,14 +33,52 @@ def is_safe_href(value):
     return parsed.scheme in {"http", "https", "mailto"}
 
 
-def is_safe_iframe_src(value):
+def normalize_safe_iframe_src(value):
     url = (value or "").strip()
     if not url:
-        return False
+        return None
     parsed = urlparse(url)
-    if not parsed.scheme:
-        return not parsed.netloc and parsed.path == "/poll"
-    return parsed.scheme == "https" and parsed.netloc == "m.dcinside.com" and parsed.path == "/poll"
+    host = (parsed.netloc or "").lower()
+
+    if not parsed.scheme and not host:
+        return url if parsed.path == "/poll" else None
+
+    if parsed.scheme not in {"", "https"}:
+        return None
+
+    if host == "m.dcinside.com" and parsed.path == "/poll":
+        return parsed._replace(scheme="https").geturl()
+
+    if (
+        (host == "gall.dcinside.com" and parsed.path == "/board/movie/movie_view")
+        or (host == "m.dcinside.com" and parsed.path == "/movie/player")
+    ):
+        movie_ids = parse_qs(parsed.query).get("no", [])
+        if movie_ids and movie_ids[0].isdigit():
+            return parsed._replace(scheme="https").geturl()
+
+    if host in YOUTUBE_IFRAME_HOSTS and parsed.path.startswith("/embed/") and len(parsed.path) > len("/embed/"):
+        return parsed._replace(scheme="https").geturl()
+
+    return None
+
+
+def is_safe_iframe_src(value):
+    return normalize_safe_iframe_src(value) is not None
+
+
+def default_iframe_title(src):
+    parsed = urlparse(src or "")
+    if parsed.netloc == "m.dcinside.com" and parsed.path == "/poll":
+        return "DCInside 투표"
+    if (
+        (parsed.netloc == "gall.dcinside.com" and parsed.path == "/board/movie/movie_view")
+        or (parsed.netloc == "m.dcinside.com" and parsed.path == "/movie/player")
+    ):
+        return "DCInside 동영상"
+    if (parsed.netloc or "").lower() in YOUTUBE_IFRAME_HOSTS:
+        return "YouTube 동영상"
+    return "첨부 콘텐츠"
 
 
 def sanitize_html_fragment(raw_html):
@@ -72,11 +111,13 @@ def sanitize_html_fragment(raw_html):
                         tag.decompose()
                         break
                 elif name == "iframe":
-                    if not is_safe_iframe_src(value):
+                    safe_src = normalize_safe_iframe_src(value)
+                    if not safe_src:
                         tag.decompose()
                         break
+                    tag["src"] = safe_src
                     tag["loading"] = "lazy"
-                    tag["title"] = tag.get("title") or "DCInside 투표"
+                    tag["title"] = tag.get("title") or default_iframe_title(safe_src)
                 else:
                     tag.decompose()
                     break
