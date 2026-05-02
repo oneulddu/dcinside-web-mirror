@@ -385,6 +385,46 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     assert recommend_query["recommend"] == ["1"]
 
 
+def test_board_renders_image_icon_before_image_post_title(monkeypatch):
+    async def fake_async_index(page, board, recommend, kind=None):
+        return [
+            {
+                "id": "123",
+                "title": "사진 있는 글",
+                "has_image": True,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "124",
+                "title": "텍스트 글",
+                "has_image": False,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+        ]
+
+    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    app = create_app()
+
+    response = app.test_client().get("/board?board=test")
+    soup = BeautifulSoup(response.data, "html.parser")
+    items = soup.select("a.feed-item")
+
+    assert items[0].select_one(".feed-image-icon") is not None
+    assert items[0].select_one(".feed-image-icon")["aria-label"] == "사진 첨부"
+    assert items[0].select_one(".feed-image-icon + .feed-title") is not None
+    assert items[1].select_one(".feed-image-icon") is None
+
+
 def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
     async def fake_async_index(page, board, recommend, kind=None):
         assert page == 1

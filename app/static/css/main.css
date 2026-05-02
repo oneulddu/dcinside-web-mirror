@@ -306,6 +306,7 @@ a {
 
 .feed-item.is-read .feed-title,
 .feed-item.is-read .reply-count,
+.feed-item.is-read .feed-image-icon,
 .feed-item.is-read .post-subject,
 .feed-item.is-read .author-text,
 .feed-item.is-read .feed-meta-left,
@@ -316,12 +317,41 @@ a {
 .feed-title-wrap {
     display: flex;
     align-items: flex-start;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 12px;
     margin-bottom: 8px;
 }
 
+.feed-image-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-top: 3px;
+    color: var(--text-soft);
+}
+
+.feed-image-icon svg {
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+}
+
+.feed-image-icon rect,
+.feed-image-icon path,
+.feed-image-icon circle {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
 .feed-title {
+    flex: 1 1 auto;
+    min-width: 0;
     margin: 0;
     color: var(--text-title);
     font-size: 1.0625rem;
@@ -336,6 +366,8 @@ a {
 }
 
 .reply-count {
+    flex: 0 0 auto;
+    margin-left: auto;
     font-size: 0.8125rem;
     font-weight: 700;
     color: var(--blue);

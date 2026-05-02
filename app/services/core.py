@@ -117,6 +117,7 @@ def _index_item_to_dict(item):
         "id": item.id,
         "subject": getattr(item, "subject", None),
         "title": item.title,
+        "has_image": bool(getattr(item, "has_image", False) or getattr(item, "isimage", False)),
         "author": author,
         "author_code": author_code,
         "time": item.time,

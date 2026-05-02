@@ -40,6 +40,15 @@
         <li>
             <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword) }}">
                 <div class="feed-title-wrap">
+                    {% if index.has_image or index.isimage %}
+                    <span class="feed-image-icon" aria-label="사진 첨부" title="사진 첨부">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <rect x="3" y="5" width="18" height="14" rx="2.4"></rect>
+                            <circle cx="8.5" cy="10" r="1.8"></circle>
+                            <path d="M5.5 17l4.4-4.6 3.1 3.1 2.2-2.4 3.3 3.9"></path>
+                        </svg>
+                    </span>
+                    {% endif %}
                     <h2 class="feed-title">
                         {{ index.title|highlight_search(search_keyword) }}
                     </h2>
