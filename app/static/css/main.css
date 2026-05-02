@@ -341,6 +341,11 @@ a {
     filter: drop-shadow(0 0 8px rgba(249, 115, 22, 0.24));
 }
 
+.feed-recommend-icon.is-video {
+    color: #ec4899;
+    filter: drop-shadow(0 0 8px rgba(236, 72, 153, 0.26));
+}
+
 .feed-recommend-icon.is-plain {
     color: var(--text-soft);
 }
@@ -399,6 +404,16 @@ a {
 .feed-recommend-icon.is-hot .flame-inner {
     fill: #fde68a;
     stroke: #fef3c7;
+}
+
+.feed-recommend-icon.is-video .flame-outer {
+    fill: currentColor;
+    stroke: #f472b6;
+}
+
+.feed-recommend-icon.is-video .flame-inner {
+    fill: #fbcfe8;
+    stroke: #fdf2f8;
 }
 
 .feed-title {
