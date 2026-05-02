@@ -33,6 +33,19 @@ def is_safe_href(value):
     return parsed.scheme in {"http", "https", "mailto"}
 
 
+def has_dot_path_segment(path):
+    return any(segment in {".", ".."} for segment in (path or "").split("/"))
+
+
+def is_safe_youtube_embed_path(path):
+    if has_dot_path_segment(path):
+        return False
+    if not path.startswith("/embed/"):
+        return False
+    video_id = path[len("/embed/"):]
+    return bool(video_id) and "/" not in video_id
+
+
 def normalize_safe_iframe_src(value):
     url = (value or "").strip()
     if not url:
@@ -57,7 +70,7 @@ def normalize_safe_iframe_src(value):
         if movie_ids and movie_ids[0].isdigit():
             return parsed._replace(scheme="https").geturl()
 
-    if host in YOUTUBE_IFRAME_HOSTS and parsed.path.startswith("/embed/") and len(parsed.path) > len("/embed/"):
+    if host in YOUTUBE_IFRAME_HOSTS and is_safe_youtube_embed_path(parsed.path):
         return parsed._replace(scheme="https").geturl()
 
     return None

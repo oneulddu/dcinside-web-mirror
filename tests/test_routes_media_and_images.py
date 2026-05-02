@@ -234,6 +234,7 @@ def test_sanitize_html_fragment_keeps_dc_movie_and_youtube_iframes():
           <iframe src="https://gall.dcinside.com/board/movie/movie_view?no=6499427" allowfullscreen></iframe>
           <iframe src="https://m.dcinside.com/movie/player?no=6499430&amp;mobile=M"></iframe>
           <iframe src="//www.youtube.com/embed/abc123" allow="autoplay; encrypted-media"></iframe>
+          <iframe src="https://www.youtube.com/embed/../watch?v=abc123"></iframe>
           <iframe src="https://www.youtube.com/watch?v=abc123"></iframe>
           <iframe src="https://gall.dcinside.com/board/movie/movie_view?no=bad"></iframe>
         </div>
