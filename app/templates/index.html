@@ -30,7 +30,7 @@
     <ul>
         {% for item in heung_items %}
         <li>
-            <a class="feed-item" href="{% if item.internal_supported is defined and not item.internal_supported %}{{ item.source_url }}{% else %}/board?board={{ item.board_id }}&recommend=0&page=1{% if item.board_kind is defined %}&kind={{ item.board_kind }}{% endif %}{% endif %}"{% if item.internal_supported is defined and not item.internal_supported %} target="_blank" rel="noopener"{% endif %}>
+            <a class="feed-item" href="{% if item.internal_supported is defined and not item.internal_supported %}{{ item.source_url }}{% else %}{{ board_url(item.board_id, recommend=0, page=1, kind=item.board_kind|default(none)) }}{% endif %}"{% if item.internal_supported is defined and not item.internal_supported %} target="_blank" rel="noopener"{% endif %}>
                 <div class="feed-title-wrap">
                     <h2 class="feed-title">{{ item.name }}</h2>
                     {% if item.rank %}

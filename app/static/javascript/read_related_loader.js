@@ -77,7 +77,37 @@
         return "";
     }
 
-    function buildReadHref(board, item, kind, recommend, sourcePage) {
+    function escapeHtml(value) {
+        return String(value || "").replace(/[&<>"']/g, function (char) {
+            return {
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                "\"": "&quot;",
+                "'": "&#39;"
+            }[char];
+        });
+    }
+
+    function escapeRegExp(value) {
+        return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function highlightSearchTerm(value, keyword) {
+        var text = String(value || "제목 없음");
+        var term = String(keyword || "").trim();
+        if (!term) {
+            return escapeHtml(text);
+        }
+        return escapeHtml(text).replace(
+            new RegExp(escapeRegExp(escapeHtml(term)), "gi"),
+            function (matched) {
+                return '<mark class="search-highlight">' + matched + "</mark>";
+            }
+        );
+    }
+
+    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword) {
         var pid = getItemPostId(item);
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
@@ -90,10 +120,59 @@
         if (kind) {
             href += "&kind=" + encodeURIComponent(kind);
         }
+        if (searchKeyword) {
+            href += "&s_type=" + encodeURIComponent(searchType || "subject_m");
+            href += "&serval=" + encodeURIComponent(searchKeyword);
+        }
         return href;
     }
 
-    function createItemNode(item, board, kind, recommend, sourcePage) {
+    function postHasImage(item) {
+        return normalizeBoolean(item && item.has_image) === true || normalizeBoolean(item && item.isimage) === true;
+    }
+
+    function postHasVideo(item) {
+        return normalizeBoolean(item && item.has_video) === true || normalizeBoolean(item && item.isvideo) === true;
+    }
+
+    function postIsRecommend(item) {
+        return normalizeBoolean(item && item.isrecommend) === true;
+    }
+
+    function createFeedStatusIcon(item) {
+        var hasImage = postHasImage(item);
+        var hasVideo = postHasVideo(item);
+        var isRecommend = postIsRecommend(item);
+        var span = document.createElement("span");
+
+        if (isRecommend) {
+            span.className = "feed-recommend-icon" + (hasVideo ? " is-video" : (hasImage ? " is-hot" : " is-plain"));
+            span.setAttribute("aria-label", "개념글");
+            span.setAttribute("title", "개념글");
+            span.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path class="flame-outer" d="M12 22c4.4 0 7.5-3.2 7.5-7.7 0-3.2-1.7-6-4.6-8.5-.4 2.3-1.5 3.7-3.1 4.7.2-3.1-.9-5.8-3.3-8.1.2 3.4-1.2 5.1-2.6 6.9-1.1 1.4-2.1 2.8-2.1 5C3.8 18.8 7 22 12 22z"></path><path class="flame-inner" d="M12.1 19.2c2 0 3.4-1.4 3.4-3.4 0-1.5-.8-2.7-2.2-3.8-.2 1.1-.8 1.8-1.7 2.3.1-1.5-.5-2.8-1.7-3.9.1 1.7-.6 2.5-1.2 3.3-.5.7-.9 1.3-.9 2.2 0 2 1.5 3.3 4.3 3.3z"></path></svg>';
+            return span;
+        }
+
+        if (hasVideo) {
+            span.className = "feed-play-icon";
+            span.setAttribute("aria-label", "동영상 첨부");
+            span.setAttribute("title", "동영상 첨부");
+            span.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"></circle><path d="M10 8.8v6.4L15.2 12z"></path></svg>';
+            return span;
+        }
+
+        if (hasImage) {
+            span.className = "feed-image-icon";
+            span.setAttribute("aria-label", "사진 첨부");
+            span.setAttribute("title", "사진 첨부");
+            span.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="2.4"></rect><circle cx="8.5" cy="10" r="1.8"></circle><path d="M5.5 17l4.4-4.6 3.1 3.1 2.2-2.4 3.3 3.9"></path></svg>';
+            return span;
+        }
+
+        return null;
+    }
+
+    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword) {
         var postId = getItemPostId(item);
         var li = document.createElement("li");
         li.dataset.postId = postId;
@@ -101,14 +180,19 @@
         var link = document.createElement("a");
         link.className = "feed-item";
         link.dataset.postId = postId;
-        link.href = buildReadHref(board, item, kind, recommend, sourcePage);
+        link.href = buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword);
 
         var titleWrap = document.createElement("div");
         titleWrap.className = "feed-title-wrap";
 
+        var icon = createFeedStatusIcon(item);
+        if (icon) {
+            titleWrap.appendChild(icon);
+        }
+
         var title = document.createElement("h2");
         title.className = "feed-title";
-        title.textContent = item.title || "제목 없음";
+        title.innerHTML = highlightSearchTerm(item.title || "제목 없음", searchKeyword);
         titleWrap.appendChild(title);
 
         if ((item.comment_count || 0) > 0) {
@@ -123,6 +207,13 @@
 
         var metaLeft = document.createElement("div");
         metaLeft.className = "feed-meta-left";
+
+        if (item.subject) {
+            var subject = document.createElement("span");
+            subject.className = "post-subject";
+            subject.textContent = "[" + String(item.subject) + "]";
+            metaLeft.appendChild(subject);
+        }
 
         var author = document.createElement("span");
         author.className = "author-text";
@@ -151,7 +242,7 @@
         return li;
     }
 
-    function appendItems(list, items, board, kind, recommend, sourcePage) {
+    function appendItems(list, items, board, kind, recommend, sourcePage, searchType, searchKeyword) {
         var appended = 0;
         var renderedIds = getRenderedPostIds(list);
 
@@ -165,7 +256,7 @@
             if (!postId || renderedIds[postId]) {
                 continue;
             }
-            list.appendChild(createItemNode(item, board, kind, recommend, sourcePage));
+            list.appendChild(createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword));
             renderedIds[postId] = true;
             appended += 1;
         }
@@ -259,7 +350,9 @@
             context.board,
             context.kind,
             context.recommend,
-            context.sourcePage
+            context.sourcePage,
+            context.searchType,
+            context.searchKeyword
         );
         var hasMore = responseHasMore(payload || {});
 
@@ -298,6 +391,8 @@
         var recommend = section.dataset.recommend || "";
         var limit = section.dataset.limit || "12";
         var sourcePage = section.dataset.sourcePage || "";
+        var searchType = section.dataset.searchType || "";
+        var searchKeyword = section.dataset.searchKeyword || "";
         var afterPid = getLastRenderedPostId(list);
 
         if (!board || !pid) {
@@ -323,6 +418,10 @@
         if (afterPid) {
             params.set("after_pid", afterPid);
         }
+        if (searchKeyword) {
+            params.set("s_type", searchType || "subject_m");
+            params.set("serval", searchKeyword);
+        }
 
         return {
             board: board,
@@ -331,6 +430,8 @@
             recommend: recommend,
             limit: limit,
             sourcePage: sourcePage,
+            searchType: searchType,
+            searchKeyword: searchKeyword,
             afterPid: afterPid,
             list: list,
             params: params

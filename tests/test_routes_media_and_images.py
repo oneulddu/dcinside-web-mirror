@@ -31,6 +31,18 @@ class DummyUpstream:
         self.closed = True
 
 
+class ExplodingUpstream(DummyUpstream):
+    def iter_content(self, chunk_size=1):
+        self.iterated += 1
+        raise OSError("upstream disconnected")
+
+
+class DummyMovieResponse:
+    def __init__(self, text, status_code=200):
+        self.text = text
+        self.status_code = status_code
+
+
 def test_read_limited_media_body_closes_after_success(monkeypatch):
     monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 10)
     upstream = DummyUpstream([b"123", b"456"])
@@ -52,6 +64,17 @@ def test_read_limited_media_body_returns_413_and_closes_when_limit_exceeded(monk
     assert body is None
     assert error_status == 413
     assert upstream.iterated == 2
+    assert upstream.closed is True
+
+
+def test_read_limited_media_body_returns_502_and_closes_on_stream_error():
+    upstream = ExplodingUpstream([], headers={"Content-Type": "image/jpeg"})
+
+    body, error_status = media_proxy.read_limited_media_body(upstream)
+
+    assert body is None
+    assert error_status == 502
+    assert upstream.iterated == 1
     assert upstream.closed is True
 
 
@@ -105,6 +128,39 @@ def test_media_route_buffers_upstream_and_sets_verified_length(monkeypatch):
     assert upstream.closed is True
 
 
+def test_media_route_streams_video_range_requests(monkeypatch):
+    upstream = DummyUpstream(
+        [b"abc", b"def"],
+        headers={
+            "Content-Type": "video/mp4",
+            "Content-Length": "6",
+            "Content-Range": "bytes 0-5/100",
+            "Accept-Ranges": "bytes",
+        },
+        status_code=206,
+    )
+    captured = {}
+
+    def fake_fetch(src, headers, cookies):
+        captured["headers"] = headers
+        return upstream, None
+
+    monkeypatch.setattr(media_proxy, "fetch_media_response", fake_fetch)
+    app = create_app()
+
+    response = app.test_client().get(
+        "/media?src=https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4",
+        headers={"Range": "bytes=0-5"},
+    )
+
+    assert response.status_code == 206
+    assert response.data == b"abcdef"
+    assert response.headers["Content-Type"] == "video/mp4"
+    assert response.headers["Content-Range"] == "bytes 0-5/100"
+    assert captured["headers"]["Range"] == "bytes=0-5"
+    assert upstream.closed is True
+
+
 def test_media_route_rejects_mismatched_known_length_when_stream_exceeds_limit(monkeypatch):
     monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 5)
     upstream = DummyUpstream(
@@ -119,6 +175,18 @@ def test_media_route_rejects_mismatched_known_length_when_stream_exceeds_limit(m
     assert response.status_code == 413
     assert upstream.iterated == 2
     assert upstream.closed is True
+
+
+def test_media_route_rejects_non_dcinside_source_before_fetch(monkeypatch):
+    def fail_fetch(*args, **kwargs):
+        raise AssertionError("invalid media source must be rejected before fetch")
+
+    monkeypatch.setattr(media_proxy, "fetch_media_response", fail_fetch)
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://example.com/test.jpg")
+
+    assert response.status_code == 400
 
 
 def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
@@ -155,6 +223,30 @@ def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
     assert "data-original" not in images[0].attrs
 
 
+def test_rewrite_content_images_rewrites_dc_movie_iframes_to_local_player():
+    app = create_app()
+    soup = BeautifulSoup(
+        """
+        <article>
+          <iframe src="https://m.dcinside.com/movie/player?no=6499430&amp;mobile=M"></iframe>
+        </article>
+        """,
+        "html.parser",
+    )
+
+    with app.test_request_context("/read?board=idolism&pid=1193413&kind=minor"):
+        html_sanitizer.rewrite_content_images(soup, [], "idolism", 1193413, "minor")
+
+    iframe = soup.find("iframe")
+    parsed = urlparse(iframe["src"])
+    query = parse_qs(parsed.query)
+    assert parsed.path == "/movie"
+    assert query["no"] == ["6499430"]
+    assert query["board"] == ["idolism"]
+    assert query["pid"] == ["1193413"]
+    assert query["kind"] == ["minor"]
+
+
 def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
     cleaned = html_sanitizer.sanitize_html_fragment(
         """
@@ -180,6 +272,84 @@ def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
     assert len(images) == 1
     assert images[0]["src"].startswith("/media?")
     assert "onerror" not in images[0].attrs
+
+
+def test_sanitize_html_fragment_rejects_scheme_relative_iframe_src():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="//evil.com/poll"></iframe>
+          <iframe src="/poll"></iframe>
+          <iframe src="https://m.dcinside.com/poll"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
+
+    assert iframe_sources == ["/poll", "https://m.dcinside.com/poll"]
+
+
+def test_sanitize_html_fragment_keeps_local_movie_iframe():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        '<iframe src="/movie?no=6499430&amp;board=idolism&amp;pid=1193413"></iframe>'
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert soup.iframe["src"] == "/movie?no=6499430&board=idolism&pid=1193413"
+
+
+def test_sanitize_html_fragment_keeps_dc_movie_and_youtube_iframes():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="https://gall.dcinside.com/board/movie/movie_view?no=6499427" allowfullscreen></iframe>
+          <iframe src="https://m.dcinside.com/movie/player?no=6499430&amp;mobile=M"></iframe>
+          <iframe src="//www.youtube.com/embed/abc123" allow="autoplay; encrypted-media"></iframe>
+          <iframe src="https://www.youtube.com/embed/../watch?v=abc123"></iframe>
+          <iframe src="https://www.youtube.com/watch?v=abc123"></iframe>
+          <iframe src="https://gall.dcinside.com/board/movie/movie_view?no=bad"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
+
+    assert iframe_sources == [
+        "https://gall.dcinside.com/board/movie/movie_view?no=6499427",
+        "https://gall.dcinside.com/board/movie/movie_view?no=6499430",
+        "https://www.youtube.com/embed/abc123",
+    ]
+    assert soup.find("iframe", src="https://www.youtube.com/embed/abc123").get("allow") == "autoplay; encrypted-media"
+
+
+def test_movie_route_renders_same_origin_video_player(monkeypatch):
+    movie_html = """
+    <html><body>
+      <video poster="https://dcm6.dcinside.co.kr/viewmovie.php?type=jpg&amp;code=poster">
+        <source src="https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4&amp;code=movie" type="video/mp4">
+      </video>
+    </body></html>
+    """
+    requests_seen = []
+
+    def fake_get(url, headers=None, timeout=None):
+        requests_seen.append((url, headers))
+        return DummyMovieResponse(movie_html)
+
+    monkeypatch.setattr(media_proxy.requests, "get", fake_get)
+    app = create_app()
+
+    response = app.test_client().get("/movie?no=6499430&board=idolism&pid=1193413&kind=minor")
+
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.data.decode("utf-8"), "html.parser")
+    source_query = parse_qs(urlparse(soup.find("source")["src"]).query)
+    poster_query = parse_qs(urlparse(soup.find("video")["poster"]).query)
+    assert source_query["src"] == ["https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4&code=movie"]
+    assert poster_query["src"] == ["https://dcm6.dcinside.co.kr/viewmovie.php?type=jpg&code=poster"]
+    assert requests_seen[0][0] == "https://gall.dcinside.com/board/movie/movie_view?no=6499430"
+    assert requests_seen[0][1]["Referer"] == "https://gall.dcinside.com/mgallery/board/view/?id=idolism&no=1193413"
 
 
 def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
@@ -215,6 +385,318 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     assert recommend_query["recommend"] == ["1"]
 
 
+def test_board_renders_image_icon_before_image_post_title(monkeypatch):
+    async def fake_async_index(page, board, recommend, kind=None):
+        return [
+            {
+                "id": "123",
+                "title": "사진 있는 글",
+                "has_image": True,
+                "isrecommend": False,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "124",
+                "title": "텍스트 글",
+                "has_image": False,
+                "isrecommend": False,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "125",
+                "title": "동영상 글",
+                "has_image": False,
+                "has_video": True,
+                "isrecommend": False,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "126",
+                "title": "사진 없는 개념글",
+                "has_image": False,
+                "isrecommend": True,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "127",
+                "title": "사진 있는 개념글",
+                "has_image": True,
+                "isrecommend": True,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "128",
+                "title": "동영상 있는 개념글",
+                "has_image": False,
+                "has_video": True,
+                "isrecommend": True,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+        ]
+
+    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    app = create_app()
+
+    response = app.test_client().get("/board?board=test")
+    soup = BeautifulSoup(response.data, "html.parser")
+    items = soup.select("a.feed-item")
+
+    assert items[0].select_one(".feed-image-icon") is not None
+    assert items[0].select_one(".feed-image-icon")["aria-label"] == "사진 첨부"
+    assert items[0].select_one(".feed-image-icon + .feed-title") is not None
+    assert items[1].select_one(".feed-image-icon") is None
+    assert items[1].select_one(".feed-recommend-icon") is None
+    assert items[2].select_one(".feed-play-icon") is not None
+    assert items[2].select_one(".feed-image-icon") is None
+    assert items[3].select_one(".feed-recommend-icon.is-plain") is not None
+    assert items[3].select_one(".feed-recommend-icon .flame-outer") is not None
+    assert items[3].select_one(".feed-image-icon") is None
+    assert items[4].select_one(".feed-recommend-icon.is-hot") is not None
+    assert items[4].select_one(".feed-recommend-icon .flame-inner") is not None
+    assert items[4].select_one(".feed-image-icon") is None
+    assert items[5].select_one(".feed-recommend-icon.is-video") is not None
+    assert items[5].select_one(".feed-play-icon") is None
+
+
+def test_read_renders_embedded_related_post_icons_and_subject(monkeypatch):
+    async def fake_async_read(pid, board, kind=None, recommend=0, **kwargs):
+        return (
+            {
+                "title": "본문",
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+                "html": "<p>본문</p>",
+                "related_posts": [
+                    {
+                        "id": "201",
+                        "title": "사진 있는 글",
+                        "subject": "말머리",
+                        "has_image": True,
+                        "isimage": False,
+                        "has_video": False,
+                        "isvideo": False,
+                        "isrecommend": False,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 3,
+                        "voteup_count": 1,
+                    },
+                    {
+                        "id": "202",
+                        "title": "동영상 글",
+                        "has_image": False,
+                        "has_video": True,
+                        "isrecommend": False,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 0,
+                        "voteup_count": 2,
+                    },
+                    {
+                        "id": "203",
+                        "title": "사진 없는 개념글",
+                        "has_image": False,
+                        "has_video": False,
+                        "isrecommend": True,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 0,
+                        "voteup_count": 3,
+                    },
+                    {
+                        "id": "204",
+                        "title": "사진 있는 개념글",
+                        "has_image": True,
+                        "has_video": False,
+                        "isrecommend": True,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 0,
+                        "voteup_count": 4,
+                    },
+                    {
+                        "id": "205",
+                        "title": "텍스트 글",
+                        "has_image": "sp-lst-txt",
+                        "isimage": "0",
+                        "has_video": False,
+                        "isvideo": False,
+                        "isrecommend": False,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 0,
+                        "voteup_count": 5,
+                    },
+                ],
+            },
+            [],
+            [],
+        )
+
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    app = create_app()
+
+    response = app.test_client().get("/read?board=test&pid=100")
+    soup = BeautifulSoup(response.data, "html.parser")
+    items = soup.select("#related-list a.feed-item")
+
+    assert response.status_code == 200
+    assert len(items) == 5
+    assert items[0].select_one(".feed-image-icon") is not None
+    assert items[0].select_one(".feed-image-icon + .feed-title") is not None
+    assert items[0].select_one(".post-subject").text == "[말머리]"
+    assert items[0].select_one(".reply-count").text == "[3]"
+    assert items[1].select_one(".feed-play-icon") is not None
+    assert items[1].select_one(".feed-image-icon") is None
+    assert items[2].select_one(".feed-recommend-icon.is-plain") is not None
+    assert items[2].select_one(".feed-image-icon") is None
+    assert items[3].select_one(".feed-recommend-icon.is-hot") is not None
+    assert items[3].select_one(".feed-image-icon") is None
+    assert items[4].select_one(".feed-image-icon") is None
+    assert items[4].select_one(".feed-play-icon") is None
+    assert items[4].select_one(".feed-recommend-icon") is None
+
+
+def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
+    async def fake_async_related_after_position(
+        pid,
+        after_pid,
+        board,
+        kind=None,
+        limit=12,
+        source_page=0,
+        recommend=0,
+        **kwargs,
+    ):
+        return (
+            [
+                {
+                    "id": "301",
+                    "title": "텍스트 글",
+                    "subject": "일반",
+                    "has_image": "sp-lst-txt",
+                    "isimage": "0",
+                    "has_video": False,
+                    "isvideo": False,
+                    "isrecommend": False,
+                    "author": "익명",
+                    "author_code": None,
+                    "time": "-",
+                    "comment_count": 0,
+                    "voteup_count": 0,
+                },
+                {
+                    "id": "302",
+                    "title": "동영상 개념글",
+                    "subject": "영상",
+                    "has_image": False,
+                    "isimage": False,
+                    "has_video": "true",
+                    "isvideo": "1",
+                    "isrecommend": "true",
+                    "author": "익명",
+                    "author_code": None,
+                    "time": "-",
+                    "comment_count": 2,
+                    "voteup_count": 9,
+                },
+            ],
+            True,
+        )
+
+    monkeypatch.setattr(routes, "async_related_after_position", fake_async_related_after_position)
+    app = create_app()
+
+    response = app.test_client().get("/read/related?board=test&pid=100")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["has_more"] is True
+    assert payload["items"][0]["subject"] == "일반"
+    assert payload["items"][0]["has_image"] is False
+    assert payload["items"][0]["isimage"] is False
+    assert payload["items"][0]["has_video"] is False
+    assert payload["items"][0]["isrecommend"] is False
+    assert payload["items"][1]["subject"] == "영상"
+    assert payload["items"][1]["has_video"] is True
+    assert payload["items"][1]["isvideo"] is True
+    assert payload["items"][1]["isrecommend"] is True
+
+
+def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
+    async def fake_async_index(page, board, recommend, kind=None):
+        assert page == 1
+        assert board == "test"
+        assert recommend == 0
+        return []
+
+    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    app = create_app()
+
+    response = app.test_client().get("/board?board=test&recommend=2&page=0")
+
+    assert response.status_code == 200
+
+
+def test_board_rejects_invalid_board_and_kind(monkeypatch):
+    async def fail_async_index(*args, **kwargs):
+        raise AssertionError("invalid board input must be rejected before upstream fetch")
+
+    monkeypatch.setattr(routes, "async_index", fail_async_index)
+    app = create_app()
+    client = app.test_client()
+
+    assert client.get("/board?board=../secret").status_code == 400
+    assert client.get("/board?board=test&kind=weird").status_code == 400
+
+
+def test_read_rejects_non_positive_pid(monkeypatch):
+    async def fail_async_read(*args, **kwargs):
+        raise AssertionError("invalid pid must be rejected before upstream fetch")
+
+    monkeypatch.setattr(routes, "async_read", fail_async_read)
+    app = create_app()
+
+    assert app.test_client().get("/read?board=test&pid=0").status_code == 404
+
+
 def test_related_loader_appends_related_results_without_replacing_existing_rows():
     script = Path(routes.BASE_DIR, "app/static/javascript/read_related_loader.js").read_text()
 
@@ -228,6 +710,11 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert 'params.set("after_pid", afterPid)' in script
     assert "function responseHasMore(" in script
     assert "has_more" in script
+    assert "function createFeedStatusIcon(" in script
+    assert "function postHasImage(" in script
+    assert "function postHasVideo(" in script
+    assert "feed-recommend-icon" in script
+    assert "post-subject" in script
     assert '"has_next"' in script
     assert "clearLegacySessionCache()" in script
     assert "window.sessionStorage.removeItem(key)" in script
@@ -374,9 +861,22 @@ def test_recent_gallery_old_cookie_without_recommend_defaults_to_normal():
     assert query["kind"] == ["minor"]
 
 
+def test_recent_gallery_ignores_bad_visited_at_in_cookie():
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie([{"board": "legacy", "kind": "minor", "visited_at": "bad"}]),
+    )
+
+    response = client.get("/recent")
+
+    assert response.status_code == 200
+
+
 def test_recent_server_cache_prunes_expired_fallback():
     app = create_app()
-    key = "127.0.0.1|pytest"
+    key = "visitor-test-key"
     with recent.RECENT_SERVER_CACHE_LOCK:
         recent.RECENT_SERVER_CACHE.clear()
         recent.RECENT_SERVER_CACHE[key] = {
@@ -385,7 +885,10 @@ def test_recent_server_cache_prunes_expired_fallback():
             "last_seen": 0,
         }
 
-    with app.test_request_context("/recent", environ_base={"REMOTE_ADDR": "127.0.0.1", "HTTP_USER_AGENT": "pytest"}):
+    with app.test_request_context(
+        "/recent",
+        headers={"Cookie": f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={key}"},
+    ):
         assert recent.load_recent_entries() == []
 
     assert key not in recent.RECENT_SERVER_CACHE
@@ -393,17 +896,49 @@ def test_recent_server_cache_prunes_expired_fallback():
 
 def test_recent_server_cache_accepts_legacy_list_shape():
     app = create_app()
-    key = "127.0.0.1|pytest"
+    key = "visitor-test-key"
     rows = [{"board": "legacy", "kind": None, "recommend": 0, "visited_at": 1}]
     with recent.RECENT_SERVER_CACHE_LOCK:
         recent.RECENT_SERVER_CACHE.clear()
         recent.RECENT_SERVER_CACHE[key] = rows
 
-    with app.test_request_context("/recent", environ_base={"REMOTE_ADDR": "127.0.0.1", "HTTP_USER_AGENT": "pytest"}):
+    with app.test_request_context(
+        "/recent",
+        headers={"Cookie": f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={key}"},
+    ):
         assert recent.load_recent_entries() == rows
 
     with recent.RECENT_SERVER_CACHE_LOCK:
         assert isinstance(recent.RECENT_SERVER_CACHE[key], dict)
+
+
+def test_recent_server_cache_does_not_share_by_ip_and_user_agent():
+    app = create_app()
+    old_shared_key = "127.0.0.1|pytest"
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        recent.RECENT_SERVER_CACHE.clear()
+        recent.RECENT_SERVER_CACHE[old_shared_key] = {
+            "entries": [{"board": "private", "kind": None, "recommend": 0, "visited_at": 1}],
+            "expires_at": 9999999999,
+            "last_seen": 0,
+        }
+
+    with app.test_request_context("/recent", environ_base={"REMOTE_ADDR": "127.0.0.1", "HTTP_USER_AGENT": "pytest"}):
+        assert recent.load_recent_entries() == []
+
+
+def test_touch_recent_gallery_sets_private_fallback_key_cookie(monkeypatch):
+    async def fake_async_index(page, board, recommend, kind=None):
+        return []
+
+    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    app = create_app()
+    response = app.test_client().get("/board?board=test")
+
+    set_cookie_headers = response.headers.getlist("Set-Cookie")
+
+    assert any(header.startswith(f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}=") for header in set_cookie_headers)
+    assert any("HttpOnly" in header for header in set_cookie_headers if header.startswith(f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}="))
 
 
 def test_recent_server_cache_limits_total_keys(monkeypatch):

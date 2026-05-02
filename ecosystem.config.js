@@ -2,11 +2,11 @@ module.exports = {
   apps: [
     {
       name: 'dc-mirror',
-      script: 'gunicorn',
+      script: './.venv/bin/gunicorn',
       args: '-c gunicorn.conf.py wsgi:app',
       interpreter: 'none',
       cwd: '/home/ubuntu/mirror',
-      watch: true,
+      watch: false,
       ignore_watch: ['.git', 'logs', '__pycache__', '*.pyc', '.venv', 'venv', 'legacy', 'instance'],
       autorestart: true,
       max_restarts: 20,

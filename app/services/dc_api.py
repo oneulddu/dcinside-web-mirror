@@ -27,6 +27,18 @@ def to_int(value, default=0):
         return default
 
 
+def to_optional_int(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
 DOCS_PER_PAGE = 200
 HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 MOBILE_USER_AGENT = "Mozilla/5.0 (Linux; Android 7.0; SM-G892A Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/67.0.3396.87 Mobile Safari/537.36"
@@ -81,14 +93,38 @@ def peek(iterable):
         return None
     return first, itertools.chain((first,), iterable)
 
+
+def has_gallery_image_icon(value):
+    classes = set(str(value or "").split())
+    return bool(
+        classes.intersection({"sp-lst-img", "sp-lst-recoimg", "icon_pic", "icon_recomimg", "icon_recoimg"})
+        or any(token.startswith("icon_pic") for token in classes)
+    )
+
+
+def has_gallery_video_icon(value):
+    classes = set(str(value or "").split())
+    return bool(
+        classes.intersection({
+            "sp-lst-play",
+            "sp-lst-recoplay",
+            "icon_play",
+            "icon_movie",
+            "icon_video",
+        })
+        or any(token.startswith(("icon_play", "icon_movie", "icon_video")) for token in classes)
+    )
+
+
 class DocumentIndex:
-    __slots__ = ["id", "subject", "title", "board_id", "has_image", "author", "author_id", "time", "view_count", "comment_count", "voteup_count",
-            "document", "comments", "isimage", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
-    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False):
+    __slots__ = ["id", "subject", "title", "board_id", "has_image", "has_video", "author", "author_id", "time", "view_count", "comment_count", "voteup_count",
+            "document", "comments", "isimage", "isvideo", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
+    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False, has_video=False, isvideo=False):
         self.id = id
         self.board_id = board_id
         self.title = title
         self.has_image = has_image
+        self.has_video = has_video
         self.author = author
         self.author_id = author_id
         self.time = time
@@ -99,6 +135,7 @@ class DocumentIndex:
         self.comments = comments
         self.subject = subject
         self.isimage = isimage
+        self.isvideo = isvideo
         self.isrecommend = isrecommend
         self.isdcbest = isdcbest
         self.ishit = ishit
@@ -288,60 +325,133 @@ class API:
 
         return status, response_headers, text
 
-    def __build_list_urls(self, board_id, page, recommend=False, kind=None):
+    def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None):
         kind = (kind or "").lower()
         urls = []
         recommend_suffix = "&recommend=1" if recommend else ""
+        mobile_search_suffix = self.__build_mobile_search_suffix(search_type, search_keyword)
+        pc_search_suffix = self.__build_pc_search_suffix(search_type, search_keyword)
 
         if kind == "mini":
-            urls.append("https://m.dcinside.com/mini/{}?page={}{}".format(board_id, page, recommend_suffix))
+            urls.append("https://m.dcinside.com/mini/{}?page={}{}{}".format(board_id, page, recommend_suffix, mobile_search_suffix))
         elif recommend:
-            urls.append("https://m.dcinside.com/board/{}?recommend=1&page={}".format(board_id, page))
+            urls.append("https://m.dcinside.com/board/{}?recommend=1&page={}{}".format(board_id, page, mobile_search_suffix))
         else:
-            urls.append("https://m.dcinside.com/board/{}?page={}".format(board_id, page))
+            urls.append("https://m.dcinside.com/board/{}?page={}{}".format(board_id, page, mobile_search_suffix))
 
         kind_urls = {
-            "normal": "https://gall.dcinside.com/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
-            "minor": "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
-            "mini": "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
-            "person": "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+            "normal": "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
+            "minor": "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
+            "mini": "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
+            "person": "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
         }
         if kind in kind_urls:
             urls.append(kind_urls[kind])
 
         urls.extend([
-            "https://gall.dcinside.com/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
-            "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
-            "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
-            "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}".format(board_id, page, recommend_suffix),
+            "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
         ])
         return self.__dedupe_urls(urls)
 
-    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False):
+    def __normalize_search_type(self, search_type):
+        value = (search_type or "").strip()
+        pc_type_map = {
+            "search_subject_memo": "subject_m",
+            "search_subject": "subject",
+            "search_memo": "memo",
+            "search_name": "name",
+            "search_comment": "comment",
+        }
+        if value in pc_type_map:
+            return pc_type_map[value]
+        if value in {"subject_m", "subject", "memo", "name", "comment"}:
+            return value
+        return "subject_m"
+
+    def __build_mobile_search_suffix(self, search_type=None, search_keyword=None):
+        keyword = (search_keyword or "").strip()
+        if not keyword:
+            return ""
+        return "&" + urlencode(
+            {
+                "s_type": self.__normalize_search_type(search_type),
+                "serval": keyword,
+            }
+        )
+
+    def __build_pc_search_suffix(self, search_type=None, search_keyword=None):
+        keyword = (search_keyword or "").strip()
+        if not keyword:
+            return ""
+        pc_type_map = {
+            "subject_m": "search_subject_memo",
+            "subject": "search_subject",
+            "memo": "search_memo",
+            "name": "search_name",
+            "comment": "search_comment",
+        }
+        return "&" + urlencode(
+            {
+                "s_type": pc_type_map.get(self.__normalize_search_type(search_type), "search_subject_memo"),
+                "s_keyword": keyword,
+            }
+        )
+
+    def __build_mobile_view_suffix(self, recommend=False, search_type=None, search_keyword=None):
+        params = []
+        if recommend:
+            params.append(("recommend", "1"))
+        keyword = (search_keyword or "").strip()
+        if keyword:
+            params.append(("s_type", self.__normalize_search_type(search_type)))
+            params.append(("serval", keyword))
+        return ("?" + urlencode(params)) if params else ""
+
+    def __build_pc_view_suffix(self, recommend=False, search_type=None, search_keyword=None):
+        params = []
+        if recommend:
+            params.append(("recommend", "1"))
+        keyword = (search_keyword or "").strip()
+        if keyword:
+            pc_type_map = {
+                "subject_m": "search_subject_memo",
+                "subject": "search_subject",
+                "memo": "search_memo",
+                "name": "search_name",
+                "comment": "search_comment",
+            }
+            params.append(("s_type", pc_type_map.get(self.__normalize_search_type(search_type), "search_subject_memo")))
+            params.append(("s_keyword", keyword))
+        return ("&" + urlencode(params)) if params else ""
+
+    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None):
         kind = (kind or "").lower()
         urls = []
-        mobile_recommend_suffix = "?recommend=1" if recommend else ""
-        pc_recommend_suffix = "&recommend=1" if recommend else ""
+        mobile_suffix = self.__build_mobile_view_suffix(recommend, search_type, search_keyword)
+        pc_suffix = self.__build_pc_view_suffix(recommend, search_type, search_keyword)
 
         if kind == "mini":
-            urls.append("https://m.dcinside.com/mini/{}/{}{}".format(board_id, document_id, mobile_recommend_suffix))
+            urls.append("https://m.dcinside.com/mini/{}/{}{}".format(board_id, document_id, mobile_suffix))
         else:
-            urls.append("https://m.dcinside.com/board/{}/{}{}".format(board_id, document_id, mobile_recommend_suffix))
+            urls.append("https://m.dcinside.com/board/{}/{}{}".format(board_id, document_id, mobile_suffix))
 
         kind_urls = {
-            "normal": "https://gall.dcinside.com/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
-            "minor": "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
-            "mini": "https://gall.dcinside.com/mini/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
-            "person": "https://gall.dcinside.com/person/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "normal": "https://gall.dcinside.com/board/view/?id={}&no={}{}".format(board_id, document_id, pc_suffix),
+            "minor": "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}{}".format(board_id, document_id, pc_suffix),
+            "mini": "https://gall.dcinside.com/mini/board/view/?id={}&no={}{}".format(board_id, document_id, pc_suffix),
+            "person": "https://gall.dcinside.com/person/board/view/?id={}&no={}{}".format(board_id, document_id, pc_suffix),
         }
         if kind in kind_urls:
             urls.append(kind_urls[kind])
 
         urls.extend([
-            "https://gall.dcinside.com/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
-            "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
-            "https://gall.dcinside.com/mini/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
-            "https://gall.dcinside.com/person/board/view/?id={}&no={}{}".format(board_id, document_id, pc_recommend_suffix),
+            "https://gall.dcinside.com/board/view/?id={}&no={}{}".format(board_id, document_id, pc_suffix),
+            "https://gall.dcinside.com/mgallery/board/view/?id={}&no={}{}".format(board_id, document_id, pc_suffix),
+            "https://gall.dcinside.com/mini/board/view/?id={}&no={}{}".format(board_id, document_id, pc_suffix),
+            "https://gall.dcinside.com/person/board/view/?id={}&no={}{}".format(board_id, document_id, pc_suffix),
         ])
         return self.__dedupe_urls(urls)
 
@@ -469,7 +579,11 @@ class API:
             if subject_tag:
                 subject = subject_tag[0].text_content().strip() or None
         else:
-            title = " ".join(link.text_content().split())
+            title_nodes = link.xpath(".//*[contains(@class,'sp-lst')]/following-sibling::*[1]")
+            if title_nodes:
+                title = " ".join(title_nodes[0].text_content().split())
+            else:
+                title = " ".join(link.text_content().split())
         if not title:
             return None
 
@@ -510,10 +624,10 @@ class API:
                 if match:
                     author_id = match.group(1)
 
-        icon_text = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/text()"))
         icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
-        flags = "{} {}".format(icon_text, icon_class)
-        isimage = ("이미지" in flags) or ("img" in flags)
+        flags = icon_class
+        isimage = has_gallery_image_icon(flags)
+        isvideo = has_gallery_video_icon(flags)
         isrecommend = "reco" in flags
         isdcbest = ("best" in flags) or (board_id == "dcbest")
         ishit = "hit" in flags
@@ -523,6 +637,7 @@ class API:
             board_id=board_id,
             title=title,
             has_image=isimage,
+            has_video=isvideo,
             author=author,
             author_id=author_id,
             view_count=view_count,
@@ -533,6 +648,7 @@ class API:
             time=post_time,
             subject=subject,
             isimage=isimage,
+            isvideo=isvideo,
             isrecommend=isrecommend,
             isdcbest=isdcbest,
             ishit=ishit,
@@ -830,6 +946,7 @@ class API:
         voteup_count = 0
         comment_count = 0
         isimage = False
+        isvideo = False
         isdcbest = False
         isrecommend = False
         ishit = False
@@ -855,7 +972,8 @@ class API:
                 view_count = to_int(doc[0][1][2].text.split()[-1] if doc[0][1][2].text else 0, 0)
                 voteup_count = to_int(doc[0][1][3].text_content().split()[-1], 0)
             classname = doc[0][0][0].get("class", "")
-            title = (doc[0][0][1].text or "").strip()
+            title_node = doc[0][0][1]
+            title = " ".join(title_node.text_content().split()) if hasattr(title_node, "text_content") else (title_node.text or "").strip()
             comment_count = to_int(doc[1][0].text if len(doc) > 1 and len(doc[1]) else 0, 0)
             author_id_nodes = doc.xpath(".//span[contains(@class, 'blockInfo')]/@data-info")
             if author_id_nodes:
@@ -877,6 +995,11 @@ class API:
                 isimage = True
             elif "sp-lst-recoimg" in classname:
                 isimage = True
+                isrecommend = True
+            elif "sp-lst-play" in classname:
+                isvideo = True
+            elif "sp-lst-recoplay" in classname:
+                isvideo = True
                 isrecommend = True
             elif "sp-lst-recotxt" in classname:
                 isrecommend = True
@@ -919,10 +1042,10 @@ class API:
             if rt:
                 comment_count = to_int(" ".join(rt[0].text_content().split()), 0)
 
-            icon_text = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/text()"))
             icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
-            flags = "{} {}".format(icon_text, icon_class)
-            isimage = ("이미지" in flags) or ("img" in flags)
+            flags = icon_class
+            isimage = has_gallery_image_icon(flags)
+            isvideo = has_gallery_video_icon(flags)
             isrecommend = "reco" in flags
             isdcbest = ("best" in flags) or (board_id == "dcbest")
             ishit = "hit" in flags
@@ -936,7 +1059,8 @@ class API:
             id=document_id,
             board_id=board_id,
             title=title,
-            has_image=isimage or classname.endswith("img"),
+            has_image=isimage,
+            has_video=isvideo,
             author=author,
             author_id=author_id,
             view_count=view_count,
@@ -947,6 +1071,7 @@ class API:
             time=post_time,
             subject=subject,
             isimage=isimage,
+            isvideo=isvideo,
             isrecommend=isrecommend,
             isdcbest=isdcbest,
             ishit=ishit,
@@ -989,7 +1114,8 @@ class API:
             row.get("data-type", ""),
             " ".join(row.xpath(".//td[contains(@class, 'gall_tit')]//em/@class")),
         ])
-        isimage = ("pic" in flags) or ("img" in flags)
+        isimage = has_gallery_image_icon(flags)
+        isvideo = has_gallery_video_icon(flags)
         isrecommend = "recom" in flags
         isdcbest = "best" in flags
         ishit = ("issue" in flags) or ("hit" in flags)
@@ -999,6 +1125,7 @@ class API:
             board_id=board_id,
             title=title,
             has_image=isimage,
+            has_video=isvideo,
             author=author,
             author_id=author_id,
             view_count=view_count,
@@ -1009,20 +1136,30 @@ class API:
             time=self.__parse_time(time_text),
             subject=None,
             isimage=isimage,
+            isvideo=isvideo,
             isrecommend=isrecommend,
             isdcbest=isdcbest,
             ishit=ishit,
             is_mobile_source=is_mobile_source,
         )
 
-    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None):
+    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None):
         page = start_page
         scanned_pages = 0
+        upper_limit = to_optional_int(document_id_upper_limit)
+        lower_limit = to_optional_int(document_id_lower_limit)
         while num:
             if max_scan_pages is not None and scanned_pages >= max_scan_pages:
                 break
             parsed, text, used_url = await self.__fetch_parsed_from_urls(
-                self.__build_list_urls(board_id, page, recommend=recommend, kind=kind),
+                self.__build_list_urls(
+                    board_id,
+                    page,
+                    recommend=recommend,
+                    kind=kind,
+                    search_type=search_type,
+                    search_keyword=search_keyword,
+                ),
                 validator=self.__is_usable_board_page,
             )
             scanned_pages += 1
@@ -1033,21 +1170,28 @@ class API:
             yielded_in_page = 0
             is_mobile_source = self.__is_mobile_request(used_url)
 
-            doc_headers = [i[0] for i in parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li") if not i.get("class", "").startswith("ad")]
-            if doc_headers:
-                for doc in doc_headers:
-                    indexdata = self.__parse_legacy_mobile_board_row(
-                        doc,
+            mobile_rows = [
+                row
+                for row in parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")
+                if not row.get("class", "").startswith("ad")
+            ]
+            if mobile_rows:
+                for row in mobile_rows:
+                    indexdata = self.__parse_mobile_list_item(
+                        row,
                         board_id,
                         kind=kind,
-                        recommend=recommend,
                         is_mobile_source=is_mobile_source,
+                        recommend=recommend,
                     )
                     if indexdata is None:
                         continue
-                    if document_id_upper_limit and int(document_id_upper_limit) <= int(indexdata.id):
+                    document_id = to_optional_int(indexdata.id)
+                    if document_id is None:
                         continue
-                    if document_id_lower_limit and int(document_id_lower_limit) >= int(indexdata.id):
+                    if upper_limit is not None and upper_limit <= document_id:
+                        continue
+                    if lower_limit is not None and lower_limit >= document_id:
                         return
 
                     yield indexdata
@@ -1067,9 +1211,12 @@ class API:
                     )
                     if indexdata is None:
                         continue
-                    if document_id_upper_limit and int(document_id_upper_limit) <= int(indexdata.id):
+                    document_id = to_optional_int(indexdata.id)
+                    if document_id is None:
                         continue
-                    if document_id_lower_limit and int(document_id_lower_limit) >= int(indexdata.id):
+                    if upper_limit is not None and upper_limit <= document_id:
+                        continue
+                    if lower_limit is not None and lower_limit >= document_id:
                         return
 
                     yield indexdata
@@ -1203,7 +1350,12 @@ class API:
         for adv in doc_content.xpath("div[@class='adv-groupin']"):
             adv.getparent().remove(adv)
         for adv in doc_content.xpath(".//img"):
-            if adv.get("src", "").startswith("https://nstatic") and not adv.get("data-original"):
+            src = adv.get("src", "")
+            if (
+                src.startswith("https://nstatic")
+                and not adv.get("data-original")
+                and not self.__is_placeholder_document_image_src(src)
+            ):
                 adv.getparent().remove(adv)
         return doc_content
 
@@ -1214,6 +1366,105 @@ class API:
             if src:
                 return src
         return None
+
+    def __is_placeholder_document_image_src(self, src):
+        if not src:
+            return True
+        parsed = urlparse(src)
+        host = (parsed.netloc or "").lower()
+        path = parsed.path or ""
+        if host == "nstatic.dcinside.com" and (
+            path.endswith("/gallview_loading_ori.gif")
+            or path.endswith("/m_webp.png")
+            or "/dc/m/img/" in path
+        ):
+            return True
+        return False
+
+    def __document_image_elements(self, doc_content):
+        return [
+            img
+            for img in doc_content.xpath(".//img")
+            if not (self.__pick_document_image_src(img) or "").startswith("https://img.iacstatic.co.kr")
+        ]
+
+    def __real_document_image_sources(self, doc_content):
+        sources = []
+        for img in self.__document_image_elements(doc_content):
+            src = self.__pick_document_image_src(img)
+            if src and not self.__is_placeholder_document_image_src(src):
+                sources.append(src)
+        return sources
+
+    def __has_placeholder_document_images(self, doc_content):
+        return any(
+            self.__is_placeholder_document_image_src(self.__pick_document_image_src(img))
+            for img in self.__document_image_elements(doc_content)
+        )
+
+    async def __pc_document_image_sources(self, board_id, document_id, kind=None):
+        for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
+            try:
+                status, _, text = await self.__request_text("GET", url)
+            except Exception:
+                continue
+            if status >= 400 or not text:
+                continue
+            try:
+                parsed = lxml.html.fromstring(text)
+            except Exception:
+                continue
+            containers = parsed.xpath("//div[contains(@class, 'writing_view_box')]")
+            if not containers:
+                containers = parsed.xpath("//div[@class='thum-txtin']")
+            if not containers:
+                containers = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
+            if not containers:
+                continue
+            sources = self.__real_document_image_sources(containers[0])
+            if sources:
+                return sources
+        return []
+
+    async def __repair_placeholder_images_from_pc(self, doc_content, board_id, document_id, kind=None):
+        if not self.__has_placeholder_document_images(doc_content):
+            return doc_content
+
+        pc_sources = await self.__pc_document_image_sources(board_id, document_id, kind=kind)
+        if not pc_sources:
+            return doc_content
+
+        mobile_images = self.__document_image_elements(doc_content)
+        used_sources = set()
+
+        for idx, img in enumerate(mobile_images):
+            current_src = self.__pick_document_image_src(img)
+            if not current_src:
+                continue
+            if not self.__is_placeholder_document_image_src(current_src):
+                used_sources.add(current_src)
+                continue
+            if idx >= len(pc_sources):
+                continue
+            replacement = pc_sources[idx]
+            if replacement:
+                img.set("data-original", replacement)
+                img.set("src", replacement)
+                used_sources.add(replacement)
+
+        # If mobile and PC image counts diverge, still fill remaining placeholders in order.
+        remaining_sources = [src for src in pc_sources if src not in used_sources]
+        for img in mobile_images:
+            current_src = self.__pick_document_image_src(img)
+            if not self.__is_placeholder_document_image_src(current_src):
+                continue
+            if not remaining_sources:
+                break
+            replacement = remaining_sources.pop(0)
+            img.set("data-original", replacement)
+            img.set("src", replacement)
+
+        return doc_content
 
     def __document_contents_text(self, doc_content):
         return '\n'.join(i.strip() for i in doc_content.itertext() if i.strip() and not i.strip().startswith("이미지 광고"))
@@ -1227,12 +1478,154 @@ class API:
             for i in doc_content.xpath(".//img")
             for src in [self.__pick_document_image_src(i)]
             if src
-            and not src.startswith("https://nstatic")
+            and not self.__is_placeholder_document_image_src(src)
             and not src.startswith("https://img.iacstatic.co.kr")]
 
-    async def document(self, board_id, document_id, kind=None, recommend=False):
+    def __normalize_poll_url(self, src):
+        parsed = urlparse(src or "")
+        if parsed.path != "/poll":
+            return None
+        if parsed.scheme == "https" and parsed.netloc == "m.dcinside.com":
+            return parsed.geturl()
+        if not parsed.scheme and not parsed.netloc:
+            return parsed._replace(scheme="https", netloc="m.dcinside.com").geturl()
+        return None
+
+    def __is_poll_url(self, src):
+        return self.__normalize_poll_url(src) is not None
+
+    def __poll_card_element(self, src, poll=None):
+        card = lxml.html.Element("div")
+        card.set("class", "dc-poll-card")
+
+        title = lxml.html.Element("h3")
+        title.set("class", "dc-poll-title")
+        title.text = (poll or {}).get("title") or "투표"
+        card.append(title)
+
+        meta_items = list((poll or {}).get("meta") or [])
+        participant = (poll or {}).get("participant")
+        if participant:
+            meta_items.insert(0, participant)
+        if meta_items:
+            meta = lxml.html.Element("ul")
+            meta.set("class", "dc-poll-meta")
+            for value in meta_items:
+                li = lxml.html.Element("li")
+                li.text = value
+                meta.append(li)
+            card.append(meta)
+
+        options = list((poll or {}).get("options") or [])
+        results = list((poll or {}).get("results") or [])
+        if results:
+            result_wrap = lxml.html.Element("div")
+            result_wrap.set("class", "dc-poll-results")
+            result_title = lxml.html.Element("div")
+            result_title.set("class", "dc-poll-results-title")
+            result_title.text = "결과 미리보기"
+            result_wrap.append(result_title)
+
+            result_list = lxml.html.Element("ol")
+            result_list.set("class", "dc-poll-result-list")
+            for result in results:
+                li = lxml.html.Element("li")
+                option = lxml.html.Element("span")
+                option.set("class", "dc-poll-result-option")
+                option.text = result.get("option") or "-"
+                li.append(option)
+
+                stats = lxml.html.Element("span")
+                stats.set("class", "dc-poll-result-stats")
+                stat_parts = [value for value in [result.get("percent"), result.get("count")] if value]
+                stats.text = " · ".join(stat_parts)
+                li.append(stats)
+                result_list.append(li)
+            result_wrap.append(result_list)
+            card.append(result_wrap)
+        elif options:
+            option_list = lxml.html.Element("ol")
+            option_list.set("class", "dc-poll-options")
+            for option in options:
+                li = lxml.html.Element("li")
+                li.text = option
+                option_list.append(li)
+            card.append(option_list)
+
+        actions = lxml.html.Element("div")
+        actions.set("class", "dc-poll-actions")
+        link = lxml.html.Element("a")
+        link.set("class", "dc-poll-link")
+        link.set("href", src)
+        link.set("rel", "noopener noreferrer")
+        link.text = "원본에서 투표하기"
+        actions.append(link)
+        card.append(actions)
+        return card
+
+    def __poll_preview_url(self, src):
+        parsed = urlparse(self.__normalize_poll_url(src) or src or "")
+        query_items = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "preview"]
+        query_items.append(("preview", "1"))
+        return parsed._replace(query=urlencode(query_items)).geturl()
+
+    def __parse_poll_summary(self, text):
+        parsed = lxml.html.document_fromstring(text or "")
+        title = self.__first_text(parsed, "//*[contains(@class, 'vote-tit-inner')]") or "투표"
+        meta = [
+            " ".join(node.text_content().split())
+            for node in parsed.xpath("//*[contains(@class, 'vote-date-lst')]/li")
+            if " ".join(node.text_content().split())
+        ]
+        participant = self.__first_text(parsed, "//*[contains(@class, 'vote-join')]")
+        options = [
+            " ".join(node.text_content().split())
+            for node in parsed.xpath("//*[contains(@class, 'vote-ask-lst')]//*[contains(@class, 'vote-txt')]")
+            if " ".join(node.text_content().split())
+        ]
+        results = []
+        for node in parsed.xpath("//*[contains(@class, 'vote-gp-lst')]/li"):
+            option = " ".join(node.xpath("string(.//*[contains(@class, 'vote-txt')])").split())
+            percent = " ".join(node.xpath("string(.//*[contains(@class, 'percent')])").split())
+            count = " ".join(node.xpath("string(.//*[contains(@class, 'vote-ct')])").split())
+            if option:
+                results.append({"option": option, "percent": percent, "count": count})
+        return {
+            "title": title,
+            "meta": meta,
+            "participant": participant,
+            "options": options,
+            "results": results,
+        }
+
+    async def __replace_poll_iframes(self, doc_content):
+        for iframe in list(doc_content.xpath(".//iframe[@src]")):
+            src = iframe.get("src")
+            poll_src = self.__normalize_poll_url(src)
+            if not poll_src:
+                continue
+            try:
+                status, _, text = await self.__request_text("GET", self.__poll_preview_url(poll_src))
+                poll = self.__parse_poll_summary(text) if status < 400 else None
+            except Exception:
+                try:
+                    status, _, text = await self.__request_text("GET", poll_src)
+                    poll = self.__parse_poll_summary(text) if status < 400 else None
+                except Exception:
+                    poll = None
+            iframe.getparent().replace(iframe, self.__poll_card_element(poll_src, poll=poll))
+        return doc_content
+
+    async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None):
         parsed, text, used_url = await self.__fetch_parsed_from_urls(
-            self.__build_view_urls(board_id, document_id, kind=kind, recommend=recommend),
+            self.__build_view_urls(
+                board_id,
+                document_id,
+                kind=kind,
+                recommend=recommend,
+                search_type=search_type,
+                search_keyword=search_keyword,
+            ),
             validator=self.__is_usable_document_page,
         )
         if parsed is None:
@@ -1274,6 +1667,14 @@ class API:
             )
 
             doc_content = self.__prepare_document_content(doc_content_container[0])
+            if is_mobile_source:
+                doc_content = await self.__repair_placeholder_images_from_pc(
+                    doc_content,
+                    board_id,
+                    document_id,
+                    kind=kind,
+                )
+            await self.__replace_poll_iframes(doc_content)
             related_posts = []
             embedded_comments = []
             embedded_comment_total = 0

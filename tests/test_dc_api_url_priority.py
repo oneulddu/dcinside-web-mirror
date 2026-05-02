@@ -77,6 +77,7 @@ def test_parse_mobile_list_item_uses_five_cell_ginfo_offsets():
     assert item.view_count == 7
     assert item.voteup_count == 2
     assert item.comment_count == 5
+    assert item.isimage is False
 
 
 def test_parse_mobile_list_item_keeps_four_cell_ginfo_offsets():
@@ -113,6 +114,175 @@ def test_parse_mobile_list_item_keeps_four_cell_ginfo_offsets():
     assert item.view_count == 7
     assert item.voteup_count == 2
     assert item.comment_count == 5
+    assert item.isimage is True
+
+
+def test_parse_mobile_list_item_ignores_text_icon_named_image():
+    api = API.__new__(API)
+    row = lxml.html.fromstring(
+        """
+        <li>
+          <div class="gall-detail-lnktb">
+            <a class="lt" href="https://m.dcinside.com/board/test/123">
+              <span class="subject-add">
+                <span class="sp-lst sp-lst-txt">이미지</span>
+                <span class="subjectin">text-only title</span>
+              </span>
+              <ul class="ginfo">
+                <li>작성자</li>
+                <li>04.16 12:00</li>
+                <li>조회 7</li>
+                <li>추천 <span>2</span></li>
+              </ul>
+            </a>
+          </div>
+        </li>
+        """
+    )
+
+    item = api._API__parse_mobile_list_item(row, "test", kind="minor")
+
+    assert item is not None
+    assert item.title == "text-only title"
+    assert item.isimage is False
+    assert item.isvideo is False
+
+
+def test_parse_mobile_list_item_tracks_play_icon_as_video():
+    api = API.__new__(API)
+    row = lxml.html.fromstring(
+        """
+        <li>
+          <div class="gall-detail-lnktb">
+            <a class="lt" href="https://m.dcinside.com/board/test/124">
+              <span class="subject-add">
+                <span class="sp-lst sp-lst-play">동영상</span>
+                <span class="subjectin">video title</span>
+              </span>
+              <ul class="ginfo">
+                <li>작성자</li>
+                <li>04.16 12:00</li>
+                <li>조회 7</li>
+                <li>추천 <span>2</span></li>
+              </ul>
+            </a>
+          </div>
+        </li>
+        """
+    )
+
+    item = api._API__parse_mobile_list_item(row, "test", kind="minor")
+
+    assert item is not None
+    assert item.title == "video title"
+    assert item.isimage is False
+    assert item.isvideo is True
+    assert item.has_video is True
+
+
+def test_parse_pc_board_row_uses_pic_icon_not_generic_icon_img():
+    api = API.__new__(API)
+    text_row = lxml.html.fromstring(
+        """
+        <tr class="ub-content us-post" data-no="123" data-type="icon_txt">
+          <td class="gall_tit">
+            <em class="icon_img icon_txt"></em>
+            <a href="/mgallery/board/view/?id=test&no=123">text title</a>
+          </td>
+          <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+          <td class="gall_date" title="2026.04.16 12:00:00"></td>
+          <td class="gall_count">7</td>
+          <td class="gall_recommend">3</td>
+        </tr>
+        """
+    )
+    image_row = lxml.html.fromstring(
+        """
+        <tr class="ub-content us-post" data-no="124" data-type="icon_pic">
+          <td class="gall_tit">
+            <em class="icon_img icon_pic"></em>
+            <a href="/mgallery/board/view/?id=test&no=124">image title</a>
+          </td>
+          <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+          <td class="gall_date" title="2026.04.16 12:00:00"></td>
+          <td class="gall_count">7</td>
+          <td class="gall_recommend">3</td>
+        </tr>
+        """
+    )
+    video_row = lxml.html.fromstring(
+        """
+        <tr class="ub-content us-post" data-no="125" data-type="icon_movie">
+          <td class="gall_tit">
+            <em class="icon_img icon_movie"></em>
+            <a href="/mgallery/board/view/?id=test&no=125">video title</a>
+          </td>
+          <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+          <td class="gall_date" title="2026.04.16 12:00:00"></td>
+          <td class="gall_count">7</td>
+          <td class="gall_recommend">3</td>
+        </tr>
+        """
+    )
+
+    text_item = api._API__parse_pc_board_row(text_row, "test", kind="minor")
+    image_item = api._API__parse_pc_board_row(image_row, "test", kind="minor")
+    video_item = api._API__parse_pc_board_row(video_row, "test", kind="minor")
+
+    assert text_item.isimage is False
+    assert text_item.has_image is False
+    assert text_item.isvideo is False
+    assert image_item.isimage is True
+    assert image_item.has_image is True
+    assert image_item.isvideo is False
+    assert video_item.isimage is False
+    assert video_item.has_image is False
+    assert video_item.isvideo is True
+    assert video_item.has_video is True
+
+
+@pytest.mark.asyncio
+async def test_board_ignores_invalid_document_id_limits_instead_of_crashing():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <html><body>
+          <ul class="gall-detail-lst">
+            <li>
+              <div class="gall-detail-lnktb">
+                <a class="lt" href="https://m.dcinside.com/board/test/122">
+                  <span class="subject-add">
+                    <span class="subjectin">embedded title</span>
+                  </span>
+                  <ul class="ginfo">
+                    <li>작성자</li>
+                    <li>04.16 12:00</li>
+                    <li>조회 7</li>
+                    <li>추천 <span>2</span></li>
+                  </ul>
+                </a>
+              </div>
+            </li>
+          </ul>
+        </body></html>
+        """
+    )
+
+    async def fake_fetch(*args, **kwargs):
+        return parsed, "ready", "https://m.dcinside.com/board/test?page=1"
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+
+    items = [
+        item async for item in api.board(
+            "test",
+            num=1,
+            document_id_upper_limit="not-a-number",
+            document_id_lower_limit="",
+        )
+    ]
+
+    assert [item.id for item in items] == ["122"]
 
 
 @pytest.mark.asyncio

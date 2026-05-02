@@ -1,12 +1,14 @@
 name: Deploy To Server
 
 on:
+  pull_request:
+    branches: ["main"]
   push:
     branches: ["main"]
   workflow_dispatch:
 
 concurrency:
-  group: deploy-main
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions: {}
@@ -37,6 +39,7 @@ jobs:
 
   deploy:
     needs: test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -47,17 +50,25 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           umask 077
           KEY_FILE="${RUNNER_TEMP}/deploy_key"
+          KNOWN_HOSTS_FILE="${RUNNER_TEMP}/known_hosts"
           printf '%s\n' "${SSH_PRIVATE_KEY}" > "${KEY_FILE}"
+          if [ -z "${SSH_KNOWN_HOSTS}" ]; then
+            echo "SSH_KNOWN_HOSTS secret is required"
+            exit 1
+          fi
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > "${KNOWN_HOSTS_FILE}"
 
           ssh -i "${KEY_FILE}" \
             -p "${SSH_PORT}" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+            -o StrictHostKeyChecking=yes \
             "${SSH_USER}@${SSH_HOST}" <<'EOF'
             set -e
             cd /home/ubuntu/mirror
@@ -93,17 +104,25 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           umask 077
           KEY_FILE="${RUNNER_TEMP}/deploy_key"
+          KNOWN_HOSTS_FILE="${RUNNER_TEMP}/known_hosts"
           printf '%s\n' "${SSH_PRIVATE_KEY}" > "${KEY_FILE}"
+          if [ -z "${SSH_KNOWN_HOSTS}" ]; then
+            echo "SSH_KNOWN_HOSTS secret is required"
+            exit 1
+          fi
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > "${KNOWN_HOSTS_FILE}"
 
           CURRENT=$(ssh -i "${KEY_FILE}" \
             -p "${SSH_PORT}" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+            -o StrictHostKeyChecking=yes \
             "${SSH_USER}@${SSH_HOST}" \
             'cd /home/ubuntu/mirror && git rev-parse HEAD')
 
