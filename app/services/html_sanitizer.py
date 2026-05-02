@@ -21,6 +21,7 @@ HTML_TAG_ATTRS = {
     "th": {"colspan", "rowspan"},
 }
 YOUTUBE_IFRAME_HOSTS = {"youtube.com", "www.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com"}
+DC_MOVIE_VIEW_URL = "https://gall.dcinside.com/board/movie/movie_view?no={}"
 
 
 def is_safe_href(value):
@@ -46,6 +47,35 @@ def is_safe_youtube_embed_path(path):
     return bool(video_id) and "/" not in video_id
 
 
+def dc_movie_id_from_parsed_url(parsed):
+    host = (parsed.netloc or "").lower()
+    if (
+        (host == "gall.dcinside.com" and parsed.path == "/board/movie/movie_view")
+        or (host == "m.dcinside.com" and parsed.path == "/movie/player")
+    ):
+        movie_ids = parse_qs(parsed.query).get("no", [])
+        if movie_ids and movie_ids[0].isdigit():
+            return movie_ids[0]
+    return None
+
+
+def dc_movie_id_from_iframe_src(value):
+    url = (value or "").strip()
+    if not url:
+        return None
+    return dc_movie_id_from_parsed_url(urlparse(url))
+
+
+def normalize_dc_movie_iframe_src(parsed):
+    movie_id = dc_movie_id_from_parsed_url(parsed)
+    if movie_id:
+        # The mobile player returns an empty body to desktop iframe requests.
+        # If route context is unavailable for a same-origin player rewrite,
+        # keep the iframe usable by falling back to DCInside's PC movie URL.
+        return DC_MOVIE_VIEW_URL.format(movie_id)
+    return None
+
+
 def normalize_safe_iframe_src(value):
     url = (value or "").strip()
     if not url:
@@ -54,7 +84,12 @@ def normalize_safe_iframe_src(value):
     host = (parsed.netloc or "").lower()
 
     if not parsed.scheme and not host:
-        return url if parsed.path == "/poll" else None
+        if parsed.path == "/poll":
+            return url
+        if parsed.path == "/movie":
+            movie_ids = parse_qs(parsed.query).get("no", [])
+            return url if movie_ids and movie_ids[0].isdigit() else None
+        return None
 
     if parsed.scheme not in {"", "https"}:
         return None
@@ -62,13 +97,9 @@ def normalize_safe_iframe_src(value):
     if host == "m.dcinside.com" and parsed.path == "/poll":
         return parsed._replace(scheme="https").geturl()
 
-    if (
-        (host == "gall.dcinside.com" and parsed.path == "/board/movie/movie_view")
-        or (host == "m.dcinside.com" and parsed.path == "/movie/player")
-    ):
-        movie_ids = parse_qs(parsed.query).get("no", [])
-        if movie_ids and movie_ids[0].isdigit():
-            return parsed._replace(scheme="https").geturl()
+    movie_src = normalize_dc_movie_iframe_src(parsed)
+    if movie_src:
+        return movie_src
 
     if host in YOUTUBE_IFRAME_HOSTS and is_safe_youtube_embed_path(parsed.path):
         return parsed._replace(scheme="https").geturl()
@@ -160,4 +191,12 @@ def rewrite_content_images(soup, images, board, pid, kind):
         img["decoding"] = "async"
         for attr in ("data-original", "data-gif", "srcset"):
             img.attrs.pop(attr, None)
+
+    for iframe in soup.find_all("iframe"):
+        movie_id = dc_movie_id_from_iframe_src(iframe.get("src"))
+        if not movie_id:
+            continue
+        iframe["src"] = url_for("main.movie", no=movie_id, board=board, pid=pid, kind=kind)
+        iframe["loading"] = "lazy"
+        iframe["title"] = iframe.get("title") or "DCInside 동영상"
     return soup

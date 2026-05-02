@@ -37,6 +37,12 @@ class ExplodingUpstream(DummyUpstream):
         raise OSError("upstream disconnected")
 
 
+class DummyMovieResponse:
+    def __init__(self, text, status_code=200):
+        self.text = text
+        self.status_code = status_code
+
+
 def test_read_limited_media_body_closes_after_success(monkeypatch):
     monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 10)
     upstream = DummyUpstream([b"123", b"456"])
@@ -122,6 +128,39 @@ def test_media_route_buffers_upstream_and_sets_verified_length(monkeypatch):
     assert upstream.closed is True
 
 
+def test_media_route_streams_video_range_requests(monkeypatch):
+    upstream = DummyUpstream(
+        [b"abc", b"def"],
+        headers={
+            "Content-Type": "video/mp4",
+            "Content-Length": "6",
+            "Content-Range": "bytes 0-5/100",
+            "Accept-Ranges": "bytes",
+        },
+        status_code=206,
+    )
+    captured = {}
+
+    def fake_fetch(src, headers, cookies):
+        captured["headers"] = headers
+        return upstream, None
+
+    monkeypatch.setattr(media_proxy, "fetch_media_response", fake_fetch)
+    app = create_app()
+
+    response = app.test_client().get(
+        "/media?src=https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4",
+        headers={"Range": "bytes=0-5"},
+    )
+
+    assert response.status_code == 206
+    assert response.data == b"abcdef"
+    assert response.headers["Content-Type"] == "video/mp4"
+    assert response.headers["Content-Range"] == "bytes 0-5/100"
+    assert captured["headers"]["Range"] == "bytes=0-5"
+    assert upstream.closed is True
+
+
 def test_media_route_rejects_mismatched_known_length_when_stream_exceeds_limit(monkeypatch):
     monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 5)
     upstream = DummyUpstream(
@@ -184,6 +223,30 @@ def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
     assert "data-original" not in images[0].attrs
 
 
+def test_rewrite_content_images_rewrites_dc_movie_iframes_to_local_player():
+    app = create_app()
+    soup = BeautifulSoup(
+        """
+        <article>
+          <iframe src="https://m.dcinside.com/movie/player?no=6499430&amp;mobile=M"></iframe>
+        </article>
+        """,
+        "html.parser",
+    )
+
+    with app.test_request_context("/read?board=idolism&pid=1193413&kind=minor"):
+        html_sanitizer.rewrite_content_images(soup, [], "idolism", 1193413, "minor")
+
+    iframe = soup.find("iframe")
+    parsed = urlparse(iframe["src"])
+    query = parse_qs(parsed.query)
+    assert parsed.path == "/movie"
+    assert query["no"] == ["6499430"]
+    assert query["board"] == ["idolism"]
+    assert query["pid"] == ["1193413"]
+    assert query["kind"] == ["minor"]
+
+
 def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
     cleaned = html_sanitizer.sanitize_html_fragment(
         """
@@ -227,6 +290,15 @@ def test_sanitize_html_fragment_rejects_scheme_relative_iframe_src():
     assert iframe_sources == ["/poll", "https://m.dcinside.com/poll"]
 
 
+def test_sanitize_html_fragment_keeps_local_movie_iframe():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        '<iframe src="/movie?no=6499430&amp;board=idolism&amp;pid=1193413"></iframe>'
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert soup.iframe["src"] == "/movie?no=6499430&board=idolism&pid=1193413"
+
+
 def test_sanitize_html_fragment_keeps_dc_movie_and_youtube_iframes():
     cleaned = html_sanitizer.sanitize_html_fragment(
         """
@@ -245,10 +317,39 @@ def test_sanitize_html_fragment_keeps_dc_movie_and_youtube_iframes():
 
     assert iframe_sources == [
         "https://gall.dcinside.com/board/movie/movie_view?no=6499427",
-        "https://m.dcinside.com/movie/player?no=6499430&mobile=M",
+        "https://gall.dcinside.com/board/movie/movie_view?no=6499430",
         "https://www.youtube.com/embed/abc123",
     ]
     assert soup.find("iframe", src="https://www.youtube.com/embed/abc123").get("allow") == "autoplay; encrypted-media"
+
+
+def test_movie_route_renders_same_origin_video_player(monkeypatch):
+    movie_html = """
+    <html><body>
+      <video poster="https://dcm6.dcinside.co.kr/viewmovie.php?type=jpg&amp;code=poster">
+        <source src="https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4&amp;code=movie" type="video/mp4">
+      </video>
+    </body></html>
+    """
+    requests_seen = []
+
+    def fake_get(url, headers=None, timeout=None):
+        requests_seen.append((url, headers))
+        return DummyMovieResponse(movie_html)
+
+    monkeypatch.setattr(media_proxy.requests, "get", fake_get)
+    app = create_app()
+
+    response = app.test_client().get("/movie?no=6499430&board=idolism&pid=1193413&kind=minor")
+
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.data.decode("utf-8"), "html.parser")
+    source_query = parse_qs(urlparse(soup.find("source")["src"]).query)
+    poster_query = parse_qs(urlparse(soup.find("video")["poster"]).query)
+    assert source_query["src"] == ["https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4&code=movie"]
+    assert poster_query["src"] == ["https://dcm6.dcinside.co.kr/viewmovie.php?type=jpg&code=poster"]
+    assert requests_seen[0][0] == "https://gall.dcinside.com/board/movie/movie_view?no=6499430"
+    assert requests_seen[0][1]["Referer"] == "https://gall.dcinside.com/mgallery/board/view/?id=idolism&no=1193413"
 
 
 def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):

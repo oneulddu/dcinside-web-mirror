@@ -10,7 +10,7 @@ from .services.async_bridge import run_async
 from .services.core import async_index, async_read, async_related_after_position
 from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import rewrite_content_images, sanitize_html_fragment
-from .services.media_proxy import build_media_response, normalize_media_url_shape
+from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
 from .services.recent import (
     RECENT_MAX_ITEMS,
     format_recent_time,
@@ -325,7 +325,20 @@ def media():
     if request.args.get("pid") not in (None, "") and pid <= 0:
         abort(400)
     kind = _normalize_gallery_kind(request.args.get("kind"))
-    return build_media_response(normalized_src, board, pid, kind=kind)
+    return build_media_response(normalized_src, board, pid, kind=kind, range_header=request.headers.get("Range"))
+
+
+@bp.route("/movie")
+def movie():
+    movie_no = (request.args.get("no") or "").strip()
+    if not movie_no.isdigit():
+        abort(400)
+    board = _normalize_board_id(request.args.get("board") or "airforce")
+    pid = _safe_int(request.args.get("pid", 0), 0)
+    if request.args.get("pid") not in (None, "") and pid <= 0:
+        abort(400)
+    kind = _normalize_gallery_kind(request.args.get("kind"))
+    return build_movie_response(movie_no, board, pid, kind=kind)
 
 
 @bp.route("/read")
