@@ -1,4 +1,5 @@
 import lxml.html
+import pytest
 
 from app.services.dc_api import API, to_int
 
@@ -33,3 +34,43 @@ def test_document_content_helpers_keep_lazy_images_and_drop_ads():
     assert [image.src for image in images] == ["https://images.dcinside.com/post.gif"]
     assert images[0].board_id == "test"
     assert images[0].document_id == "123"
+
+
+@pytest.mark.asyncio
+async def test_replace_poll_iframes_handles_relative_poll_src():
+    api = API.__new__(API)
+    doc_content = lxml.html.fromstring(
+        """
+        <div>
+          <iframe src="/poll?vote_id=123"></iframe>
+          <iframe src="//evil.com/poll"></iframe>
+        </div>
+        """
+    )
+    requests = []
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        requests.append((method, url))
+        return (
+            200,
+            {},
+            """
+            <html><body>
+              <div class="vote-tit-inner">오늘의 투표</div>
+              <ul class="vote-date-lst"><li>2026.05.03</li></ul>
+              <div class="vote-join">10명 참여</div>
+              <ul class="vote-ask-lst"><li><span class="vote-txt">찬성</span></li></ul>
+            </body></html>
+            """,
+        )
+
+    api._API__request_text = fake_request_text
+
+    await api._API__replace_poll_iframes(doc_content)
+
+    assert requests == [("GET", "https://m.dcinside.com/poll?vote_id=123&preview=1")]
+    assert doc_content.xpath("string(.//*[contains(@class, 'dc-poll-title')])") == "오늘의 투표"
+    assert doc_content.xpath(".//a[contains(@class, 'dc-poll-link')]/@href") == [
+        "https://m.dcinside.com/poll?vote_id=123"
+    ]
+    assert doc_content.xpath(".//iframe/@src") == ["//evil.com/poll"]

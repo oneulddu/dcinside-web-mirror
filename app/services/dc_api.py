@@ -1443,9 +1443,18 @@ class API:
             and not self.__is_placeholder_document_image_src(src)
             and not src.startswith("https://img.iacstatic.co.kr")]
 
-    def __is_poll_url(self, src):
+    def __normalize_poll_url(self, src):
         parsed = urlparse(src or "")
-        return parsed.scheme == "https" and parsed.netloc == "m.dcinside.com" and parsed.path == "/poll"
+        if parsed.path != "/poll":
+            return None
+        if parsed.scheme == "https" and parsed.netloc == "m.dcinside.com":
+            return parsed.geturl()
+        if not parsed.scheme and not parsed.netloc:
+            return parsed._replace(scheme="https", netloc="m.dcinside.com").geturl()
+        return None
+
+    def __is_poll_url(self, src):
+        return self.__normalize_poll_url(src) is not None
 
     def __poll_card_element(self, src, poll=None):
         card = lxml.html.Element("div")
@@ -1517,7 +1526,7 @@ class API:
         return card
 
     def __poll_preview_url(self, src):
-        parsed = urlparse(src or "")
+        parsed = urlparse(self.__normalize_poll_url(src) or src or "")
         query_items = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "preview"]
         query_items.append(("preview", "1"))
         return parsed._replace(query=urlencode(query_items)).geturl()
@@ -1554,18 +1563,19 @@ class API:
     async def __replace_poll_iframes(self, doc_content):
         for iframe in list(doc_content.xpath(".//iframe[@src]")):
             src = iframe.get("src")
-            if not self.__is_poll_url(src):
+            poll_src = self.__normalize_poll_url(src)
+            if not poll_src:
                 continue
             try:
-                status, _, text = await self.__request_text("GET", self.__poll_preview_url(src))
+                status, _, text = await self.__request_text("GET", self.__poll_preview_url(poll_src))
                 poll = self.__parse_poll_summary(text) if status < 400 else None
             except Exception:
                 try:
-                    status, _, text = await self.__request_text("GET", src)
+                    status, _, text = await self.__request_text("GET", poll_src)
                     poll = self.__parse_poll_summary(text) if status < 400 else None
                 except Exception:
                     poll = None
-            iframe.getparent().replace(iframe, self.__poll_card_element(src, poll=poll))
+            iframe.getparent().replace(iframe, self.__poll_card_element(poll_src, poll=poll))
         return doc_content
 
     async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None):
