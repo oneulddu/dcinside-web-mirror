@@ -319,7 +319,7 @@ def movie_html(media, board, pid, kind=None):
 html, body {{
     margin: 0;
     width: 100%;
-    min-height: 100%;
+    height: 100%;
     background: #05070b;
 }}
 body {{
@@ -330,8 +330,8 @@ body {{
 video {{
     display: block;
     width: 100%;
-    max-width: 100%;
-    max-height: 100vh;
+    height: 100%;
+    object-fit: contain;
     background: #05070b;
 }}
 </style>

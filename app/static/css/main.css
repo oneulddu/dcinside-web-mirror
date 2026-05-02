@@ -709,10 +709,14 @@ a {
 }
 
 .article-body iframe[src*="/board/movie/movie_view"],
-.article-body iframe[src*="/movie/player"] {
+.article-body iframe[src*="/movie/player"],
+.article-body iframe[src^="/movie"] {
     aspect-ratio: 9 / 16;
     height: auto;
+    width: min(100%, 360px);
     max-height: min(82vh, 820px);
+    margin-right: auto;
+    margin-left: auto;
     background: #05070b;
 }
 
