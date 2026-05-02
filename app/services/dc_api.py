@@ -93,6 +93,15 @@ def peek(iterable):
         return None
     return first, itertools.chain((first,), iterable)
 
+
+def has_gallery_image_icon(value):
+    classes = set(str(value or "").split())
+    return bool(
+        classes.intersection({"sp-lst-img", "sp-lst-recoimg", "icon_pic", "icon_recomimg", "icon_recoimg"})
+        or any(token.startswith("icon_pic") for token in classes)
+    )
+
+
 class DocumentIndex:
     __slots__ = ["id", "subject", "title", "board_id", "has_image", "author", "author_id", "time", "view_count", "comment_count", "voteup_count",
             "document", "comments", "isimage", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
@@ -599,10 +608,9 @@ class API:
                 if match:
                     author_id = match.group(1)
 
-        icon_text = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/text()"))
         icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
-        flags = "{} {}".format(icon_text, icon_class)
-        isimage = ("이미지" in flags) or ("img" in flags)
+        flags = icon_class
+        isimage = has_gallery_image_icon(flags)
         isrecommend = "reco" in flags
         isdcbest = ("best" in flags) or (board_id == "dcbest")
         ishit = "hit" in flags
@@ -1009,10 +1017,9 @@ class API:
             if rt:
                 comment_count = to_int(" ".join(rt[0].text_content().split()), 0)
 
-            icon_text = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/text()"))
             icon_class = " ".join(link.xpath(".//span[contains(@class,'sp-lst')]/@class"))
-            flags = "{} {}".format(icon_text, icon_class)
-            isimage = ("이미지" in flags) or ("img" in flags)
+            flags = icon_class
+            isimage = has_gallery_image_icon(flags)
             isrecommend = "reco" in flags
             isdcbest = ("best" in flags) or (board_id == "dcbest")
             ishit = "hit" in flags
@@ -1026,7 +1033,7 @@ class API:
             id=document_id,
             board_id=board_id,
             title=title,
-            has_image=isimage or classname.endswith("img"),
+            has_image=isimage,
             author=author,
             author_id=author_id,
             view_count=view_count,
@@ -1079,7 +1086,7 @@ class API:
             row.get("data-type", ""),
             " ".join(row.xpath(".//td[contains(@class, 'gall_tit')]//em/@class")),
         ])
-        isimage = ("pic" in flags) or ("img" in flags)
+        isimage = has_gallery_image_icon(flags)
         isrecommend = "recom" in flags
         isdcbest = "best" in flags
         ishit = ("issue" in flags) or ("hit" in flags)

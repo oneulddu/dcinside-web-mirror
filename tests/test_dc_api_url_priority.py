@@ -77,6 +77,7 @@ def test_parse_mobile_list_item_uses_five_cell_ginfo_offsets():
     assert item.view_count == 7
     assert item.voteup_count == 2
     assert item.comment_count == 5
+    assert item.isimage is False
 
 
 def test_parse_mobile_list_item_keeps_four_cell_ginfo_offsets():
@@ -113,6 +114,77 @@ def test_parse_mobile_list_item_keeps_four_cell_ginfo_offsets():
     assert item.view_count == 7
     assert item.voteup_count == 2
     assert item.comment_count == 5
+    assert item.isimage is True
+
+
+def test_parse_mobile_list_item_ignores_text_icon_named_image():
+    api = API.__new__(API)
+    row = lxml.html.fromstring(
+        """
+        <li>
+          <div class="gall-detail-lnktb">
+            <a class="lt" href="https://m.dcinside.com/board/test/123">
+              <span class="subject-add">
+                <span class="sp-lst sp-lst-txt">이미지</span>
+                <span class="subjectin">text-only title</span>
+              </span>
+              <ul class="ginfo">
+                <li>작성자</li>
+                <li>04.16 12:00</li>
+                <li>조회 7</li>
+                <li>추천 <span>2</span></li>
+              </ul>
+            </a>
+          </div>
+        </li>
+        """
+    )
+
+    item = api._API__parse_mobile_list_item(row, "test", kind="minor")
+
+    assert item is not None
+    assert item.title == "text-only title"
+    assert item.isimage is False
+
+
+def test_parse_pc_board_row_uses_pic_icon_not_generic_icon_img():
+    api = API.__new__(API)
+    text_row = lxml.html.fromstring(
+        """
+        <tr class="ub-content us-post" data-no="123" data-type="icon_txt">
+          <td class="gall_tit">
+            <em class="icon_img icon_txt"></em>
+            <a href="/mgallery/board/view/?id=test&no=123">text title</a>
+          </td>
+          <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+          <td class="gall_date" title="2026.04.16 12:00:00"></td>
+          <td class="gall_count">7</td>
+          <td class="gall_recommend">3</td>
+        </tr>
+        """
+    )
+    image_row = lxml.html.fromstring(
+        """
+        <tr class="ub-content us-post" data-no="124" data-type="icon_pic">
+          <td class="gall_tit">
+            <em class="icon_img icon_pic"></em>
+            <a href="/mgallery/board/view/?id=test&no=124">image title</a>
+          </td>
+          <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+          <td class="gall_date" title="2026.04.16 12:00:00"></td>
+          <td class="gall_count">7</td>
+          <td class="gall_recommend">3</td>
+        </tr>
+        """
+    )
+
+    text_item = api._API__parse_pc_board_row(text_row, "test", kind="minor")
+    image_item = api._API__parse_pc_board_row(image_row, "test", kind="minor")
+
+    assert text_item.isimage is False
+    assert text_item.has_image is False
+    assert image_item.isimage is True
+    assert image_item.has_image is True
 
 
 @pytest.mark.asyncio
