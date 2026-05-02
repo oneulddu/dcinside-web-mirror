@@ -392,6 +392,7 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
                 "id": "123",
                 "title": "사진 있는 글",
                 "has_image": True,
+                "isrecommend": False,
                 "comment_count": 0,
                 "subject": None,
                 "author": "익명",
@@ -403,6 +404,31 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
                 "id": "124",
                 "title": "텍스트 글",
                 "has_image": False,
+                "isrecommend": False,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "125",
+                "title": "사진 없는 개념글",
+                "has_image": False,
+                "isrecommend": True,
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            },
+            {
+                "id": "126",
+                "title": "사진 있는 개념글",
+                "has_image": True,
+                "isrecommend": True,
                 "comment_count": 0,
                 "subject": None,
                 "author": "익명",
@@ -423,6 +449,11 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
     assert items[0].select_one(".feed-image-icon")["aria-label"] == "사진 첨부"
     assert items[0].select_one(".feed-image-icon + .feed-title") is not None
     assert items[1].select_one(".feed-image-icon") is None
+    assert items[1].select_one(".feed-recommend-icon") is None
+    assert items[2].select_one(".feed-recommend-icon.is-plain") is not None
+    assert items[2].select_one(".feed-image-icon") is None
+    assert items[3].select_one(".feed-recommend-icon.is-hot") is not None
+    assert items[3].select_one(".feed-image-icon") is None
 
 
 def test_board_normalizes_page_and_recommend_inputs(monkeypatch):

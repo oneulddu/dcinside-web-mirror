@@ -322,7 +322,8 @@ a {
     margin-bottom: 8px;
 }
 
-.feed-image-icon {
+.feed-image-icon,
+.feed-recommend-icon {
     display: inline-flex;
     flex: 0 0 auto;
     align-items: center;
@@ -333,7 +334,17 @@ a {
     color: var(--text-soft);
 }
 
-.feed-image-icon svg {
+.feed-recommend-icon.is-hot {
+    color: #f97316;
+    filter: drop-shadow(0 0 8px rgba(249, 115, 22, 0.24));
+}
+
+.feed-recommend-icon.is-plain {
+    color: var(--text-soft);
+}
+
+.feed-image-icon svg,
+.feed-recommend-icon svg {
     width: 100%;
     height: 100%;
     overflow: visible;
@@ -347,6 +358,21 @@ a {
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
+}
+
+.feed-recommend-icon path {
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.feed-recommend-icon.is-plain path {
+    fill: none;
+}
+
+.feed-recommend-icon.is-hot path {
+    fill: currentColor;
 }
 
 .feed-title {
