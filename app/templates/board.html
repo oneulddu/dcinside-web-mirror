@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_feed_post_bits.html" import feed_status_icon, feed_subject %}
 
 {% block content %}
 <section class="feed-list">
@@ -40,30 +41,7 @@
         <li>
             <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword) }}">
                 <div class="feed-title-wrap">
-                    {% set has_media = index.has_image or index.isimage or index.has_video or index.isvideo %}
-                    {% if index.isrecommend %}
-                    <span class="feed-recommend-icon{% if has_media %} is-hot{% else %} is-plain{% endif %}" aria-label="개념글" title="개념글">
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <path class="flame-outer" d="M12 22c4.4 0 7.5-3.2 7.5-7.7 0-3.2-1.7-6-4.6-8.5-.4 2.3-1.5 3.7-3.1 4.7.2-3.1-.9-5.8-3.3-8.1.2 3.4-1.2 5.1-2.6 6.9-1.1 1.4-2.1 2.8-2.1 5C3.8 18.8 7 22 12 22z"></path>
-                            <path class="flame-inner" d="M12.1 19.2c2 0 3.4-1.4 3.4-3.4 0-1.5-.8-2.7-2.2-3.8-.2 1.1-.8 1.8-1.7 2.3.1-1.5-.5-2.8-1.7-3.9.1 1.7-.6 2.5-1.2 3.3-.5.7-.9 1.3-.9 2.2 0 2 1.5 3.3 4.3 3.3z"></path>
-                        </svg>
-                    </span>
-                    {% elif index.has_video or index.isvideo %}
-                    <span class="feed-play-icon" aria-label="동영상 첨부" title="동영상 첨부">
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <circle cx="12" cy="12" r="8.5"></circle>
-                            <path d="M10 8.8v6.4L15.2 12z"></path>
-                        </svg>
-                    </span>
-                    {% elif index.has_image or index.isimage %}
-                    <span class="feed-image-icon" aria-label="사진 첨부" title="사진 첨부">
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <rect x="3" y="5" width="18" height="14" rx="2.4"></rect>
-                            <circle cx="8.5" cy="10" r="1.8"></circle>
-                            <path d="M5.5 17l4.4-4.6 3.1 3.1 2.2-2.4 3.3 3.9"></path>
-                        </svg>
-                    </span>
-                    {% endif %}
+                    {{ feed_status_icon(index) }}
                     <h2 class="feed-title">
                         {{ index.title|highlight_search(search_keyword) }}
                     </h2>
@@ -73,9 +51,7 @@
                 </div>
                 <div class="feed-meta-row">
                     <div class="feed-meta-left">
-                        {% if index.subject %}
-                        <span class="post-subject">[{{ index.subject }}]</span>
-                        {% endif %}
+                        {{ feed_subject(index) }}
                         <span class="author-text">{{ index.author }}{% if index.author_code %}({{ index.author_code }}){% endif %}</span>
                         <span class="sep">|</span>
                         <span>{{ index.time }}</span>

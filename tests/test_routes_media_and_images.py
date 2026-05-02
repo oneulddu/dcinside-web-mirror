@@ -488,6 +488,178 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
     assert items[5].select_one(".feed-play-icon") is None
 
 
+def test_read_renders_embedded_related_post_icons_and_subject(monkeypatch):
+    async def fake_async_read(pid, board, kind=None, recommend=0, **kwargs):
+        return (
+            {
+                "title": "본문",
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+                "html": "<p>본문</p>",
+                "related_posts": [
+                    {
+                        "id": "201",
+                        "title": "사진 있는 글",
+                        "subject": "말머리",
+                        "has_image": True,
+                        "isimage": False,
+                        "has_video": False,
+                        "isvideo": False,
+                        "isrecommend": False,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 3,
+                        "voteup_count": 1,
+                    },
+                    {
+                        "id": "202",
+                        "title": "동영상 글",
+                        "has_image": False,
+                        "has_video": True,
+                        "isrecommend": False,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 0,
+                        "voteup_count": 2,
+                    },
+                    {
+                        "id": "203",
+                        "title": "사진 없는 개념글",
+                        "has_image": False,
+                        "has_video": False,
+                        "isrecommend": True,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 0,
+                        "voteup_count": 3,
+                    },
+                    {
+                        "id": "204",
+                        "title": "사진 있는 개념글",
+                        "has_image": True,
+                        "has_video": False,
+                        "isrecommend": True,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 0,
+                        "voteup_count": 4,
+                    },
+                    {
+                        "id": "205",
+                        "title": "텍스트 글",
+                        "has_image": "sp-lst-txt",
+                        "isimage": "0",
+                        "has_video": False,
+                        "isvideo": False,
+                        "isrecommend": False,
+                        "author": "익명",
+                        "author_code": None,
+                        "time": "-",
+                        "comment_count": 0,
+                        "voteup_count": 5,
+                    },
+                ],
+            },
+            [],
+            [],
+        )
+
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    app = create_app()
+
+    response = app.test_client().get("/read?board=test&pid=100")
+    soup = BeautifulSoup(response.data, "html.parser")
+    items = soup.select("#related-list a.feed-item")
+
+    assert response.status_code == 200
+    assert len(items) == 5
+    assert items[0].select_one(".feed-image-icon") is not None
+    assert items[0].select_one(".feed-image-icon + .feed-title") is not None
+    assert items[0].select_one(".post-subject").text == "[말머리]"
+    assert items[0].select_one(".reply-count").text == "[3]"
+    assert items[1].select_one(".feed-play-icon") is not None
+    assert items[1].select_one(".feed-image-icon") is None
+    assert items[2].select_one(".feed-recommend-icon.is-plain") is not None
+    assert items[2].select_one(".feed-image-icon") is None
+    assert items[3].select_one(".feed-recommend-icon.is-hot") is not None
+    assert items[3].select_one(".feed-image-icon") is None
+    assert items[4].select_one(".feed-image-icon") is None
+    assert items[4].select_one(".feed-play-icon") is None
+    assert items[4].select_one(".feed-recommend-icon") is None
+
+
+def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
+    async def fake_async_related_after_position(
+        pid,
+        after_pid,
+        board,
+        kind=None,
+        limit=12,
+        source_page=0,
+        recommend=0,
+        **kwargs,
+    ):
+        return (
+            [
+                {
+                    "id": "301",
+                    "title": "텍스트 글",
+                    "subject": "일반",
+                    "has_image": "sp-lst-txt",
+                    "isimage": "0",
+                    "has_video": False,
+                    "isvideo": False,
+                    "isrecommend": False,
+                    "author": "익명",
+                    "author_code": None,
+                    "time": "-",
+                    "comment_count": 0,
+                    "voteup_count": 0,
+                },
+                {
+                    "id": "302",
+                    "title": "동영상 개념글",
+                    "subject": "영상",
+                    "has_image": False,
+                    "isimage": False,
+                    "has_video": "true",
+                    "isvideo": "1",
+                    "isrecommend": "true",
+                    "author": "익명",
+                    "author_code": None,
+                    "time": "-",
+                    "comment_count": 2,
+                    "voteup_count": 9,
+                },
+            ],
+            True,
+        )
+
+    monkeypatch.setattr(routes, "async_related_after_position", fake_async_related_after_position)
+    app = create_app()
+
+    response = app.test_client().get("/read/related?board=test&pid=100")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["has_more"] is True
+    assert payload["items"][0]["subject"] == "일반"
+    assert payload["items"][0]["has_image"] is False
+    assert payload["items"][0]["isimage"] is False
+    assert payload["items"][0]["has_video"] is False
+    assert payload["items"][0]["isrecommend"] is False
+    assert payload["items"][1]["subject"] == "영상"
+    assert payload["items"][1]["has_video"] is True
+    assert payload["items"][1]["isvideo"] is True
+    assert payload["items"][1]["isrecommend"] is True
+
+
 def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
     async def fake_async_index(page, board, recommend, kind=None):
         assert page == 1
@@ -538,6 +710,11 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert 'params.set("after_pid", afterPid)' in script
     assert "function responseHasMore(" in script
     assert "has_more" in script
+    assert "function createFeedStatusIcon(" in script
+    assert "function postHasImage(" in script
+    assert "function postHasVideo(" in script
+    assert "feed-recommend-icon" in script
+    assert "post-subject" in script
     assert '"has_next"' in script
     assert "clearLegacySessionCache()" in script
     assert "window.sessionStorage.removeItem(key)" in script

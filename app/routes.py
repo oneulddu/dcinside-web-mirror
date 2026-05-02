@@ -35,6 +35,12 @@ def _safe_int(value, default):
         return default
 
 
+def _safe_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 def _positive_int_arg(name, default=1):
     return max(_safe_int(request.args.get(name, default), default), 1)
 
@@ -121,16 +127,26 @@ def read_url(board, pid, recommend=0, source_page=None, kind=None, search_type=N
 def _serialize_related_posts(posts):
     rows = []
     for item in posts or []:
+        isimage = _safe_bool(item.get("isimage"))
+        isvideo = _safe_bool(item.get("isvideo"))
+        has_image = _safe_bool(item.get("has_image")) or isimage
+        has_video = _safe_bool(item.get("has_video")) or isvideo
         rows.append(
             {
                 "id": str(item.get("id", "")),
+                "subject": item.get("subject"),
                 "title": item.get("title", ""),
+                "has_image": has_image,
+                "has_video": has_video,
                 "author": item.get("author", "익명"),
                 "author_code": item.get("author_code"),
                 "time": str(item.get("time", "")),
                 "comment_count": _safe_int(item.get("comment_count", 0), 0),
                 "voteup_count": _safe_int(item.get("voteup_count", 0), 0),
                 "source_page": _safe_int(item.get("source_page", 0), 0),
+                "isimage": isimage,
+                "isvideo": isvideo,
+                "isrecommend": _safe_bool(item.get("isrecommend")),
             }
         )
     return rows

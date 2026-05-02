@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_feed_post_bits.html" import feed_status_icon, feed_subject %}
 
 {% block content %}
 <section class="read-shell">
@@ -49,6 +50,7 @@
             <li data-post-id="{{ item.id }}">
                 <a class="feed-item" data-post-id="{{ item.id }}" href="{{ read_url(board, item.id, recommend=recommend, source_page=source_page, kind=kind, search_type=search_type, search_keyword=search_keyword) }}">
                     <div class="feed-title-wrap">
+                        {{ feed_status_icon(item) }}
                         <h2 class="feed-title">{{ item.title|highlight_search(search_keyword) }}</h2>
                         {% if item.comment_count > 0 %}
                         <span class="reply-count">[{{ item.comment_count }}]</span>
@@ -56,6 +58,7 @@
                     </div>
                     <div class="feed-meta-row">
                         <div class="feed-meta-left">
+                            {{ feed_subject(item) }}
                             <span class="author-text">{{ item.author }}{% if item.author_code %}({{ item.author_code }}){% endif %}</span>
                             <span class="sep">|</span>
                             <span>{{ item.time }}</span>
