@@ -55,7 +55,14 @@ python3 -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-개발 중에는 `.env`에서 `MIRROR_ENV=development`로 바꾸면 디버그 모드로 실행됩니다.<br />
+`.env.example`은 운영 배포 기본값이라 그대로 실행하면 `MIRROR_ENV=production`, `MIRROR_HOST=::`, `MIRROR_PORT=6100` 기준으로 뜹니다. 로컬 빠른 시작은 `.env`를 아래처럼 바꿔 주세요.
+
+```dotenv
+MIRROR_ENV=development
+MIRROR_HOST=127.0.0.1
+MIRROR_PORT=8080
+```
+
 운영 환경에서는 `MIRROR_SECRET_KEY`를 반드시 안전한 임의 문자열로 바꿔 주세요.
 
 ### 3. 실행
