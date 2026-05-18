@@ -130,6 +130,75 @@ def test_document_content_helpers_keep_lazy_images_and_drop_ads():
     assert images[0].document_id == "123"
 
 
+def test_document_images_include_video_source_and_poster():
+    api = API.__new__(API)
+    api.session = object()
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="writing_view_box">
+          <video poster="https://dcimg7.dcinside.co.kr/poster.jpg">
+            <source src="https://dcimg7.dcinside.co.kr/movie.mp4" type="video/mp4">
+          </video>
+        </div>
+        """
+    )
+
+    images = api._API__document_images(doc_content, "test", "123")
+
+    assert [image.src for image in images] == [
+        "https://dcimg7.dcinside.co.kr/movie.mp4",
+        "https://dcimg7.dcinside.co.kr/poster.jpg",
+    ]
+
+
+def test_document_images_include_nested_source_data_src():
+    api = API.__new__(API)
+    api.session = object()
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="writing_view_box">
+          <video>
+            <source data-src="https://dcimg7.dcinside.co.kr/lazy-source.mp4" type="video/mp4">
+          </video>
+        </div>
+        """
+    )
+
+    images = api._API__document_images(doc_content, "test", "123")
+
+    assert [image.src for image in images] == ["https://dcimg7.dcinside.co.kr/lazy-source.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_repair_placeholder_images_uses_pc_video_source_when_image_source_missing():
+    api = API.__new__(API)
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="thum-txtin">
+          <p>본문</p>
+          <img src="https://nstatic.dcinside.com/dc/m/img/dccon_loading_nobg200.png"
+               data-gif="https://nstatic.dcinside.com/dc/m/img/m_webp.png"
+               data-fileno="1913158">
+        </div>
+        """
+    )
+
+    async def fake_pc_image_sources(board_id, document_id, kind=None):
+        return []
+
+    async def fake_pc_video_sources(board_id, document_id, kind=None):
+        return ["https://dcimg7.dcinside.co.kr/viewimage.php?id=test&no=mp4"]
+
+    api._API__pc_document_image_sources = fake_pc_image_sources
+    api._API__pc_document_video_sources = fake_pc_video_sources
+
+    repaired = await api._API__repair_placeholder_images_from_pc(doc_content, "idolism", "1201641", kind="minor")
+
+    assert repaired.xpath(".//img") == []
+    assert repaired.xpath(".//video/source/@src") == ["https://dcimg7.dcinside.co.kr/viewimage.php?id=test&no=mp4"]
+    assert repaired.xpath(".//video/@playsinline") == ["playsinline"]
+
+
 @pytest.mark.asyncio
 async def test_replace_poll_iframes_handles_relative_poll_src():
     api = API.__new__(API)

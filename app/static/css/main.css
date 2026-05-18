@@ -764,11 +764,17 @@ a {
     overflow-wrap: break-word;
 }
 
-.article-body img {
+.article-body img,
+.article-body video {
+    display: block;
     max-width: 100%;
     height: auto;
     border-radius: var(--radius-sm);
     margin: 20px 0;
+}
+
+.article-body video {
+    background: #05070b;
 }
 
 .article-body a {

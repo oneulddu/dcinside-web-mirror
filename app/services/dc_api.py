@@ -1393,7 +1393,21 @@ class API:
 
     def __pick_document_image_src(self, el):
         # Some posts (e.g. gif/mp4 lazy media) keep the real URL in data-gif.
-        for key in ("data-gif", "data-original", "src"):
+        for key in ("data-gif", "data-original", "data-src", "src"):
+            src = el.get(key)
+            if src:
+                return src
+        return None
+
+    def __pick_document_video_src(self, el):
+        tag = (getattr(el, "tag", "") or "").lower()
+        if tag == "video":
+            for source in el.xpath(".//source"):
+                for key in ("src", "data-src", "data-original", "data-mp4"):
+                    src = source.get(key)
+                    if src:
+                        return src
+        for key in ("src", "data-src", "data-original", "data-mp4"):
             src = el.get(key)
             if src:
                 return src
@@ -1426,7 +1440,27 @@ class API:
             src = self.__pick_document_image_src(img)
             if src and not self.__is_placeholder_document_image_src(src):
                 sources.append(src)
-        return sources
+        return self.__dedupe_urls(sources)
+
+    def __real_document_video_sources(self, doc_content):
+        sources = []
+        for video in doc_content.xpath(".//video"):
+            src = self.__pick_document_video_src(video)
+            if src and not self.__is_placeholder_document_image_src(src):
+                sources.append(src)
+        for source in doc_content.xpath(".//source[not(ancestor::video)]"):
+            src = self.__pick_document_video_src(source)
+            if src and not self.__is_placeholder_document_image_src(src):
+                sources.append(src)
+        return self.__dedupe_urls(sources)
+
+    def __real_document_video_poster_sources(self, doc_content):
+        sources = []
+        for video in doc_content.xpath(".//video"):
+            poster = video.get("poster")
+            if poster and not self.__is_placeholder_document_image_src(poster):
+                sources.append(poster)
+        return self.__dedupe_urls(sources)
 
     def __has_placeholder_document_images(self, doc_content):
         return any(
@@ -1458,43 +1492,97 @@ class API:
                 return sources
         return []
 
+    async def __pc_document_video_sources(self, board_id, document_id, kind=None):
+        for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
+            try:
+                status, _, text = await self.__request_text("GET", url)
+            except Exception:
+                continue
+            if status >= 400 or not text:
+                continue
+            try:
+                parsed = lxml.html.fromstring(text)
+            except Exception:
+                continue
+            containers = parsed.xpath("//div[contains(@class, 'writing_view_box')]")
+            if not containers:
+                containers = parsed.xpath("//div[@class='thum-txtin']")
+            if not containers:
+                containers = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
+            if not containers:
+                continue
+            sources = self.__real_document_video_sources(containers[0])
+            if sources:
+                return sources
+        return []
+
+    def __document_video_element(self, src):
+        video = lxml.html.Element("video")
+        for attr in ("controls", "autoplay", "loop", "muted", "playsinline"):
+            video.set(attr, attr)
+        video.set("preload", "metadata")
+        source = lxml.html.Element("source")
+        source.set("src", src)
+        source.set("type", "video/mp4")
+        video.append(source)
+        return video
+
     async def __repair_placeholder_images_from_pc(self, doc_content, board_id, document_id, kind=None):
         if not self.__has_placeholder_document_images(doc_content):
             return doc_content
 
         pc_sources = await self.__pc_document_image_sources(board_id, document_id, kind=kind)
-        if not pc_sources:
-            return doc_content
-
         mobile_images = self.__document_image_elements(doc_content)
-        used_sources = set()
 
-        for idx, img in enumerate(mobile_images):
-            current_src = self.__pick_document_image_src(img)
-            if not current_src:
-                continue
-            if not self.__is_placeholder_document_image_src(current_src):
-                used_sources.add(current_src)
-                continue
-            if idx >= len(pc_sources):
-                continue
-            replacement = pc_sources[idx]
-            if replacement:
+        if pc_sources:
+            used_sources = set()
+
+            for idx, img in enumerate(mobile_images):
+                current_src = self.__pick_document_image_src(img)
+                if not current_src:
+                    continue
+                if not self.__is_placeholder_document_image_src(current_src):
+                    used_sources.add(current_src)
+                    continue
+                if idx >= len(pc_sources):
+                    continue
+                replacement = pc_sources[idx]
+                if replacement:
+                    img.set("data-original", replacement)
+                    img.set("src", replacement)
+                    used_sources.add(replacement)
+
+            # If mobile and PC image counts diverge, still fill remaining placeholders in order.
+            remaining_sources = [src for src in pc_sources if src not in used_sources]
+            for img in mobile_images:
+                current_src = self.__pick_document_image_src(img)
+                if not self.__is_placeholder_document_image_src(current_src):
+                    continue
+                if not remaining_sources:
+                    break
+                replacement = remaining_sources.pop(0)
                 img.set("data-original", replacement)
                 img.set("src", replacement)
-                used_sources.add(replacement)
 
-        # If mobile and PC image counts diverge, still fill remaining placeholders in order.
-        remaining_sources = [src for src in pc_sources if src not in used_sources]
-        for img in mobile_images:
+        if not self.__has_placeholder_document_images(doc_content):
+            return doc_content
+
+        pc_video_sources = await self.__pc_document_video_sources(board_id, document_id, kind=kind)
+        if not pc_video_sources:
+            return doc_content
+
+        remaining_videos = list(pc_video_sources)
+        for img in self.__document_image_elements(doc_content):
             current_src = self.__pick_document_image_src(img)
             if not self.__is_placeholder_document_image_src(current_src):
                 continue
-            if not remaining_sources:
+            if not remaining_videos:
                 break
-            replacement = remaining_sources.pop(0)
-            img.set("data-original", replacement)
-            img.set("src", replacement)
+            parent = img.getparent()
+            if parent is None:
+                continue
+            replacement = self.__document_video_element(remaining_videos.pop(0))
+            parent.replace(img, replacement)
 
         return doc_content
 
@@ -1502,16 +1590,23 @@ class API:
         return '\n'.join(i.strip() for i in doc_content.itertext() if i.strip() and not i.strip().startswith("이미지 광고"))
 
     def __document_images(self, doc_content, board_id, document_id):
+        sources = []
+        sources.extend(
+            src
+            for i in doc_content.xpath(".//img")
+            for src in [self.__pick_document_image_src(i)]
+            if src
+            and not self.__is_placeholder_document_image_src(src)
+            and not src.startswith("https://img.iacstatic.co.kr")
+        )
+        sources.extend(self.__real_document_video_sources(doc_content))
+        sources.extend(self.__real_document_video_poster_sources(doc_content))
         return [Image(
             src=src,
             board_id=board_id,
             document_id=document_id,
             session=self.session)
-            for i in doc_content.xpath(".//img")
-            for src in [self.__pick_document_image_src(i)]
-            if src
-            and not self.__is_placeholder_document_image_src(src)
-            and not src.startswith("https://img.iacstatic.co.kr")]
+            for src in self.__dedupe_urls(sources)]
 
     def __normalize_poll_url(self, src):
         parsed = urlparse(src or "")
