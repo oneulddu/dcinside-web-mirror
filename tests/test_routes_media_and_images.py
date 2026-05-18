@@ -157,6 +157,7 @@ def test_media_route_streams_video_range_requests(monkeypatch):
     assert response.data == b"abcdef"
     assert response.headers["Content-Type"] == "video/mp4"
     assert response.headers["Content-Range"] == "bytes 0-5/100"
+    assert captured["headers"]["Accept-Encoding"] == "identity"
     assert captured["headers"]["Range"] == "bytes=0-5"
     assert upstream.closed is True
 

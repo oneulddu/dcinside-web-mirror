@@ -211,20 +211,132 @@ async def test_repair_placeholder_images_uses_pc_video_source_when_image_source_
         """
     )
 
-    async def fake_pc_image_sources(board_id, document_id, kind=None):
-        return []
+    async def fake_pc_media_sources(board_id, document_id, kind=None):
+        return [{"type": "video", "src": "https://dcimg7.dcinside.co.kr/viewimage.php?id=test&no=mp4"}]
 
-    async def fake_pc_video_sources(board_id, document_id, kind=None):
-        return ["https://dcimg7.dcinside.co.kr/viewimage.php?id=test&no=mp4"]
-
-    api._API__pc_document_image_sources = fake_pc_image_sources
-    api._API__pc_document_video_sources = fake_pc_video_sources
+    api._API__pc_document_media_sources = fake_pc_media_sources
 
     repaired = await api._API__repair_placeholder_images_from_pc(doc_content, "idolism", "1201641", kind="minor")
 
     assert repaired.xpath(".//img") == []
     assert repaired.xpath(".//video/source/@src") == ["https://dcimg7.dcinside.co.kr/viewimage.php?id=test&no=mp4"]
     assert repaired.xpath(".//video/@playsinline") == ["playsinline"]
+
+
+@pytest.mark.asyncio
+async def test_repair_placeholder_images_preserves_pc_media_order():
+    api = API.__new__(API)
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="thum-txtin">
+          <p>
+            <img src="https://nstatic.dcinside.com/dc/m/img/m_webp.png" data-fileno="1">
+            <img src="https://nstatic.dcinside.com/dc/m/img/gallview_loading_ori.gif" data-fileno="2">
+          </p>
+        </div>
+        """
+    )
+
+    async def fake_pc_media_sources(board_id, document_id, kind=None):
+        return [
+            {"type": "video", "src": "https://dcimg7.dcinside.co.kr/movie.mp4"},
+            {"type": "image", "src": "https://dcimg7.dcinside.co.kr/photo.jpg"},
+        ]
+
+    api._API__pc_document_media_sources = fake_pc_media_sources
+
+    repaired = await api._API__repair_placeholder_images_from_pc(doc_content, "idolism", "1201641", kind="minor")
+
+    assert repaired.xpath(".//video/source/@src") == ["https://dcimg7.dcinside.co.kr/movie.mp4"]
+    assert repaired.xpath(".//img/@src") == ["https://dcimg7.dcinside.co.kr/photo.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_repair_placeholder_images_consumes_existing_mobile_media_before_placeholder():
+    api = API.__new__(API)
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="thum-txtin">
+          <p>
+            <img src="https://dcimg7.dcinside.co.kr/already.jpg">
+            <img src="https://nstatic.dcinside.com/dc/m/img/m_webp.png" data-fileno="1">
+          </p>
+        </div>
+        """
+    )
+
+    async def fake_pc_media_sources(board_id, document_id, kind=None):
+        return [
+            {"type": "image", "src": "https://dcimg7.dcinside.co.kr/already.jpg"},
+            {"type": "video", "src": "https://dcimg7.dcinside.co.kr/movie.mp4"},
+        ]
+
+    api._API__pc_document_media_sources = fake_pc_media_sources
+
+    repaired = await api._API__repair_placeholder_images_from_pc(doc_content, "idolism", "1201641", kind="minor")
+
+    assert repaired.xpath(".//img/@src") == ["https://dcimg7.dcinside.co.kr/already.jpg"]
+    assert repaired.xpath(".//video/source/@src") == ["https://dcimg7.dcinside.co.kr/movie.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_repair_placeholder_images_consumes_existing_mobile_video_before_placeholder():
+    api = API.__new__(API)
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="thum-txtin">
+          <p>
+            <video>
+              <source src="https://dcimg7.dcinside.co.kr/already.mp4" type="video/mp4">
+            </video>
+            <img src="https://nstatic.dcinside.com/dc/m/img/m_webp.png" data-fileno="1">
+          </p>
+        </div>
+        """
+    )
+
+    async def fake_pc_media_sources(board_id, document_id, kind=None):
+        return [
+            {"type": "video", "src": "https://dcimg7.dcinside.co.kr/already.mp4"},
+            {"type": "image", "src": "https://dcimg7.dcinside.co.kr/photo.jpg"},
+        ]
+
+    api._API__pc_document_media_sources = fake_pc_media_sources
+
+    repaired = await api._API__repair_placeholder_images_from_pc(doc_content, "idolism", "1201641", kind="minor")
+
+    assert repaired.xpath(".//video/source/@src") == ["https://dcimg7.dcinside.co.kr/already.mp4"]
+    assert repaired.xpath(".//img/@src") == ["https://dcimg7.dcinside.co.kr/photo.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_repair_placeholder_images_removes_stale_lazy_attrs_for_image_replacement():
+    api = API.__new__(API)
+    api.session = object()
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="thum-txtin">
+          <img src="https://nstatic.dcinside.com/dc/m/img/gallview_loading_ori.gif"
+               data-gif="https://nstatic.dcinside.com/dc/m/img/m_webp.png"
+               data-src="https://nstatic.dcinside.com/dc/m/img/m_webp.png"
+               data-fileno="1">
+        </div>
+        """
+    )
+
+    async def fake_pc_media_sources(board_id, document_id, kind=None):
+        return [{"type": "image", "src": "https://dcimg7.dcinside.co.kr/photo.jpg"}]
+
+    api._API__pc_document_media_sources = fake_pc_media_sources
+
+    repaired = await api._API__repair_placeholder_images_from_pc(doc_content, "idolism", "1201641", kind="minor")
+    img = repaired.xpath(".//img")[0]
+    images = api._API__document_images(repaired, "idolism", "1201641")
+
+    assert api._API__pick_document_image_src(img) == "https://dcimg7.dcinside.co.kr/photo.jpg"
+    assert img.get("data-gif") is None
+    assert img.get("data-src") is None
+    assert [image.src for image in images] == ["https://dcimg7.dcinside.co.kr/photo.jpg"]
 
 
 @pytest.mark.asyncio
