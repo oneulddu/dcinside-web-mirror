@@ -280,6 +280,36 @@ async def test_repair_placeholder_images_consumes_existing_mobile_media_before_p
 
 
 @pytest.mark.asyncio
+async def test_repair_placeholder_images_consumes_existing_mobile_video_before_placeholder():
+    api = API.__new__(API)
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="thum-txtin">
+          <p>
+            <video>
+              <source src="https://dcimg7.dcinside.co.kr/already.mp4" type="video/mp4">
+            </video>
+            <img src="https://nstatic.dcinside.com/dc/m/img/m_webp.png" data-fileno="1">
+          </p>
+        </div>
+        """
+    )
+
+    async def fake_pc_media_sources(board_id, document_id, kind=None):
+        return [
+            {"type": "video", "src": "https://dcimg7.dcinside.co.kr/already.mp4"},
+            {"type": "image", "src": "https://dcimg7.dcinside.co.kr/photo.jpg"},
+        ]
+
+    api._API__pc_document_media_sources = fake_pc_media_sources
+
+    repaired = await api._API__repair_placeholder_images_from_pc(doc_content, "idolism", "1201641", kind="minor")
+
+    assert repaired.xpath(".//video/source/@src") == ["https://dcimg7.dcinside.co.kr/already.mp4"]
+    assert repaired.xpath(".//img/@src") == ["https://dcimg7.dcinside.co.kr/photo.jpg"]
+
+
+@pytest.mark.asyncio
 async def test_repair_placeholder_images_removes_stale_lazy_attrs_for_image_replacement():
     api = API.__new__(API)
     api.session = object()

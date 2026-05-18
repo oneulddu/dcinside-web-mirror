@@ -1530,33 +1530,42 @@ class API:
         if not pc_media_sources:
             return doc_content
 
-        mobile_images = self.__document_image_elements(doc_content)
+        mobile_images = set(self.__document_image_elements(doc_content))
         remaining_media = list(pc_media_sources)
 
-        for img in mobile_images:
-            current_src = self.__pick_document_image_src(img)
+        for el in doc_content.xpath(".//img | .//video | .//source[not(ancestor::video)]"):
+            tag = (getattr(el, "tag", "") or "").lower()
+            if tag == "img":
+                if el not in mobile_images:
+                    continue
+                current_src = self.__pick_document_image_src(el)
+            else:
+                current_src = self.__pick_document_video_src(el)
+
             if not self.__is_placeholder_document_image_src(current_src):
                 for idx, media in enumerate(remaining_media):
                     if media["src"] == current_src:
                         remaining_media.pop(idx)
                         break
                 continue
+            if tag != "img":
+                continue
             if not remaining_media:
                 break
 
             replacement = remaining_media.pop(0)
             if replacement["type"] == "image":
-                img.set("data-original", replacement["src"])
-                img.set("src", replacement["src"])
+                el.set("data-original", replacement["src"])
+                el.set("src", replacement["src"])
                 for attr in ("data-gif", "data-src", "data-mp4"):
-                    img.attrib.pop(attr, None)
+                    el.attrib.pop(attr, None)
                 continue
 
             if replacement["type"] == "video":
-                parent = img.getparent()
+                parent = el.getparent()
                 if parent is None:
                     continue
-                parent.replace(img, self.__document_video_element(replacement["src"]))
+                parent.replace(el, self.__document_video_element(replacement["src"]))
 
         return doc_content
 
