@@ -8,8 +8,9 @@ from flask import url_for
 HTML_ALLOWED_TAGS = {
     "a", "abbr", "b", "blockquote", "br", "code", "dd", "del", "div", "dl", "dt",
     "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "iframe",
-    "img", "li", "ol", "p", "pre", "s", "span", "strong", "sub", "sup", "table",
+    "img", "li", "ol", "p", "pre", "s", "source", "span", "strong", "sub", "sup", "table",
     "tbody", "td", "th", "thead", "tr", "u", "ul",
+    "video",
 }
 HTML_DROP_TAGS = {"script", "style", "object", "embed", "link", "meta", "base", "form", "input", "button"}
 HTML_GLOBAL_ATTRS = {"class", "title"}
@@ -17,8 +18,10 @@ HTML_TAG_ATTRS = {
     "a": {"href", "target", "rel"},
     "iframe": {"src", "title", "loading", "width", "height", "frameborder", "scrolling", "allow", "allowfullscreen"},
     "img": {"src", "alt", "loading", "decoding", "width", "height"},
+    "source": {"src", "type"},
     "td": {"colspan", "rowspan"},
     "th": {"colspan", "rowspan"},
+    "video": {"src", "poster", "controls", "autoplay", "loop", "muted", "playsinline", "preload", "width", "height"},
 }
 YOUTUBE_IFRAME_HOSTS = {"youtube.com", "www.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com"}
 DC_MOVIE_VIEW_URL = "https://gall.dcinside.com/board/movie/movie_view?no={}"
@@ -154,6 +157,14 @@ def sanitize_html_fragment(raw_html):
                     if not str(value).startswith("/media?"):
                         tag.decompose()
                         break
+                elif name == "video":
+                    if not str(value).startswith("/media?"):
+                        tag.decompose()
+                        break
+                elif name == "source":
+                    if not str(value).startswith("/media?"):
+                        tag.decompose()
+                        break
                 elif name == "iframe":
                     safe_src = normalize_safe_iframe_src(value)
                     if not safe_src:
@@ -165,11 +176,28 @@ def sanitize_html_fragment(raw_html):
                 else:
                     tag.decompose()
                     break
+            elif attr_name == "poster":
+                if name != "video" or not str(value).startswith("/media?"):
+                    del tag.attrs[attr]
     return str(soup)
 
 
 def pick_soup_image_src(tag):
-    for key in ("data-gif", "data-original", "src"):
+    for key in ("data-gif", "data-original", "data-src", "src"):
+        src = tag.get(key)
+        if src:
+            return src
+    return None
+
+
+def pick_soup_media_src(tag):
+    if (tag.name or "").lower() == "video":
+        for source in tag.find_all("source"):
+            for key in ("src", "data-src", "data-original", "data-mp4"):
+                src = source.get(key)
+                if src:
+                    return src
+    for key in ("src", "data-src", "data-original", "data-mp4", "data-gif"):
         src = tag.get(key)
         if src:
             return src
@@ -191,6 +219,29 @@ def rewrite_content_images(soup, images, board, pid, kind):
         img["decoding"] = "async"
         for attr in ("data-original", "data-gif", "srcset"):
             img.attrs.pop(attr, None)
+
+    for source in soup.find_all("source"):
+        original_src = pick_soup_media_src(source)
+        if not original_src or not image_urls[original_src]:
+            source.decompose()
+            continue
+        source["src"] = image_urls[original_src].popleft()
+
+    for video in soup.find_all("video"):
+        original_src = pick_soup_media_src(video)
+        if original_src:
+            if image_urls[original_src]:
+                video["src"] = image_urls[original_src].popleft()
+            else:
+                video.attrs.pop("src", None)
+        poster_src = video.get("poster")
+        if poster_src:
+            if image_urls[poster_src]:
+                video["poster"] = image_urls[poster_src].popleft()
+            else:
+                video.attrs.pop("poster", None)
+        for attr in ("data-original", "data-gif", "data-mp4", "data-src", "srcset"):
+            video.attrs.pop(attr, None)
 
     for iframe in soup.find_all("iframe"):
         movie_id = dc_movie_id_from_iframe_src(iframe.get("src"))

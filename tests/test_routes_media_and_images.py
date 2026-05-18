@@ -362,6 +362,96 @@ def test_rewrite_content_images_rewrites_dc_movie_iframes_to_local_player():
     assert query["kind"] == ["minor"]
 
 
+def test_rewrite_content_images_rewrites_video_sources_to_media_proxy():
+    app = create_app()
+    soup = BeautifulSoup(
+        """
+        <article>
+          <video controls autoplay loop muted playsinline data-src="https://dcimg7.dcinside.co.kr/ignored.mp4">
+            <source src="https://dcimg7.dcinside.co.kr/viewimage.php?id=test&amp;no=mp4" type="video/mp4">
+          </video>
+        </article>
+        """,
+        "html.parser",
+    )
+
+    with app.test_request_context("/read?board=idolism&pid=1201641&kind=minor"):
+        html_sanitizer.rewrite_content_images(
+            soup,
+            ["https://dcimg7.dcinside.co.kr/viewimage.php?id=test&no=mp4"],
+            "idolism",
+            1201641,
+            "minor",
+        )
+
+    source = soup.find("source")
+    query = parse_qs(urlparse(source["src"]).query)
+    assert query["src"] == ["https://dcimg7.dcinside.co.kr/viewimage.php?id=test&no=mp4"]
+    assert query["board"] == ["idolism"]
+    assert query["pid"] == ["1201641"]
+    assert query["kind"] == ["minor"]
+    assert "data-src" not in soup.find("video").attrs
+
+
+def test_rewrite_content_images_rewrites_nested_source_data_src():
+    app = create_app()
+    soup = BeautifulSoup(
+        """
+        <article>
+          <video controls>
+            <source data-src="https://dcimg7.dcinside.co.kr/lazy-source.mp4" type="video/mp4">
+          </video>
+        </article>
+        """,
+        "html.parser",
+    )
+
+    with app.test_request_context("/read?board=idolism&pid=1201641&kind=minor"):
+        html_sanitizer.rewrite_content_images(
+            soup,
+            ["https://dcimg7.dcinside.co.kr/lazy-source.mp4"],
+            "idolism",
+            1201641,
+            "minor",
+        )
+
+    source = soup.find("source")
+    query = parse_qs(urlparse(source["src"]).query)
+    assert query["src"] == ["https://dcimg7.dcinside.co.kr/lazy-source.mp4"]
+
+
+def test_rewrite_content_images_rewrites_lazy_video_src_and_poster():
+    app = create_app()
+    soup = BeautifulSoup(
+        """
+        <article>
+          <video controls data-src="https://dcimg7.dcinside.co.kr/lazy.mp4"
+                 poster="https://dcimg7.dcinside.co.kr/poster.jpg"></video>
+        </article>
+        """,
+        "html.parser",
+    )
+
+    with app.test_request_context("/read?board=idolism&pid=1201641&kind=minor"):
+        html_sanitizer.rewrite_content_images(
+            soup,
+            [
+                "https://dcimg7.dcinside.co.kr/lazy.mp4",
+                "https://dcimg7.dcinside.co.kr/poster.jpg",
+            ],
+            "idolism",
+            1201641,
+            "minor",
+        )
+
+    video = soup.find("video")
+    src_query = parse_qs(urlparse(video["src"]).query)
+    poster_query = parse_qs(urlparse(video["poster"]).query)
+    assert src_query["src"] == ["https://dcimg7.dcinside.co.kr/lazy.mp4"]
+    assert poster_query["src"] == ["https://dcimg7.dcinside.co.kr/poster.jpg"]
+    assert "data-src" not in video.attrs
+
+
 def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
     cleaned = html_sanitizer.sanitize_html_fragment(
         """
@@ -387,6 +477,39 @@ def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
     assert len(images) == 1
     assert images[0]["src"].startswith("/media?")
     assert "onerror" not in images[0].attrs
+
+
+def test_sanitize_html_fragment_keeps_rewritten_video_source():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <video controls autoplay loop muted playsinline data-src="https://dcimg7.dcinside.co.kr/raw.mp4">
+          <source src="/media?src=https%3A%2F%2Fdcimg7.dcinside.co.kr%2Fsafe.mp4" type="video/mp4">
+          <source src="https://dcimg7.dcinside.co.kr/raw.mp4" type="video/mp4">
+        </video>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert soup.video is not None
+    assert soup.video.has_attr("controls")
+    assert "data-src" not in soup.video.attrs
+    sources = soup.find_all("source")
+    assert len(sources) == 1
+    assert sources[0]["src"].startswith("/media?")
+
+
+def test_sanitize_html_fragment_keeps_rewritten_video_src_and_poster():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <video controls src="/media?src=https%3A%2F%2Fdcimg7.dcinside.co.kr%2Fsafe.mp4"
+               poster="/media?src=https%3A%2F%2Fdcimg7.dcinside.co.kr%2Fposter.jpg"></video>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert soup.video is not None
+    assert soup.video["src"].startswith("/media?")
+    assert soup.video["poster"].startswith("/media?")
 
 
 def test_sanitize_html_fragment_rejects_scheme_relative_iframe_src():
