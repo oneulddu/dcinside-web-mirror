@@ -1462,13 +1462,32 @@ class API:
                 sources.append(poster)
         return sources
 
+    def __real_document_media_sources(self, doc_content):
+        sources = []
+        for el in doc_content.xpath(".//img | .//video | .//source[not(ancestor::video)]"):
+            tag = (getattr(el, "tag", "") or "").lower()
+            if tag == "img":
+                src = self.__pick_document_image_src(el)
+                if (
+                    src
+                    and not self.__is_placeholder_document_image_src(src)
+                    and not src.startswith("https://img.iacstatic.co.kr")
+                ):
+                    sources.append({"type": "image", "src": src})
+                continue
+
+            src = self.__pick_document_video_src(el)
+            if src and not self.__is_placeholder_document_image_src(src):
+                sources.append({"type": "video", "src": src})
+        return sources
+
     def __has_placeholder_document_images(self, doc_content):
         return any(
             self.__is_placeholder_document_image_src(self.__pick_document_image_src(img))
             for img in self.__document_image_elements(doc_content)
         )
 
-    async def __pc_document_image_sources(self, board_id, document_id, kind=None):
+    async def __pc_document_media_sources(self, board_id, document_id, kind=None):
         for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
             try:
                 status, _, text = await self.__request_text("GET", url)
@@ -1487,31 +1506,7 @@ class API:
                 containers = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
             if not containers:
                 continue
-            sources = self.__real_document_image_sources(containers[0])
-            if sources:
-                return sources
-        return []
-
-    async def __pc_document_video_sources(self, board_id, document_id, kind=None):
-        for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
-            try:
-                status, _, text = await self.__request_text("GET", url)
-            except Exception:
-                continue
-            if status >= 400 or not text:
-                continue
-            try:
-                parsed = lxml.html.fromstring(text)
-            except Exception:
-                continue
-            containers = parsed.xpath("//div[contains(@class, 'writing_view_box')]")
-            if not containers:
-                containers = parsed.xpath("//div[@class='thum-txtin']")
-            if not containers:
-                containers = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
-            if not containers:
-                continue
-            sources = self.__real_document_video_sources(containers[0])
+            sources = self.__real_document_media_sources(containers[0])
             if sources:
                 return sources
         return []
@@ -1531,58 +1526,37 @@ class API:
         if not self.__has_placeholder_document_images(doc_content):
             return doc_content
 
-        pc_sources = await self.__pc_document_image_sources(board_id, document_id, kind=kind)
+        pc_media_sources = await self.__pc_document_media_sources(board_id, document_id, kind=kind)
+        if not pc_media_sources:
+            return doc_content
+
         mobile_images = self.__document_image_elements(doc_content)
+        remaining_media = list(pc_media_sources)
 
-        if pc_sources:
-            used_sources = set()
-
-            for idx, img in enumerate(mobile_images):
-                current_src = self.__pick_document_image_src(img)
-                if not current_src:
-                    continue
-                if not self.__is_placeholder_document_image_src(current_src):
-                    used_sources.add(current_src)
-                    continue
-                if idx >= len(pc_sources):
-                    continue
-                replacement = pc_sources[idx]
-                if replacement:
-                    img.set("data-original", replacement)
-                    img.set("src", replacement)
-                    used_sources.add(replacement)
-
-            # If mobile and PC image counts diverge, still fill remaining placeholders in order.
-            remaining_sources = [src for src in pc_sources if src not in used_sources]
-            for img in mobile_images:
-                current_src = self.__pick_document_image_src(img)
-                if not self.__is_placeholder_document_image_src(current_src):
-                    continue
-                if not remaining_sources:
-                    break
-                replacement = remaining_sources.pop(0)
-                img.set("data-original", replacement)
-                img.set("src", replacement)
-
-        if not self.__has_placeholder_document_images(doc_content):
-            return doc_content
-
-        pc_video_sources = await self.__pc_document_video_sources(board_id, document_id, kind=kind)
-        if not pc_video_sources:
-            return doc_content
-
-        remaining_videos = list(pc_video_sources)
-        for img in self.__document_image_elements(doc_content):
+        for img in mobile_images:
             current_src = self.__pick_document_image_src(img)
             if not self.__is_placeholder_document_image_src(current_src):
+                for idx, media in enumerate(remaining_media):
+                    if media["src"] == current_src:
+                        remaining_media.pop(idx)
+                        break
                 continue
-            if not remaining_videos:
+            if not remaining_media:
                 break
-            parent = img.getparent()
-            if parent is None:
+
+            replacement = remaining_media.pop(0)
+            if replacement["type"] == "image":
+                img.set("data-original", replacement["src"])
+                img.set("src", replacement["src"])
+                for attr in ("data-gif", "data-src", "data-mp4"):
+                    img.attrib.pop(attr, None)
                 continue
-            replacement = self.__document_video_element(remaining_videos.pop(0))
-            parent.replace(img, replacement)
+
+            if replacement["type"] == "video":
+                parent = img.getparent()
+                if parent is None:
+                    continue
+                parent.replace(img, self.__document_video_element(replacement["src"]))
 
         return doc_content
 
