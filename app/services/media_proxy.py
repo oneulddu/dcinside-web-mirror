@@ -303,6 +303,7 @@ def build_streaming_media_response(upstream, content_type):
 
 def build_media_response(src, board, pid, kind=None, range_header=None):
     headers = {
+        "Accept-Encoding": "identity",
         "User-Agent": PC_USER_AGENT,
         "Referer": build_pc_view_referer(board, pid, kind=kind),
     }
