@@ -169,6 +169,34 @@ def test_document_images_include_nested_source_data_src():
     assert [image.src for image in images] == ["https://dcimg7.dcinside.co.kr/lazy-source.mp4"]
 
 
+def test_document_images_preserve_duplicate_media_sources():
+    api = API.__new__(API)
+    api.session = object()
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="writing_view_box">
+          <img src="https://dcimg7.dcinside.co.kr/repeated.jpg">
+          <img src="https://dcimg7.dcinside.co.kr/repeated.jpg">
+          <video>
+            <source src="https://dcimg7.dcinside.co.kr/repeated.mp4" type="video/mp4">
+          </video>
+          <video>
+            <source src="https://dcimg7.dcinside.co.kr/repeated.mp4" type="video/mp4">
+          </video>
+        </div>
+        """
+    )
+
+    images = api._API__document_images(doc_content, "test", "123")
+
+    assert [image.src for image in images] == [
+        "https://dcimg7.dcinside.co.kr/repeated.jpg",
+        "https://dcimg7.dcinside.co.kr/repeated.jpg",
+        "https://dcimg7.dcinside.co.kr/repeated.mp4",
+        "https://dcimg7.dcinside.co.kr/repeated.mp4",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_repair_placeholder_images_uses_pc_video_source_when_image_source_missing():
     api = API.__new__(API)

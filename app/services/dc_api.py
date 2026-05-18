@@ -1440,7 +1440,7 @@ class API:
             src = self.__pick_document_image_src(img)
             if src and not self.__is_placeholder_document_image_src(src):
                 sources.append(src)
-        return self.__dedupe_urls(sources)
+        return sources
 
     def __real_document_video_sources(self, doc_content):
         sources = []
@@ -1452,7 +1452,7 @@ class API:
             src = self.__pick_document_video_src(source)
             if src and not self.__is_placeholder_document_image_src(src):
                 sources.append(src)
-        return self.__dedupe_urls(sources)
+        return sources
 
     def __real_document_video_poster_sources(self, doc_content):
         sources = []
@@ -1460,7 +1460,7 @@ class API:
             poster = video.get("poster")
             if poster and not self.__is_placeholder_document_image_src(poster):
                 sources.append(poster)
-        return self.__dedupe_urls(sources)
+        return sources
 
     def __has_placeholder_document_images(self, doc_content):
         return any(
@@ -1606,7 +1606,7 @@ class API:
             board_id=board_id,
             document_id=document_id,
             session=self.session)
-            for src in self.__dedupe_urls(sources)]
+            for src in sources]
 
     def __normalize_poll_url(self, src):
         parsed = urlparse(src or "")
