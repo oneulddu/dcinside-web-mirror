@@ -3,7 +3,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from flask import Blueprint, abort, jsonify, make_response, render_template, request, url_for
+from flask import Blueprint, abort, current_app, jsonify, make_response, render_template, request, url_for
 from bs4 import BeautifulSoup, NavigableString
 
 from .services.async_bridge import run_async
@@ -183,6 +183,15 @@ def _current_search_context():
     return search_type, keyword
 
 
+def _media_request_context(default_board="airforce"):
+    board = _normalize_board_id(request.args.get("board") or default_board)
+    pid = _safe_int(request.args.get("pid", 0), 0)
+    if request.args.get("pid") not in (None, "") and pid <= 0:
+        abort(400)
+    kind = _normalize_gallery_kind(request.args.get("kind"))
+    return board, pid, kind
+
+
 def _search_call_kwargs(search_type, search_keyword):
     if not search_keyword:
         return {}
@@ -246,11 +255,13 @@ def index():
             heung_items = search_galleries(heung_q)
             heung_updated_at = time.time()
         except Exception:
+            current_app.logger.exception("Failed to search DCinside galleries")
             heung_error = "갤러리 검색 결과를 가져오지 못했습니다."
     else:
         try:
             heung_items, heung_updated_at = get_heung_galleries()
         except Exception:
+            current_app.logger.exception("Failed to load heung galleries")
             heung_error = "흥한 갤러리 목록을 가져오지 못했습니다."
 
     total_items = len(heung_items)
@@ -336,11 +347,7 @@ def media():
     normalized_src = normalize_media_url_shape(src)
     if not normalized_src:
         abort(400)
-    board = _normalize_board_id(request.args.get("board") or "airforce")
-    pid = _safe_int(request.args.get("pid", 0), 0)
-    if request.args.get("pid") not in (None, "") and pid <= 0:
-        abort(400)
-    kind = _normalize_gallery_kind(request.args.get("kind"))
+    board, pid, kind = _media_request_context()
     return build_media_response(normalized_src, board, pid, kind=kind, range_header=request.headers.get("Range"))
 
 
@@ -349,11 +356,7 @@ def movie():
     movie_no = (request.args.get("no") or "").strip()
     if not movie_no.isdigit():
         abort(400)
-    board = _normalize_board_id(request.args.get("board") or "airforce")
-    pid = _safe_int(request.args.get("pid", 0), 0)
-    if request.args.get("pid") not in (None, "") and pid <= 0:
-        abort(400)
-    kind = _normalize_gallery_kind(request.args.get("kind"))
+    board, pid, kind = _media_request_context()
     return build_movie_response(movie_no, board, pid, kind=kind)
 
 
@@ -438,6 +441,7 @@ def read_related():
                 )
             )
         except Exception:
+            current_app.logger.exception("Failed to fetch related posts")
             return jsonify({"ok": False, "items": [], "error": "related_fetch_failed"}), 502
 
     return jsonify(

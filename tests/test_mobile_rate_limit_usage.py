@@ -1,5 +1,6 @@
 import pytest
 
+from app.services import core
 from app.services.core import _fill_missing_author_code
 from app.services.dc_api import API, DocumentIndex
 
@@ -21,6 +22,60 @@ async def test_fill_missing_author_code_skips_mobile_source_rows():
 
     assert result is row
     assert row["author_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_fill_missing_author_code_does_not_cache_exceptions():
+    core._AUTHOR_CODE_CACHE.clear()
+
+    class FailingAPI:
+        def __init__(self):
+            self.calls = 0
+
+        async def document(self, *args, **kwargs):
+            self.calls += 1
+            raise RuntimeError("temporary upstream failure")
+
+    api = FailingAPI()
+    row = {
+        "id": "123",
+        "author": "익명",
+        "author_code": None,
+        "is_mobile_source": False,
+    }
+
+    await _fill_missing_author_code(api, "test", None, dict(row))
+    await _fill_missing_author_code(api, "test", None, dict(row))
+
+    assert api.calls == 2
+    core._AUTHOR_CODE_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_fill_missing_author_code_does_not_cache_missing_document():
+    core._AUTHOR_CODE_CACHE.clear()
+
+    class MissingAPI:
+        def __init__(self):
+            self.calls = 0
+
+        async def document(self, *args, **kwargs):
+            self.calls += 1
+            return None
+
+    api = MissingAPI()
+    row = {
+        "id": "123",
+        "author": "익명",
+        "author_code": None,
+        "is_mobile_source": False,
+    }
+
+    await _fill_missing_author_code(api, "test", None, dict(row))
+    await _fill_missing_author_code(api, "test", None, dict(row))
+
+    assert api.calls == 2
+    core._AUTHOR_CODE_CACHE.clear()
 
 
 def test_document_index_tracks_mobile_source_flag():

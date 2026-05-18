@@ -2,11 +2,14 @@ import ipaddress
 import os
 import re
 import socket
+import threading
+import time
 from html import escape
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 import requests
+from requests.adapters import HTTPAdapter
 from flask import Response, stream_with_context, url_for
 
 
@@ -28,6 +31,9 @@ HTTP_TIMEOUT = _env_int("MIRROR_HTTP_TIMEOUT", 20)
 MEDIA_CACHE_MAX_AGE = _env_int("MIRROR_MEDIA_CACHE_MAX_AGE", 86400)
 MEDIA_MAX_BYTES = _env_int("MIRROR_MEDIA_MAX_BYTES", 25 * 1024 * 1024)
 MEDIA_REDIRECT_LIMIT = _env_int("MIRROR_MEDIA_REDIRECT_LIMIT", 3)
+MEDIA_DNS_CACHE_TTL = max(_env_int("MIRROR_MEDIA_DNS_CACHE_TTL", 30), 0)
+MEDIA_DNS_CACHE_MAX_ITEMS = max(_env_int("MIRROR_MEDIA_DNS_CACHE_MAX_ITEMS", 512), 0)
+MEDIA_HTTP_POOL_MAXSIZE = max(_env_int("MIRROR_MEDIA_HTTP_POOL_MAXSIZE", 16), 1)
 MEDIA_ALLOWED_HOST_SUFFIXES = tuple(
     suffix.strip().lower().lstrip(".")
     for suffix in os.getenv("MIRROR_MEDIA_ALLOWED_HOST_SUFFIXES", "dcinside.com,dcinside.co.kr").split(",")
@@ -35,6 +41,34 @@ MEDIA_ALLOWED_HOST_SUFFIXES = tuple(
 )
 PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 MOBILE_USER_AGENT = "Mozilla/5.0 (Linux; Android 7.0; SM-G892A Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/67.0.3396.87 Mobile Safari/537.36"
+_ORIGINAL_REQUESTS_GET = requests.get
+_MEDIA_SESSION_LOCAL = threading.local()
+_PUBLIC_HOST_CACHE = {}
+_PUBLIC_HOST_CACHE_LOCK = threading.Lock()
+
+
+def _media_http_session():
+    session = getattr(_MEDIA_SESSION_LOCAL, "session", None)
+    if session is not None:
+        return session
+
+    session = requests.Session()
+    adapter = HTTPAdapter(pool_connections=MEDIA_HTTP_POOL_MAXSIZE, pool_maxsize=MEDIA_HTTP_POOL_MAXSIZE)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    _MEDIA_SESSION_LOCAL.session = session
+    return session
+
+
+def _http_get(url, **kwargs):
+    if requests.get is not _ORIGINAL_REQUESTS_GET:
+        return requests.get(url, **kwargs)
+    session = _media_http_session()
+    try:
+        session.cookies.clear()
+        return session.get(url, **kwargs)
+    finally:
+        session.cookies.clear()
 
 
 def build_pc_view_referer(board, pid, kind=None):
@@ -67,7 +101,7 @@ def is_allowed_media_host(hostname):
     return any(host == suffix or host.endswith(f".{suffix}") for suffix in MEDIA_ALLOWED_HOST_SUFFIXES)
 
 
-def is_public_hostname(hostname):
+def _resolve_public_hostname(hostname):
     try:
         infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
     except socket.gaierror:
@@ -83,6 +117,54 @@ def is_public_hostname(hostname):
         if not ip.is_global:
             return False
     return True
+
+
+def _prune_public_host_cache_locked(now):
+    expired_keys = [
+        key
+        for key, entry in _PUBLIC_HOST_CACHE.items()
+        if float(entry.get("expires_at", 0.0) or 0.0) <= now
+    ]
+    for key in expired_keys:
+        _PUBLIC_HOST_CACHE.pop(key, None)
+
+    overflow = len(_PUBLIC_HOST_CACHE) - MEDIA_DNS_CACHE_MAX_ITEMS
+    if overflow <= 0:
+        return
+
+    oldest_keys = sorted(
+        _PUBLIC_HOST_CACHE,
+        key=lambda key: float(_PUBLIC_HOST_CACHE[key].get("expires_at", 0.0) or 0.0),
+    )[:overflow]
+    for key in oldest_keys:
+        _PUBLIC_HOST_CACHE.pop(key, None)
+
+
+def is_public_hostname(hostname):
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    if MEDIA_DNS_CACHE_TTL <= 0 or MEDIA_DNS_CACHE_MAX_ITEMS <= 0:
+        return _resolve_public_hostname(host)
+
+    now = time.time()
+    with _PUBLIC_HOST_CACHE_LOCK:
+        _prune_public_host_cache_locked(now)
+        cached = _PUBLIC_HOST_CACHE.get(host)
+        if cached and cached["expires_at"] > now:
+            return bool(cached["value"])
+
+    result = _resolve_public_hostname(host)
+    # Public results are intentionally not cached: media URL validation is part
+    # of the SSRF/DNS-rebinding boundary, so each allowed request must see the
+    # current DNS answer. Cache only non-public failures briefly to reduce
+    # repeated bad lookups without weakening the allow path.
+    if not result:
+        with _PUBLIC_HOST_CACHE_LOCK:
+            _prune_public_host_cache_locked(now)
+            _PUBLIC_HOST_CACHE[host] = {"value": False, "expires_at": now + MEDIA_DNS_CACHE_TTL}
+            _prune_public_host_cache_locked(now)
+    return result
 
 
 def _parse_media_url(raw_url, base_url=None):
@@ -131,7 +213,7 @@ def fetch_media_response(src, headers, cookies):
 
     for _ in range(MEDIA_REDIRECT_LIMIT + 1):
         try:
-            upstream = requests.get(
+            upstream = _http_get(
                 url,
                 headers=headers,
                 cookies=cookies,
@@ -291,7 +373,7 @@ def fetch_movie_media(movie_no, board, pid, kind=None):
         return None
     for url, headers in movie_player_candidates(movie_no, board, pid, kind=kind):
         try:
-            response = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT)
+            response = _http_get(url, headers=headers, timeout=HTTP_TIMEOUT)
         except requests.RequestException:
             continue
         if response.status_code >= 400 or not response.text:
