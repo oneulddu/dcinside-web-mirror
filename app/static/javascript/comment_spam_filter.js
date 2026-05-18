@@ -49,12 +49,15 @@
     return false;
   };
 
-  const getCommentText = (li) => {
-    const textNode = li.querySelector(".comment-main p");
-    return textNode ? textNode.innerText : "";
+  const getCommentInfo = (li) => {
+    const main = li.querySelector(".comment-main");
+    const textNode = main ? main.querySelector("p") : null;
+    return {
+      element: li,
+      text: textNode ? textNode.textContent : "",
+      hasDccon: !!(main && main.querySelector("img.dccon"))
+    };
   };
-
-  const isDcconComment = (li) => !!li.querySelector(".comment-main img.dccon");
 
   const isRepeatedTextSpam = (text, count) =>
     Boolean(text) && count >= getRepeatThreshold(text);
@@ -66,12 +69,12 @@
       return;
     }
 
-    const items = Array.from(list.querySelectorAll(":scope > li"));
-    if (!items.length) {
+    const comments = Array.from(list.querySelectorAll(":scope > li")).map(getCommentInfo);
+    if (!comments.length) {
       return;
     }
 
-    const normalized = items.map((li) => normalizeText(getCommentText(li)));
+    const normalized = comments.map((comment) => normalizeText(comment.text));
     const counts = normalized.reduce((acc, text) => {
       if (!text) {
         return acc;
@@ -82,14 +85,14 @@
 
     const normalizedDeletedText = normalizeText(DELETED_TEXT);
     const hidden = [];
-    items.forEach((li, idx) => {
-      const raw = getCommentText(li);
+    comments.forEach((comment, idx) => {
+      const raw = comment.text;
       const norm = normalized[idx];
       const deleted = norm === normalizedDeletedText;
       const repeated = isRepeatedTextSpam(norm, counts[norm] || 0);
       const patternSpam = raw && hasPatternRepeat(raw);
-      if ((repeated || patternSpam || deleted) && !isDcconComment(li)) {
-        hidden.push(li);
+      if ((repeated || patternSpam || deleted) && !comment.hasDccon) {
+        hidden.push(comment.element);
       }
     });
 

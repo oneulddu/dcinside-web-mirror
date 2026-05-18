@@ -189,6 +189,121 @@ def test_media_route_rejects_non_dcinside_source_before_fetch(monkeypatch):
     assert response.status_code == 400
 
 
+def test_public_hostname_cache_does_not_cache_public_results(monkeypatch):
+    media_proxy._PUBLIC_HOST_CACHE.clear()
+    monkeypatch.setattr(media_proxy, "MEDIA_DNS_CACHE_TTL", 30)
+    monkeypatch.setattr(media_proxy, "MEDIA_DNS_CACHE_MAX_ITEMS", 10)
+    calls = []
+
+    def fake_resolve(hostname):
+        calls.append(hostname)
+        return True
+
+    monkeypatch.setattr(media_proxy, "_resolve_public_hostname", fake_resolve)
+
+    assert media_proxy.is_public_hostname("IMAGES.DCINSIDE.COM.") is True
+    assert media_proxy.is_public_hostname("images.dcinside.com") is True
+    assert calls == ["images.dcinside.com", "images.dcinside.com"]
+    assert media_proxy._PUBLIC_HOST_CACHE == {}
+
+
+def test_public_hostname_cache_reuses_short_lived_non_public_result(monkeypatch):
+    media_proxy._PUBLIC_HOST_CACHE.clear()
+    monkeypatch.setattr(media_proxy, "MEDIA_DNS_CACHE_TTL", 30)
+    monkeypatch.setattr(media_proxy, "MEDIA_DNS_CACHE_MAX_ITEMS", 10)
+    calls = []
+
+    def fake_resolve(hostname):
+        calls.append(hostname)
+        return False
+
+    monkeypatch.setattr(media_proxy, "_resolve_public_hostname", fake_resolve)
+
+    assert media_proxy.is_public_hostname("IMAGES.DCINSIDE.COM.") is False
+    assert media_proxy.is_public_hostname("images.dcinside.com") is False
+    assert calls == ["images.dcinside.com"]
+    media_proxy._PUBLIC_HOST_CACHE.clear()
+
+
+def test_public_hostname_cache_expires_non_public_result(monkeypatch):
+    media_proxy._PUBLIC_HOST_CACHE.clear()
+    monkeypatch.setattr(media_proxy, "MEDIA_DNS_CACHE_TTL", 5)
+    monkeypatch.setattr(media_proxy, "MEDIA_DNS_CACHE_MAX_ITEMS", 10)
+    calls = []
+    now = [1000.0]
+
+    def fake_resolve(hostname):
+        calls.append(hostname)
+        return False
+
+    monkeypatch.setattr(media_proxy, "_resolve_public_hostname", fake_resolve)
+    monkeypatch.setattr(media_proxy.time, "time", lambda: now[0])
+
+    assert media_proxy.is_public_hostname("images.dcinside.com") is False
+    now[0] += 6
+    assert media_proxy.is_public_hostname("images.dcinside.com") is False
+
+    assert calls == ["images.dcinside.com", "images.dcinside.com"]
+    media_proxy._PUBLIC_HOST_CACHE.clear()
+
+
+def test_public_hostname_cache_prunes_to_max_items(monkeypatch):
+    media_proxy._PUBLIC_HOST_CACHE.clear()
+    monkeypatch.setattr(media_proxy, "MEDIA_DNS_CACHE_TTL", 30)
+    monkeypatch.setattr(media_proxy, "MEDIA_DNS_CACHE_MAX_ITEMS", 2)
+
+    def fake_resolve(hostname):
+        return False
+
+    monkeypatch.setattr(media_proxy, "_resolve_public_hostname", fake_resolve)
+
+    assert media_proxy.is_public_hostname("a.dcinside.com") is False
+    assert media_proxy.is_public_hostname("b.dcinside.com") is False
+    assert media_proxy.is_public_hostname("c.dcinside.com") is False
+
+    assert len(media_proxy._PUBLIC_HOST_CACHE) == 2
+    assert "c.dcinside.com" in media_proxy._PUBLIC_HOST_CACHE
+    media_proxy._PUBLIC_HOST_CACHE.clear()
+
+
+def test_media_http_session_clears_upstream_cookie_state(monkeypatch):
+    if hasattr(media_proxy._MEDIA_SESSION_LOCAL, "session"):
+        delattr(media_proxy._MEDIA_SESSION_LOCAL, "session")
+
+    class FakeCookies:
+        def __init__(self):
+            self.values = {"stale": "1"}
+            self.clear_count = 0
+
+        def clear(self):
+            self.clear_count += 1
+            self.values.clear()
+
+    class FakeSession:
+        def __init__(self):
+            self.cookies = FakeCookies()
+            self.sent_cookie_state = None
+
+        def mount(self, *args, **kwargs):
+            pass
+
+        def get(self, *args, **kwargs):
+            self.sent_cookie_state = dict(self.cookies.values)
+            self.cookies.values["upstream"] = "set-cookie"
+            return "ok"
+
+    fake_session = FakeSession()
+    monkeypatch.setattr(media_proxy.requests, "Session", lambda: fake_session)
+
+    assert media_proxy._http_get("https://images.dcinside.com/test.jpg") == "ok"
+    assert fake_session.sent_cookie_state == {}
+    assert fake_session.cookies.values == {}
+    assert fake_session.cookies.clear_count == 2
+
+    if hasattr(media_proxy._MEDIA_SESSION_LOCAL, "session"):
+        delattr(media_proxy._MEDIA_SESSION_LOCAL, "session")
+
+
 def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
     app = create_app()
     soup = BeautifulSoup(
@@ -702,11 +817,11 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
 
     assert "function appendItems(" in script
     assert "[data-related-loader-status='1'], .empty-row" in script
-    assert "getRenderedPostIds(list)" in script
+    assert "getRenderedPostState(list)" in script
     assert "renderedIds[postId]" in script
-    assert "list.appendChild(createItemNode" in script
+    assert "context.list.appendChild(createItemNode" in script
     assert "clearChildren" not in script
-    assert "function getLastRenderedPostId(" in script
+    assert "lastPostId" in script
     assert 'params.set("after_pid", afterPid)' in script
     assert "function responseHasMore(" in script
     assert "has_more" in script

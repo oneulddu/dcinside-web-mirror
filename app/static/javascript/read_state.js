@@ -5,6 +5,7 @@
     var THEME_STORAGE_KEY = "mirror_theme_v1";
     var MAX_ENTRIES = 1500;
     var DEFAULT_THEME = "dark";
+    var readStore = null;
     var THEME_VARIABLES = {
         dark: {
             "--page-bg": "#09090b",
@@ -191,9 +192,10 @@
         if (!key) {
             return;
         }
-        var store = loadStore();
+        var store = readStore || loadStore();
         store[key] = Date.now();
-        saveStore(pruneStore(store));
+        readStore = pruneStore(store);
+        saveStore(readStore);
     }
 
     function markCurrentRead() {
@@ -204,9 +206,9 @@
         markRead(toReadKey(params.get("board"), params.get("pid")));
     }
 
-    function applyReadState(root) {
+    function applyReadState(root, store) {
         var scope = root || document;
-        var store = loadStore();
+        var currentStore = store || readStore || loadStore();
         var links = scope.querySelectorAll("a.feed-item[href*=\"/read?\"]");
         var i;
         for (i = 0; i < links.length; i += 1) {
@@ -215,7 +217,7 @@
             if (!key) {
                 continue;
             }
-            link.classList.toggle("is-read", !!store[key]);
+            link.classList.toggle("is-read", !!currentStore[key]);
         }
     }
 
@@ -235,7 +237,12 @@
     }
 
     function wireDynamicApply() {
+        var relatedList = document.getElementById("related-list");
+        if (!relatedList) {
+            return;
+        }
         var observer = new MutationObserver(function (mutations) {
+            readStore = loadStore();
             var i;
             for (i = 0; i < mutations.length; i += 1) {
                 var m = mutations[i];
@@ -246,19 +253,20 @@
                 for (j = 0; j < m.addedNodes.length; j += 1) {
                     var node = m.addedNodes[j];
                     if (node && node.nodeType === 1) {
-                        applyReadState(node);
+                        applyReadState(node, readStore);
                     }
                 }
             }
         });
-        observer.observe(document.body, { childList: true, subtree: true });
+        observer.observe(relatedList, { childList: true });
     }
 
     function boot() {
         applyTheme(loadTheme(), false);
         wireThemeToggle();
+        readStore = loadStore();
         markCurrentRead();
-        applyReadState(document);
+        applyReadState(document, readStore);
         wireClickMarking();
         wireDynamicApply();
     }

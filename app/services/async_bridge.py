@@ -22,6 +22,9 @@ async def _await_coro(coro):
     return await coro
 
 
+ASYNC_TO_SYNC_RUNNER = async_to_sync(_await_coro) if async_to_sync is not None else None
+
+
 def _run_coro_in_new_loop(coro):
     return asyncio.run(coro)
 
@@ -37,7 +40,7 @@ def run_async(coro):
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        if async_to_sync is not None:
-            return async_to_sync(_await_coro)(coro)
+        if ASYNC_TO_SYNC_RUNNER is not None:
+            return ASYNC_TO_SYNC_RUNNER(coro)
         return _run_coro_in_new_loop(coro)
     return ASYNC_FALLBACK_EXECUTOR.submit(_run_coro_in_new_loop, coro).result()
