@@ -7,7 +7,7 @@ from flask import Blueprint, abort, current_app, jsonify, make_response, render_
 from bs4 import BeautifulSoup, NavigableString
 
 from .services.async_bridge import run_async
-from .services.core import async_index, async_read, async_related_after_position
+from .services.core import async_index_with_head_categories, async_read, async_related_after_position
 from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import rewrite_content_images, sanitize_html_fragment
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
@@ -78,6 +78,17 @@ def _normalize_nav_mode(value):
     abort(400)
 
 
+def _normalize_head_id(value):
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if not re.fullmatch(r"\d{1,8}", raw):
+        abort(400)
+    return raw
+
+
 def _query_kind_for_url(kind):
     return _normalize_gallery_kind(kind, abort_on_invalid=False)
 
@@ -96,7 +107,7 @@ def _add_search_params(params, search_type=None, search_keyword=None):
     params["serval"] = keyword
 
 
-def board_url(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None):
+def board_url(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None):
     params = {
         "board": board,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
@@ -105,11 +116,14 @@ def board_url(board, recommend=0, page=1, kind=None, nav=None, search_type=None,
     _add_kind_param(params, kind)
     if nav:
         params["nav"] = nav
+    normalized_head_id = _normalize_head_id(head_id)
+    if normalized_head_id is not None:
+        params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword)
     return url_for("main.board", **params)
 
 
-def read_url(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None):
+def read_url(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None):
     params = {
         "board": board,
         "pid": pid,
@@ -120,6 +134,9 @@ def read_url(board, pid, recommend=0, source_page=None, kind=None, search_type=N
     if source_page_int > 0:
         params["source_page"] = source_page_int
     _add_kind_param(params, kind)
+    normalized_head_id = _normalize_head_id(head_id)
+    if normalized_head_id is not None:
+        params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword)
     return url_for("main.read", **params)
 
@@ -199,6 +216,18 @@ def _search_call_kwargs(search_type, search_keyword):
         "search_type": search_type,
         "search_keyword": search_keyword,
     }
+
+
+async def _load_board_payload(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None):
+    return await async_index_with_head_categories(
+        page,
+        board,
+        recommend,
+        kind=kind,
+        search_type=search_type,
+        search_keyword=search_keyword,
+        head_id=head_id,
+    )
 
 
 def _nav_tab_for_gallery(board, recommend=0, nav_mode=None):
@@ -312,14 +341,17 @@ def board():
     recommend = _normalize_recommend()
     kind = _normalize_gallery_kind(request.args.get("kind"))
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
+    head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
-    ret = run_async(
-        async_index(
+    ret, head_categories = run_async(
+        _load_board_payload(
             page,
             board,
             recommend,
             kind=kind,
-            **_search_call_kwargs(search_type, search_keyword),
+            search_type=search_type,
+            search_keyword=search_keyword,
+            head_id=head_id,
         )
     )
 
@@ -335,6 +367,8 @@ def board():
             nav_mode=nav_mode,
             search_type=search_type,
             search_keyword=search_keyword,
+            head_id=head_id,
+            head_categories=head_categories,
         )
     )
     touch_recent_gallery(response, board, kind, recommend=recommend)
@@ -369,6 +403,7 @@ def read():
     kind = _normalize_gallery_kind(request.args.get("kind"))
     recommend = _normalize_recommend()
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
+    head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
     data, comments, images = run_async(
         async_read(
@@ -402,6 +437,7 @@ def read():
             kind=kind,
             recommend=recommend,
             source_page=source_page,
+            head_id=head_id,
             search_type=search_type,
             search_keyword=search_keyword,
             embedded_related_posts=embedded_related_posts,
@@ -422,6 +458,7 @@ def read_related():
     limit = max(1, min(limit, 30))
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     after_pid = max(_safe_int(request.args.get("after_pid", 0), 0), 0)
+    head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
 
     posts = []
@@ -437,6 +474,7 @@ def read_related():
                     limit=limit,
                     source_page=source_page,
                     recommend=recommend,
+                    head_id=head_id,
                     **_search_call_kwargs(search_type, search_keyword),
                 )
             )

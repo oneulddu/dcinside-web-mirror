@@ -592,7 +592,7 @@ def test_movie_route_renders_same_origin_video_player(monkeypatch):
 
 
 def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
-    async def fake_async_index(page, board, recommend, kind=None):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [
             {
                 "id": "123",
@@ -604,9 +604,9 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
                 "time": "-",
                 "voteup_count": 0,
             }
-        ]
+        ], []
 
-    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
 
     normal_response = app.test_client().get("/board?board=test&recommend=0&page=3")
@@ -624,8 +624,49 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     assert recommend_query["recommend"] == ["1"]
 
 
+def test_board_head_category_tabs_filter_and_preserve_links(monkeypatch):
+    seen = {}
+
+    async def fake_board_payload(page, board, recommend, kind=None, head_id=None, **kwargs):
+        seen["head_id"] = head_id
+        return [
+            {
+                "id": "123",
+                "title": "정보 글",
+                "comment_count": 0,
+                "subject": "📪정보",
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+            }
+        ], [
+            {"head_id": None, "label": "전체", "active": head_id is None},
+            {"head_id": "0", "label": "일반", "active": head_id == "0"},
+            {"head_id": "10", "label": "📪정보", "active": head_id == "10"},
+        ]
+
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
+    app = create_app()
+
+    response = app.test_client().get("/board?board=test&headid=10")
+    soup = BeautifulSoup(response.data, "html.parser")
+    active_tab = soup.select_one(".board-category-tab.active")
+    read_query = parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)
+    main_tab_queries = [
+        parse_qs(urlparse(link["href"]).query)
+        for link in soup.select(".main-tabs a.tab-item")[:2]
+    ]
+
+    assert seen["head_id"] == "10"
+    assert active_tab.get_text(strip=True) == "📪정보"
+    assert read_query["headid"] == ["10"]
+    assert main_tab_queries[0]["headid"] == ["10"]
+    assert main_tab_queries[1]["headid"] == ["10"]
+
+
 def test_board_renders_image_icon_before_image_post_title(monkeypatch):
-    async def fake_async_index(page, board, recommend, kind=None):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [
             {
                 "id": "123",
@@ -701,9 +742,9 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
                 "time": "-",
                 "voteup_count": 0,
             },
-        ]
+        ], []
 
-    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
 
     response = app.test_client().get("/board?board=test")
@@ -834,6 +875,8 @@ def test_read_renders_embedded_related_post_icons_and_subject(monkeypatch):
 
 
 def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
+    seen = {}
+
     async def fake_async_related_after_position(
         pid,
         after_pid,
@@ -842,8 +885,10 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
         limit=12,
         source_page=0,
         recommend=0,
+        head_id=None,
         **kwargs,
     ):
+        seen["head_id"] = head_id
         return (
             [
                 {
@@ -883,10 +928,11 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     monkeypatch.setattr(routes, "async_related_after_position", fake_async_related_after_position)
     app = create_app()
 
-    response = app.test_client().get("/read/related?board=test&pid=100")
+    response = app.test_client().get("/read/related?board=test&pid=100&headid=10")
     payload = response.get_json()
 
     assert response.status_code == 200
+    assert seen["head_id"] == "10"
     assert payload["has_more"] is True
     assert payload["items"][0]["subject"] == "일반"
     assert payload["items"][0]["has_image"] is False
@@ -900,13 +946,13 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
 
 
 def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
-    async def fake_async_index(page, board, recommend, kind=None):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         assert page == 1
         assert board == "test"
         assert recommend == 0
-        return []
+        return [], []
 
-    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
 
     response = app.test_client().get("/board?board=test&recommend=2&page=0")
@@ -915,10 +961,10 @@ def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
 
 
 def test_board_rejects_invalid_board_and_kind(monkeypatch):
-    async def fail_async_index(*args, **kwargs):
+    async def fail_board_payload(*args, **kwargs):
         raise AssertionError("invalid board input must be rejected before upstream fetch")
 
-    monkeypatch.setattr(routes, "async_index", fail_async_index)
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fail_board_payload)
     app = create_app()
     client = app.test_client()
 
@@ -947,6 +993,9 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "clearChildren" not in script
     assert "lastPostId" in script
     assert 'params.set("after_pid", afterPid)' in script
+    assert "section.dataset.headId" in script
+    assert 'params.set("headid", headId)' in script
+    assert 'href += "&headid="' in script
     assert "function responseHasMore(" in script
     assert "has_more" in script
     assert "function createFeedStatusIcon(" in script
@@ -1047,10 +1096,10 @@ def _encode_recent_cookie(rows):
 
 
 def test_recent_gallery_preserves_recommend_context_from_board(monkeypatch):
-    async def fake_async_index(page, board, recommend, kind=None):
-        return []
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        return [], []
 
-    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
     client = app.test_client()
 
@@ -1067,10 +1116,10 @@ def test_recent_gallery_preserves_recommend_context_from_board(monkeypatch):
 
 
 def test_recent_gallery_dedupes_by_recommend_context(monkeypatch):
-    async def fake_async_index(page, board, recommend, kind=None):
-        return []
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        return [], []
 
-    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
     client = app.test_client()
 
@@ -1167,10 +1216,10 @@ def test_recent_server_cache_does_not_share_by_ip_and_user_agent():
 
 
 def test_touch_recent_gallery_sets_private_fallback_key_cookie(monkeypatch):
-    async def fake_async_index(page, board, recommend, kind=None):
-        return []
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        return [], []
 
-    monkeypatch.setattr(routes, "async_index", fake_async_index)
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
     response = app.test_client().get("/board?board=test")
 

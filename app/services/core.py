@@ -174,6 +174,7 @@ async def _fetch_board_page(
     page_size=RELATED_PAGE_FETCH_SIZE,
     search_type=None,
     search_keyword=None,
+    head_id=None,
 ):
     cache_key = (
         board,
@@ -183,6 +184,7 @@ async def _fetch_board_page(
         _safe_int(page_size, RELATED_PAGE_FETCH_SIZE),
         (search_type or "").strip(),
         (search_keyword or "").strip(),
+        "" if head_id is None else str(head_id).strip(),
     )
     cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
@@ -198,6 +200,7 @@ async def _fetch_board_page(
         max_scan_pages=1,
         search_type=search_type,
         search_keyword=search_keyword,
+        head_id=head_id,
     ):
         row = _index_item_to_dict(item)
         row["source_page"] = _safe_int(page, 1)
@@ -212,6 +215,48 @@ async def _fetch_board_page(
             BOARD_PAGE_CACHE_MAX_ITEMS,
         )
     return posts
+
+
+def _normalize_head_category(row):
+    if not row:
+        return None
+    head_id = row.get("head_id")
+    if head_id is not None:
+        head_id = str(head_id).strip()
+        if not head_id:
+            head_id = None
+    return {
+        "head_id": head_id,
+        "label": row.get("label") or "전체",
+        "active": bool(row.get("active")),
+    }
+
+
+def _normalize_head_categories(rows, head_id=None):
+    categories = []
+    seen = set()
+    for row in rows or []:
+        category = _normalize_head_category(row)
+        if not category:
+            continue
+        key = "" if category["head_id"] is None else category["head_id"]
+        if key in seen:
+            continue
+        seen.add(key)
+        categories.append(category)
+
+    if not categories:
+        return []
+
+    current_key = "" if head_id is None else str(head_id).strip()
+    has_active = False
+    for category in categories:
+        key = "" if category["head_id"] is None else category["head_id"]
+        category["active"] = key == current_key
+        has_active = has_active or category["active"]
+    if not has_active:
+        categories[0]["active"] = True
+    return categories
 
 
 async def _fill_missing_author_code(api, board, kind, row, recommend=0):
@@ -343,6 +388,7 @@ async def async_index(
     max_scan_pages=None,
     search_type=None,
     search_keyword=None,
+    head_id=None,
 ):
     if limit is None:
         fetch_num = MAX_PAGE
@@ -374,11 +420,63 @@ async def async_index(
             max_scan_pages=scan_limit,
             search_type=search_type,
             search_keyword=search_keyword,
+            head_id=head_id,
         ):
             tdata = _index_item_to_dict(item)
             data.append(tdata)
         await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
     return data
+
+
+async def async_index_with_head_categories(
+    page,
+    board,
+    recommend,
+    kind=None,
+    document_id_upper_limit=None,
+    document_id_lower_limit=None,
+    limit=None,
+    max_scan_pages=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+):
+    if limit is None:
+        fetch_num = MAX_PAGE
+    else:
+        try:
+            fetch_num = max(int(limit), 0)
+        except (TypeError, ValueError):
+            fetch_num = MAX_PAGE
+    if fetch_num == 0:
+        return [], []
+    if max_scan_pages is None:
+        scan_limit = None
+    else:
+        try:
+            scan_limit = max(int(max_scan_pages), 0)
+        except (TypeError, ValueError):
+            scan_limit = None
+
+    data = []
+    async with dc_api.API() as api:
+        async for item in api.board(
+            board_id=board,
+            num=fetch_num,
+            start_page=page,
+            recommend=recommend,
+            kind=kind,
+            document_id_upper_limit=document_id_upper_limit,
+            document_id_lower_limit=document_id_lower_limit,
+            max_scan_pages=scan_limit,
+            search_type=search_type,
+            search_keyword=search_keyword,
+            head_id=head_id,
+        ):
+            data.append(_index_item_to_dict(item))
+        await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
+        categories = _normalize_head_categories(getattr(api, "last_board_headtexts", []), head_id=head_id)
+    return data, categories
 
 
 async def _related_by_position_with_api(
@@ -393,6 +491,7 @@ async def _related_by_position_with_api(
     recommend=0,
     search_type=None,
     search_keyword=None,
+    head_id=None,
 ):
     target_id = _safe_int(api_id, 0)
     fetch_limit = max(_safe_int(limit, RELATED_LIMIT), 0)
@@ -405,6 +504,7 @@ async def _related_by_position_with_api(
     recommend_value = _safe_int(recommend, 0)
     search_keyword_value = (search_keyword or "").strip()
     search_type_value = (search_type or "").strip()
+    head_id_value = "" if head_id is None else str(head_id).strip()
     related_key = (
         board,
         kind or "",
@@ -414,6 +514,7 @@ async def _related_by_position_with_api(
         source_page_value,
         search_type_value,
         search_keyword_value,
+        head_id_value,
     )
     cached_related = _cache_get(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key)
     if cached_related is not None:
@@ -439,6 +540,7 @@ async def _related_by_position_with_api(
                 kind=kind,
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
+                head_id=head_id_value or None,
             )
             page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
             if target_id not in page_ids:
@@ -461,7 +563,7 @@ async def _related_by_position_with_api(
         _cache_set(_RELATED_CACHE, _RELATED_CACHE_LOCK, related_key, [], RELATED_CACHE_TTL, RELATED_CACHE_MAX_ITEMS)
         return []
 
-    board_key = (board, kind or "", recommend_value, search_type_value, search_keyword_value)
+    board_key = (board, kind or "", recommend_value, search_type_value, search_keyword_value, head_id_value)
 
     async def estimate_page_from_latest_id():
         latest_id = _cache_get(_LATEST_ID_CACHE, _LATEST_ID_CACHE_LOCK, board_key)
@@ -475,6 +577,7 @@ async def _related_by_position_with_api(
                 page_size=1,
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
+                head_id=head_id_value or None,
             )
             if not first_page:
                 return None
@@ -504,6 +607,7 @@ async def _related_by_position_with_api(
                 kind=kind,
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
+                head_id=head_id_value or None,
             )
             if not page_posts:
                 break
@@ -581,6 +685,7 @@ async def _related_by_position_with_api(
             kind=kind,
             search_type=search_type_value,
             search_keyword=search_keyword_value,
+            head_id=head_id_value or None,
         )
         if not page_posts:
             break
@@ -613,6 +718,7 @@ async def _related_after_position_with_api(
     recommend=0,
     search_type=None,
     search_keyword=None,
+    head_id=None,
 ):
     current_id = _safe_int(api_id, 0)
     target_id = _safe_int(after_id, 0) or current_id
@@ -623,11 +729,12 @@ async def _related_after_position_with_api(
     recommend_value = _safe_int(recommend, 0)
     search_keyword_value = (search_keyword or "").strip()
     search_type_value = (search_type or "").strip()
+    head_id_value = "" if head_id is None else str(head_id).strip()
 
     if target_id <= 0 or fetch_limit == 0:
         return [], False
 
-    board_key = (board, kind or "", recommend_value, search_type_value, search_keyword_value)
+    board_key = (board, kind or "", recommend_value, search_type_value, search_keyword_value, head_id_value)
 
     async def estimate_page_from_latest_id():
         if recommend_value:
@@ -644,6 +751,7 @@ async def _related_after_position_with_api(
                 page_size=1,
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
+                head_id=head_id_value or None,
             )
             if not first_page:
                 return None
@@ -677,6 +785,7 @@ async def _related_after_position_with_api(
                 kind=kind,
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
+                head_id=head_id_value or None,
             )
             if not page_posts:
                 break
@@ -759,6 +868,7 @@ async def _related_after_position_with_api(
             kind=kind,
             search_type=search_type_value,
             search_keyword=search_keyword_value,
+            head_id=head_id_value or None,
         )
         if not page_posts:
             break
@@ -780,6 +890,7 @@ async def async_related_by_position(
     recommend=0,
     search_type=None,
     search_keyword=None,
+    head_id=None,
 ):
     async with dc_api.API() as api:
         return await _related_by_position_with_api(
@@ -794,6 +905,7 @@ async def async_related_by_position(
             recommend=recommend,
             search_type=search_type,
             search_keyword=search_keyword,
+            head_id=head_id,
         )
 
 
@@ -809,6 +921,7 @@ async def async_related_after_position(
     recommend=0,
     search_type=None,
     search_keyword=None,
+    head_id=None,
 ):
     async with dc_api.API() as api:
         return await _related_after_position_with_api(
@@ -824,4 +937,5 @@ async def async_related_after_position(
             recommend=recommend,
             search_type=search_type,
             search_keyword=search_keyword,
+            head_id=head_id,
         )
