@@ -82,6 +82,15 @@ def test_read_limited_media_body_returns_502_and_closes_on_stream_error():
     assert upstream.closed is True
 
 
+def test_should_stream_known_length_media_respects_threshold(monkeypatch):
+    monkeypatch.setattr(media_proxy, "MEDIA_STREAMING_MIN_BYTES", 1024)
+
+    assert media_proxy.should_stream_known_length_media("image/jpeg", 1023) is False
+    assert media_proxy.should_stream_known_length_media("image/jpeg", 1024) is True
+    assert media_proxy.should_stream_known_length_media("application/octet-stream", 1024) is True
+    assert media_proxy.should_stream_known_length_media("text/html", 1024) is False
+
+
 def test_media_route_rejects_unknown_length_streams_when_limit_exceeded(monkeypatch):
     monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 5)
     upstream = DummyUpstream(
@@ -129,6 +138,30 @@ def test_media_route_buffers_upstream_and_sets_verified_length(monkeypatch):
         assert response.content_length == 6
         assert response.get_data() == b"123456"
 
+    assert upstream.closed is True
+
+
+def test_media_route_streams_large_known_length_images_without_buffering(monkeypatch):
+    monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 20)
+    monkeypatch.setattr(media_proxy, "MEDIA_STREAMING_MIN_BYTES", 5)
+    upstream = DummyUpstream(
+        [b"123", b"456"],
+        headers={"Content-Type": "application/octet-stream", "Content-Length": "6"},
+    )
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda src, headers, cookies: (upstream, None))
+
+    def fail_buffering(*args, **kwargs):
+        raise AssertionError("known-length large media should stream without full buffering")
+
+    monkeypatch.setattr(media_proxy, "read_limited_media_body", fail_buffering)
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://dcimg7.dcinside.co.kr/viewimage.php?id=test")
+
+    assert response.status_code == 200
+    assert response.data == b"123456"
+    assert response.headers["Content-Length"] == "6"
+    assert response.headers["Content-Type"] == "application/octet-stream"
     assert upstream.closed is True
 
 
