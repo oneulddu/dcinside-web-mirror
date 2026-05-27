@@ -197,6 +197,85 @@ def test_document_images_preserve_duplicate_media_sources():
     ]
 
 
+def test_pc_media_sources_prefer_change_gif_fallback_image_over_broken_mp4():
+    api = API.__new__(API)
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="writing_view_box">
+          <video data-src="https://dcimg7.dcinside.co.kr/viewimage.php?id=test&amp;no=webp">
+            <source src="https://dcimg7.dcinside.co.kr/viewimage.php?id=test&amp;no=mp4"
+                    type="video/mp4"
+                    onerror="change_gif(this)">
+          </video>
+        </div>
+        """
+    )
+
+    sources = api._API__real_document_media_sources(doc_content)
+
+    assert sources == [
+        {"type": "image", "src": "https://dcimg7.dcinside.co.kr/viewimage.php?id=test&no=webp"}
+    ]
+
+
+def test_pc_media_sources_keep_regular_video_without_change_gif_fallback():
+    api = API.__new__(API)
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="writing_view_box">
+          <video data-src="https://dcimg7.dcinside.co.kr/movie-preview.webp">
+            <source src="https://dcimg7.dcinside.co.kr/movie.mp4" type="video/mp4">
+          </video>
+        </div>
+        """
+    )
+
+    sources = api._API__real_document_media_sources(doc_content)
+
+    assert sources == [{"type": "video", "src": "https://dcimg7.dcinside.co.kr/movie.mp4"}]
+
+
+@pytest.mark.asyncio
+async def test_repair_placeholder_images_uses_pc_change_gif_fallback_image():
+    api = API.__new__(API)
+    doc_content = lxml.html.fromstring(
+        """
+        <div class="thum-txtin">
+          <img src="https://nstatic.dcinside.com/dc/m/img/gallview_loading_ori.gif"
+               data-gif="https://nstatic.dcinside.com/dc/m/img/m_webp.png">
+        </div>
+        """
+    )
+
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+        return (
+            200,
+            {},
+            """
+            <html>
+              <body>
+                <div class="writing_view_box">
+                  <video data-src="https://dcimg7.dcinside.co.kr/viewimage.php?id=test&amp;no=webp">
+                    <source src="https://dcimg7.dcinside.co.kr/viewimage.php?id=test&amp;no=mp4"
+                            type="video/mp4"
+                            onerror="change_gif(this)">
+                  </video>
+                </div>
+              </body>
+            </html>
+            """,
+        )
+
+    api._API__request_text = fake_request_text
+
+    repaired = await api._API__repair_placeholder_images_from_pc(doc_content, "idolism", "1206783", kind="minor")
+
+    assert repaired.xpath(".//img/@src") == [
+        "https://dcimg7.dcinside.co.kr/viewimage.php?id=test&no=webp"
+    ]
+    assert repaired.xpath(".//video") == []
+
+
 @pytest.mark.asyncio
 async def test_repair_placeholder_images_uses_pc_video_source_when_image_source_missing():
     api = API.__new__(API)

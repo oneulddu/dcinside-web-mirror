@@ -1501,6 +1501,26 @@ class API:
                 return src
         return None
 
+    def __pick_change_gif_fallback_image_src(self, video):
+        if (getattr(video, "tag", "") or "").lower() != "video":
+            return None
+        fallback_src = video.get("data-src") or video.get("data-original") or video.get("data-gif")
+        if not fallback_src or self.__is_placeholder_document_image_src(fallback_src):
+            return None
+
+        direct_sources = video.xpath("./source")
+        if not any("change_gif" in (source.get("onerror") or "") for source in direct_sources):
+            return None
+
+        primary_video_src = None
+        for source in direct_sources:
+            primary_video_src = self.__pick_document_video_src(source)
+            if primary_video_src:
+                break
+        if primary_video_src and primary_video_src == fallback_src:
+            return None
+        return fallback_src
+
     def __is_placeholder_document_image_src(self, src):
         if not src:
             return True
@@ -1563,6 +1583,12 @@ class API:
                 ):
                     sources.append({"type": "image", "src": src})
                 continue
+
+            if tag == "video":
+                fallback_src = self.__pick_change_gif_fallback_image_src(el)
+                if fallback_src:
+                    sources.append({"type": "image", "src": fallback_src})
+                    continue
 
             src = self.__pick_document_video_src(el)
             if src and not self.__is_placeholder_document_image_src(src):
