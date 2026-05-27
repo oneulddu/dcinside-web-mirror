@@ -13,7 +13,8 @@ module.exports = {
       restart_delay: 1000,
       env: {
         MIRROR_BIND: '0.0.0.0:6100',
-        MIRROR_THREADS: '4'
+        MIRROR_WORKERS: '4',
+        MIRROR_THREADS: '12'
       }
     }
   ]

@@ -91,6 +91,13 @@ def test_should_stream_known_length_media_respects_threshold(monkeypatch):
     assert media_proxy.should_stream_known_length_media("text/html", 1024) is False
 
 
+def test_identity_content_encoding_accepts_only_empty_or_identity():
+    assert media_proxy.is_identity_content_encoding(None) is True
+    assert media_proxy.is_identity_content_encoding("") is True
+    assert media_proxy.is_identity_content_encoding("identity") is True
+    assert media_proxy.is_identity_content_encoding("gzip") is False
+
+
 def test_media_route_rejects_unknown_length_streams_when_limit_exceeded(monkeypatch):
     monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 5)
     upstream = DummyUpstream(
@@ -162,6 +169,61 @@ def test_media_route_streams_large_known_length_images_without_buffering(monkeyp
     assert response.data == b"123456"
     assert response.headers["Content-Length"] == "6"
     assert response.headers["Content-Type"] == "application/octet-stream"
+    assert upstream.closed is True
+
+
+def test_media_route_buffers_encoded_known_length_images(monkeypatch):
+    monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 20)
+    monkeypatch.setattr(media_proxy, "MEDIA_STREAMING_MIN_BYTES", 1)
+    upstream = DummyUpstream(
+        [b"decoded", b"-body"],
+        headers={
+            "Content-Type": "image/jpeg",
+            "Content-Length": "6",
+            "Content-Encoding": "gzip",
+        },
+    )
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda src, headers, cookies: (upstream, None))
+
+    def fail_streaming(*args, **kwargs):
+        raise AssertionError("encoded media should not reuse upstream Content-Length while streaming")
+
+    monkeypatch.setattr(media_proxy, "build_streaming_media_response", fail_streaming)
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://images.dcinside.com/test.jpg")
+
+    assert response.status_code == 200
+    assert response.data == b"decoded-body"
+    assert response.content_length == len(b"decoded-body")
+    assert "Content-Encoding" not in response.headers
+    assert upstream.closed is True
+
+
+def test_media_route_buffers_encoded_video_instead_of_streaming(monkeypatch):
+    monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 20)
+    upstream = DummyUpstream(
+        [b"decoded", b"-video"],
+        headers={
+            "Content-Type": "video/mp4",
+            "Content-Length": "5",
+            "Content-Encoding": "gzip",
+        },
+    )
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda src, headers, cookies: (upstream, None))
+
+    def fail_streaming(*args, **kwargs):
+        raise AssertionError("encoded video should not reuse upstream Content-Length while streaming")
+
+    monkeypatch.setattr(media_proxy, "build_streaming_media_response", fail_streaming)
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4")
+
+    assert response.status_code == 200
+    assert response.data == b"decoded-video"
+    assert response.content_length == len(b"decoded-video")
+    assert "Content-Encoding" not in response.headers
     assert upstream.closed is True
 
 

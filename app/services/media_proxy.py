@@ -29,7 +29,7 @@ def _safe_int(value, default):
 
 HTTP_TIMEOUT = _env_int("MIRROR_HTTP_TIMEOUT", 20)
 MEDIA_CACHE_MAX_AGE = _env_int("MIRROR_MEDIA_CACHE_MAX_AGE", 86400)
-MEDIA_MAX_BYTES = _env_int("MIRROR_MEDIA_MAX_BYTES", 25 * 1024 * 1024)
+MEDIA_MAX_BYTES = _env_int("MIRROR_MEDIA_MAX_BYTES", 50 * 1024 * 1024)
 MEDIA_CHUNK_BYTES = max(_env_int("MIRROR_MEDIA_CHUNK_BYTES", 256 * 1024), 16 * 1024)
 MEDIA_STREAMING_MIN_BYTES = max(_env_int("MIRROR_MEDIA_STREAMING_MIN_BYTES", 1024 * 1024), 0)
 MEDIA_REDIRECT_LIMIT = _env_int("MIRROR_MEDIA_REDIRECT_LIMIT", 3)
@@ -266,6 +266,11 @@ def should_stream_known_length_media(content_type, content_length):
     return value == "application/octet-stream" or value.startswith("image/")
 
 
+def is_identity_content_encoding(content_encoding):
+    value = (content_encoding or "").strip().lower()
+    return not value or value == "identity"
+
+
 def read_limited_media_body(upstream):
     total = 0
     chunks = []
@@ -329,7 +334,9 @@ def build_media_response(src, board, pid, kind=None, range_header=None):
         upstream.close()
         return "", 415
 
-    if is_streaming_media_response(content_type, upstream.status_code, normalized_range):
+    content_encoding = upstream.headers.get("Content-Encoding")
+    can_stream_decoded_body = is_identity_content_encoding(content_encoding)
+    if can_stream_decoded_body and is_streaming_media_response(content_type, upstream.status_code, normalized_range):
         return build_streaming_media_response(upstream, content_type)
 
     raw_content_length = upstream.headers.get("Content-Length")
@@ -337,7 +344,11 @@ def build_media_response(src, board, pid, kind=None, range_header=None):
     if content_length and content_length > MEDIA_MAX_BYTES:
         upstream.close()
         return "", 413
-    if content_length and should_stream_known_length_media(content_type, content_length):
+    if (
+        content_length
+        and can_stream_decoded_body
+        and should_stream_known_length_media(content_type, content_length)
+    ):
         return build_streaming_media_response(upstream, content_type)
 
     body, error_status = read_limited_media_body(upstream)
