@@ -227,6 +227,30 @@ def test_media_route_buffers_encoded_video_instead_of_streaming(monkeypatch):
     assert upstream.closed is True
 
 
+def test_media_route_rejects_encoded_partial_content(monkeypatch):
+    upstream = DummyUpstream(
+        [b"decoded", b"-partial"],
+        headers={
+            "Content-Type": "video/mp4",
+            "Content-Length": "7",
+            "Content-Encoding": "gzip",
+            "Content-Range": "bytes 0-6/100",
+        },
+        status_code=206,
+    )
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda src, headers, cookies: (upstream, None))
+    app = create_app()
+
+    response = app.test_client().get(
+        "/media?src=https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4",
+        headers={"Range": "bytes=0-6"},
+    )
+
+    assert response.status_code == 502
+    assert upstream.iterated == 0
+    assert upstream.closed is True
+
+
 def test_media_route_streams_video_range_requests(monkeypatch):
     upstream = DummyUpstream(
         [b"abc", b"def"],

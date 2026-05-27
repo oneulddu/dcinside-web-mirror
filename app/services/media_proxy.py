@@ -338,6 +338,9 @@ def build_media_response(src, board, pid, kind=None, range_header=None):
     can_stream_decoded_body = is_identity_content_encoding(content_encoding)
     if can_stream_decoded_body and is_streaming_media_response(content_type, upstream.status_code, normalized_range):
         return build_streaming_media_response(upstream, content_type)
+    if not can_stream_decoded_body and upstream.status_code == 206:
+        upstream.close()
+        return "", 502
 
     raw_content_length = upstream.headers.get("Content-Length")
     content_length = _safe_int(raw_content_length, 0)
