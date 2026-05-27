@@ -1,7 +1,7 @@
 import lxml.html
 import pytest
 
-from app.services.dc_api import API, to_int
+from app.services.dc_api import API, GET_HEADERS, MOBILE_USER_AGENT, POST_HEADERS, XML_HTTP_REQ_HEADERS, to_int
 
 
 def test_to_int_extracts_numbers_and_falls_back_safely():
@@ -9,6 +9,13 @@ def test_to_int_extracts_numbers_and_falls_back_safely():
     assert to_int("추천 -5") == -5
     assert to_int(None, default=7) == 7
     assert to_int("숫자 없음", default=3) == 3
+
+
+def test_mobile_request_headers_use_ios_user_agent():
+    assert "iPhone" in MOBILE_USER_AGENT
+    assert GET_HEADERS["User-Agent"] == MOBILE_USER_AGENT
+    assert XML_HTTP_REQ_HEADERS["User-Agent"] == MOBILE_USER_AGENT
+    assert POST_HEADERS["User-Agent"] == MOBILE_USER_AGENT
 
 
 def test_parse_mobile_list_item_extracts_gallog_author_id():

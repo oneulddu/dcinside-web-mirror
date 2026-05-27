@@ -43,6 +43,10 @@ class DummyMovieResponse:
         self.status_code = status_code
 
 
+def test_media_proxy_mobile_user_agent_uses_ios():
+    assert "iPhone" in media_proxy.MOBILE_USER_AGENT
+
+
 def test_read_limited_media_body_closes_after_success(monkeypatch):
     monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 10)
     upstream = DummyUpstream([b"123", b"456"])
