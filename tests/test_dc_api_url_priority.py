@@ -26,6 +26,116 @@ def test_list_urls_keep_recommend_flag_on_mobile_mini_first():
     assert any(url.startswith("https://gall.dcinside.com/mini/") and "recommend=1" in url for url in urls[1:])
 
 
+def test_list_urls_include_mobile_head_id_filter():
+    api = API.__new__(API)
+    urls = api._API__build_list_urls("thesingularity", 2, head_id="10")
+
+    assert urls[0] == "https://m.dcinside.com/board/thesingularity?page=2&headid=10"
+    assert any(url.startswith("https://gall.dcinside.com/") and "search_head=10" in url for url in urls[1:])
+
+
+def test_redirect_url_preserves_head_id_for_mobile_and_pc_targets():
+    api = API.__new__(API)
+
+    mobile_redirect = api._API__normalize_redirect_url(
+        "https://m.dcinside.com/board/thesingularity?page=1&headid=10",
+        "/board/thesingularity?page=2",
+    )
+    pc_redirect = api._API__normalize_redirect_url(
+        "https://m.dcinside.com/board/thesingularity?page=1&headid=10&recommend=1",
+        "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2",
+    )
+
+    assert mobile_redirect == "https://m.dcinside.com/board/thesingularity?page=2&headid=10"
+    assert pc_redirect == "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2&recommend=1&search_head=10"
+
+
+def test_redirect_url_does_not_drop_target_recommend_when_preserving_head_id():
+    api = API.__new__(API)
+
+    redirect = api._API__normalize_redirect_url(
+        "https://m.dcinside.com/board/thesingularity?page=1&headid=10",
+        "/board/thesingularity?page=2&recommend=1",
+    )
+
+    assert redirect == "https://m.dcinside.com/board/thesingularity?page=2&recommend=1&headid=10"
+
+
+def test_parse_mobile_headtext_tabs():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="mal-sw-wrap">
+          <ul class="mal-lst swiper-wrapper">
+            <li class="swiper-slide"><a href="javascript:headText_change();">전체</a></li>
+            <li class="swiper-slide"><a href="javascript:headText_change(0);">일반</a></li>
+            <li class="swiper-slide on"><a href="javascript:headText_change(10);">📪정보</a></li>
+          </ul>
+        </div>
+        """
+    )
+
+    assert api._API__parse_mobile_headtext_tabs(parsed) == [
+        {"head_id": None, "label": "전체", "active": False},
+        {"head_id": "0", "label": "일반", "active": False},
+        {"head_id": "10", "label": "📪정보", "active": True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_board_keeps_headtext_tabs_from_first_scanned_page(monkeypatch):
+    api = API.__new__(API)
+    api.last_board_headtexts = []
+    pages = [
+        lxml.html.fromstring(
+            """
+            <html><body>
+              <ul class="mal-lst">
+                <li class="on"><a href="javascript:headText_change();">전체</a></li>
+                <li><a href="javascript:headText_change(10);">첫페이지</a></li>
+              </ul>
+              <ul class="gall-detail-lst">
+                <li><a class="lt" href="https://m.dcinside.com/board/test/200">
+                  <span class="subjectin">first</span>
+                  <ul class="ginfo"><li>일반</li><li>ㅇㅇ</li><li>00:01</li><li>조회 1</li><li>추천 0</li></ul>
+                </a></li>
+              </ul>
+            </body></html>
+            """
+        ),
+        lxml.html.fromstring(
+            """
+            <html><body>
+              <ul class="mal-lst">
+                <li><a href="javascript:headText_change();">전체</a></li>
+                <li class="on"><a href="javascript:headText_change(20);">두번째페이지</a></li>
+              </ul>
+              <ul class="gall-detail-lst">
+                <li><a class="lt" href="https://m.dcinside.com/board/test/199">
+                  <span class="subjectin">second</span>
+                  <ul class="ginfo"><li>일반</li><li>ㅇㅇ</li><li>00:02</li><li>조회 1</li><li>추천 0</li></ul>
+                </a></li>
+              </ul>
+            </body></html>
+            """
+        ),
+    ]
+
+    async def fake_fetch(urls, validator=None):
+        parsed = pages.pop(0)
+        return parsed, "ok", "https://m.dcinside.com/board/test"
+
+    monkeypatch.setattr(api, "_API__fetch_parsed_from_urls", fake_fetch)
+
+    rows = [row async for row in api.board("test", num=2, max_scan_pages=2)]
+
+    assert [row.id for row in rows] == ["200", "199"]
+    assert api.last_board_headtexts == [
+        {"head_id": None, "label": "전체", "active": True},
+        {"head_id": "10", "label": "첫페이지", "active": False},
+    ]
+
+
 def test_view_urls_prefer_mobile_before_pc():
     api = API.__new__(API)
     urls = api._API__build_view_urls("aoegame", "30389383", kind="minor")

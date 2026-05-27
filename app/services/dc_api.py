@@ -218,6 +218,7 @@ class API:
             cookies={"_ga": "GA1.2.693521455.1588839880"},
             timeout=timeout,
         )
+        self.last_board_headtexts = []
     async def close(self):
         await self.session.close()
     async def __aenter__(self):
@@ -325,36 +326,96 @@ class API:
 
         return status, response_headers, text
 
-    def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None):
+    def __normalize_head_id(self, head_id):
+        if head_id is None:
+            return None
+        text = str(head_id).strip()
+        if not text:
+            return None
+        if not re.fullmatch(r"\d{1,8}", text):
+            return None
+        return text
+
+    def __build_head_id_suffix(self, head_id):
+        normalized = self.__normalize_head_id(head_id)
+        if normalized is None:
+            return ""
+        return "&" + urlencode({"headid": normalized})
+
+    def __build_pc_head_id_suffix(self, head_id):
+        normalized = self.__normalize_head_id(head_id)
+        if normalized is None:
+            return ""
+        return "&" + urlencode({"search_head": normalized})
+
+    def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None):
         kind = (kind or "").lower()
         urls = []
         recommend_suffix = "&recommend=1" if recommend else ""
+        head_id_suffix = self.__build_head_id_suffix(head_id)
+        pc_head_id_suffix = self.__build_pc_head_id_suffix(head_id)
         mobile_search_suffix = self.__build_mobile_search_suffix(search_type, search_keyword)
         pc_search_suffix = self.__build_pc_search_suffix(search_type, search_keyword)
 
         if kind == "mini":
-            urls.append("https://m.dcinside.com/mini/{}?page={}{}{}".format(board_id, page, recommend_suffix, mobile_search_suffix))
+            urls.append("https://m.dcinside.com/mini/{}?page={}{}{}{}".format(board_id, page, recommend_suffix, head_id_suffix, mobile_search_suffix))
         elif recommend:
-            urls.append("https://m.dcinside.com/board/{}?recommend=1&page={}{}".format(board_id, page, mobile_search_suffix))
+            urls.append("https://m.dcinside.com/board/{}?recommend=1&page={}{}{}".format(board_id, page, head_id_suffix, mobile_search_suffix))
         else:
-            urls.append("https://m.dcinside.com/board/{}?page={}{}".format(board_id, page, mobile_search_suffix))
+            urls.append("https://m.dcinside.com/board/{}?page={}{}{}".format(board_id, page, head_id_suffix, mobile_search_suffix))
 
         kind_urls = {
-            "normal": "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
-            "minor": "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
-            "mini": "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
-            "person": "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
+            "normal": "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "minor": "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "mini": "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "person": "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
         }
         if kind in kind_urls:
             urls.append(kind_urls[kind])
 
         urls.extend([
-            "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
-            "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
-            "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
-            "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}".format(board_id, page, recommend_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
         ])
         return self.__dedupe_urls(urls)
+
+    def __parse_mobile_headtext_tabs(self, parsed):
+        tabs = []
+        seen = set()
+        tab_nodes = parsed.xpath("//ul[contains(@class, 'mal-lst')]//li[a]")
+
+        for node in tab_nodes:
+            link_nodes = node.xpath("./a[1]")
+            if not link_nodes:
+                continue
+            link = link_nodes[0]
+            label = " ".join(link.text_content().split())
+            if not label:
+                continue
+
+            href = link.get("href", "") or ""
+            head_id = None
+            matched = re.search(r"headText_change\(\s*(\d+)\s*\)", href)
+            if matched:
+                head_id = matched.group(1)
+
+            key = "" if head_id is None else head_id
+            if key in seen:
+                continue
+            seen.add(key)
+
+            node_class = " {} ".format(node.get("class", ""))
+            tabs.append(
+                {
+                    "head_id": head_id,
+                    "label": label,
+                    "active": " on " in node_class,
+                }
+            )
+
+        return tabs
 
     def __normalize_search_type(self, search_type):
         value = (search_type or "").strip()
@@ -504,21 +565,42 @@ class API:
 
     def __normalize_redirect_url(self, current_url, redirect_url):
         normalized_url = urljoin(current_url, redirect_url)
-        if "1" not in parse_qs(urlparse(current_url).query).get("recommend", []):
+        current_parsed = urlparse(current_url)
+        current_query = parse_qs(current_parsed.query)
+        preserve_recommend = "1" in current_query.get("recommend", [])
+        preserved_head_id = self.__normalize_head_id(
+            (current_query.get("headid") or current_query.get("search_head") or [None])[0]
+        )
+        if not preserve_recommend and preserved_head_id is None:
             return normalized_url
 
         parsed = urlparse(normalized_url)
+        target_host = (parsed.netloc or "").lower()
+        target_head_key = "search_head" if target_host in {"gall.dcinside.com", "search.dcinside.com"} else "headid"
         query_items = []
         recommend_added = False
+        head_added = False
         for key, value in parse_qsl(parsed.query, keep_blank_values=True):
             if key == "recommend":
-                if not recommend_added:
-                    query_items.append(("recommend", "1"))
-                    recommend_added = True
+                if preserve_recommend:
+                    if not recommend_added:
+                        query_items.append(("recommend", "1"))
+                        recommend_added = True
+                else:
+                    query_items.append((key, value))
+                continue
+            if key in {"headid", "search_head"}:
+                if preserved_head_id is not None and key == target_head_key and not head_added:
+                    query_items.append((target_head_key, preserved_head_id))
+                    head_added = True
+                elif preserved_head_id is None:
+                    query_items.append((key, value))
                 continue
             query_items.append((key, value))
-        if not recommend_added:
+        if preserve_recommend and not recommend_added:
             query_items.append(("recommend", "1"))
+        if preserved_head_id is not None and not head_added:
+            query_items.append((target_head_key, preserved_head_id))
         return parsed._replace(query=urlencode(query_items)).geturl()
 
     def __is_usable_board_page(self, parsed, text, url):
@@ -1175,9 +1257,11 @@ class API:
             include_issue_hit=True,
         )
 
-    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None):
+    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None):
         page = start_page
         scanned_pages = 0
+        self.last_board_headtexts = []
+        headtexts_captured = False
         upper_limit = to_optional_int(document_id_upper_limit)
         lower_limit = to_optional_int(document_id_lower_limit)
         while num:
@@ -1191,12 +1275,16 @@ class API:
                     kind=kind,
                     search_type=search_type,
                     search_keyword=search_keyword,
+                    head_id=head_id,
                 ),
                 validator=self.__is_usable_board_page,
             )
             scanned_pages += 1
             if parsed is None:
                 break
+            if not headtexts_captured:
+                self.last_board_headtexts = self.__parse_mobile_headtext_tabs(parsed)
+                headtexts_captured = True
             if "등록된 게시물이 없습니다." in text:
                 break
             yielded_in_page = 0

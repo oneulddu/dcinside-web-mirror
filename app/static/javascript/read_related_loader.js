@@ -101,7 +101,7 @@
         );
     }
 
-    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword) {
+    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId) {
         var pid = getItemPostId(item);
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
@@ -113,6 +113,9 @@
         }
         if (kind) {
             href += "&kind=" + encodeURIComponent(kind);
+        }
+        if (headId) {
+            href += "&headid=" + encodeURIComponent(headId);
         }
         if (searchKeyword) {
             href += "&s_type=" + encodeURIComponent(searchType || "subject_m");
@@ -166,7 +169,7 @@
         return null;
     }
 
-    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword) {
+    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, headId) {
         var postId = getItemPostId(item);
         var li = document.createElement("li");
         li.dataset.postId = postId;
@@ -174,7 +177,7 @@
         var link = document.createElement("a");
         link.className = "feed-item";
         link.dataset.postId = postId;
-        link.href = buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword);
+        link.href = buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId);
 
         var titleWrap = document.createElement("div");
         titleWrap.className = "feed-title-wrap";
@@ -257,7 +260,8 @@
                 context.recommend,
                 context.sourcePage,
                 context.searchType,
-                context.searchKeyword
+                context.searchKeyword,
+                context.headId
             ));
             renderedIds[postId] = true;
             context.lastPostId = postId;
@@ -385,6 +389,7 @@
         var recommend = section.dataset.recommend || "";
         var limit = section.dataset.limit || "12";
         var sourcePage = section.dataset.sourcePage || "";
+        var headId = section.dataset.headId || "";
         var searchType = section.dataset.searchType || "";
         var searchKeyword = section.dataset.searchKeyword || "";
         var afterPid = state.lastPostId || "";
@@ -409,6 +414,9 @@
         if (sourcePage) {
             params.set("source_page", sourcePage);
         }
+        if (headId) {
+            params.set("headid", headId);
+        }
         if (afterPid) {
             params.set("after_pid", afterPid);
         }
@@ -424,6 +432,7 @@
             recommend: recommend,
             limit: limit,
             sourcePage: sourcePage,
+            headId: headId,
             searchType: searchType,
             searchKeyword: searchKeyword,
             afterPid: afterPid,
