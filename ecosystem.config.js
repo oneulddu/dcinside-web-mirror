@@ -12,7 +12,8 @@ module.exports = {
       max_restarts: 20,
       restart_delay: 1000,
       env: {
-        MIRROR_BIND: '0.0.0.0:6100'
+        MIRROR_BIND: '0.0.0.0:6100',
+        MIRROR_THREADS: '4'
       }
     }
   ]

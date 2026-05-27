@@ -373,6 +373,10 @@ def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
     second_query = parse_qs(urlparse(images[1]["src"]).query)
     assert first_query["src"] == ["https://images.dcinside.com/post-a.jpg"]
     assert second_query["src"] == ["https://images.dcinside.com/post-b.jpg"]
+    assert images[0]["loading"] == "eager"
+    assert images[0]["fetchpriority"] == "high"
+    assert images[1]["loading"] == "lazy"
+    assert "fetchpriority" not in images[1].attrs
     assert "data-original" not in images[0].attrs
 
 
@@ -498,7 +502,8 @@ def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
           <a href="javascript:alert(1)" target="_blank">bad</a>
           <a href="https://example.com/path">good</a>
           <img src="https://images.dcinside.com/raw.jpg">
-          <img src="/media?src=https%3A%2F%2Fimages.dcinside.com%2Fsafe.jpg" onerror="alert(1)">
+          <img src="/media?src=https%3A%2F%2Fimages.dcinside.com%2Fsafe.jpg" fetchpriority="high" onerror="alert(1)">
+          <img src="/media?src=https%3A%2F%2Fimages.dcinside.com%2Fbad-priority.jpg" fetchpriority="fast">
         </div>
         """
     )
@@ -512,9 +517,11 @@ def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
     assert anchors[1]["href"] == "https://example.com/path"
     assert anchors[1]["rel"] == ["noopener", "noreferrer"]
     images = soup.find_all("img")
-    assert len(images) == 1
+    assert len(images) == 2
     assert images[0]["src"].startswith("/media?")
+    assert images[0]["fetchpriority"] == "high"
     assert "onerror" not in images[0].attrs
+    assert "fetchpriority" not in images[1].attrs
 
 
 def test_sanitize_html_fragment_keeps_rewritten_video_source():

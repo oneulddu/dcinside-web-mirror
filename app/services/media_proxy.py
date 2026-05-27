@@ -30,6 +30,7 @@ def _safe_int(value, default):
 HTTP_TIMEOUT = _env_int("MIRROR_HTTP_TIMEOUT", 20)
 MEDIA_CACHE_MAX_AGE = _env_int("MIRROR_MEDIA_CACHE_MAX_AGE", 86400)
 MEDIA_MAX_BYTES = _env_int("MIRROR_MEDIA_MAX_BYTES", 25 * 1024 * 1024)
+MEDIA_CHUNK_BYTES = max(_env_int("MIRROR_MEDIA_CHUNK_BYTES", 256 * 1024), 16 * 1024)
 MEDIA_STREAMING_MIN_BYTES = max(_env_int("MIRROR_MEDIA_STREAMING_MIN_BYTES", 1024 * 1024), 0)
 MEDIA_REDIRECT_LIMIT = _env_int("MIRROR_MEDIA_REDIRECT_LIMIT", 3)
 MEDIA_DNS_CACHE_TTL = max(_env_int("MIRROR_MEDIA_DNS_CACHE_TTL", 30), 0)
@@ -269,7 +270,7 @@ def read_limited_media_body(upstream):
     total = 0
     chunks = []
     try:
-        for chunk in upstream.iter_content(chunk_size=64 * 1024):
+        for chunk in upstream.iter_content(chunk_size=MEDIA_CHUNK_BYTES):
             if not chunk:
                 continue
             total += len(chunk)
@@ -285,7 +286,7 @@ def read_limited_media_body(upstream):
 
 def stream_media_body(upstream):
     try:
-        for chunk in upstream.iter_content(chunk_size=64 * 1024):
+        for chunk in upstream.iter_content(chunk_size=MEDIA_CHUNK_BYTES):
             if chunk:
                 yield chunk
     finally:
