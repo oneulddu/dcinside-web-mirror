@@ -134,6 +134,43 @@ async def test_read_document_fetches_comments_without_trusting_zero_hint():
 
 
 @pytest.mark.asyncio
+async def test_read_document_passes_head_id_to_document_fetch():
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>body</p>"
+        images = []
+        related_posts = []
+
+        async def comments(self):
+            if False:
+                yield None
+
+    class FakeAPI:
+        def __init__(self):
+            self.kwargs = None
+
+        async def document(self, **kwargs):
+            self.kwargs = kwargs
+            return FakeDocument()
+
+    api = FakeAPI()
+
+    await core._read_document_with_api(
+        api,
+        "123",
+        "test",
+        kind="minor",
+        head_id="10",
+    )
+
+    assert api.kwargs["head_id"] == "10"
+
+
+@pytest.mark.asyncio
 async def test_read_document_uses_complete_embedded_comments_without_extra_fetch():
     class FakeDocument:
         title = "title"

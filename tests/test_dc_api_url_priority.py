@@ -150,6 +150,19 @@ def test_view_urls_keep_recommend_flag_on_mobile_first():
     assert any(url.startswith("https://gall.dcinside.com/mgallery/") and "recommend=1" in url for url in urls[1:])
 
 
+def test_view_urls_include_head_id_filter_for_initial_related_posts():
+    api = API.__new__(API)
+    urls = api._API__build_view_urls("thesingularity", "123", kind="minor", recommend=True, head_id="10")
+
+    assert urls[0] == "https://m.dcinside.com/board/thesingularity/123?recommend=1&headid=10"
+    assert any(
+        url.startswith("https://gall.dcinside.com/mgallery/")
+        and "recommend=1" in url
+        and "search_head=10" in url
+        for url in urls[1:]
+    )
+
+
 def test_parse_mobile_list_item_uses_five_cell_ginfo_offsets():
     api = API.__new__(API)
     row = lxml.html.fromstring(
