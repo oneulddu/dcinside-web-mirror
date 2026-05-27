@@ -17,7 +17,7 @@ HTML_GLOBAL_ATTRS = {"class", "title"}
 HTML_TAG_ATTRS = {
     "a": {"href", "target", "rel"},
     "iframe": {"src", "title", "loading", "width", "height", "frameborder", "scrolling", "allow", "allowfullscreen"},
-    "img": {"src", "alt", "loading", "decoding", "width", "height"},
+    "img": {"src", "alt", "loading", "decoding", "fetchpriority", "width", "height"},
     "source": {"src", "type"},
     "td": {"colspan", "rowspan"},
     "th": {"colspan", "rowspan"},
@@ -179,6 +179,9 @@ def sanitize_html_fragment(raw_html):
             elif attr_name == "poster":
                 if name != "video" or not str(value).startswith("/media?"):
                     del tag.attrs[attr]
+            elif attr_name == "fetchpriority":
+                if name != "img" or str(value).strip().lower() not in {"high", "low", "auto"}:
+                    del tag.attrs[attr]
     return str(soup)
 
 
@@ -209,14 +212,21 @@ def rewrite_content_images(soup, images, board, pid, kind):
     for image_src in images:
         image_urls[image_src].append(url_for("main.media", src=image_src, board=board, pid=pid, kind=kind))
 
+    image_index = 0
     for img in soup.find_all("img"):
         original_src = pick_soup_image_src(img)
         if not original_src or not image_urls[original_src]:
             img.decompose()
             continue
         img["src"] = image_urls[original_src].popleft()
-        img["loading"] = "lazy"
         img["decoding"] = "async"
+        if image_index == 0:
+            img["loading"] = "eager"
+            img["fetchpriority"] = "high"
+        else:
+            img["loading"] = "lazy"
+            img.attrs.pop("fetchpriority", None)
+        image_index += 1
         for attr in ("data-original", "data-gif", "srcset"):
             img.attrs.pop(attr, None)
 

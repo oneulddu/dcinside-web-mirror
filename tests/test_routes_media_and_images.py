@@ -82,6 +82,22 @@ def test_read_limited_media_body_returns_502_and_closes_on_stream_error():
     assert upstream.closed is True
 
 
+def test_should_stream_known_length_media_respects_threshold(monkeypatch):
+    monkeypatch.setattr(media_proxy, "MEDIA_STREAMING_MIN_BYTES", 1024)
+
+    assert media_proxy.should_stream_known_length_media("image/jpeg", 1023) is False
+    assert media_proxy.should_stream_known_length_media("image/jpeg", 1024) is True
+    assert media_proxy.should_stream_known_length_media("application/octet-stream", 1024) is True
+    assert media_proxy.should_stream_known_length_media("text/html", 1024) is False
+
+
+def test_identity_content_encoding_accepts_only_empty_or_identity():
+    assert media_proxy.is_identity_content_encoding(None) is True
+    assert media_proxy.is_identity_content_encoding("") is True
+    assert media_proxy.is_identity_content_encoding("identity") is True
+    assert media_proxy.is_identity_content_encoding("gzip") is False
+
+
 def test_media_route_rejects_unknown_length_streams_when_limit_exceeded(monkeypatch):
     monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 5)
     upstream = DummyUpstream(
@@ -129,6 +145,109 @@ def test_media_route_buffers_upstream_and_sets_verified_length(monkeypatch):
         assert response.content_length == 6
         assert response.get_data() == b"123456"
 
+    assert upstream.closed is True
+
+
+def test_media_route_streams_large_known_length_images_without_buffering(monkeypatch):
+    monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 20)
+    monkeypatch.setattr(media_proxy, "MEDIA_STREAMING_MIN_BYTES", 5)
+    upstream = DummyUpstream(
+        [b"123", b"456"],
+        headers={"Content-Type": "application/octet-stream", "Content-Length": "6"},
+    )
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda src, headers, cookies: (upstream, None))
+
+    def fail_buffering(*args, **kwargs):
+        raise AssertionError("known-length large media should stream without full buffering")
+
+    monkeypatch.setattr(media_proxy, "read_limited_media_body", fail_buffering)
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://dcimg7.dcinside.co.kr/viewimage.php?id=test")
+
+    assert response.status_code == 200
+    assert response.data == b"123456"
+    assert response.headers["Content-Length"] == "6"
+    assert response.headers["Content-Type"] == "application/octet-stream"
+    assert upstream.closed is True
+
+
+def test_media_route_buffers_encoded_known_length_images(monkeypatch):
+    monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 20)
+    monkeypatch.setattr(media_proxy, "MEDIA_STREAMING_MIN_BYTES", 1)
+    upstream = DummyUpstream(
+        [b"decoded", b"-body"],
+        headers={
+            "Content-Type": "image/jpeg",
+            "Content-Length": "6",
+            "Content-Encoding": "gzip",
+        },
+    )
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda src, headers, cookies: (upstream, None))
+
+    def fail_streaming(*args, **kwargs):
+        raise AssertionError("encoded media should not reuse upstream Content-Length while streaming")
+
+    monkeypatch.setattr(media_proxy, "build_streaming_media_response", fail_streaming)
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://images.dcinside.com/test.jpg")
+
+    assert response.status_code == 200
+    assert response.data == b"decoded-body"
+    assert response.content_length == len(b"decoded-body")
+    assert "Content-Encoding" not in response.headers
+    assert upstream.closed is True
+
+
+def test_media_route_buffers_encoded_video_instead_of_streaming(monkeypatch):
+    monkeypatch.setattr(media_proxy, "MEDIA_MAX_BYTES", 20)
+    upstream = DummyUpstream(
+        [b"decoded", b"-video"],
+        headers={
+            "Content-Type": "video/mp4",
+            "Content-Length": "5",
+            "Content-Encoding": "gzip",
+        },
+    )
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda src, headers, cookies: (upstream, None))
+
+    def fail_streaming(*args, **kwargs):
+        raise AssertionError("encoded video should not reuse upstream Content-Length while streaming")
+
+    monkeypatch.setattr(media_proxy, "build_streaming_media_response", fail_streaming)
+    app = create_app()
+
+    response = app.test_client().get("/media?src=https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4")
+
+    assert response.status_code == 200
+    assert response.data == b"decoded-video"
+    assert response.content_length == len(b"decoded-video")
+    assert "Content-Encoding" not in response.headers
+    assert upstream.closed is True
+
+
+def test_media_route_rejects_encoded_partial_content(monkeypatch):
+    upstream = DummyUpstream(
+        [b"decoded", b"-partial"],
+        headers={
+            "Content-Type": "video/mp4",
+            "Content-Length": "7",
+            "Content-Encoding": "gzip",
+            "Content-Range": "bytes 0-6/100",
+        },
+        status_code=206,
+    )
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda src, headers, cookies: (upstream, None))
+    app = create_app()
+
+    response = app.test_client().get(
+        "/media?src=https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4",
+        headers={"Range": "bytes=0-6"},
+    )
+
+    assert response.status_code == 502
+    assert upstream.iterated == 0
     assert upstream.closed is True
 
 
@@ -340,6 +459,10 @@ def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
     second_query = parse_qs(urlparse(images[1]["src"]).query)
     assert first_query["src"] == ["https://images.dcinside.com/post-a.jpg"]
     assert second_query["src"] == ["https://images.dcinside.com/post-b.jpg"]
+    assert images[0]["loading"] == "eager"
+    assert images[0]["fetchpriority"] == "high"
+    assert images[1]["loading"] == "lazy"
+    assert "fetchpriority" not in images[1].attrs
     assert "data-original" not in images[0].attrs
 
 
@@ -465,7 +588,8 @@ def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
           <a href="javascript:alert(1)" target="_blank">bad</a>
           <a href="https://example.com/path">good</a>
           <img src="https://images.dcinside.com/raw.jpg">
-          <img src="/media?src=https%3A%2F%2Fimages.dcinside.com%2Fsafe.jpg" onerror="alert(1)">
+          <img src="/media?src=https%3A%2F%2Fimages.dcinside.com%2Fsafe.jpg" fetchpriority="high" onerror="alert(1)">
+          <img src="/media?src=https%3A%2F%2Fimages.dcinside.com%2Fbad-priority.jpg" fetchpriority="fast">
         </div>
         """
     )
@@ -479,9 +603,11 @@ def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
     assert anchors[1]["href"] == "https://example.com/path"
     assert anchors[1]["rel"] == ["noopener", "noreferrer"]
     images = soup.find_all("img")
-    assert len(images) == 1
+    assert len(images) == 2
     assert images[0]["src"].startswith("/media?")
+    assert images[0]["fetchpriority"] == "high"
     assert "onerror" not in images[0].attrs
+    assert "fetchpriority" not in images[1].attrs
 
 
 def test_sanitize_html_fragment_keeps_rewritten_video_source():
