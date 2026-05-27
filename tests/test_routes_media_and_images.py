@@ -1037,9 +1037,43 @@ def test_theme_toggle_persists_and_updates_accessibility_state():
     assert "html[data-theme='light'] .board-head" in style
 
 
+def test_read_passes_head_id_to_initial_document_fetch(monkeypatch):
+    seen = {}
+
+    async def fake_async_read(pid, board, kind=None, recommend=0, head_id=None, **kwargs):
+        seen["pid"] = pid
+        seen["board"] = board
+        seen["kind"] = kind
+        seen["head_id"] = head_id
+        return (
+            {
+                "title": "title",
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+                "html": "<p>body</p>",
+                "related_posts": [],
+            },
+            [],
+            [],
+        )
+
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    app = create_app()
+
+    response = app.test_client().get("/read?board=test&pid=123&kind=minor&headid=10")
+    soup = BeautifulSoup(response.data, "html.parser")
+
+    assert response.status_code == 200
+    assert seen == {"pid": 123, "board": "test", "kind": "minor", "head_id": "10"}
+    assert soup.select_one("#related-section")["data-head-id"] == "10"
+
+
 def test_read_renders_embedded_related_posts_without_extra_related_request(monkeypatch):
-    async def fake_async_read(pid, board, kind=None, recommend=0):
+    async def fake_async_read(pid, board, kind=None, recommend=0, **kwargs):
         assert recommend == 1
+        assert kwargs.get("head_id") is None
         return (
             {
                 "title": "title",

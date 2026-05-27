@@ -411,6 +411,7 @@ def read():
             board,
             kind=kind,
             recommend=recommend,
+            head_id=head_id,
             **_search_call_kwargs(search_type, search_keyword),
         )
     )

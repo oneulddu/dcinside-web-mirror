@@ -461,20 +461,26 @@ class API:
             }
         )
 
-    def __build_mobile_view_suffix(self, recommend=False, search_type=None, search_keyword=None):
+    def __build_mobile_view_suffix(self, recommend=False, search_type=None, search_keyword=None, head_id=None):
         params = []
         if recommend:
             params.append(("recommend", "1"))
+        normalized_head_id = self.__normalize_head_id(head_id)
+        if normalized_head_id is not None:
+            params.append(("headid", normalized_head_id))
         keyword = (search_keyword or "").strip()
         if keyword:
             params.append(("s_type", self.__normalize_search_type(search_type)))
             params.append(("serval", keyword))
         return ("?" + urlencode(params)) if params else ""
 
-    def __build_pc_view_suffix(self, recommend=False, search_type=None, search_keyword=None):
+    def __build_pc_view_suffix(self, recommend=False, search_type=None, search_keyword=None, head_id=None):
         params = []
         if recommend:
             params.append(("recommend", "1"))
+        normalized_head_id = self.__normalize_head_id(head_id)
+        if normalized_head_id is not None:
+            params.append(("search_head", normalized_head_id))
         keyword = (search_keyword or "").strip()
         if keyword:
             pc_type_map = {
@@ -488,11 +494,11 @@ class API:
             params.append(("s_keyword", keyword))
         return ("&" + urlencode(params)) if params else ""
 
-    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None):
+    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None):
         kind = (kind or "").lower()
         urls = []
-        mobile_suffix = self.__build_mobile_view_suffix(recommend, search_type, search_keyword)
-        pc_suffix = self.__build_pc_view_suffix(recommend, search_type, search_keyword)
+        mobile_suffix = self.__build_mobile_view_suffix(recommend, search_type, search_keyword, head_id=head_id)
+        pc_suffix = self.__build_pc_view_suffix(recommend, search_type, search_keyword, head_id=head_id)
 
         if kind == "mini":
             urls.append("https://m.dcinside.com/mini/{}/{}{}".format(board_id, document_id, mobile_suffix))
@@ -1814,7 +1820,7 @@ class API:
             iframe.getparent().replace(iframe, self.__poll_card_element(poll_src, poll=poll))
         return doc_content
 
-    async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None):
+    async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None):
         parsed, text, used_url = await self.__fetch_parsed_from_urls(
             self.__build_view_urls(
                 board_id,
@@ -1823,6 +1829,7 @@ class API:
                 recommend=recommend,
                 search_type=search_type,
                 search_keyword=search_keyword,
+                head_id=head_id,
             ),
             validator=self.__is_usable_document_page,
         )

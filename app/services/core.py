@@ -306,7 +306,7 @@ async def _fill_missing_author_codes(api, board, kind, rows, recommend=0):
     return rows
 
 
-async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None):
+async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
     data = {}
     comments = []
     images = []
@@ -317,6 +317,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         recommend=bool(_safe_int(recommend, 0)),
         search_type=search_type,
         search_keyword=search_keyword,
+        head_id=head_id,
     )
     if doc is None:
         return {
@@ -364,7 +365,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
     return data, comments, images
 
 
-async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None):
+async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
     async with dc_api.API() as api:
         return await _read_document_with_api(
             api,
@@ -374,6 +375,7 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
             recommend=recommend,
             search_type=search_type,
             search_keyword=search_keyword,
+            head_id=head_id,
         )
 
 
