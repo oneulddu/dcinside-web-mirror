@@ -1,12 +1,15 @@
 import asyncio
-import json
-import lxml.html
-import os
-from datetime import datetime, timedelta
 import itertools
+import json
+import os
+import re
+from datetime import datetime, timedelta
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
+
 import aiohttp
 import filetype
-from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
+import lxml.html
+
 
 def env_int(name, default):
     try:
@@ -45,8 +48,8 @@ MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Appl
 PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 GET_HEADERS = {
-    "User-Agent": MOBILE_USER_AGENT
-     }
+    "User-Agent": MOBILE_USER_AGENT,
+}
 XML_HTTP_REQ_HEADERS = {
     "Accept": "*/*",
     "Connection": "keep-alive",
@@ -54,9 +57,8 @@ XML_HTTP_REQ_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
     "Accept-Encoding": "gzip, deflate, br",
     "Accept-Language": "en-US,en;q=0.5",
-    "X-Requested-With": "XMLHttpRequest",
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    }
+}
 
 POST_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
@@ -67,14 +69,14 @@ POST_HEADERS = {
     "Pragma": "no-cache",
     "Upgrade-Insecure-Requests": "1",
     "User-Agent": MOBILE_USER_AGENT,
-    }
+}
 
 GALLERY_POSTS_COOKIES = {
     "__gat_mobile_search": 1,
     "list_count": DOCS_PER_PAGE,
-    }
+}
 
-import re
+
 def unquote(encoded):
     return re.sub(r'\\u([a-fA-F0-9]{4}|[a-fA-F0-9]{2})', lambda m: chr(int(m.group(1), 16)), encoded)
 def quote(decoded):
@@ -1938,14 +1940,7 @@ class API:
             # fail due to unusual tags in mobile version
             # at now, just skip it
             return None
-        ''' !TODO: use an alternative(PC) protocol to fetch document
-        else:
-            url = "https://gall.dcinside.com/{}?no={}".format(board_id, document_id)
-            res = sess.get(url, timeout=TIMEOUT, headers=ALTERNATIVE_GET_HEADERS)
-            parsed = lxml.html.fromstring(res.text)
-            doc_content = parsed.xpath("//div[@class='thum-txtin']")[0]
-            return '\n'.join(i.strip() for i in doc_content.itertext() if i.strip() and not i.strip().startswith("이미지 광고")), [i.get("src") for i in doc_content.xpath("//img") if not i.get("src","").startswith("https://nstatic")], comments(board_id, document_id, sess=sess)
-        '''
+
     async def __get_pc_comment_context(self, board_id, document_id, kind=None):
         for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
             try:
@@ -2214,6 +2209,8 @@ class API:
                 remaining -= 1
                 if remaining == 0:
                     return
+    # The Flask app is read-only today, so these write helpers are intentionally
+    # not connected to routes. Keep them isolated until write support is planned.
     async def write_comment(self, board_id, document_id, contents="", dccon_id="", dccon_src="", parent_comment_id="", name="", password="", is_minor=False):
         url = "https://m.dcinside.com/board/{}/{}".format(board_id, document_id)
         async with self.session.get(url) as res:

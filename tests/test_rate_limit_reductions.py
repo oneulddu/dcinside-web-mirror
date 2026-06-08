@@ -30,12 +30,10 @@ def _index_item(doc_id, *, author_id=None, is_mobile_source=False):
 @pytest.fixture(autouse=True)
 def clear_core_caches():
     core._BOARD_PAGE_CACHE.clear()
-    core._RELATED_CACHE.clear()
     core._LATEST_ID_CACHE.clear()
     core._AUTHOR_CODE_CACHE.clear()
     yield
     core._BOARD_PAGE_CACHE.clear()
-    core._RELATED_CACHE.clear()
     core._LATEST_ID_CACHE.clear()
     core._AUTHOR_CODE_CACHE.clear()
 
@@ -43,12 +41,11 @@ def clear_core_caches():
 def test_core_caches_use_separate_locks():
     locks = {
         core._BOARD_PAGE_CACHE_LOCK,
-        core._RELATED_CACHE_LOCK,
         core._LATEST_ID_CACHE_LOCK,
         core._AUTHOR_CODE_CACHE_LOCK,
     }
 
-    assert len(locks) == 4
+    assert len(locks) == 3
 
 
 @pytest.mark.asyncio
@@ -278,7 +275,7 @@ async def test_read_document_fetches_comments_when_embedded_total_is_unknown():
 
 
 @pytest.mark.asyncio
-async def test_related_uses_source_page_without_author_backfill(monkeypatch):
+async def test_related_after_position_uses_source_page_without_author_backfill(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
 
@@ -293,11 +290,13 @@ async def test_related_uses_source_page_without_author_backfill(monkeypatch):
             if kwargs["start_page"] == 2:
                 yield _index_item(100)
                 yield _index_item(99)
+                yield _index_item(98)
 
     api = FakeAPI()
 
-    related = await core._related_by_position_with_api(
+    related, has_more = await core._related_after_position_with_api(
         api,
+        "100",
         "100",
         "test",
         limit=1,
@@ -305,42 +304,12 @@ async def test_related_uses_source_page_without_author_backfill(monkeypatch):
     )
 
     assert [row["id"] for row in related] == ["99"]
-    assert api.calls == [(2, core.RELATED_PAGE_FETCH_SIZE)]
+    assert has_more is True
+    assert api.calls == [(1, 1), (2, core.RELATED_PAGE_FETCH_SIZE)]
 
 
 @pytest.mark.asyncio
-async def test_related_recommend_uses_source_page_fallback(monkeypatch):
-    async def fail_author_backfill(*args, **kwargs):
-        raise AssertionError("related posts should not fetch documents for author code backfill")
-
-    monkeypatch.setattr(core, "_fill_missing_author_codes", fail_author_backfill)
-
-    class FakeAPI:
-        def __init__(self):
-            self.calls = []
-
-        async def board(self, **kwargs):
-            self.calls.append((kwargs["start_page"], kwargs["num"], kwargs["recommend"]))
-            yield _index_item(100)
-            yield _index_item(99)
-
-    api = FakeAPI()
-
-    related = await core._related_by_position_with_api(
-        api,
-        "100",
-        "test",
-        limit=1,
-        source_page=1,
-        recommend=1,
-    )
-
-    assert [row["id"] for row in related] == ["99"]
-    assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
-
-
-@pytest.mark.asyncio
-async def test_related_recommend_keeps_following_higher_ids(monkeypatch):
+async def test_related_after_position_recommend_keeps_following_higher_ids(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
 
@@ -358,98 +327,24 @@ async def test_related_recommend_keeps_following_higher_ids(monkeypatch):
 
     api = FakeAPI()
 
-    related = await core._related_by_position_with_api(
+    related, has_more = await core._related_after_position_with_api(
         api,
+        "100",
         "100",
         "test",
         limit=2,
         source_page=1,
         recommend=1,
+        tail_pages=0,
     )
 
     assert [row["id"] for row in related] == ["105", "99"]
+    assert has_more is False
     assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
 
 
 @pytest.mark.asyncio
-async def test_related_recommend_fallback_checks_only_source_page_then_first_page(monkeypatch):
-    async def fail_author_backfill(*args, **kwargs):
-        raise AssertionError("related posts should not fetch documents for author code backfill")
-
-    monkeypatch.setattr(core, "_fill_missing_author_codes", fail_author_backfill)
-
-    class FakeAPI:
-        def __init__(self):
-            self.calls = []
-
-        async def board(self, **kwargs):
-            self.calls.append((kwargs["start_page"], kwargs["num"], kwargs["recommend"]))
-            if kwargs["start_page"] == 1:
-                yield _index_item(100)
-                yield _index_item(99)
-            else:
-                yield _index_item(200)
-
-    api = FakeAPI()
-
-    related = await core._related_by_position_with_api(
-        api,
-        "100",
-        "test",
-        limit=1,
-        source_page=7,
-        recommend=1,
-    )
-
-    assert [row["id"] for row in related] == ["99"]
-    assert api.calls == [
-        (7, core.RELATED_PAGE_FETCH_SIZE, 1),
-        (1, core.RELATED_PAGE_FETCH_SIZE, 1),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_related_recommend_caches_empty_fallback(monkeypatch):
-    async def fail_author_backfill(*args, **kwargs):
-        raise AssertionError("related posts should not fetch documents for author code backfill")
-
-    monkeypatch.setattr(core, "_fill_missing_author_codes", fail_author_backfill)
-
-    class FakeAPI:
-        def __init__(self):
-            self.calls = []
-
-        async def board(self, **kwargs):
-            self.calls.append((kwargs["start_page"], kwargs["num"], kwargs["recommend"]))
-            yield _index_item(200)
-
-    api = FakeAPI()
-
-    first = await core._related_by_position_with_api(
-        api,
-        "100",
-        "test",
-        limit=1,
-        source_page=1,
-        recommend=1,
-    )
-    core._BOARD_PAGE_CACHE.clear()
-    second = await core._related_by_position_with_api(
-        api,
-        "100",
-        "test",
-        limit=1,
-        source_page=1,
-        recommend=1,
-    )
-
-    assert first == []
-    assert second == []
-    assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
-
-
-@pytest.mark.asyncio
-async def test_related_falls_back_to_estimate_when_source_page_hint_misses(monkeypatch):
+async def test_related_after_position_falls_back_to_estimate_when_source_page_hint_misses(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
 
@@ -466,11 +361,13 @@ async def test_related_falls_back_to_estimate_when_source_page_hint_misses(monke
             elif kwargs["start_page"] == 3:
                 yield _index_item(100)
                 yield _index_item(99)
+                yield _index_item(98)
 
     api = FakeAPI()
 
-    related = await core._related_by_position_with_api(
+    related, has_more = await core._related_after_position_with_api(
         api,
+        "100",
         "100",
         "test",
         limit=1,
@@ -478,43 +375,12 @@ async def test_related_falls_back_to_estimate_when_source_page_hint_misses(monke
     )
 
     assert [row["id"] for row in related] == ["99"]
+    assert has_more is True
     assert api.calls == [
-        (9, core.RELATED_PAGE_FETCH_SIZE),
         (1, 1),
+        (9, core.RELATED_PAGE_FETCH_SIZE),
         (3, core.RELATED_PAGE_FETCH_SIZE),
     ]
-
-
-@pytest.mark.asyncio
-async def test_related_does_not_cache_empty_results(monkeypatch):
-    async def fail_author_backfill(*args, **kwargs):
-        raise AssertionError("related posts should not fetch documents for author code backfill")
-
-    monkeypatch.setattr(core, "_fill_missing_author_codes", fail_author_backfill)
-
-    class FakeAPI:
-        def __init__(self):
-            self.calls = 0
-
-        async def board(self, **kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                yield _index_item(100)
-            elif self.calls == 2:
-                yield _index_item(100)
-            else:
-                yield _index_item(100)
-                yield _index_item(99)
-
-    api = FakeAPI()
-
-    first = await core._related_by_position_with_api(api, "100", "test", limit=1, source_page=1)
-    core._BOARD_PAGE_CACHE.clear()
-    second = await core._related_by_position_with_api(api, "100", "test", limit=1, source_page=1)
-
-    assert first == []
-    assert [row["id"] for row in second] == ["99"]
-    assert api.calls == 3
 
 
 @pytest.mark.asyncio

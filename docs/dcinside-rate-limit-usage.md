@@ -246,7 +246,7 @@ GET /read/related?board={board}&pid={pid}&limit=12
 - `app/templates/read.html`
 - `app/static/javascript/read_related_loader.js`
 - `app/routes.py`의 `read_related()`
-- `app/services/core.py`의 `async_related_by_position()`
+- `app/services/core.py`의 `async_related_after_position()`
 - `app/services/core.py`의 `_fetch_board_page()`
 
 ### 기본 흐름
@@ -257,9 +257,8 @@ GET /read/related?board={board}&pid={pid}&limit=12
 /read 화면 렌더링
 → read_related_loader.js 실행
 → /read/related fetch
-→ async_related_by_position()
-→ 현재 글 위치를 찾기 위해 DCinside 리스트 페이지 여러 번 요청
-→ 필요한 경우 관련글 작성자 코드 보완용 게시글 요청
+→ async_related_after_position()
+→ 마지막으로 본 글 이후 위치를 찾기 위해 DCinside 리스트 페이지 요청
 ```
 
 ### 제한 사용량
@@ -275,9 +274,8 @@ GET /read/related?board={board}&pid={pid}&limit=12
 
 ```python
 RELATED_LIMIT = 12
-RELATED_PAGE_PROBE_STEPS = 8
-RELATED_TAIL_PAGES = 3
-RELATED_CACHE_TTL = 90
+RELATED_PAGE_PROBE_STEPS = 4
+RELATED_TAIL_PAGES = 1
 LATEST_ID_CACHE_TTL = 20
 ```
 
@@ -288,26 +286,16 @@ LATEST_ID_CACHE_TTL = 20
 | 단계 | 리스트뷰 사용 |
 |---|---:|
 | 최신 글 번호 확인 | 최대 1회 |
-| 현재 글 위치 탐색 | 최대 8회 |
-| 다음 페이지 꼬리 탐색 | 최대 3회 |
+| 마지막으로 본 글 위치 탐색 | 후보 페이지당 최대 4회 |
+| 다음 페이지 꼬리 탐색 | 최대 1회 |
 
 최악에 가까운 경우:
 
 ```text
-리스트뷰 최대 12회
+리스트뷰 여러 회
 ```
 
-여기에 관련글 결과의 작성자 코드가 비어 있으면 게시글 요청이 추가된다.
-
-관련글 결과 기본 개수는 `limit=12`이므로, 최악에 가까우면:
-
-```text
-리스트뷰 최대 12회 + 게시글 최대 12회
-```
-
-까지 갈 수 있다.
-
-단, `_LATEST_ID_CACHE`, `_RELATED_CACHE`, `_AUTHOR_CODE_CACHE`가 있어 같은 조건의 관련글 조회는 일정 시간 재사용된다.
+단, `_LATEST_ID_CACHE`와 게시판 페이지 짧은 캐시가 있어 같은 조건의 위치 탐색은 일정 시간 일부 재사용된다.
 
 ## `/media` 이미지 요청
 
@@ -458,7 +446,7 @@ app/services/core.py
 ```text
 /read
 → /read/related
-→ async_related_by_position()
+→ async_related_after_position()
 → _fetch_board_page()
 ```
 
