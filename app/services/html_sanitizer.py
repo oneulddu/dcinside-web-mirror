@@ -4,6 +4,8 @@ from urllib.parse import parse_qs, urlparse
 from bs4 import BeautifulSoup
 from flask import url_for
 
+from .highlight import highlight_soup_text
+
 
 HTML_ALLOWED_TAGS = {
     "a", "abbr", "b", "blockquote", "br", "code", "dd", "del", "div", "dl", "dt",
@@ -25,6 +27,7 @@ HTML_TAG_ATTRS = {
 }
 YOUTUBE_IFRAME_HOSTS = {"youtube.com", "www.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com"}
 DC_MOVIE_VIEW_URL = "https://gall.dcinside.com/board/movie/movie_view?no={}"
+HTML_PARSER = "lxml"
 
 
 def is_safe_href(value):
@@ -128,8 +131,11 @@ def default_iframe_title(src):
     return "첨부 콘텐츠"
 
 
-def sanitize_html_fragment(raw_html):
-    soup = BeautifulSoup(raw_html or "", "html.parser")
+def parse_html_fragment(raw_html):
+    return BeautifulSoup(raw_html or "", HTML_PARSER)
+
+
+def sanitize_html_tree(soup):
     for tag in list(soup.find_all(True)):
         name = (tag.name or "").lower()
         if name in HTML_DROP_TAGS:
@@ -182,7 +188,25 @@ def sanitize_html_fragment(raw_html):
             elif attr_name == "fetchpriority":
                 if name != "img" or str(value).strip().lower() not in {"high", "low", "auto"}:
                     del tag.attrs[attr]
+    return soup
+
+
+def serialize_html_fragment(soup):
     return str(soup)
+
+
+def sanitize_html_fragment(raw_html):
+    soup = parse_html_fragment(raw_html)
+    sanitize_html_tree(soup)
+    return serialize_html_fragment(soup)
+
+
+def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
+    soup = parse_html_fragment(raw_html)
+    rewrite_content_images(soup, images, board, pid, kind)
+    sanitize_html_tree(soup)
+    highlight_soup_text(soup, search_keyword)
+    return serialize_html_fragment(soup)
 
 
 def pick_soup_image_src(tag):
