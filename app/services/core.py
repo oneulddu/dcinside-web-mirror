@@ -407,42 +407,19 @@ async def async_index(
     search_keyword=None,
     head_id=None,
 ):
-    if limit is None:
-        fetch_num = MAX_PAGE
-    else:
-        try:
-            fetch_num = max(int(limit), 0)
-        except (TypeError, ValueError):
-            fetch_num = MAX_PAGE
-    if fetch_num == 0:
-        return []
-    if max_scan_pages is None:
-        scan_limit = None
-    else:
-        try:
-            scan_limit = max(int(max_scan_pages), 0)
-        except (TypeError, ValueError):
-            scan_limit = None
-
-    data = []
-    async with dc_api_context() as api:
-        async for item in api.board(
-            board_id=board,
-            num=fetch_num,
-            start_page=page,
-            recommend=recommend,
-            kind=kind,
-            document_id_upper_limit=document_id_upper_limit,
-            document_id_lower_limit=document_id_lower_limit,
-            max_scan_pages=scan_limit,
-            search_type=search_type,
-            search_keyword=search_keyword,
-            head_id=head_id,
-            headtexts_collector=[],
-        ):
-            tdata = _index_item_to_dict(item)
-            data.append(tdata)
-        await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
+    data, _categories = await async_index_with_head_categories(
+        page,
+        board,
+        recommend,
+        kind=kind,
+        document_id_upper_limit=document_id_upper_limit,
+        document_id_lower_limit=document_id_lower_limit,
+        limit=limit,
+        max_scan_pages=max_scan_pages,
+        search_type=search_type,
+        search_keyword=search_keyword,
+        head_id=head_id,
+    )
     return data
 
 
