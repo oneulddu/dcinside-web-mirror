@@ -1,3 +1,4 @@
+import logging
 import os
 from urllib.parse import parse_qs, urlparse
 
@@ -58,3 +59,17 @@ def test_static_files_use_immutable_cache_headers(monkeypatch):
     assert "public" in response.headers["Cache-Control"]
     assert "max-age=31536000" in response.headers["Cache-Control"]
     assert "immutable" in response.headers["Cache-Control"]
+
+
+def test_request_logging_records_path_status_and_duration(monkeypatch, caplog):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    app = create_app()
+    caplog.set_level(logging.INFO, logger=app.logger.name)
+
+    response = app.test_client().get("/static/css/main.css")
+
+    assert response.status_code == 200
+    assert any(
+        "request path=/static/css/main.css status=200 duration_ms=" in record.getMessage()
+        for record in caplog.records
+    )

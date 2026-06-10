@@ -1,6 +1,7 @@
 import os
+import time
 
-from flask import Flask, request, url_for
+from flask import Flask, g, request, url_for
 from flask_compress import Compress
 
 from env_loader import load_dotenv
@@ -46,6 +47,26 @@ def _init_static_cache_busting(app):
         return response
 
 
+def _init_request_logging(app):
+    @app.before_request
+    def start_request_timer():
+        g.request_started_at = time.perf_counter()
+
+    @app.after_request
+    def log_request(response):
+        started_at = getattr(g, "request_started_at", None)
+        duration_ms = 0.0
+        if started_at is not None:
+            duration_ms = (time.perf_counter() - started_at) * 1000
+        app.logger.info(
+            "request path=%s status=%s duration_ms=%.2f",
+            request.path,
+            response.status_code,
+            duration_ms,
+        )
+        return response
+
+
 def create_app():
     app = Flask(__name__, instance_relative_config=True)
     env = os.getenv("MIRROR_ENV", "production").strip().lower()
@@ -56,6 +77,7 @@ def create_app():
     app.config.from_prefixed_env("MIRROR")
     app.add_template_filter(highlight_search_term, "highlight_search")
     register_routes(app)
+    _init_request_logging(app)
     _init_static_cache_busting(app)
     _init_response_compression(app)
     return app
