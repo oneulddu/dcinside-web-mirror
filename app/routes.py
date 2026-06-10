@@ -299,6 +299,9 @@ def recent():
 
 @bp.route("/healthz")
 def healthz():
+    remote_addr = request.remote_addr or ""
+    if remote_addr not in {"127.0.0.1", "::1"}:
+        abort(404)
     return jsonify({"ok": True})
 
 
