@@ -1,5 +1,8 @@
+import asyncio
+
 import pytest
 
+from app.services import async_bridge
 from app.services import core
 from app.services.dc_api import Comment, DocumentIndex
 
@@ -50,6 +53,52 @@ def test_core_caches_use_separate_locks():
 
 def test_author_code_cache_ttl_is_one_hour():
     assert core.AUTHOR_CODE_CACHE_TTL == 3600
+
+
+def test_shared_api_head_categories_are_request_scoped(monkeypatch):
+    async_bridge.shutdown_async_bridge()
+
+    class FakeSession:
+        closed = False
+
+    class FakeAPI:
+        instances = []
+
+        def __init__(self):
+            self.session = FakeSession()
+            self.close_calls = 0
+            self.last_board_headtexts = []
+            self.__class__.instances.append(self)
+
+        async def close(self):
+            self.close_calls += 1
+            self.session.closed = True
+
+        async def board(self, board_id, headtexts_collector=None, **kwargs):
+            await asyncio.sleep(0.01 if board_id == "alpha" else 0)
+            headtexts = [{"head_id": None, "label": board_id, "active": True}]
+            if headtexts_collector is not None:
+                headtexts_collector[:] = headtexts
+            else:
+                self.last_board_headtexts = headtexts
+            yield _index_item(101 if board_id == "alpha" else 202)
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    async def load_both():
+        return await asyncio.gather(
+            core.async_index_with_head_categories(1, "alpha", 0, limit=1),
+            core.async_index_with_head_categories(1, "beta", 0, limit=1),
+        )
+
+    try:
+        results = async_bridge.run_async(load_both())
+    finally:
+        async_bridge.shutdown_async_bridge()
+
+    assert len(FakeAPI.instances) == 1
+    assert [results[0][1][0]["label"], results[1][1][0]["label"]] == ["alpha", "beta"]
+    assert FakeAPI.instances[0].close_calls == 1
 
 
 @pytest.mark.asyncio

@@ -29,6 +29,11 @@ def test_board_kind_cache_ttl_default_is_six_hours():
     assert dc_api.BOARD_KIND_CACHE_TTL == 21600
 
 
+def test_dc_session_connector_defaults():
+    assert dc_api.DC_CONN_LIMIT == 20
+    assert dc_api.DC_DNS_CACHE_TTL == 60
+
+
 def test_list_urls_prefer_mobile_before_pc():
     api = API.__new__(API)
     urls = api._API__build_list_urls("aoegame", 1, recommend=False, kind=None)
