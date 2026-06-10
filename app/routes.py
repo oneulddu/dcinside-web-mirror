@@ -296,6 +296,12 @@ def recent():
         )
     return render_template("recent.html", nav_tab="recent", recent_items=recent_items)
 
+
+@bp.route("/healthz")
+def healthz():
+    return jsonify({"ok": True})
+
+
 # 공군갤 airforce
 # 야갤 baseball_new10
 # 싱벙갤 singlebungle1472

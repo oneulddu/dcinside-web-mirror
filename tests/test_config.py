@@ -73,3 +73,13 @@ def test_request_logging_records_path_status_and_duration(monkeypatch, caplog):
         "request path=/static/css/main.css status=200 duration_ms=" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_healthz_is_local_only(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    app = create_app()
+
+    response = app.test_client().get("/healthz")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True}
