@@ -1,6 +1,7 @@
 import base64
 import json
 import threading
+import time
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
@@ -1532,6 +1533,45 @@ def test_get_heung_galleries_does_not_hold_cache_lock_while_fetching_or_writing(
     assert items == [{"rank": 1, "name": "테스트", "board_id": "test"}]
     assert updated_at > 0
     assert calls == ["fetch", "write"]
+
+
+def test_get_heung_galleries_returns_stale_while_refreshing(monkeypatch):
+    stale_items = [{"rank": 1, "name": "오래된 목록", "board_id": "old"}]
+    fresh_items = [{"rank": 1, "name": "새 목록", "board_id": "fresh"}]
+    refresh_started = threading.Event()
+    allow_refresh_finish = threading.Event()
+
+    def fake_fetch():
+        refresh_started.set()
+        assert allow_refresh_finish.wait(timeout=2)
+        return fresh_items
+
+    monkeypatch.setattr(heung, "HEUNG_CACHE", {"updated_at": 1.0, "items": stale_items})
+    monkeypatch.setattr(heung, "HEUNG_CACHE_LOCK", threading.Lock())
+    monkeypatch.setattr(heung, "HEUNG_REFRESH_LOCK", threading.Lock())
+    monkeypatch.setattr(heung, "_read_heung_cache_file", lambda: None)
+    monkeypatch.setattr(heung, "_fetch_heung_galleries", fake_fetch)
+    monkeypatch.setattr(heung, "_write_heung_cache_file", lambda updated_at, items: None)
+
+    started_at = time.monotonic()
+    items, updated_at = heung.get_heung_galleries()
+
+    assert time.monotonic() - started_at < 0.2
+    assert items == stale_items
+    assert updated_at == 1.0
+    assert refresh_started.wait(timeout=1)
+
+    allow_refresh_finish.set()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        cached_items, _ = heung._heung_cache_snapshot()
+        if cached_items == fresh_items:
+            break
+        time.sleep(0.01)
+
+    cached_items, cached_updated_at = heung._heung_cache_snapshot()
+    assert cached_items == fresh_items
+    assert cached_updated_at > 1.0
 
 
 def test_search_galleries_parses_gallery_search_results(monkeypatch):
