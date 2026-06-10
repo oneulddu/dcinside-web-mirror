@@ -34,6 +34,38 @@ def test_dc_session_connector_defaults():
     assert dc_api.DC_DNS_CACHE_TTL == 60
 
 
+@pytest.mark.asyncio
+async def test_request_text_logs_rate_limit_warning(caplog):
+    class FakeResponse:
+        status = 429
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "Too Many Requests"
+
+    class FakeSession:
+        def request(self, *args, **kwargs):
+            return FakeResponse()
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+    caplog.set_level("WARNING", logger="app.services.dc.api")
+
+    with pytest.raises(RuntimeError, match="rate limited: 429"):
+        await api._API__request_text("GET", "https://m.dcinside.com/board/test")
+
+    assert any(
+        "rate limited: status=429 url=https://m.dcinside.com/board/test" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_list_urls_prefer_mobile_before_pc():
     api = API.__new__(API)
     urls = api._API__build_list_urls("aoegame", 1, recommend=False, kind=None)

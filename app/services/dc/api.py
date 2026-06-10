@@ -1,6 +1,7 @@
 import asyncio
 import itertools
 import json
+import logging
 import os
 import re
 import threading
@@ -11,6 +12,8 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 import aiohttp
 import filetype
 import lxml.html
+
+logger = logging.getLogger(__name__)
 
 
 def env_int(name, default):
@@ -397,6 +400,7 @@ class API(ParserMixin):
             response_headers = dict(res.headers)
 
         if self.__is_rate_limited_response(status, text[:1000]):
+            logger.warning("rate limited: status=%s url=%s", status, url)
             raise RuntimeError(f"rate limited: {status}")
 
         return status, response_headers, text
