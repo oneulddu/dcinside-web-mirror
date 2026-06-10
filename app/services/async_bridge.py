@@ -19,17 +19,19 @@ ASYNC_FALLBACK_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, _env_int("MIRROR
 
 _BACKGROUND_LOOP = None
 _BACKGROUND_THREAD = None
+_BACKGROUND_STARTING = False
 _BACKGROUND_READY = threading.Event()
 _BACKGROUND_LOCK = threading.Lock()
 _SHARED_DC_API = None
 
 
 def _background_loop_worker():
-    global _BACKGROUND_LOOP
+    global _BACKGROUND_LOOP, _BACKGROUND_STARTING
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     with _BACKGROUND_LOCK:
         _BACKGROUND_LOOP = loop
+        _BACKGROUND_STARTING = False
     _BACKGROUND_READY.set()
     try:
         loop.run_forever()
@@ -43,17 +45,23 @@ def _background_loop_worker():
 
 
 def get_background_loop():
-    global _BACKGROUND_THREAD
+    global _BACKGROUND_THREAD, _BACKGROUND_STARTING
+    should_start = False
     with _BACKGROUND_LOCK:
         if _BACKGROUND_LOOP is not None and _BACKGROUND_LOOP.is_running():
             return _BACKGROUND_LOOP
-        _BACKGROUND_READY.clear()
-        _BACKGROUND_THREAD = threading.Thread(
-            target=_background_loop_worker,
-            name="mirror-async-loop",
-            daemon=True,
-        )
-        _BACKGROUND_THREAD.start()
+        if not _BACKGROUND_STARTING:
+            _BACKGROUND_STARTING = True
+            _BACKGROUND_READY.clear()
+            _BACKGROUND_THREAD = threading.Thread(
+                target=_background_loop_worker,
+                name="mirror-async-loop",
+                daemon=True,
+            )
+            should_start = True
+        thread = _BACKGROUND_THREAD
+    if should_start:
+        thread.start()
     _BACKGROUND_READY.wait()
     with _BACKGROUND_LOCK:
         return _BACKGROUND_LOOP
@@ -91,7 +99,7 @@ async def _close_shared_dc_api():
 
 
 def shutdown_async_bridge():
-    global _BACKGROUND_LOOP, _BACKGROUND_THREAD
+    global _BACKGROUND_LOOP, _BACKGROUND_THREAD, _BACKGROUND_STARTING
     with _BACKGROUND_LOCK:
         loop = _BACKGROUND_LOOP
         thread = _BACKGROUND_THREAD
@@ -112,6 +120,7 @@ def shutdown_async_bridge():
             _BACKGROUND_LOOP = None
         if _BACKGROUND_THREAD is thread:
             _BACKGROUND_THREAD = None
+        _BACKGROUND_STARTING = False
 
 
 def _run_coro_in_new_loop(coro):
