@@ -3,6 +3,8 @@ import itertools
 import json
 import os
 import re
+import threading
+import time
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
@@ -42,8 +44,46 @@ def to_optional_int(value):
         return None
 
 
+def cache_get(cache, lock, key):
+    now = time.time()
+    with lock:
+        entry = cache.get(key)
+        if not entry:
+            return None
+        if entry["expires_at"] < now:
+            cache.pop(key, None)
+            return None
+        return entry["value"]
+
+
+def cache_prune(cache, now, max_items):
+    expired_keys = [key for key, entry in cache.items() if entry["expires_at"] < now]
+    for key in expired_keys:
+        cache.pop(key, None)
+    overflow = len(cache) - max(max_items, 0)
+    if overflow <= 0:
+        return
+    oldest_keys = sorted(cache, key=lambda key: cache[key]["expires_at"])[:overflow]
+    for key in oldest_keys:
+        cache.pop(key, None)
+
+
+def cache_set(cache, lock, key, value, ttl, max_items):
+    expires_at = time.time() + max(to_int(ttl, 0), 0)
+    with lock:
+        cache_prune(cache, time.time(), max_items)
+        cache[key] = {"value": value, "expires_at": expires_at}
+
+
+def cache_delete(cache, lock, key):
+    with lock:
+        cache.pop(key, None)
+
+
 DOCS_PER_PAGE = 200
 HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
+BOARD_KIND_CACHE_TTL = max(env_int("MIRROR_BOARD_KIND_CACHE_TTL", 21600), 0)
+BOARD_KIND_CACHE_MAX_ITEMS = 2048
 MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
@@ -75,6 +115,9 @@ GALLERY_POSTS_COOKIES = {
     "__gat_mobile_search": 1,
     "list_count": DOCS_PER_PAGE,
 }
+
+_BOARD_KIND_CACHE = {}
+_BOARD_KIND_CACHE_LOCK = threading.Lock()
 
 
 def unquote(encoded):
@@ -250,6 +293,62 @@ class API:
             seen.add(url)
             unique.append(url)
         return unique
+
+    def __board_kind_cache_key(self, board_id, kind=None, recommend=False, search_keyword=None):
+        return (
+            board_id,
+            (kind or "").lower(),
+            1 if recommend else 0,
+            bool((search_keyword or "").strip()),
+        )
+
+    def __list_url_pattern(self, url):
+        parsed = urlparse(url or "")
+        host = (parsed.netloc or "").lower()
+        path = parsed.path or ""
+        if host == "m.dcinside.com":
+            if path.startswith("/mini/"):
+                return "mobile_mini"
+            if path.startswith("/board/"):
+                return "mobile"
+            return None
+        if host != "gall.dcinside.com":
+            return None
+        if path.startswith("/mgallery/board/lists/"):
+            return "minor"
+        if path.startswith("/mini/board/lists/"):
+            return "mini"
+        if path.startswith("/person/board/lists/"):
+            return "person"
+        if path.startswith("/board/lists/"):
+            return "normal"
+        return None
+
+    def __get_cached_list_url(self, urls, cache_key):
+        pattern = cache_get(_BOARD_KIND_CACHE, _BOARD_KIND_CACHE_LOCK, cache_key)
+        if not pattern:
+            return None, None
+        for url in urls:
+            if self.__list_url_pattern(url) == pattern:
+                return url, pattern
+        cache_delete(_BOARD_KIND_CACHE, _BOARD_KIND_CACHE_LOCK, cache_key)
+        return None, None
+
+    def __cache_list_url_pattern(self, cache_key, used_url):
+        pattern = self.__list_url_pattern(used_url)
+        if not pattern:
+            return
+        cache_set(
+            _BOARD_KIND_CACHE,
+            _BOARD_KIND_CACHE_LOCK,
+            cache_key,
+            pattern,
+            BOARD_KIND_CACHE_TTL,
+            BOARD_KIND_CACHE_MAX_ITEMS,
+        )
+
+    def __invalidate_list_url_pattern(self, cache_key):
+        cache_delete(_BOARD_KIND_CACHE, _BOARD_KIND_CACHE_LOCK, cache_key)
 
     def __prepare_headers(self, url, headers=None):
         prepared = dict(headers or {})
@@ -1275,18 +1374,42 @@ class API:
         while num:
             if max_scan_pages is not None and scanned_pages >= max_scan_pages:
                 break
-            parsed, text, used_url = await self.__fetch_parsed_from_urls(
-                self.__build_list_urls(
-                    board_id,
-                    page,
-                    recommend=recommend,
-                    kind=kind,
-                    search_type=search_type,
-                    search_keyword=search_keyword,
-                    head_id=head_id,
-                ),
-                validator=self.__is_usable_board_page,
+            list_urls = self.__build_list_urls(
+                board_id,
+                page,
+                recommend=recommend,
+                kind=kind,
+                search_type=search_type,
+                search_keyword=search_keyword,
+                head_id=head_id,
             )
+            cache_key = self.__board_kind_cache_key(
+                board_id,
+                kind=kind,
+                recommend=recommend,
+                search_keyword=search_keyword,
+            )
+            cached_url, cached_pattern = self.__get_cached_list_url(list_urls, cache_key)
+            if cached_url and cached_url != list_urls[0]:
+                parsed, text, used_url = await self.__fetch_parsed_from_urls(
+                    [cached_url],
+                    validator=self.__is_usable_board_page,
+                )
+                if parsed is None:
+                    self.__invalidate_list_url_pattern(cache_key)
+                    parsed, text, used_url = await self.__fetch_parsed_from_urls(
+                        list_urls,
+                        validator=self.__is_usable_board_page,
+                    )
+            else:
+                parsed, text, used_url = await self.__fetch_parsed_from_urls(
+                    list_urls,
+                    validator=self.__is_usable_board_page,
+                )
+            if cached_pattern and used_url and self.__list_url_pattern(used_url) != cached_pattern:
+                self.__invalidate_list_url_pattern(cache_key)
+            if used_url:
+                self.__cache_list_url_pattern(cache_key, used_url)
             scanned_pages += 1
             if parsed is None:
                 break

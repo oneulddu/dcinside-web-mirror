@@ -239,6 +239,7 @@ mirror/
 | `MIRROR_HEUNG_CACHE_FILE` | `instance/heung_gallery_cache.json` | 캐시 파일 경로 |
 | `MIRROR_BOARD_PAGE_CACHE_TTL` | `20` | 게시판 페이지 짧은 캐시 |
 | `MIRROR_BOARD_FILL_AUTHOR_CODES` | `0` | 게시판 목록에서 캐시된 작성자 코드 보강 |
+| `MIRROR_BOARD_KIND_CACHE_TTL` | `21600` | 게시판 URL 후보 성공 패턴 캐시 |
 | `MIRROR_RELATED_PAGE_PROBE_STEPS` | `4` | 관련 글 주변 탐색 페이지 수 |
 | `MIRROR_RELATED_TAIL_PAGES` | `1` | 관련 글 뒤쪽 보충 페이지 |
 | `MIRROR_ASYNC_BRIDGE_WORKERS` | `2` | async bridge 보조 실행자 수 |
