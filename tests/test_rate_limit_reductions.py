@@ -48,6 +48,10 @@ def test_core_caches_use_separate_locks():
     assert len(locks) == 3
 
 
+def test_author_code_cache_ttl_is_one_hour():
+    assert core.AUTHOR_CODE_CACHE_TTL == 3600
+
+
 @pytest.mark.asyncio
 async def test_fetch_board_page_reuses_short_cache():
     class FakeAPI:
@@ -66,6 +70,107 @@ async def test_fetch_board_page_reuses_short_cache():
     assert api.calls == 1
     assert first == second
     assert first is not second
+
+
+@pytest.mark.asyncio
+async def test_fill_missing_author_codes_disabled_skips_document_fetch(monkeypatch):
+    monkeypatch.setattr(core, "BOARD_FILL_AUTHOR_CODES", False)
+
+    class FailingAPI:
+        def __init__(self):
+            self.document_calls = 0
+
+        async def document(self, *args, **kwargs):
+            self.document_calls += 1
+            raise AssertionError("disabled board author backfill must not fetch documents")
+
+    api = FailingAPI()
+    rows = [
+        {
+            "id": "123",
+            "author": "익명",
+            "author_code": None,
+            "is_mobile_source": False,
+        }
+    ]
+
+    result = await core._fill_missing_author_codes(api, "test", None, rows)
+
+    assert result is rows
+    assert rows[0]["author_code"] is None
+    assert api.document_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_fill_missing_author_codes_enabled_uses_cache_only(monkeypatch):
+    monkeypatch.setattr(core, "BOARD_FILL_AUTHOR_CODES", True)
+    core._cache_author_code("test", None, "123", "익명", "1.2")
+
+    class FailingAPI:
+        def __init__(self):
+            self.document_calls = 0
+
+        async def document(self, *args, **kwargs):
+            self.document_calls += 1
+            raise AssertionError("board author backfill should use only cache hits")
+
+    api = FailingAPI()
+    rows = [
+        {
+            "id": "123",
+            "author": "익명",
+            "author_code": None,
+            "is_mobile_source": False,
+        },
+        {
+            "id": "456",
+            "author": "익명",
+            "author_code": None,
+            "is_mobile_source": False,
+        },
+    ]
+
+    await core._fill_missing_author_codes(api, "test", None, rows)
+
+    assert rows[0]["author_code"] == "1.2"
+    assert rows[1]["author_code"] is None
+    assert api.document_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_async_index_does_not_fetch_documents_for_missing_author_codes_by_default(monkeypatch):
+    monkeypatch.setattr(core, "BOARD_FILL_AUTHOR_CODES", False)
+
+    class FakeAPI:
+        instances = []
+
+        def __init__(self):
+            self.board_calls = 0
+            self.document_calls = 0
+            self.__class__.instances.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def board(self, **kwargs):
+            self.board_calls += 1
+            yield _index_item(123, is_mobile_source=False)
+
+        async def document(self, **kwargs):
+            self.document_calls += 1
+            raise AssertionError("board rendering must not fetch documents for author codes by default")
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    rows = await core.async_index(1, "test", 0)
+
+    assert [row["id"] for row in rows] == ["123"]
+    assert rows[0]["author_code"] is None
+    assert FakeAPI.instances[0].board_calls == 1
+    assert FakeAPI.instances[0].document_calls == 0
 
 
 @pytest.mark.asyncio
