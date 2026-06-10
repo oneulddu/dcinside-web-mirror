@@ -4,6 +4,7 @@ import threading
 import time
 
 from . import dc_api
+from .async_bridge import dc_api_context
 
 
 def _env_int(name, default):
@@ -220,6 +221,7 @@ async def _fetch_board_page(
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        headtexts_collector=[],
     ):
         row = _index_item_to_dict(item)
         row["source_page"] = _safe_int(page, 1)
@@ -379,7 +381,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
 
 
 async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
-    async with dc_api.API() as api:
+    async with dc_api_context() as api:
         return await _read_document_with_api(
             api,
             api_id,
@@ -423,7 +425,7 @@ async def async_index(
             scan_limit = None
 
     data = []
-    async with dc_api.API() as api:
+    async with dc_api_context() as api:
         async for item in api.board(
             board_id=board,
             num=fetch_num,
@@ -436,6 +438,7 @@ async def async_index(
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            headtexts_collector=[],
         ):
             tdata = _index_item_to_dict(item)
             data.append(tdata)
@@ -474,7 +477,8 @@ async def async_index_with_head_categories(
             scan_limit = None
 
     data = []
-    async with dc_api.API() as api:
+    headtexts = []
+    async with dc_api_context() as api:
         async for item in api.board(
             board_id=board,
             num=fetch_num,
@@ -487,10 +491,11 @@ async def async_index_with_head_categories(
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            headtexts_collector=headtexts,
         ):
             data.append(_index_item_to_dict(item))
         await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
-        categories = _normalize_head_categories(getattr(api, "last_board_headtexts", []), head_id=head_id)
+        categories = _normalize_head_categories(headtexts, head_id=head_id)
     return data, categories
 
 
@@ -682,7 +687,7 @@ async def async_related_after_position(
     search_keyword=None,
     head_id=None,
 ):
-    async with dc_api.API() as api:
+    async with dc_api_context() as api:
         return await _related_after_position_with_api(
             api,
             api_id,

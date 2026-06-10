@@ -16,3 +16,9 @@ keepalive = env_int("MIRROR_KEEPALIVE", 5, minimum=0)
 accesslog = "-"
 errorlog = "-"
 loglevel = os.getenv("MIRROR_LOG_LEVEL", "info")
+
+
+def worker_exit(server, worker):
+    from app.services.async_bridge import shutdown_async_bridge
+
+    shutdown_async_bridge()
