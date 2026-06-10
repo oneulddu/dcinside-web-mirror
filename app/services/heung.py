@@ -145,18 +145,40 @@ def _refresh_heung_galleries():
     return fresh_items, fetched_at
 
 
+def _refresh_heung_galleries_in_background():
+    try:
+        _refresh_heung_galleries()
+    except Exception:
+        pass
+    finally:
+        HEUNG_REFRESH_LOCK.release()
+
+
+def _start_heung_refresh_background():
+    acquired = HEUNG_REFRESH_LOCK.acquire(blocking=False)
+    if not acquired:
+        return False
+    try:
+        thread = threading.Thread(target=_refresh_heung_galleries_in_background, daemon=True)
+        thread.start()
+        return True
+    except Exception:
+        HEUNG_REFRESH_LOCK.release()
+        raise
+
+
 def get_heung_galleries():
     _load_heung_file_cache_if_empty()
 
     cached_items, cached_updated_at = _heung_cache_snapshot()
     if _is_heung_cache_fresh(cached_items, cached_updated_at):
         return cached_items, cached_updated_at
+    if cached_items:
+        _start_heung_refresh_background()
+        return cached_items, cached_updated_at
 
     acquired = HEUNG_REFRESH_LOCK.acquire(blocking=False)
     if not acquired:
-        if cached_items:
-            return cached_items, cached_updated_at
-
         with HEUNG_REFRESH_LOCK:
             refreshed_items, refreshed_updated_at = _heung_cache_snapshot()
             if refreshed_items:
