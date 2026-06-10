@@ -92,6 +92,6 @@
         <a class="pager-btn" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}">목록으로</a>
     </div>
 </section>
-<script src="{{ url_for('static', filename='javascript/read_related_loader.js') }}"></script>
-<script src="{{ url_for('static', filename='javascript/comment_spam_filter.js') }}"></script>
+<script src="{{ static_url('javascript/read_related_loader.js') }}"></script>
+<script src="{{ static_url('javascript/comment_spam_filter.js') }}"></script>
 {% endblock %}

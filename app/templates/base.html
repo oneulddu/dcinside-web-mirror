@@ -42,7 +42,7 @@
         })();
     </script>
     <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/main.css') }}">
     <title>{{ title or "머숨 미러" }}</title>
 </head>
 <body>
@@ -71,6 +71,6 @@
             {% block content %}{% endblock %}
         </section>
     </main>
-    <script src="{{ url_for('static', filename='javascript/read_state.js') }}"></script>
+    <script src="{{ static_url('javascript/read_state.js') }}"></script>
 </body>
 </html>
