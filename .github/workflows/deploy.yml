@@ -94,11 +94,8 @@ jobs:
               exit 1
             fi
 
-            if "${PM2_BIN}" describe dc-mirror >/dev/null 2>&1; then
-              "${PM2_BIN}" reload ecosystem.config.js --only dc-mirror --update-env
-            else
-              "${PM2_BIN}" start ecosystem.config.js --only dc-mirror
-            fi
+            "${PM2_BIN}" delete dc-mirror >/dev/null 2>&1 || true
+            "${PM2_BIN}" start ecosystem.config.js --only dc-mirror
             "${PM2_BIN}" save
 
             "${PM2_BIN}" describe dc-mirror >/dev/null
