@@ -5,6 +5,7 @@ from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
 from bs4 import BeautifulSoup
+from flask import jsonify
 
 from app import create_app
 from app import routes
@@ -45,6 +46,53 @@ class DummyMovieResponse:
 
 def test_media_proxy_mobile_user_agent_uses_ios():
     assert "iPhone" in media_proxy.MOBILE_USER_AGENT
+
+
+def test_html_and_json_responses_are_compressed():
+    app = create_app()
+
+    @app.get("/compression-html-test")
+    def compression_html_test():
+        return "<p>" + ("압축 테스트" * 200) + "</p>"
+
+    @app.get("/compression-json-test")
+    def compression_json_test():
+        return jsonify({"text": "압축 테스트" * 200})
+
+    client = app.test_client()
+
+    html_response = client.get("/compression-html-test", headers={"Accept-Encoding": "gzip"})
+    json_response = client.get("/compression-json-test", headers={"Accept-Encoding": "gzip"})
+
+    assert html_response.headers["Content-Encoding"] == "gzip"
+    assert json_response.headers["Content-Encoding"] == "gzip"
+
+
+def test_media_and_movie_routes_are_not_compressed(monkeypatch):
+    upstream = DummyUpstream(
+        [b"1234567890"],
+        headers={"Content-Type": "image/jpeg"},
+    )
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda src, headers, cookies: (upstream, None))
+    monkeypatch.setattr(
+        media_proxy.requests,
+        "get",
+        lambda *args, **kwargs: DummyMovieResponse("<html>" + ("movie" * 200) + "</html>"),
+    )
+    app = create_app()
+    client = app.test_client()
+
+    media_response = client.get(
+        "/media?src=https://images.dcinside.com/test.jpg",
+        headers={"Accept-Encoding": "gzip"},
+    )
+    movie_response = client.get(
+        "/movie?no=6499430&board=idolism&pid=1193413",
+        headers={"Accept-Encoding": "gzip"},
+    )
+
+    assert "Content-Encoding" not in media_response.headers
+    assert "Content-Encoding" not in movie_response.headers
 
 
 def test_read_limited_media_body_closes_after_success(monkeypatch):
