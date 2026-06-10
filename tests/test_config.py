@@ -1,3 +1,6 @@
+import os
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 
 from app import create_app
@@ -29,3 +32,29 @@ def test_production_uses_configured_secret_key(monkeypatch):
 
     assert app.config["DEBUG"] is False
     assert app.config["SECRET_KEY"] == "stable-secret"
+
+
+def test_static_url_adds_mtime_version(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    app = create_app()
+
+    with app.test_request_context():
+        url = app.jinja_env.globals["static_url"]("css/main.css")
+
+    parsed = urlparse(url)
+    version = parse_qs(parsed.query).get("v")
+
+    assert parsed.path == "/static/css/main.css"
+    assert version == [str(int(os.path.getmtime(os.path.join(app.static_folder, "css/main.css"))))]
+
+
+def test_static_files_use_immutable_cache_headers(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    app = create_app()
+
+    response = app.test_client().get("/static/css/main.css")
+
+    assert response.status_code == 200
+    assert "public" in response.headers["Cache-Control"]
+    assert "max-age=31536000" in response.headers["Cache-Control"]
+    assert "immutable" in response.headers["Cache-Control"]
