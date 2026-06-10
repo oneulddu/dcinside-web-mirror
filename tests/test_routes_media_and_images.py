@@ -692,6 +692,48 @@ def test_sanitize_html_fragment_keeps_dc_movie_and_youtube_iframes():
     assert soup.find("iframe", src="https://www.youtube.com/embed/abc123").get("allow") == "autoplay; encrypted-media"
 
 
+def test_prepare_read_html_rewrites_sanitizes_and_highlights_with_one_parse(monkeypatch):
+    parser_calls = []
+    real_beautiful_soup = html_sanitizer.BeautifulSoup
+
+    def counting_beautiful_soup(*args, **kwargs):
+        parser_calls.append(args[1] if len(args) > 1 else kwargs.get("features"))
+        return real_beautiful_soup(*args, **kwargs)
+
+    monkeypatch.setattr(html_sanitizer, "BeautifulSoup", counting_beautiful_soup)
+    app = create_app()
+
+    with app.test_request_context("/read?board=test&pid=123&kind=minor"):
+        rendered = html_sanitizer.prepare_read_html(
+            """
+            <div onclick="alert(1)">
+              <script>alert(1)</script>
+              <p>hello BODY</p>
+              <code>BODY</code>
+              <img data-original="https://images.dcinside.com/body.jpg" src="/placeholder.jpg" onerror="alert(1)">
+              <img src="https://images.dcinside.com/unmapped.jpg">
+            </div>
+            """,
+            ["https://images.dcinside.com/body.jpg"],
+            "test",
+            123,
+            "minor",
+            search_keyword="body",
+        )
+
+    soup = BeautifulSoup(rendered, "html.parser")
+    media_query = parse_qs(urlparse(soup.find("img")["src"]).query)
+
+    assert parser_calls == [html_sanitizer.HTML_PARSER]
+    assert soup.find("script") is None
+    assert "onclick" not in soup.div.attrs
+    assert len(soup.find_all("img")) == 1
+    assert "onerror" not in soup.find("img").attrs
+    assert media_query["src"] == ["https://images.dcinside.com/body.jpg"]
+    assert soup.p.find("mark", class_="search-highlight").text == "BODY"
+    assert soup.code.find("mark") is None
+
+
 def test_movie_route_renders_same_origin_video_player(monkeypatch):
     movie_html = """
     <html><body>

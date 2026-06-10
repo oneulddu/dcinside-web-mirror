@@ -4,12 +4,11 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, abort, current_app, jsonify, make_response, render_template, request, url_for
-from bs4 import BeautifulSoup, NavigableString
 
 from .services.async_bridge import run_async
 from .services.core import async_index_with_head_categories, async_read, async_related_after_position
 from .services.heung import get_heung_galleries, search_galleries
-from .services.html_sanitizer import rewrite_content_images, sanitize_html_fragment
+from .services.html_sanitizer import prepare_read_html
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
 from .services.recent import (
     RECENT_MAX_ITEMS,
@@ -238,39 +237,6 @@ def _nav_tab_for_gallery(board, recommend=0, nav_mode=None):
     return "all"
 
 
-def _highlight_html_text(html, keyword):
-    term = (keyword or "").strip()
-    if not term:
-        return html
-    soup = BeautifulSoup(html or "", "html.parser")
-    pattern = re.compile(re.escape(term), re.IGNORECASE)
-    ignored_parents = {"script", "style", "textarea", "code", "pre", "mark"}
-
-    for node in list(soup.find_all(string=pattern)):
-        if not isinstance(node, NavigableString):
-            continue
-        parent = node.parent
-        if parent and parent.name in ignored_parents:
-            continue
-        text = str(node)
-        parts = []
-        last = 0
-        for match in pattern.finditer(text):
-            start, end = match.span()
-            if start > last:
-                parts.append(NavigableString(text[last:start]))
-            mark = soup.new_tag("mark")
-            mark["class"] = "search-highlight"
-            mark.string = text[start:end]
-            parts.append(mark)
-            last = end
-        if last < len(text):
-            parts.append(NavigableString(text[last:]))
-        if parts:
-            node.replace_with(*parts)
-    return str(soup)
-
-
 @bp.route("/")
 def index():
     page = _safe_int(request.args.get("heung_page", 1), 1)
@@ -416,17 +382,12 @@ def read():
         )
     )
     embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
-    soup = BeautifulSoup(data.get("html") or "", "html.parser")
-    rewrite_content_images(soup, images, board, pid, kind)
 
     for comment in comments:
         if comment.get("dccon"):
             comment["dccon"] = url_for("main.media", src=comment["dccon"], board=board, pid=pid, kind=kind)
 
-    safe_html = sanitize_html_fragment(str(soup))
-    if search_keyword:
-        safe_html = _highlight_html_text(safe_html, search_keyword)
-    data["html"] = safe_html
+    data["html"] = prepare_read_html(data.get("html"), images, board, pid, kind, search_keyword=search_keyword)
     response = make_response(
         render_template(
             "read.html",
