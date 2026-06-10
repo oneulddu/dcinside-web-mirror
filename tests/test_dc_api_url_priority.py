@@ -1,6 +1,32 @@
+from app.services import dc_api
 from app.services.dc_api import API
 import lxml.html
 import pytest
+
+
+def _pc_board_html(doc_id="123", title="pc title"):
+    return lxml.html.fromstring(
+        f"""
+        <html><body><table><tbody>
+          <tr class="ub-content us-post" data-no="{doc_id}">
+            <td class="gall_tit"><a href="/board/view/?id=test&no={doc_id}">{title}</a></td>
+            <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+            <td class="gall_date" title="2026.04.16 12:00:00"></td>
+            <td class="gall_count">7</td>
+            <td class="gall_recommend">3</td>
+          </tr>
+        </tbody></table></body></html>
+        """
+    )
+
+
+def _clear_board_kind_cache():
+    with dc_api._BOARD_KIND_CACHE_LOCK:
+        dc_api._BOARD_KIND_CACHE.clear()
+
+
+def test_board_kind_cache_ttl_default_is_six_hours():
+    assert dc_api.BOARD_KIND_CACHE_TTL == 21600
 
 
 def test_list_urls_prefer_mobile_before_pc():
@@ -134,6 +160,61 @@ async def test_board_keeps_headtext_tabs_from_first_scanned_page(monkeypatch):
         {"head_id": None, "label": "전체", "active": True},
         {"head_id": "10", "label": "첫페이지", "active": False},
     ]
+
+
+@pytest.mark.asyncio
+async def test_board_tries_cached_successful_list_url_pattern_first(monkeypatch):
+    _clear_board_kind_cache()
+    api = API.__new__(API)
+    api.last_board_headtexts = []
+    seen_url_batches = []
+
+    async def fake_fetch(urls, validator=None):
+        seen_url_batches.append(list(urls))
+        used_url = next(url for url in urls if "/mgallery/board/lists/" in url)
+        return _pc_board_html(), "ok", used_url
+
+    monkeypatch.setattr(api, "_API__fetch_parsed_from_urls", fake_fetch)
+
+    first_rows = [row async for row in api.board("cachetest", num=1, start_page=1)]
+    second_rows = [row async for row in api.board("cachetest", num=1, start_page=1)]
+
+    assert [row.id for row in first_rows] == ["123"]
+    assert [row.id for row in second_rows] == ["123"]
+    assert seen_url_batches[0][0] == "https://m.dcinside.com/board/cachetest?page=1"
+    assert any("/board/lists/" in url for url in seen_url_batches[0][1:])
+    assert seen_url_batches[1] == ["https://gall.dcinside.com/mgallery/board/lists/?id=cachetest&page=1"]
+    _clear_board_kind_cache()
+
+
+@pytest.mark.asyncio
+async def test_board_invalidates_stale_cached_list_url_pattern(monkeypatch):
+    _clear_board_kind_cache()
+    api = API.__new__(API)
+    api.last_board_headtexts = []
+    original_urls = api._API__build_list_urls("staletest", 1)
+    cache_key = api._API__board_kind_cache_key("staletest")
+    stale_url = next(url for url in original_urls if "/mgallery/board/lists/" in url)
+    fallback_url = next(url for url in original_urls if "/board/lists/" in url and "/mgallery/" not in url)
+    api._API__cache_list_url_pattern(cache_key, stale_url)
+    seen_url_batches = []
+
+    async def fake_fetch(urls, validator=None):
+        seen_url_batches.append(list(urls))
+        if urls == [stale_url]:
+            return None, "", None
+        return _pc_board_html(), "ok", fallback_url
+
+    monkeypatch.setattr(api, "_API__fetch_parsed_from_urls", fake_fetch)
+
+    rows = [row async for row in api.board("staletest", num=1, start_page=1)]
+    cached_url, cached_pattern = api._API__get_cached_list_url(original_urls, cache_key)
+
+    assert [row.id for row in rows] == ["123"]
+    assert seen_url_batches == [[stale_url], original_urls]
+    assert cached_url == fallback_url
+    assert cached_pattern == "normal"
+    _clear_board_kind_cache()
 
 
 def test_view_urls_prefer_mobile_before_pc():
