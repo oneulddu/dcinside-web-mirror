@@ -1,4 +1,3 @@
-import asyncio
 import os
 import re
 import threading
@@ -14,6 +13,13 @@ def _env_int(name, default):
         return default
 
 
+def _env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 MAX_PAGE = 31
 RELATED_LIMIT = 12
 DOCS_PER_PAGE_ESTIMATE = max(int(getattr(dc_api, "DOCS_PER_PAGE", 200)), 1)
@@ -21,12 +27,12 @@ RELATED_PAGE_FETCH_SIZE = DOCS_PER_PAGE_ESTIMATE
 RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1)
 RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
 BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)
+BOARD_FILL_AUTHOR_CODES = _env_bool("MIRROR_BOARD_FILL_AUTHOR_CODES", False)
 LATEST_ID_CACHE_TTL = 20
-AUTHOR_CODE_CACHE_TTL = 600
+AUTHOR_CODE_CACHE_TTL = 3600
 BOARD_PAGE_CACHE_MAX_ITEMS = 2048
 LATEST_ID_CACHE_MAX_ITEMS = 512
 AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
-AUTHOR_CODE_FETCH_CONCURRENCY = max(_env_int("MIRROR_AUTHOR_CODE_FETCH_CONCURRENCY", 5), 1)
 
 _BOARD_PAGE_CACHE = {}
 _LATEST_ID_CACHE = {}
@@ -161,6 +167,23 @@ def _cache_set(cache, lock, key, value, ttl, max_items):
         cache[key] = {"value": value, "expires_at": expires_at}
 
 
+def _author_code_cache_key(board, kind, doc_id):
+    return (board, kind or "", str(doc_id))
+
+
+def _cache_author_code(board, kind, doc_id, author, author_code):
+    if not doc_id:
+        return
+    _cache_set(
+        _AUTHOR_CODE_CACHE,
+        _AUTHOR_CODE_CACHE_LOCK,
+        _author_code_cache_key(board, kind, doc_id),
+        {"author": author, "author_code": author_code},
+        AUTHOR_CODE_CACHE_TTL,
+        AUTHOR_CODE_CACHE_MAX_ITEMS,
+    )
+
+
 async def _fetch_board_page(
     api,
     page,
@@ -255,21 +278,23 @@ def _normalize_head_categories(rows, head_id=None):
     return categories
 
 
-async def _fill_missing_author_code(api, board, kind, row, recommend=0):
+async def _fill_missing_author_code(api, board, kind, row, recommend=0, allow_fetch=True):
     if not row:
         return row
     if row.get("author_code"):
         return row
-    if row.get("is_mobile_source"):
-        return row
     doc_id = row.get("id")
     if not doc_id:
         return row
-    cache_key = (board, kind or "", str(doc_id))
+    cache_key = _author_code_cache_key(board, kind, doc_id)
     cached = _cache_get(_AUTHOR_CODE_CACHE, _AUTHOR_CODE_CACHE_LOCK, cache_key)
     if cached is not None:
         row["author"] = cached.get("author", row.get("author"))
         row["author_code"] = cached.get("author_code")
+        return row
+    if not allow_fetch:
+        return row
+    if row.get("is_mobile_source"):
         return row
     try:
         doc = await api.document(board_id=board, document_id=doc_id, kind=kind, recommend=bool(_safe_int(recommend, 0)))
@@ -280,25 +305,16 @@ async def _fill_missing_author_code(api, board, kind, row, recommend=0):
     author, author_code = _normalize_author(doc.author, doc.author_id)
     row["author"] = author
     row["author_code"] = author_code
-    _cache_set(
-        _AUTHOR_CODE_CACHE,
-        _AUTHOR_CODE_CACHE_LOCK,
-        cache_key,
-        {"author": author, "author_code": author_code},
-        AUTHOR_CODE_CACHE_TTL,
-        AUTHOR_CODE_CACHE_MAX_ITEMS,
-    )
+    _cache_author_code(board, kind, doc_id, author, author_code)
     return row
 
 
 async def _fill_missing_author_codes(api, board, kind, rows, recommend=0):
-    semaphore = asyncio.Semaphore(AUTHOR_CODE_FETCH_CONCURRENCY)
+    if not BOARD_FILL_AUTHOR_CODES:
+        return rows
 
-    async def fill(row):
-        async with semaphore:
-            return await _fill_missing_author_code(api, board, kind, row, recommend=recommend)
-
-    await asyncio.gather(*(fill(row) for row in rows))
+    for row in rows:
+        await _fill_missing_author_code(api, board, kind, row, recommend=recommend, allow_fetch=False)
     return rows
 
 
@@ -325,6 +341,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
             "html": "게시글 데이터를 가져오는 데 실패했습니다.",
         }, [], []
     author, author_code = _normalize_author(doc.author, doc.author_id)
+    _cache_author_code(board, kind, api_id, author, author_code)
     data = {
         "title": doc.title,
         "author": author,
