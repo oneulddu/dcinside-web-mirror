@@ -134,3 +134,4 @@ dmypy.json
 
 # Local agent/tooling worktrees
 .claude/
+.claude/worktrees/
