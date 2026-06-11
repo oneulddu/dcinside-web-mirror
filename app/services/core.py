@@ -350,6 +350,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         "author_code": author_code,
         "time": doc.time,
         "voteup_count": doc.voteup_count,
+        "contents": getattr(doc, "contents", ""),
         "html": doc.html,
         "related_posts": [_index_item_to_dict(item) for item in getattr(doc, "related_posts", [])],
     }

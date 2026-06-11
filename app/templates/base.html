@@ -44,6 +44,23 @@
     <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
     <link rel="stylesheet" href="{{ static_url('css/main.css') }}">
     <title>{{ title or "머숨 미러" }}</title>
+    {% if social_meta %}
+    <meta property="og:site_name" content="{{ social_meta.site_name }}">
+    <meta property="og:type" content="{{ social_meta.type }}">
+    <meta property="og:title" content="{{ social_meta.title }}">
+    <meta property="og:description" content="{{ social_meta.description }}">
+    <meta property="og:url" content="{{ social_meta.url }}">
+    <meta name="twitter:card" content="{{ social_meta.twitter_card }}">
+    <meta name="twitter:title" content="{{ social_meta.title }}">
+    <meta name="twitter:description" content="{{ social_meta.description }}">
+    {% if social_meta.image %}
+    <meta property="og:image" content="{{ social_meta.image }}">
+    <meta property="og:image:secure_url" content="{{ social_meta.image }}">
+    <meta property="og:image:alt" content="{{ social_meta.image_alt }}">
+    <meta name="twitter:image" content="{{ social_meta.image }}">
+    <meta name="twitter:image:alt" content="{{ social_meta.image_alt }}">
+    {% endif %}
+    {% endif %}
 </head>
 <body>
     <main class="app-shell">

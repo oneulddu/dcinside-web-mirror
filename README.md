@@ -224,6 +224,7 @@ mirror/
 | `MIRROR_TIMEOUT` | `60` | 요청 제한 시간 |
 | `MIRROR_LOG_LEVEL` | `info` | Gunicorn 로그 레벨 |
 | `MIRROR_SECRET_KEY` | — | 운영에서 반드시 설정 |
+| `MIRROR_PUBLIC_BASE_URL` | — | URL 미리보기용 공개 기본 주소. 예: `https://example.com` |
 
 </details>
 
