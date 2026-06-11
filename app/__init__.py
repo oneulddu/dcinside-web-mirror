@@ -10,7 +10,7 @@ load_dotenv()
 
 from .config import DevelopmentConfig, ProductionConfig
 from .routes import register_routes
-from .services.highlight import highlight_search_term
+from .services.highlight import highlight_search_term, linkify_comment_text
 
 compress = Compress()
 
@@ -76,6 +76,7 @@ def create_app():
         app.config.from_object(ProductionConfig)
     app.config.from_prefixed_env("MIRROR")
     app.add_template_filter(highlight_search_term, "highlight_search")
+    app.add_template_filter(linkify_comment_text, "linkify_comment")
     register_routes(app)
     _init_request_logging(app)
     _init_static_cache_busting(app)

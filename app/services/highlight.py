@@ -6,6 +6,8 @@ from markupsafe import Markup, escape
 
 SEARCH_HIGHLIGHT_CLASS = "search-highlight"
 HTML_HIGHLIGHT_IGNORED_PARENTS = {"script", "style", "textarea", "code", "pre", "mark"}
+COMMENT_URL_RE = re.compile(r"(?P<url>(?:https?://|www\.)[^\s<]+)", re.IGNORECASE)
+COMMENT_LINK_TRAILING_CHARS = ".,!?;:)]}>'\""
 
 
 def _search_pattern(keyword):
@@ -34,6 +36,46 @@ def highlight_search_term(value, keyword=None):
         return escape(text)
     pieces.append(str(escape(text[last:])))
     return Markup("".join(pieces))
+
+
+def _split_comment_link_trailing_text(url):
+    trailing = []
+    while url and url[-1] in COMMENT_LINK_TRAILING_CHARS:
+        trailing.append(url[-1])
+        url = url[:-1]
+    trailing.reverse()
+    return url, "".join(trailing)
+
+
+def linkify_comment_text(value):
+    text = "" if value is None else str(value)
+    pieces = []
+    last = 0
+
+    for match in COMMENT_URL_RE.finditer(text):
+        start, end = match.span("url")
+        raw_url = match.group("url")
+        url, trailing = _split_comment_link_trailing_text(raw_url)
+        if not url:
+            continue
+
+        pieces.append(str(escape(text[last:start])))
+        href = url if url.lower().startswith(("http://", "https://")) else f"https://{url}"
+        pieces.append(
+            '<a href="{}" target="_blank" rel="noopener noreferrer nofollow">'.format(
+                escape(href)
+            )
+        )
+        pieces.append(str(escape(url)))
+        pieces.append("</a>")
+        pieces.append(str(escape(trailing)))
+        last = end
+
+    if not pieces:
+        return escape(text)
+
+    pieces.append(str(escape(text[last:])))
+    return Markup("".join(pieces).replace("\n", "<br>"))
 
 
 def highlight_soup_text(soup, keyword):

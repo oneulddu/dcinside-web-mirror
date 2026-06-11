@@ -28,7 +28,7 @@
                     {% if comment.dccon != None %}
                     <img class="dccon" src="{{ comment.dccon }}" alt="dccon" loading="lazy" decoding="async">
                     {% else %}
-                    <p>{{ comment.contents }}</p>
+                    <p>{{ comment.contents|linkify_comment }}</p>
                     {% endif %}
                 </div>
                 <div class="comment-meta">
