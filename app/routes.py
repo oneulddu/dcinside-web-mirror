@@ -4,7 +4,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from flask import Blueprint, abort, current_app, jsonify, make_response, render_template, request, url_for
 
 from .services.async_bridge import run_async
@@ -29,6 +29,8 @@ ALLOWED_NAV_MODES = {"ai"}
 DEFAULT_SEARCH_TYPE = "subject_m"
 SITE_NAME = "머숨 미러"
 SOCIAL_DESCRIPTION_MAX_LENGTH = 180
+SOCIAL_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+SOCIAL_VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".m4v", ".m3u8")
 
 
 def _safe_int(value, default):
@@ -269,13 +271,39 @@ def _read_canonical_url(board, pid, recommend, source_page, kind, search_type, s
     return _external_url_for("main.read", **params)
 
 
+def _is_social_preview_image_url(src):
+    normalized_src = normalize_media_url_shape(src)
+    if not normalized_src:
+        return False
+    parsed = urlparse(normalized_src)
+    path = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    media_hint = path + "?" + query
+    if "viewmovie" in path or any(path.endswith(ext) for ext in SOCIAL_VIDEO_EXTENSIONS):
+        return False
+    if "type=mp4" in query or "type=webm" in query:
+        return False
+    if any(path.endswith(ext) for ext in SOCIAL_IMAGE_EXTENSIONS):
+        return True
+    return "viewimage" in path or "dccon" in media_hint
+
+
+def _first_social_preview_image(images):
+    for src in images or []:
+        normalized_src = normalize_media_url_shape(src)
+        if _is_social_preview_image_url(normalized_src):
+            return normalized_src
+    return None
+
+
 def _read_social_meta(data, images, board, pid, kind, recommend, source_page, search_type, search_keyword, head_id):
     title = _collapse_preview_text(data.get("title")) or SITE_NAME
+    preview_image = _first_social_preview_image(images)
     media_params = {
-        "src": images[0],
+        "src": preview_image,
         "board": board,
         "pid": pid,
-    } if images else None
+    } if preview_image else None
     if media_params is not None:
         _add_kind_param(media_params, kind)
 

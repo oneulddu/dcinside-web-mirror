@@ -1142,6 +1142,40 @@ def test_read_renders_social_preview_meta_with_public_image_url(monkeypatch):
     assert image_query["kind"] == ["minor"]
 
 
+def test_read_social_preview_skips_video_sources_for_image_meta(monkeypatch):
+    async def fake_async_read(pid, board, kind=None, recommend=0, **kwargs):
+        return (
+            {
+                "title": "동영상 글",
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+                "contents": "동영상 본문",
+                "html": "<p>본문</p>",
+                "related_posts": [],
+            },
+            [],
+            [
+                "https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4&no=123",
+                "https://dcimg7.dcinside.co.kr/viewimage.php?id=poster",
+            ],
+        )
+
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    app = create_app()
+    app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
+
+    response = app.test_client().get("/read?board=test&pid=123")
+    soup = BeautifulSoup(response.data, "html.parser")
+    og_image = soup.select_one('meta[property="og:image"]')["content"]
+    image_query = parse_qs(urlparse(og_image).query)
+
+    assert response.status_code == 200
+    assert soup.select_one('meta[name="twitter:card"]')["content"] == "summary_large_image"
+    assert image_query["src"] == ["https://dcimg7.dcinside.co.kr/viewimage.php?id=poster"]
+
+
 def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     seen = {}
 
