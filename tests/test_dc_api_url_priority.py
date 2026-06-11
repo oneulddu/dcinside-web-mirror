@@ -1,7 +1,9 @@
 from app.services import dc_api
 from app.services.dc_api import API
+from aiohttp import CookieJar
 import lxml.html
 import pytest
+from yarl import URL
 
 
 def _pc_board_html(doc_id="123", title="pc title"):
@@ -64,6 +66,50 @@ async def test_request_text_logs_rate_limit_warning(caplog):
         "rate limited: status=429 url=https://m.dcinside.com/board/test" in record.getMessage()
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_request_text_prunes_shared_session_cookies():
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "ok"
+
+    class FakeSession:
+        def __init__(self):
+            self.cookie_jar = CookieJar(unsafe=True)
+            self.cookie_jar.update_cookies(
+                {
+                    "_ga": "ga-value",
+                    "ci_c": "ci-value",
+                    "penalty-box": "rate-limit",
+                    "tracking": "drop-me",
+                },
+                URL("https://gall.dcinside.com/"),
+            )
+
+        def request(self, *args, **kwargs):
+            return FakeResponse()
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+
+    status, _, text = await api._API__request_text("GET", "https://gall.dcinside.com/m")
+    cookies = api.session.cookie_jar.filter_cookies(URL("https://gall.dcinside.com/"))
+
+    assert status == 200
+    assert text == "ok"
+    assert set(cookies) == {"_ga", "ci_c"}
+    assert cookies["_ga"].value == "ga-value"
+    assert cookies["ci_c"].value == "ci-value"
 
 
 def test_list_urls_prefer_mobile_before_pc():
