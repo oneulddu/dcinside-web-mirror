@@ -37,6 +37,7 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     PREFERRED_URL_SCHEME = os.getenv("MIRROR_PREFERRED_URL_SCHEME", "http")
+    PUBLIC_BASE_URL = os.getenv("MIRROR_PUBLIC_BASE_URL", "").strip()
 
 
 class DevelopmentConfig(Config):

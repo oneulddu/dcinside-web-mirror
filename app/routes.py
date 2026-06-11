@@ -1,8 +1,10 @@
 #-*- coding:utf-8 -*-
+import html
 import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urljoin
 from flask import Blueprint, abort, current_app, jsonify, make_response, render_template, request, url_for
 
 from .services.async_bridge import run_async
@@ -25,6 +27,8 @@ BOARD_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,80}$")
 ALLOWED_GALLERY_KINDS = {"normal", "minor", "mini", "person"}
 ALLOWED_NAV_MODES = {"ai"}
 DEFAULT_SEARCH_TYPE = "subject_m"
+SITE_NAME = "머숨 미러"
+SOCIAL_DESCRIPTION_MAX_LENGTH = 180
 
 
 def _safe_int(value, default):
@@ -214,6 +218,86 @@ def _search_call_kwargs(search_type, search_keyword):
     return {
         "search_type": search_type,
         "search_keyword": search_keyword,
+    }
+
+
+def _public_base_url():
+    base_url = (current_app.config.get("PUBLIC_BASE_URL") or "").strip()
+    if not base_url:
+        return None
+    return base_url.rstrip("/") + "/"
+
+
+def _external_url_for(endpoint, **values):
+    path = url_for(endpoint, **values)
+    base_url = _public_base_url()
+    if base_url:
+        return urljoin(base_url, path.lstrip("/"))
+    return url_for(endpoint, _external=True, **values)
+
+
+def _collapse_preview_text(value):
+    text = html.unescape(re.sub(r"<[^>]+>", " ", str(value or "")))
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= SOCIAL_DESCRIPTION_MAX_LENGTH:
+        return text
+    return text[:SOCIAL_DESCRIPTION_MAX_LENGTH].rstrip() + "..."
+
+
+def _read_social_description(data):
+    for key in ("contents", "html", "title"):
+        description = _collapse_preview_text(data.get(key))
+        if description:
+            return description
+    return SITE_NAME
+
+
+def _read_canonical_url(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id):
+    params = {
+        "board": board,
+        "pid": pid,
+    }
+    if _safe_int(recommend, 0) == 1:
+        params["recommend"] = 1
+    if _safe_int(source_page, 0) > 0:
+        params["source_page"] = _safe_int(source_page, 0)
+    _add_kind_param(params, kind)
+    normalized_head_id = _normalize_head_id(head_id)
+    if normalized_head_id is not None:
+        params["headid"] = normalized_head_id
+    _add_search_params(params, search_type, search_keyword)
+    return _external_url_for("main.read", **params)
+
+
+def _read_social_meta(data, images, board, pid, kind, recommend, source_page, search_type, search_keyword, head_id):
+    title = _collapse_preview_text(data.get("title")) or SITE_NAME
+    media_params = {
+        "src": images[0],
+        "board": board,
+        "pid": pid,
+    } if images else None
+    if media_params is not None:
+        _add_kind_param(media_params, kind)
+
+    image_url = _external_url_for("main.media", **media_params) if media_params else None
+    return {
+        "site_name": SITE_NAME,
+        "title": title,
+        "description": _read_social_description(data),
+        "url": _read_canonical_url(
+            board,
+            pid,
+            recommend,
+            source_page,
+            kind,
+            search_type,
+            search_keyword,
+            head_id,
+        ),
+        "type": "article",
+        "image": image_url,
+        "image_alt": title,
+        "twitter_card": "summary_large_image" if image_url else "summary",
     }
 
 
@@ -412,6 +496,18 @@ def read():
             search_type=search_type,
             search_keyword=search_keyword,
             embedded_related_posts=embedded_related_posts,
+            social_meta=_read_social_meta(
+                data,
+                images,
+                board,
+                pid,
+                kind,
+                recommend,
+                source_page,
+                search_type,
+                search_keyword,
+                head_id,
+            ),
             nav_tab=_nav_tab_for_gallery(board, recommend),
         )
     )
