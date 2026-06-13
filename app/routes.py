@@ -205,6 +205,22 @@ def _current_search_context():
     return search_type, keyword
 
 
+def _target_post_ids_arg(name="ids", limit=60):
+    ids = []
+    seen = set()
+    for raw_id in (request.args.get(name) or "").split(","):
+        post_id = raw_id.strip()
+        if not post_id or post_id in seen:
+            continue
+        if not post_id.isdigit():
+            abort(400)
+        seen.add(post_id)
+        ids.append(post_id)
+        if len(ids) >= limit:
+            break
+    return ids
+
+
 def _media_request_context(default_board="airforce"):
     board = _normalize_board_id(request.args.get("board") or default_board)
     pid = _safe_int(request.args.get("pid", 0), 0)
@@ -470,6 +486,7 @@ def board_times():
     kind = _normalize_gallery_kind(request.args.get("kind"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    target_ids = _target_post_ids_arg()
 
     try:
         times = run_async(
@@ -481,6 +498,7 @@ def board_times():
                 search_type=search_type,
                 search_keyword=search_keyword,
                 head_id=head_id,
+                target_ids=target_ids,
             )
         )
     except Exception:

@@ -251,7 +251,11 @@ async def _fetch_board_page(
     return posts
 
 
-def _board_time_cache_key(board, kind, recommend, page, search_type=None, search_keyword=None, head_id=None):
+def _normalize_target_ids(target_ids):
+    return tuple(str(value).strip() for value in (target_ids or []) if str(value).strip())
+
+
+def _board_time_cache_key(board, kind, recommend, page, search_type=None, search_keyword=None, head_id=None, target_ids=None):
     return (
         board,
         kind or "",
@@ -260,6 +264,7 @@ def _board_time_cache_key(board, kind, recommend, page, search_type=None, search
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
+        _normalize_target_ids(target_ids),
     )
 
 
@@ -271,7 +276,9 @@ async def async_board_precise_times(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    target_ids=None,
 ):
+    normalized_target_ids = _normalize_target_ids(target_ids)
     cache_key = _board_time_cache_key(
         board,
         kind,
@@ -280,6 +287,7 @@ async def async_board_precise_times(
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        target_ids=normalized_target_ids,
     )
     cached = _cache_get(_BOARD_TIME_CACHE, _BOARD_TIME_CACHE_LOCK, cache_key)
     if cached is not None:
@@ -294,6 +302,7 @@ async def async_board_precise_times(
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            target_ids=normalized_target_ids,
         )
 
     result = {str(doc_id): str(value) for doc_id, value in (precise_times or {}).items()}

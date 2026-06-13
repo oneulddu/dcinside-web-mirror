@@ -1029,6 +1029,38 @@ async def test_board_precise_times_fetches_pc_list_only():
 
 
 @pytest.mark.asyncio
+async def test_board_precise_times_looks_ahead_for_rendered_overflow_row():
+    api = API.__new__(API)
+    seen_urls = []
+
+    async def fake_fetch(urls, validator=None):
+        seen_urls.extend(urls)
+        doc_id = "124" if "page=3" in urls[0] else "123"
+        parsed = lxml.html.fromstring(
+            f"""
+            <html><body><table><tbody>
+              <tr class="ub-content us-post" data-no="{doc_id}">
+                <td class="gall_tit"><a href="/board/view/?id=test&no={doc_id}">pc title</a></td>
+                <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+                <td class="gall_date" title="2026.04.16 12:00:00"></td>
+                <td class="gall_count">7</td>
+                <td class="gall_recommend">3</td>
+              </tr>
+            </tbody></table></body></html>
+            """
+        )
+        return parsed, "ok", urls[0]
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+
+    times = await api.board_precise_times("test", page=2, kind="normal", target_ids=["123", "124"])
+
+    assert set(times) == {"123", "124"}
+    assert any("page=2" in url for url in seen_urls)
+    assert any("page=3" in url for url in seen_urls)
+
+
+@pytest.mark.asyncio
 async def test_board_falls_back_to_pc_when_mobile_list_has_only_ads():
     api = API.__new__(API)
     mobile_url = "https://m.dcinside.com/board/test?page=1"

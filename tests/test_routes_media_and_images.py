@@ -878,7 +878,7 @@ def test_board_renders_date_only_time_for_async_hydration(monkeypatch):
 def test_board_times_endpoint_returns_precise_times(monkeypatch):
     seen = {}
 
-    async def fake_precise_times(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None):
+    async def fake_precise_times(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None):
         seen.update(
             {
                 "page": page,
@@ -888,6 +888,7 @@ def test_board_times_endpoint_returns_precise_times(monkeypatch):
                 "search_type": search_type,
                 "search_keyword": search_keyword,
                 "head_id": head_id,
+                "target_ids": target_ids,
             }
         )
         return {"123": "2026-04-16 12:00:00"}
@@ -896,7 +897,7 @@ def test_board_times_endpoint_returns_precise_times(monkeypatch):
     app = create_app()
 
     response = app.test_client().get(
-        "/board/times?board=test&page=2&recommend=1&kind=minor&headid=10&s_type=subject&serval=hello"
+        "/board/times?board=test&page=2&recommend=1&kind=minor&headid=10&s_type=subject&serval=hello&ids=123,124"
     )
 
     assert response.status_code == 200
@@ -909,6 +910,7 @@ def test_board_times_endpoint_returns_precise_times(monkeypatch):
         "search_type": "subject",
         "search_keyword": "hello",
         "head_id": "10",
+        "target_ids": ["123", "124"],
     }
 
 
@@ -1384,6 +1386,14 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "cached.items" not in script
     assert "cached.items.length === 0" not in script
     assert 'params.set("recommend", "1")' in script
+
+
+def test_board_time_hydrator_sends_rendered_post_ids():
+    script = Path(routes.BASE_DIR, "app/static/javascript/board_time_hydrator.js").read_text()
+
+    assert 'params.set("ids", postIds.join(","))' in script
+    assert "var postIds = Object.keys(targets)" in script
+    assert "buildParams(section, postIds)" in script
 
 
 def test_theme_toggle_persists_and_updates_accessibility_state():

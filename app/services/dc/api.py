@@ -85,6 +85,7 @@ def cache_delete(cache, lock, key):
 
 DOCS_PER_PAGE = 200
 BOARD_LIST_PAGE_SIZE = 30
+BOARD_TIME_LOOKAHEAD_PAGES = 1
 HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 BOARD_KIND_CACHE_TTL = max(env_int("MIRROR_BOARD_KIND_CACHE_TTL", 21600), 0)
 BOARD_KIND_CACHE_MAX_ITEMS = 2048
@@ -887,42 +888,53 @@ class API(ParserMixin):
                 break
             page += 1
 
-    async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None):
-        list_urls = [
-            self.__with_pc_list_page_size(url)
-            for url in self.__build_list_urls(
-                board_id,
-                page,
-                recommend=recommend,
-                kind=kind,
-                search_type=search_type,
-                search_keyword=search_keyword,
-                head_id=head_id,
-            )
-            if not self.__is_mobile_request(url)
-        ]
-        parsed, _, _ = await self.__fetch_parsed_from_urls(
-            list_urls,
-            validator=self.__is_usable_board_page,
-        )
-        if parsed is None:
-            return {}
-
+    async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None):
         precise_times = {}
-        rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")
-        for row in rows:
-            item = self.__parse_pc_board_row(
-                row,
-                board_id,
-                kind=kind,
-                recommend=recommend,
-                is_mobile_source=False,
+        remaining_ids = {str(value).strip() for value in (target_ids or []) if str(value).strip()}
+        page_count = 1 + (BOARD_TIME_LOOKAHEAD_PAGES if remaining_ids else 0)
+        start_page = max(to_int(page, 1), 1)
+
+        for current_page in range(start_page, start_page + page_count):
+            list_urls = [
+                self.__with_pc_list_page_size(url)
+                for url in self.__build_list_urls(
+                    board_id,
+                    current_page,
+                    recommend=recommend,
+                    kind=kind,
+                    search_type=search_type,
+                    search_keyword=search_keyword,
+                    head_id=head_id,
+                )
+                if not self.__is_mobile_request(url)
+            ]
+            parsed, _, _ = await self.__fetch_parsed_from_urls(
+                list_urls,
+                validator=self.__is_usable_board_page,
             )
-            if item is None:
+            if parsed is None:
                 continue
-            if not getattr(item, "time_is_precise", False):
-                continue
-            precise_times[str(item.id)] = item.time
+
+            rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")
+            for row in rows:
+                item = self.__parse_pc_board_row(
+                    row,
+                    board_id,
+                    kind=kind,
+                    recommend=recommend,
+                    is_mobile_source=False,
+                )
+                if item is None:
+                    continue
+                if not getattr(item, "time_is_precise", False):
+                    continue
+                item_id = str(item.id)
+                if remaining_ids and item_id not in remaining_ids:
+                    continue
+                precise_times[item_id] = item.time
+                remaining_ids.discard(item_id)
+            if not remaining_ids:
+                break
         return precise_times
 
     async def __pc_document_media_sources(self, board_id, document_id, kind=None):

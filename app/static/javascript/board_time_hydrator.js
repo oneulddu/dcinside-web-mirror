@@ -5,11 +5,14 @@
         return String(value || "").trim();
     }
 
-    function buildParams(section) {
+    function buildParams(section, postIds) {
         var params = new URLSearchParams();
         params.set("board", trim(section.dataset.board));
         params.set("page", trim(section.dataset.page) || "1");
         params.set("recommend", trim(section.dataset.recommend) === "1" ? "1" : "0");
+        if (postIds.length) {
+            params.set("ids", postIds.join(","));
+        }
 
         var kind = trim(section.dataset.kind);
         var headId = trim(section.dataset.headId);
@@ -66,11 +69,12 @@
         }
 
         var targets = collectTargets(section);
-        if (!Object.keys(targets).length) {
+        var postIds = Object.keys(targets);
+        if (!postIds.length) {
             return;
         }
 
-        fetch("/board/times?" + buildParams(section).toString(), {
+        fetch("/board/times?" + buildParams(section, postIds).toString(), {
             credentials: "same-origin",
             headers: {
                 "Accept": "application/json"
