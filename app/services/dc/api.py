@@ -446,33 +446,34 @@ class API(ParserMixin):
     def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None):
         kind = (kind or "").lower()
         urls = []
-        recommend_suffix = "&recommend=1" if recommend else ""
+        mobile_recommend_suffix = "&recommend=1" if recommend else ""
+        pc_recommend_suffix = "&exception_mode=recommend" if recommend else ""
         head_id_suffix = self.__build_head_id_suffix(head_id)
         pc_head_id_suffix = self.__build_pc_head_id_suffix(head_id)
         mobile_search_suffix = self.__build_mobile_search_suffix(search_type, search_keyword)
         pc_search_suffix = self.__build_pc_search_suffix(search_type, search_keyword)
 
         if kind == "mini":
-            urls.append("https://m.dcinside.com/mini/{}?page={}{}{}{}".format(board_id, page, recommend_suffix, head_id_suffix, mobile_search_suffix))
+            urls.append("https://m.dcinside.com/mini/{}?page={}{}{}{}".format(board_id, page, mobile_recommend_suffix, head_id_suffix, mobile_search_suffix))
         elif recommend:
             urls.append("https://m.dcinside.com/board/{}?recommend=1&page={}{}{}".format(board_id, page, head_id_suffix, mobile_search_suffix))
         else:
             urls.append("https://m.dcinside.com/board/{}?page={}{}{}".format(board_id, page, head_id_suffix, mobile_search_suffix))
 
         kind_urls = {
-            "normal": "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
-            "minor": "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
-            "mini": "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
-            "person": "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "normal": "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "minor": "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "mini": "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "person": "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
         }
         if kind in kind_urls:
             urls.append(kind_urls[kind])
 
         urls.extend([
-            "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
-            "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
-            "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
-            "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}{}".format(board_id, page, recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/mgallery/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
+            "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
         ])
         return self.__dedupe_urls(urls)
     def __normalize_search_type(self, search_type):
@@ -631,7 +632,10 @@ class API(ParserMixin):
         normalized_url = urljoin(current_url, redirect_url)
         current_parsed = urlparse(current_url)
         current_query = parse_qs(current_parsed.query)
-        preserve_recommend = "1" in current_query.get("recommend", [])
+        preserve_recommend = (
+            "1" in current_query.get("recommend", [])
+            or "recommend" in current_query.get("exception_mode", [])
+        )
         preserved_head_id = self.__normalize_head_id(
             (current_query.get("headid") or current_query.get("search_head") or [None])[0]
         )
@@ -640,15 +644,22 @@ class API(ParserMixin):
 
         parsed = urlparse(normalized_url)
         target_host = (parsed.netloc or "").lower()
+        target_path = parsed.path or ""
         target_head_key = "search_head" if target_host in {"gall.dcinside.com", "search.dcinside.com"} else "headid"
+        target_recommend_key = (
+            "exception_mode"
+            if target_host in {"gall.dcinside.com", "search.dcinside.com"} and "/lists" in target_path
+            else "recommend"
+        )
+        target_recommend_value = "recommend" if target_recommend_key == "exception_mode" else "1"
         query_items = []
         recommend_added = False
         head_added = False
         for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-            if key == "recommend":
+            if key in {"recommend", "exception_mode"}:
                 if preserve_recommend:
                     if not recommend_added:
-                        query_items.append(("recommend", "1"))
+                        query_items.append((target_recommend_key, target_recommend_value))
                         recommend_added = True
                 else:
                     query_items.append((key, value))
@@ -662,7 +673,7 @@ class API(ParserMixin):
                 continue
             query_items.append((key, value))
         if preserve_recommend and not recommend_added:
-            query_items.append(("recommend", "1"))
+            query_items.append((target_recommend_key, target_recommend_value))
         if preserved_head_id is not None and not head_added:
             query_items.append((target_head_key, preserved_head_id))
         return parsed._replace(query=urlencode(query_items)).geturl()
@@ -890,8 +901,9 @@ class API(ParserMixin):
 
     async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None):
         precise_times = {}
-        remaining_ids = {str(value).strip() for value in (target_ids or []) if str(value).strip()}
-        page_count = 1 + (BOARD_TIME_LOOKAHEAD_PAGES if remaining_ids else 0)
+        requested_ids = {str(value).strip() for value in (target_ids or []) if str(value).strip()}
+        remaining_ids = set(requested_ids)
+        page_count = 1 + (BOARD_TIME_LOOKAHEAD_PAGES if requested_ids else 0)
         start_page = max(to_int(page, 1), 1)
 
         for current_page in range(start_page, start_page + page_count):
@@ -929,7 +941,7 @@ class API(ParserMixin):
                 if not getattr(item, "time_is_precise", False):
                     continue
                 item_id = str(item.id)
-                if remaining_ids and item_id not in remaining_ids:
+                if requested_ids and item_id not in requested_ids:
                     continue
                 precise_times[item_id] = item.time
                 remaining_ids.discard(item_id)

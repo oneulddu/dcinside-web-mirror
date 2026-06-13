@@ -124,7 +124,8 @@ def test_list_urls_keep_recommend_flag_on_mobile_first():
     urls = api._API__build_list_urls("aoegame", 1, recommend=True, kind="minor")
     assert "recommend=1" in urls[0]
     assert urls[0].startswith("https://m.dcinside.com/")
-    assert any(url.startswith("https://gall.dcinside.com/mgallery/") and "recommend=1" in url for url in urls[1:])
+    assert any(url.startswith("https://gall.dcinside.com/mgallery/") and "exception_mode=recommend" in url for url in urls[1:])
+    assert all("recommend=1" not in url for url in urls[1:])
 
 
 def test_list_urls_keep_recommend_flag_on_mobile_mini_first():
@@ -132,7 +133,8 @@ def test_list_urls_keep_recommend_flag_on_mobile_mini_first():
     urls = api._API__build_list_urls("aoegame", 1, recommend=True, kind="mini")
     assert urls[0].startswith("https://m.dcinside.com/mini/")
     assert "recommend=1" in urls[0]
-    assert any(url.startswith("https://gall.dcinside.com/mini/") and "recommend=1" in url for url in urls[1:])
+    assert any(url.startswith("https://gall.dcinside.com/mini/") and "exception_mode=recommend" in url for url in urls[1:])
+    assert all("recommend=1" not in url for url in urls[1:])
 
 
 def test_list_urls_include_mobile_head_id_filter():
@@ -156,7 +158,7 @@ def test_redirect_url_preserves_head_id_for_mobile_and_pc_targets():
     )
 
     assert mobile_redirect == "https://m.dcinside.com/board/thesingularity?page=2&headid=10"
-    assert pc_redirect == "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2&recommend=1&search_head=10"
+    assert pc_redirect == "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2&exception_mode=recommend&search_head=10"
 
 
 def test_redirect_url_does_not_drop_target_recommend_when_preserving_head_id():
@@ -168,6 +170,17 @@ def test_redirect_url_does_not_drop_target_recommend_when_preserving_head_id():
     )
 
     assert redirect == "https://m.dcinside.com/board/thesingularity?page=2&recommend=1&headid=10"
+
+
+def test_redirect_url_preserves_pc_exception_mode_recommend():
+    api = API.__new__(API)
+
+    redirect = api._API__normalize_redirect_url(
+        "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=1&exception_mode=recommend",
+        "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2",
+    )
+
+    assert redirect == "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2&exception_mode=recommend"
 
 
 def test_parse_mobile_headtext_tabs():
@@ -1026,6 +1039,45 @@ async def test_board_precise_times_fetches_pc_list_only():
     assert seen_urls
     assert all("m.dcinside.com" not in url for url in seen_urls)
     assert all("list_num=30" in url for url in seen_urls)
+
+
+@pytest.mark.asyncio
+async def test_board_precise_times_uses_pc_recommend_list_parameter():
+    api = API.__new__(API)
+    seen_urls = []
+
+    async def fake_fetch(urls, validator=None):
+        seen_urls.extend(urls)
+        parsed = lxml.html.fromstring(
+            """
+            <html><body><table><tbody>
+              <tr class="ub-content us-post" data-no="123">
+                <td class="gall_tit"><a href="/board/view/?id=test&no=123">pc title</a></td>
+                <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+                <td class="gall_date" title="2026.04.16 12:00:00"></td>
+                <td class="gall_count">7</td>
+                <td class="gall_recommend">3</td>
+              </tr>
+              <tr class="ub-content us-post" data-no="999">
+                <td class="gall_tit"><a href="/board/view/?id=test&no=999">other title</a></td>
+                <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+                <td class="gall_date" title="2026.04.16 13:00:00"></td>
+                <td class="gall_count">7</td>
+                <td class="gall_recommend">3</td>
+              </tr>
+            </tbody></table></body></html>
+            """
+        )
+        return parsed, "ok", "https://gall.dcinside.com/board/lists/?id=test&page=1"
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+
+    times = await api.board_precise_times("test", page=1, recommend=True, kind="normal", target_ids=["123"])
+
+    assert list(times) == ["123"]
+    assert seen_urls
+    assert all("exception_mode=recommend" in url for url in seen_urls)
+    assert all("recommend=1" not in url for url in seen_urls)
 
 
 @pytest.mark.asyncio
