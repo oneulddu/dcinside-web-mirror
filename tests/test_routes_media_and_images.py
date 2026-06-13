@@ -845,6 +845,73 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     assert recommend_query["recommend"] == ["1"]
 
 
+def test_board_renders_date_only_time_for_async_hydration(monkeypatch):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        return [
+            {
+                "id": "123",
+                "title": "전날 글",
+                "comment_count": 0,
+                "subject": None,
+                "author": "익명",
+                "author_code": None,
+                "time": "2026-04-16 23:59:59",
+                "time_display": "04.16",
+                "needs_time_hydrate": True,
+                "voteup_count": 0,
+            }
+        ], []
+
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
+    app = create_app()
+
+    response = app.test_client().get("/board?board=test&page=2")
+    soup = BeautifulSoup(response.data, "html.parser")
+    time_node = soup.select_one("[data-board-time][data-post-id='123']")
+
+    assert time_node.get_text(strip=True) == "04.16"
+    assert time_node["data-needs-time-hydrate"] == "1"
+    assert "2026-04-16 23:59:59" not in response.get_data(as_text=True)
+    assert soup.select_one("script[src*='board_time_hydrator.js']") is not None
+
+
+def test_board_times_endpoint_returns_precise_times(monkeypatch):
+    seen = {}
+
+    async def fake_precise_times(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None):
+        seen.update(
+            {
+                "page": page,
+                "board": board,
+                "recommend": recommend,
+                "kind": kind,
+                "search_type": search_type,
+                "search_keyword": search_keyword,
+                "head_id": head_id,
+            }
+        )
+        return {"123": "2026-04-16 12:00:00"}
+
+    monkeypatch.setattr(routes, "async_board_precise_times", fake_precise_times)
+    app = create_app()
+
+    response = app.test_client().get(
+        "/board/times?board=test&page=2&recommend=1&kind=minor&headid=10&s_type=subject&serval=hello"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "times": {"123": "2026-04-16 12:00:00"}}
+    assert seen == {
+        "page": 2,
+        "board": "test",
+        "recommend": 1,
+        "kind": "minor",
+        "search_type": "subject",
+        "search_keyword": "hello",
+        "head_id": "10",
+    }
+
+
 def test_board_head_category_tabs_filter_and_preserve_links(monkeypatch):
     seen = {}
 

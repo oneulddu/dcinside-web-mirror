@@ -402,6 +402,37 @@ def test_parse_mobile_list_item_keeps_four_cell_ginfo_offsets():
     assert item.voteup_count == 2
     assert item.comment_count == 5
     assert item.isimage is True
+    assert item.time_text == "04.16 12:00"
+    assert item.time_is_precise is True
+
+
+def test_parse_mobile_list_item_marks_date_only_time_as_imprecise():
+    api = API.__new__(API)
+    row = lxml.html.fromstring(
+        """
+        <li>
+          <div class="gall-detail-lnktb">
+            <a class="lt" href="https://m.dcinside.com/board/test/122">
+              <span class="subject-add">
+                <span class="subjectin">date only title</span>
+              </span>
+              <ul class="ginfo">
+                <li>작성자</li>
+                <li>04.16</li>
+                <li>조회 7</li>
+                <li>추천 <span>2</span></li>
+              </ul>
+            </a>
+          </div>
+        </li>
+        """
+    )
+
+    item = api._API__parse_mobile_list_item(row, "test", kind="minor")
+
+    assert item is not None
+    assert item.time_text == "04.16"
+    assert item.time_is_precise is False
 
 
 def test_parse_mobile_list_item_ignores_text_icon_named_image():
@@ -960,6 +991,41 @@ async def test_board_falls_back_to_pc_when_mobile_page_is_not_parseable():
     assert rows[0].id == "123"
     assert rows[0].title == "pc title"
     assert rows[0].is_mobile_source is False
+    assert rows[0].time_text == "2026.04.16 12:00:00"
+    assert rows[0].time_is_precise is True
+
+
+@pytest.mark.asyncio
+async def test_board_precise_times_fetches_pc_list_only():
+    api = API.__new__(API)
+    seen_urls = []
+
+    async def fake_fetch(urls, validator=None):
+        seen_urls.extend(urls)
+        parsed = lxml.html.fromstring(
+            """
+            <html><body><table><tbody>
+              <tr class="ub-content us-post" data-no="123">
+                <td class="gall_tit"><a href="/board/view/?id=test&no=123">pc title</a></td>
+                <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+                <td class="gall_date" title="2026.04.16 12:00:00"></td>
+                <td class="gall_count">7</td>
+                <td class="gall_recommend">3</td>
+              </tr>
+            </tbody></table></body></html>
+            """
+        )
+        return parsed, "ok", "https://gall.dcinside.com/board/lists/?id=test&page=2"
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+
+    times = await api.board_precise_times("test", page=2, kind="normal", head_id="10")
+
+    assert list(times) == ["123"]
+    assert str(times["123"]) == "2026-04-16 12:00:00"
+    assert seen_urls
+    assert all("m.dcinside.com" not in url for url in seen_urls)
+    assert all("list_num=30" in url for url in seen_urls)
 
 
 @pytest.mark.asyncio

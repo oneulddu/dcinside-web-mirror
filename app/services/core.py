@@ -28,6 +28,7 @@ RELATED_PAGE_FETCH_SIZE = DOCS_PER_PAGE_ESTIMATE
 RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1)
 RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
 BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)
+BOARD_TIME_CACHE_TTL = max(_env_int("MIRROR_BOARD_TIME_CACHE_TTL", BOARD_PAGE_CACHE_TTL), 0)
 BOARD_FILL_AUTHOR_CODES = _env_bool("MIRROR_BOARD_FILL_AUTHOR_CODES", False)
 LATEST_ID_CACHE_TTL = 20
 AUTHOR_CODE_CACHE_TTL = 3600
@@ -36,9 +37,11 @@ LATEST_ID_CACHE_MAX_ITEMS = 512
 AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
 
 _BOARD_PAGE_CACHE = {}
+_BOARD_TIME_CACHE = {}
 _LATEST_ID_CACHE = {}
 _AUTHOR_CODE_CACHE = {}
 _BOARD_PAGE_CACHE_LOCK = threading.Lock()
+_BOARD_TIME_CACHE_LOCK = threading.Lock()
 _LATEST_ID_CACHE_LOCK = threading.Lock()
 _AUTHOR_CODE_CACHE_LOCK = threading.Lock()
 
@@ -114,8 +117,16 @@ def _comment_to_dict(comment):
     }
 
 
+def _index_time_display(item):
+    raw_time = (getattr(item, "time_text", None) or "").strip()
+    if not bool(getattr(item, "time_is_precise", True)):
+        return raw_time or "-"
+    return str(getattr(item, "time", "") or "-")
+
+
 def _index_item_to_dict(item):
     author, author_code = _normalize_author(item.author, getattr(item, "author_id", None))
+    needs_time_hydrate = not bool(getattr(item, "time_is_precise", True))
     return {
         "id": item.id,
         "subject": getattr(item, "subject", None),
@@ -125,6 +136,8 @@ def _index_item_to_dict(item):
         "author": author,
         "author_code": author_code,
         "time": item.time,
+        "time_display": _index_time_display(item),
+        "needs_time_hydrate": needs_time_hydrate,
         "comment_count": item.comment_count,
         "voteup_count": item.voteup_count,
         "view_count": item.view_count,
@@ -236,6 +249,63 @@ async def _fetch_board_page(
             BOARD_PAGE_CACHE_MAX_ITEMS,
         )
     return posts
+
+
+def _board_time_cache_key(board, kind, recommend, page, search_type=None, search_keyword=None, head_id=None):
+    return (
+        board,
+        kind or "",
+        _safe_int(recommend, 0),
+        _safe_int(page, 1),
+        (search_type or "").strip(),
+        (search_keyword or "").strip(),
+        "" if head_id is None else str(head_id).strip(),
+    )
+
+
+async def async_board_precise_times(
+    page,
+    board,
+    recommend,
+    kind=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+):
+    cache_key = _board_time_cache_key(
+        board,
+        kind,
+        recommend,
+        page,
+        search_type=search_type,
+        search_keyword=search_keyword,
+        head_id=head_id,
+    )
+    cached = _cache_get(_BOARD_TIME_CACHE, _BOARD_TIME_CACHE_LOCK, cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    async with dc_api_context() as api:
+        precise_times = await api.board_precise_times(
+            board_id=board,
+            page=page,
+            recommend=bool(_safe_int(recommend, 0)),
+            kind=kind,
+            search_type=search_type,
+            search_keyword=search_keyword,
+            head_id=head_id,
+        )
+
+    result = {str(doc_id): str(value) for doc_id, value in (precise_times or {}).items()}
+    _cache_set(
+        _BOARD_TIME_CACHE,
+        _BOARD_TIME_CACHE_LOCK,
+        cache_key,
+        dict(result),
+        BOARD_TIME_CACHE_TTL,
+        BOARD_PAGE_CACHE_MAX_ITEMS,
+    )
+    return result
 
 
 def _normalize_head_category(row):

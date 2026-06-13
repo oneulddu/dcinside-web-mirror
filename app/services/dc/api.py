@@ -84,6 +84,7 @@ def cache_delete(cache, lock, key):
 
 
 DOCS_PER_PAGE = 200
+BOARD_LIST_PAGE_SIZE = 30
 HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 BOARD_KIND_CACHE_TTL = max(env_int("MIRROR_BOARD_KIND_CACHE_TTL", 21600), 0)
 BOARD_KIND_CACHE_MAX_ITEMS = 2048
@@ -436,6 +437,10 @@ class API(ParserMixin):
         if normalized is None:
             return ""
         return "&" + urlencode({"search_head": normalized})
+
+    def __with_pc_list_page_size(self, url):
+        separator = "&" if "?" in url else "?"
+        return url + separator + urlencode({"list_num": BOARD_LIST_PAGE_SIZE})
 
     def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None):
         kind = (kind or "").lower()
@@ -881,6 +886,45 @@ class API(ParserMixin):
             if yielded_in_page == 0:
                 break
             page += 1
+
+    async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None):
+        list_urls = [
+            self.__with_pc_list_page_size(url)
+            for url in self.__build_list_urls(
+                board_id,
+                page,
+                recommend=recommend,
+                kind=kind,
+                search_type=search_type,
+                search_keyword=search_keyword,
+                head_id=head_id,
+            )
+            if not self.__is_mobile_request(url)
+        ]
+        parsed, _, _ = await self.__fetch_parsed_from_urls(
+            list_urls,
+            validator=self.__is_usable_board_page,
+        )
+        if parsed is None:
+            return {}
+
+        precise_times = {}
+        rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")
+        for row in rows:
+            item = self.__parse_pc_board_row(
+                row,
+                board_id,
+                kind=kind,
+                recommend=recommend,
+                is_mobile_source=False,
+            )
+            if item is None:
+                continue
+            if not getattr(item, "time_is_precise", False):
+                continue
+            precise_times[str(item.id)] = item.time
+        return precise_times
+
     async def __pc_document_media_sources(self, board_id, document_id, kind=None):
         for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
             try:

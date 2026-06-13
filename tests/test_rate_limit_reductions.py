@@ -33,10 +33,12 @@ def _index_item(doc_id, *, author_id=None, is_mobile_source=False):
 @pytest.fixture(autouse=True)
 def clear_core_caches():
     core._BOARD_PAGE_CACHE.clear()
+    core._BOARD_TIME_CACHE.clear()
     core._LATEST_ID_CACHE.clear()
     core._AUTHOR_CODE_CACHE.clear()
     yield
     core._BOARD_PAGE_CACHE.clear()
+    core._BOARD_TIME_CACHE.clear()
     core._LATEST_ID_CACHE.clear()
     core._AUTHOR_CODE_CACHE.clear()
 
@@ -44,11 +46,12 @@ def clear_core_caches():
 def test_core_caches_use_separate_locks():
     locks = {
         core._BOARD_PAGE_CACHE_LOCK,
+        core._BOARD_TIME_CACHE_LOCK,
         core._LATEST_ID_CACHE_LOCK,
         core._AUTHOR_CODE_CACHE_LOCK,
     }
 
-    assert len(locks) == 3
+    assert len(locks) == 4
 
 
 def test_author_code_cache_ttl_is_one_hour():
