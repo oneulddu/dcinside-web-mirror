@@ -632,7 +632,10 @@ class API(ParserMixin):
         normalized_url = urljoin(current_url, redirect_url)
         current_parsed = urlparse(current_url)
         current_query = parse_qs(current_parsed.query)
-        preserve_recommend = "1" in current_query.get("recommend", [])
+        preserve_recommend = (
+            "1" in current_query.get("recommend", [])
+            or "recommend" in current_query.get("exception_mode", [])
+        )
         preserved_head_id = self.__normalize_head_id(
             (current_query.get("headid") or current_query.get("search_head") or [None])[0]
         )

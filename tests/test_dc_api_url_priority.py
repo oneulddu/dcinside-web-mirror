@@ -172,6 +172,17 @@ def test_redirect_url_does_not_drop_target_recommend_when_preserving_head_id():
     assert redirect == "https://m.dcinside.com/board/thesingularity?page=2&recommend=1&headid=10"
 
 
+def test_redirect_url_preserves_pc_exception_mode_recommend():
+    api = API.__new__(API)
+
+    redirect = api._API__normalize_redirect_url(
+        "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=1&exception_mode=recommend",
+        "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2",
+    )
+
+    assert redirect == "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2&exception_mode=recommend"
+
+
 def test_parse_mobile_headtext_tabs():
     api = API.__new__(API)
     parsed = lxml.html.fromstring(
