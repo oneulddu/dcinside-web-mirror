@@ -177,6 +177,7 @@ class ParserMixin:
         ]
         author = "익명"
         post_time = self.__parse_time("")
+        time_text = ""
         view_count = 0
         voteup_count = 0
         meta_offset = 0
@@ -186,12 +187,13 @@ class ParserMixin:
         if len(ginfo) > meta_offset:
             author = ginfo[meta_offset] or "익명"
         if len(ginfo) > meta_offset + 1:
-            post_time = self.__parse_time(ginfo[meta_offset + 1])
+            time_text = ginfo[meta_offset + 1]
+            post_time = self.__parse_time(time_text)
         if len(ginfo) > meta_offset + 2:
             view_count = to_int(ginfo[meta_offset + 2], 0)
         if len(ginfo) > meta_offset + 3:
             voteup_count = to_int(ginfo[meta_offset + 3], 0)
-        return subject, author, post_time, view_count, voteup_count
+        return subject, author, post_time, view_count, voteup_count, time_text
 
     def __extract_mobile_comment_count(self, row, full_text_fallback=False):
         comment_nodes = row.xpath(".//a[contains(@class, 'rt')]//*[contains(@class, 'ct')]")
@@ -235,6 +237,7 @@ class ParserMixin:
         recommend_marker="reco",
         include_board_best=True,
         include_issue_hit=False,
+        time_text=None,
     ):
         parsed_flags = self.__gallery_flags(
             flags,
@@ -264,6 +267,7 @@ class ParserMixin:
             isdcbest=parsed_flags["isdcbest"],
             ishit=parsed_flags["ishit"],
             is_mobile_source=is_mobile_source,
+            time_text=time_text,
         )
 
     def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True, recommend=False):
@@ -284,7 +288,7 @@ class ParserMixin:
         if not title:
             return None
 
-        subject, author, post_time, view_count, voteup_count = self.__extract_mobile_ginfo(
+        subject, author, post_time, view_count, voteup_count, time_text = self.__extract_mobile_ginfo(
             link,
             subject=subject,
             allow_subject_cell=True,
@@ -304,6 +308,7 @@ class ParserMixin:
             kind=kind,
             recommend=recommend,
             is_mobile_source=is_mobile_source,
+            time_text=time_text,
         )
 
     def __parse_embedded_mobile_posts(self, parsed, board_id, current_document_id, kind=None, recommend=False):
@@ -494,6 +499,7 @@ class ParserMixin:
         author = "익명"
         author_id = None
         post_time = self.__parse_time("")
+        time_text = ""
         view_count = 0
         voteup_count = 0
         comment_count = 0
@@ -510,13 +516,15 @@ class ParserMixin:
             if len(doc[0][1]) == 5:
                 subject = doc[0][1][0].text
                 author = " ".join(doc[0][1][1].text_content().split()) if len(doc[0][1]) > 1 else "익명"
-                post_time = self.__parse_time(doc[0][1][2].text or "")
+                time_text = doc[0][1][2].text or ""
+                post_time = self.__parse_time(time_text)
                 view_count = to_int(doc[0][1][3].text.split()[-1] if doc[0][1][3].text else 0, 0)
                 voteup_count = to_int(doc[0][1][4][0].text.split()[-1] if doc[0][1][4][0].text else 0, 0)
             else:
                 subject = None
                 author = " ".join(doc[0][1][0].text_content().split()) if len(doc[0][1]) > 0 else "익명"
-                post_time = self.__parse_time(doc[0][1][1].text or "")
+                time_text = doc[0][1][1].text or ""
+                post_time = self.__parse_time(time_text)
                 view_count = to_int(doc[0][1][2].text.split()[-1] if doc[0][1][2].text else 0, 0)
                 voteup_count = to_int(doc[0][1][3].text_content().split()[-1], 0)
             classname = doc[0][0][0].get("class", "")
@@ -538,7 +546,7 @@ class ParserMixin:
             title, subject = self.__extract_mobile_title_subject(link, prefer_icon_sibling=False)
             if not title:
                 title = self.__compact_text(link)
-            subject, author, post_time, view_count, voteup_count = self.__extract_mobile_ginfo(
+            subject, author, post_time, view_count, voteup_count, time_text = self.__extract_mobile_ginfo(
                 link,
                 subject=subject,
                 allow_subject_cell=False,
@@ -566,6 +574,7 @@ class ParserMixin:
             kind=kind,
             recommend=recommend,
             is_mobile_source=is_mobile_source,
+            time_text=time_text,
         )
 
     def __extract_pc_board_author(self, row):
@@ -632,6 +641,7 @@ class ParserMixin:
             recommend_marker="recom",
             include_board_best=False,
             include_issue_hit=True,
+            time_text=time_text,
         )
 
     def __first_text(self, parsed, xpath_expr):

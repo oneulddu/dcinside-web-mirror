@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlparse
 from flask import Blueprint, abort, current_app, jsonify, make_response, render_template, request, url_for
 
 from .services.async_bridge import run_async
-from .services.core import async_index_with_head_categories, async_read, async_related_after_position
+from .services.core import async_board_precise_times, async_index_with_head_categories, async_read, async_related_after_position
 from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
@@ -162,7 +162,7 @@ def _serialize_related_posts(posts):
                 "has_video": has_video,
                 "author": item.get("author", "익명"),
                 "author_code": item.get("author_code"),
-                "time": str(item.get("time", "")),
+                "time": str(item.get("time_display") or item.get("time", "")),
                 "comment_count": _safe_int(item.get("comment_count", 0), 0),
                 "voteup_count": _safe_int(item.get("voteup_count", 0), 0),
                 "source_page": _safe_int(item.get("source_page", 0), 0),
@@ -203,6 +203,22 @@ def _current_search_context():
     keyword = _board_search_keyword()
     search_type = _normalize_board_search_type(request.args.get("s_type")) if keyword else DEFAULT_SEARCH_TYPE
     return search_type, keyword
+
+
+def _target_post_ids_arg(name="ids", limit=60):
+    ids = []
+    seen = set()
+    for raw_id in (request.args.get(name) or "").split(","):
+        post_id = raw_id.strip()
+        if not post_id or post_id in seen:
+            continue
+        if not post_id.isdigit():
+            abort(400)
+        seen.add(post_id)
+        ids.append(post_id)
+        if len(ids) >= limit:
+            break
+    return ids
 
 
 def _media_request_context(default_board="airforce"):
@@ -460,6 +476,36 @@ def board():
     )
     touch_recent_gallery(response, board, kind, recommend=recommend)
     return response
+
+
+@bp.route("/board/times")
+def board_times():
+    page = _positive_int_arg("page", 1)
+    board = _normalize_board_id(request.args.get("board", "airforce"))
+    recommend = _normalize_recommend()
+    kind = _normalize_gallery_kind(request.args.get("kind"))
+    head_id = _normalize_head_id(request.args.get("headid"))
+    search_type, search_keyword = _current_search_context()
+    target_ids = _target_post_ids_arg()
+
+    try:
+        times = run_async(
+            async_board_precise_times(
+                page,
+                board,
+                recommend,
+                kind=kind,
+                search_type=search_type,
+                search_keyword=search_keyword,
+                head_id=head_id,
+                target_ids=target_ids,
+            )
+        )
+    except Exception:
+        current_app.logger.exception("Failed to fetch board precise times")
+        return jsonify({"ok": False, "times": {}, "error": "board_time_fetch_failed"}), 502
+
+    return jsonify({"ok": True, "times": times})
 
 
 @bp.route("/media")

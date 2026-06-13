@@ -2,7 +2,7 @@
 {% from "_feed_post_bits.html" import feed_status_icon, feed_subject %}
 
 {% block content %}
-<section class="feed-list">
+<section class="feed-list" id="board-list" data-board="{{ board }}" data-page="{{ page }}" data-recommend="{{ recommend }}" data-kind="{{ kind or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
     <div class="board-head">
         <h2>{{ board }} 게시판</h2>
         {% if recommend == 1 %}
@@ -30,7 +30,7 @@
     <ul>
         {% for index in datas %}
         <li>
-            <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}">
+            <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}" data-post-id="{{ index.id }}">
                 <div class="feed-title-wrap">
                     {{ feed_status_icon(index) }}
                     <h2 class="feed-title">
@@ -45,7 +45,7 @@
                         {{ feed_subject(index) }}
                         <span class="author-text">{{ index.author }}{% if index.author_code %}({{ index.author_code }}){% endif %}</span>
                         <span class="sep">|</span>
-                        <span>{{ index.time }}</span>
+                        <span data-board-time data-post-id="{{ index.id }}" {% if index.needs_time_hydrate %}data-needs-time-hydrate="1"{% endif %}>{{ index.time_display or index.time }}</span>
                     </div>
                     <div class="feed-meta-right">
                         <div class="score-box">
@@ -96,4 +96,5 @@
         </div>
     </div>
 </section>
+<script src="{{ static_url('javascript/board_time_hydrator.js') }}"></script>
 {% endblock %}

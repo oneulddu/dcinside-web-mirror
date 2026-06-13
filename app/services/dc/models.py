@@ -12,9 +12,9 @@ GALLERY_POSTS_COOKIES = {
 
 
 class DocumentIndex:
-    __slots__ = ["id", "subject", "title", "board_id", "has_image", "has_video", "author", "author_id", "time", "view_count", "comment_count", "voteup_count",
+    __slots__ = ["id", "subject", "title", "board_id", "has_image", "has_video", "author", "author_id", "time", "time_text", "time_is_precise", "view_count", "comment_count", "voteup_count",
             "document", "comments", "isimage", "isvideo", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
-    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False, has_video=False, isvideo=False):
+    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False, has_video=False, isvideo=False, time_text=None, time_is_precise=None):
         self.id = id
         self.board_id = board_id
         self.title = title
@@ -23,6 +23,8 @@ class DocumentIndex:
         self.author = author
         self.author_id = author_id
         self.time = time
+        self.time_text = time_text
+        self.time_is_precise = (":" in str(time_text if time_text is not None else time)) if time_is_precise is None else bool(time_is_precise)
         self.view_count = view_count
         self.comment_count = comment_count
         self.voteup_count = voteup_count
@@ -98,6 +100,5 @@ class Image:
             ext = filetype.guess(bytes).extension
             with open(path + '.' + ext, 'wb') as f:
                 f.write(bytes)
-
 
 
