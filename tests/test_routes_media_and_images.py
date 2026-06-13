@@ -813,7 +813,10 @@ def test_movie_route_renders_same_origin_video_player(monkeypatch):
 
 
 def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
+    seen_scan_limits = []
+
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        seen_scan_limits.append(kwargs.get("max_scan_pages"))
         return [
             {
                 "id": "123",
@@ -843,6 +846,7 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     assert normal_query["source_page"] == ["3"]
     assert recommend_query["source_page"] == ["3"]
     assert recommend_query["recommend"] == ["1"]
+    assert seen_scan_limits == [1, 1]
 
 
 def test_board_renders_date_only_time_for_async_hydration(monkeypatch):

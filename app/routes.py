@@ -351,6 +351,7 @@ async def _load_board_payload(page, board, recommend, kind=None, search_type=Non
         board,
         recommend,
         kind=kind,
+        max_scan_pages=1,
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
