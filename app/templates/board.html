@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_feed_post_bits.html" import feed_status_icon, feed_subject %}
+{% from "_feed_post_bits.html" import author_text, feed_status_icon, feed_subject %}
 
 {% block content %}
 <section class="feed-list" id="board-list" data-board="{{ board }}" data-page="{{ page }}" data-recommend="{{ recommend }}" data-kind="{{ kind or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
@@ -43,7 +43,7 @@
                 <div class="feed-meta-row">
                     <div class="feed-meta-left">
                         {{ feed_subject(index) }}
-                        <span class="author-text">{{ index.author }}{% if index.author_code %}({{ index.author_code }}){% endif %}</span>
+                        {{ author_text(index) }}
                         <span class="sep">|</span>
                         <span data-board-time data-post-id="{{ index.id }}" {% if index.needs_time_hydrate %}data-needs-time-hydrate="1"{% endif %}>{{ index.time_display or index.time }}</span>
                     </div>

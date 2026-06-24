@@ -353,7 +353,7 @@ def test_parse_mobile_list_item_uses_five_cell_ginfo_offsets():
               </span>
               <ul class="ginfo">
                 <li>일반</li>
-                <li>작성자(3.4)</li>
+                <li>작성자(3.4)<span class="sp-nick m-nogonick"></span></li>
                 <li>04.16 12:00</li>
                 <li>조회 7</li>
                 <li>추천 <span>2</span></li>
@@ -392,7 +392,7 @@ def test_parse_mobile_list_item_keeps_four_cell_ginfo_offsets():
                 <span class="subjectin">embedded title</span>
               </span>
               <ul class="ginfo">
-                <li>작성자(3.4)</li>
+                <li>작성자(3.4)<span class="sp-nick m-nogonick"></span></li>
                 <li>04.16 12:00</li>
                 <li>조회 7</li>
                 <li>추천 <span>2</span></li>
@@ -417,6 +417,75 @@ def test_parse_mobile_list_item_keeps_four_cell_ginfo_offsets():
     assert item.isimage is True
     assert item.time_text == "04.16 12:00"
     assert item.time_is_precise is True
+    assert item.author_role == "manager"
+
+
+def test_parse_mobile_list_item_preserves_manager_role():
+    api = API.__new__(API)
+    row = lxml.html.fromstring(
+        """
+        <li>
+          <div class="gall-detail-lnktb">
+            <a class="lt" href="https://m.dcinside.com/board/test/122">
+              <span class="subject-add">
+                <span class="subjectin">manager title</span>
+              </span>
+              <ul class="ginfo">
+                <li>일반</li>
+                <li class="list-nick">매니저<span class="sp-nick m-gonick"></span></li>
+                <li>04.16 12:00</li>
+                <li>조회 7</li>
+                <li>추천 <span>2</span></li>
+              </ul>
+            </a>
+          </div>
+        </li>
+        """
+    )
+
+    item = api._API__parse_mobile_list_item(row, "test", kind="minor")
+
+    assert item is not None
+    assert item.author == "매니저"
+    assert item.author_role == "manager"
+
+
+def test_parse_pc_board_row_preserves_manager_roles():
+    api = API.__new__(API)
+    manager_row = lxml.html.fromstring(
+        """
+        <tr class="ub-content us-post" data-no="123">
+          <td class="gall_tit"><a href="/mgallery/board/view/?id=test&no=123">manager title</a></td>
+          <td class="gall_writer" data-nick="매니저" data-uid="manager-id">
+            <span class="nickname in">매니저</span>
+            <img src="https://nstatic.dcinside.com/dc/w/images/managernik.gif">
+          </td>
+          <td class="gall_date" title="2026.04.16 12:00:00"></td>
+          <td class="gall_count">7</td>
+          <td class="gall_recommend">3</td>
+        </tr>
+        """
+    )
+    submanager_row = lxml.html.fromstring(
+        """
+        <tr class="ub-content us-post" data-no="124">
+          <td class="gall_tit"><a href="/mgallery/board/view/?id=test&no=124">sub title</a></td>
+          <td class="gall_writer" data-nick="부매니저" data-uid="sub-id">
+            <span class="nickname in">부매니저</span>
+            <img src="https://nstatic.dcinside.com/dc/w/images/fix_sub_managernik.gif">
+          </td>
+          <td class="gall_date" title="2026.04.16 12:00:00"></td>
+          <td class="gall_count">7</td>
+          <td class="gall_recommend">3</td>
+        </tr>
+        """
+    )
+
+    manager = api._API__parse_pc_board_row(manager_row, "test", kind="minor")
+    submanager = api._API__parse_pc_board_row(submanager_row, "test", kind="minor")
+
+    assert manager.author_role == "manager"
+    assert submanager.author_role == "submanager"
 
 
 def test_parse_mobile_list_item_marks_date_only_time_as_imprecise():
@@ -1516,6 +1585,30 @@ async def test_mobile_comment_rows_accept_classless_comment_items():
     ]
 
     assert comments == ["1"]
+
+
+def test_parse_mobile_comment_preserves_submanager_role():
+    api = API.__new__(API)
+    li = lxml.html.fromstring(
+        """
+        <li class="comment-add" no="10" m_no="1">
+          <div class="ginfo-area">
+            <button type="button" class="nick">부매니저</button>
+            <a href="/gallog/sub-id">
+              <span class="sp-nick sub-gonick"></span>
+              <span class="blockCommentId" data-info="sub-id"></span>
+            </a>
+          </div>
+          <p class="txt">comment body</p>
+          <span class="date">04.16 12:00</span>
+        </li>
+        """
+    )
+
+    comment = api._API__parse_mobile_comment_li(li)
+
+    assert comment.author == "부매니저"
+    assert comment.author_role == "submanager"
 
 
 @pytest.mark.asyncio

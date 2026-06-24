@@ -92,6 +92,13 @@ def _normalize_author(author, author_id=None):
     return name, code
 
 
+def _normalize_author_role(role):
+    value = str(role or "").strip().lower()
+    if value in {"manager", "submanager"}:
+        return value
+    return None
+
+
 def _is_reply_comment(parent_id):
     value = str(parent_id or "").strip().lower()
     if value in {"", "0", "1", "none", "null"}:
@@ -111,6 +118,7 @@ def _comment_to_dict(comment):
         "contents": comment.contents,
         "author": comment_author,
         "author_code": comment_author_code,
+        "author_role": _normalize_author_role(getattr(comment, "author_role", None)),
         "parent_id": comment.parent_id,
         "is_reply": is_reply,
         "dccon": comment.dccon,
@@ -135,6 +143,7 @@ def _index_item_to_dict(item):
         "has_video": bool(getattr(item, "has_video", False) or getattr(item, "isvideo", False)),
         "author": author,
         "author_code": author_code,
+        "author_role": _normalize_author_role(getattr(item, "author_role", None)),
         "time": item.time,
         "time_display": _index_time_display(item),
         "needs_time_hydrate": needs_time_hydrate,
@@ -185,14 +194,18 @@ def _author_code_cache_key(board, kind, doc_id):
     return (board, kind or "", str(doc_id))
 
 
-def _cache_author_code(board, kind, doc_id, author, author_code):
+def _cache_author_code(board, kind, doc_id, author, author_code, author_role=None):
     if not doc_id:
         return
     _cache_set(
         _AUTHOR_CODE_CACHE,
         _AUTHOR_CODE_CACHE_LOCK,
         _author_code_cache_key(board, kind, doc_id),
-        {"author": author, "author_code": author_code},
+        {
+            "author": author,
+            "author_code": author_code,
+            "author_role": _normalize_author_role(author_role),
+        },
         AUTHOR_CODE_CACHE_TTL,
         AUTHOR_CODE_CACHE_MAX_ITEMS,
     )
@@ -372,6 +385,8 @@ async def _fill_missing_author_code(api, board, kind, row, recommend=0, allow_fe
     if cached is not None:
         row["author"] = cached.get("author", row.get("author"))
         row["author_code"] = cached.get("author_code")
+        if cached.get("author_role"):
+            row["author_role"] = cached.get("author_role")
         return row
     if not allow_fetch:
         return row
@@ -386,7 +401,8 @@ async def _fill_missing_author_code(api, board, kind, row, recommend=0, allow_fe
     author, author_code = _normalize_author(doc.author, doc.author_id)
     row["author"] = author
     row["author_code"] = author_code
-    _cache_author_code(board, kind, doc_id, author, author_code)
+    row["author_role"] = _normalize_author_role(getattr(doc, "author_role", None))
+    _cache_author_code(board, kind, doc_id, author, author_code, row["author_role"])
     return row
 
 
@@ -422,11 +438,13 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
             "html": "게시글 데이터를 가져오는 데 실패했습니다.",
         }, [], []
     author, author_code = _normalize_author(doc.author, doc.author_id)
-    _cache_author_code(board, kind, api_id, author, author_code)
+    author_role = _normalize_author_role(getattr(doc, "author_role", None))
+    _cache_author_code(board, kind, api_id, author, author_code, author_role)
     data = {
         "title": doc.title,
         "author": author,
         "author_code": author_code,
+        "author_role": author_role,
         "time": doc.time,
         "voteup_count": doc.voteup_count,
         "contents": getattr(doc, "contents", ""),

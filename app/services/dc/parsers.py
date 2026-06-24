@@ -142,6 +142,28 @@ class ParserMixin:
                     return author_id
         return None
 
+    def __extract_author_role(self, node):
+        if node is None:
+            return None
+        values = []
+        for attr in ("class", "src", "data-original", "title", "alt"):
+            values.extend(str(value or "") for value in node.xpath(f".//@{attr}"))
+        return self.__extract_author_role_from_text(" ".join(values))
+
+    def __extract_author_role_from_text(self, value):
+        marker = str(value or "").lower()
+        if not marker:
+            return None
+        if (
+            "fix_sub_managernik" in marker
+            or "sub_managernik" in marker
+            or re.search(r"\bsub-(?:go|nogo)nick\b", marker)
+        ):
+            return "submanager"
+        if re.search(r"(?<!sub_)managernik\.gif", marker) or re.search(r"\bm-(?:go|nogo)nick\b", marker):
+            return "manager"
+        return None
+
     def __find_mobile_list_link(self, row):
         link_nodes = row.xpath(
             ".//a[contains(@class, 'lt') and "
@@ -195,6 +217,22 @@ class ParserMixin:
             voteup_count = to_int(ginfo[meta_offset + 3], 0)
         return subject, author, post_time, view_count, voteup_count, time_text
 
+    def __extract_mobile_author_role_from_ginfo(self, link, allow_subject_cell=True):
+        nodes = link.xpath(".//ul[contains(@class, 'ginfo')]/li")
+        if not nodes:
+            return None
+        named_nodes = [
+            node
+            for node in nodes
+            if " list-nick " in " {} ".format(node.get("class", ""))
+        ]
+        if named_nodes:
+            return self.__extract_author_role(named_nodes[0])
+        author_offset = 1 if allow_subject_cell and len(nodes) >= 5 else 0
+        if author_offset >= len(nodes):
+            return None
+        return self.__extract_author_role(nodes[author_offset])
+
     def __extract_mobile_comment_count(self, row, full_text_fallback=False):
         comment_nodes = row.xpath(".//a[contains(@class, 'rt')]//*[contains(@class, 'ct')]")
         if comment_nodes:
@@ -238,6 +276,7 @@ class ParserMixin:
         include_board_best=True,
         include_issue_hit=False,
         time_text=None,
+        author_role=None,
     ):
         parsed_flags = self.__gallery_flags(
             flags,
@@ -268,6 +307,7 @@ class ParserMixin:
             ishit=parsed_flags["ishit"],
             is_mobile_source=is_mobile_source,
             time_text=time_text,
+            author_role=author_role,
         )
 
     def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True, recommend=False):
@@ -293,6 +333,7 @@ class ParserMixin:
             subject=subject,
             allow_subject_cell=True,
         )
+        author_role = self.__extract_mobile_author_role_from_ginfo(link, allow_subject_cell=True)
         return self.__make_board_index(
             document_id=document_id,
             board_id=board_id,
@@ -309,6 +350,7 @@ class ParserMixin:
             recommend=recommend,
             is_mobile_source=is_mobile_source,
             time_text=time_text,
+            author_role=author_role,
         )
 
     def __parse_embedded_mobile_posts(self, parsed, board_id, current_document_id, kind=None, recommend=False):
@@ -355,6 +397,7 @@ class ParserMixin:
                 author = " ".join(nick_buttons[0].itertext()).strip() or "익명"
             else:
                 author = " ".join(nick_node.itertext()).strip() or "익명"
+        author_role = self.__extract_author_role(nick_node)
 
         dccon_images = content_node.xpath(
             ".//img[contains(@src, 'dccon') or contains(@data-original, 'dccon') "
@@ -383,6 +426,7 @@ class ParserMixin:
             voice=voice,
             time=self.__parse_time(time_node.text_content() if time_node is not None else ""),
             is_reply="comment-add" in li_classes,
+            author_role=author_role,
         )
 
     def __mobile_comment_rows(self, parsed):
@@ -553,6 +597,10 @@ class ParserMixin:
             )
             comment_count = self.__extract_mobile_comment_count(doc, full_text_fallback=True)
             flags = self.__mobile_icon_flags(link)
+        author_role = None
+        link = self.__find_mobile_list_link(doc)
+        if link is not None:
+            author_role = self.__extract_mobile_author_role_from_ginfo(link, allow_subject_cell=False)
 
         if not href:
             return None
@@ -575,12 +623,14 @@ class ParserMixin:
             recommend=recommend,
             is_mobile_source=is_mobile_source,
             time_text=time_text,
+            author_role=author_role,
         )
 
     def __extract_pc_board_author(self, row):
         author_el = row.xpath(".//td[contains(@class, 'gall_writer')]")
         author = "익명"
         author_id = None
+        author_role = None
         if author_el:
             author = (author_el[0].get("data-nick") or "").strip()
             if not author:
@@ -589,7 +639,8 @@ class ParserMixin:
             if not author_id:
                 author_id = (author_el[0].get("data-ip") or "").strip()
             author_id = author_id or None
-        return author, author_id
+            author_role = self.__extract_author_role(author_el[0])
+        return author, author_id, author_role
 
     def __extract_pc_board_counts(self, row):
         view_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_count')]/text()") or []), 0)
@@ -615,7 +666,7 @@ class ParserMixin:
             return None
 
         title = self.__compact_text(href_els[0])
-        author, author_id = self.__extract_pc_board_author(row)
+        author, author_id, author_role = self.__extract_pc_board_author(row)
 
         date_el = row.xpath(".//td[contains(@class, 'gall_date')]")
         time_text = ""
@@ -642,6 +693,7 @@ class ParserMixin:
             include_board_best=False,
             include_issue_hit=True,
             time_text=time_text,
+            author_role=author_role,
         )
 
     def __first_text(self, parsed, xpath_expr):
@@ -669,6 +721,7 @@ class ParserMixin:
 
         author = "익명"
         author_id = None
+        author_role = self.__extract_author_role(doc_head_container)
 
         # Mobile view often exposes writer in ginfo2 first item:
         # <li><a href="/gallog/{id}">닉네임</a></li> or plain "ㅇㅇ(1.2)" text.
@@ -733,6 +786,7 @@ class ParserMixin:
             "subject": subject,
             "author": author,
             "author_id": author_id,
+            "author_role": author_role,
             "time_str": time_str,
             "meta_text": meta_text,
         }
@@ -1074,6 +1128,9 @@ class ParserMixin:
 
         author_id = (raw.get("user_id") or "").strip() or (raw.get("ip") or "").strip() or None
         parent_id = str(raw.get("c_no") or raw.get("parent") or "").strip() or None
+        author_role = self.__extract_author_role_from_text(
+            " ".join(str(raw.get(key) or "") for key in ("nick_icon", "user_icon", "icon", "member_icon"))
+        )
 
         return Comment(
             id=str(raw.get("no") or "").strip() or None,
@@ -1085,6 +1142,7 @@ class ParserMixin:
             voice=voice,
             time=self.__parse_time((raw.get("reg_date") or "").strip()),
             is_reply=str(raw.get("depth") or "0").strip() != "0",
+            author_role=author_role,
         )
 
     def __parse_time(self, time): 

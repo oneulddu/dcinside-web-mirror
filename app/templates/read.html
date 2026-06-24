@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% from "_feed_post_bits.html" import feed_status_icon, feed_subject %}
+{% from "_feed_post_bits.html" import author_text, feed_status_icon, feed_subject %}
 
 {% block content %}
 <section class="read-shell">
     <div class="article-head">
         <h1>{{ data.title }}</h1>
         <div class="article-meta">
-            <span class="author-text">{{ data.author }}{% if data.author_code %}({{ data.author_code }}){% endif %}</span>
+            {{ author_text(data) }}
             <span>{{ data.time }}</span>
             <span>추천 {{ data.voteup_count }}</span>
         </div>
@@ -32,7 +32,7 @@
                     {% endif %}
                 </div>
                 <div class="comment-meta">
-                    <span class="author-text">{{ comment.author }}{% if comment.author_code %}({{ comment.author_code }}){% endif %}</span>
+                    {{ author_text(comment) }}
                     <span>{{ comment.time }}</span>
                 </div>
             </li>
@@ -59,7 +59,7 @@
                     <div class="feed-meta-row">
                         <div class="feed-meta-left">
                             {{ feed_subject(item) }}
-                            <span class="author-text">{{ item.author }}{% if item.author_code %}({{ item.author_code }}){% endif %}</span>
+                            {{ author_text(item) }}
                             <span class="sep">|</span>
                             <span>{{ item.time }}</span>
                         </div>

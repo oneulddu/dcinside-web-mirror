@@ -971,6 +971,7 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
                 "subject": None,
                 "author": "익명",
                 "author_code": None,
+                "author_role": "manager",
                 "time": "-",
                 "voteup_count": 0,
             },
@@ -983,6 +984,7 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
                 "subject": None,
                 "author": "익명",
                 "author_code": None,
+                "author_role": "submanager",
                 "time": "-",
                 "voteup_count": 0,
             },
@@ -1048,8 +1050,10 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
     assert items[0].select_one(".feed-image-icon") is not None
     assert items[0].select_one(".feed-image-icon")["aria-label"] == "사진 첨부"
     assert items[0].select_one(".feed-image-icon + .feed-title") is not None
+    assert items[0].select_one(".author-text.author-role-manager") is not None
     assert items[1].select_one(".feed-image-icon") is None
     assert items[1].select_one(".feed-recommend-icon") is None
+    assert items[1].select_one(".author-text.author-role-submanager") is not None
     assert items[2].select_one(".feed-play-icon") is not None
     assert items[2].select_one(".feed-image-icon") is None
     assert items[3].select_one(".feed-recommend-icon.is-plain") is not None
@@ -1277,6 +1281,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "isrecommend": False,
                     "author": "익명",
                     "author_code": None,
+                    "author_role": "manager",
                     "time": "-",
                     "comment_count": 0,
                     "voteup_count": 0,
@@ -1292,6 +1297,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "isrecommend": "true",
                     "author": "익명",
                     "author_code": None,
+                    "author_role": "submanager",
                     "time": "-",
                     "comment_count": 2,
                     "voteup_count": 9,
@@ -1314,10 +1320,12 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     assert payload["items"][0]["isimage"] is False
     assert payload["items"][0]["has_video"] is False
     assert payload["items"][0]["isrecommend"] is False
+    assert payload["items"][0]["author_role"] == "manager"
     assert payload["items"][1]["subject"] == "영상"
     assert payload["items"][1]["has_video"] is True
     assert payload["items"][1]["isvideo"] is True
     assert payload["items"][1]["isrecommend"] is True
+    assert payload["items"][1]["author_role"] == "submanager"
 
 
 def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
