@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlparse
 from bs4 import BeautifulSoup
 from flask import url_for
 
+from .dc_links import dcinside_internal_href
 from .highlight import highlight_soup_text
 
 
@@ -204,6 +205,7 @@ def sanitize_html_fragment(raw_html):
 def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
     soup = parse_html_fragment(raw_html)
     rewrite_content_images(soup, images, board, pid, kind)
+    rewrite_dcinside_links(soup)
     sanitize_html_tree(soup)
     highlight_soup_text(soup, search_keyword)
     return serialize_html_fragment(soup)
@@ -284,4 +286,14 @@ def rewrite_content_images(soup, images, board, pid, kind):
         iframe["src"] = url_for("main.movie", no=movie_id, board=board, pid=pid, kind=kind)
         iframe["loading"] = "lazy"
         iframe["title"] = iframe.get("title") or "DCInside 동영상"
+    return soup
+
+
+def rewrite_dcinside_links(soup):
+    for anchor in soup.find_all("a", href=True):
+        href = dcinside_internal_href(anchor.get("href"))
+        if not href:
+            continue
+        anchor["href"] = href
+        anchor.attrs.pop("target", None)
     return soup

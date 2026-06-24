@@ -3,6 +3,8 @@ import re
 from bs4 import NavigableString
 from markupsafe import Markup, escape
 
+from .dc_links import dcinside_internal_href
+
 
 SEARCH_HIGHLIGHT_CLASS = "search-highlight"
 HTML_HIGHLIGHT_IGNORED_PARENTS = {"script", "style", "textarea", "code", "pre", "mark"}
@@ -61,11 +63,15 @@ def linkify_comment_text(value):
 
         pieces.append(str(escape(text[last:start])))
         href = url if url.lower().startswith(("http://", "https://")) else f"https://{url}"
-        pieces.append(
-            '<a href="{}" target="_blank" rel="noopener noreferrer nofollow">'.format(
-                escape(href)
+        internal_href = dcinside_internal_href(href)
+        if internal_href:
+            pieces.append('<a href="{}" rel="noopener noreferrer nofollow">'.format(escape(internal_href)))
+        else:
+            pieces.append(
+                '<a href="{}" target="_blank" rel="noopener noreferrer nofollow">'.format(
+                    escape(href)
+                )
             )
-        )
         pieces.append(str(escape(url)))
         pieces.append("</a>")
         pieces.append(str(escape(trailing)))
