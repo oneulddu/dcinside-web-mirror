@@ -783,6 +783,61 @@ def test_prepare_read_html_rewrites_sanitizes_and_highlights_with_one_parse(monk
     assert soup.code.find("mark") is None
 
 
+def test_prepare_read_html_rewrites_dcinside_links_to_internal_routes():
+    app = create_app()
+
+    with app.test_request_context("/read?board=test&pid=123&kind=minor"):
+        rendered = html_sanitizer.prepare_read_html(
+            """
+            <div>
+              <a href="https://m.dcinside.com/board/test/456?recommend=1&amp;headid=10#comment_box" target="_blank">mobile read</a>
+              <a href="https://m.dcinside.com/mini/minitest?page=3&amp;s_type=subject_m&amp;s_keyword=hello">mobile list</a>
+              <a href="https://gall.dcinside.com/mgallery/board/view/?id=minor_test&amp;no=789&amp;page=4&amp;search_head=20">pc read</a>
+              <a href="/board/lists/?id=normal_test&amp;page=2&amp;exception_mode=recommend">pc list</a>
+              <a href="https://gallog.dcinside.com/writer">gallog</a>
+            </div>
+            """,
+            [],
+            "test",
+            123,
+            "minor",
+        )
+
+    soup = BeautifulSoup(rendered, "html.parser")
+    links = {link.get_text(strip=True): link for link in soup.find_all("a")}
+    mobile_read = links["mobile read"]
+    mobile_list = links["mobile list"]
+    pc_read = links["pc read"]
+    pc_list = links["pc list"]
+
+    assert mobile_read["href"] == "/read?board=test&pid=456&recommend=1&headid=10#comment_box"
+    assert "target" not in mobile_read.attrs
+
+    mobile_list_query = parse_qs(urlparse(mobile_list["href"]).query)
+    assert urlparse(mobile_list["href"]).path == "/board"
+    assert mobile_list_query["board"] == ["minitest"]
+    assert mobile_list_query["kind"] == ["mini"]
+    assert mobile_list_query["page"] == ["3"]
+    assert mobile_list_query["s_type"] == ["subject_m"]
+    assert mobile_list_query["serval"] == ["hello"]
+
+    pc_read_query = parse_qs(urlparse(pc_read["href"]).query)
+    assert urlparse(pc_read["href"]).path == "/read"
+    assert pc_read_query["board"] == ["minor_test"]
+    assert pc_read_query["pid"] == ["789"]
+    assert pc_read_query["kind"] == ["minor"]
+    assert pc_read_query["source_page"] == ["4"]
+    assert pc_read_query["headid"] == ["20"]
+
+    pc_list_query = parse_qs(urlparse(pc_list["href"]).query)
+    assert urlparse(pc_list["href"]).path == "/board"
+    assert pc_list_query["board"] == ["normal_test"]
+    assert pc_list_query["recommend"] == ["1"]
+    assert pc_list_query["page"] == ["2"]
+
+    assert links["gallog"]["href"] == "https://gallog.dcinside.com/writer"
+
+
 def test_movie_route_renders_same_origin_video_player(monkeypatch):
     movie_html = """
     <html><body>

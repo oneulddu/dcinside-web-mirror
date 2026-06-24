@@ -1,5 +1,8 @@
+from urllib.parse import parse_qs, urlparse
+
 from bs4 import BeautifulSoup
 
+from app import create_app
 from app.services.highlight import linkify_comment_text
 
 
@@ -38,3 +41,20 @@ def test_linkify_comment_text_escapes_comment_html():
     assert "<script>" not in rendered
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
     assert '<a href="https://example.com"' in rendered
+
+
+def test_linkify_comment_text_rewrites_dcinside_url_to_internal_route():
+    app = create_app()
+
+    with app.test_request_context("/read?board=test&pid=123"):
+        rendered = linkify_comment_text("관련글 https://gall.dcinside.com/board/view/?id=test&no=456&recommend=1")
+
+    soup = BeautifulSoup(str(rendered), "html.parser")
+    link = soup.find("a")
+    query = parse_qs(urlparse(link["href"]).query)
+
+    assert urlparse(link["href"]).path == "/read"
+    assert query["board"] == ["test"]
+    assert query["pid"] == ["456"]
+    assert query["recommend"] == ["1"]
+    assert "target" not in link.attrs
