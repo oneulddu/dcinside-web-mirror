@@ -1079,6 +1079,7 @@ class API(ParserMixin):
             subject = header["subject"]
             author = header["author"]
             author_id = header["author_id"]
+            author_role = header["author_role"]
             time_str = header["time_str"]
 
             view_count, voteup_count, votedown_count, logined_voteup_count = self.__parse_document_counts(
@@ -1109,6 +1110,7 @@ class API(ParserMixin):
                     title= title,
                     author= author,
                     author_id =author_id,
+                    author_role=author_role,
                     contents= self.__document_contents_text(doc_content),
                     images= self.__document_images(doc_content, board_id, document_id),
                     html= lxml.html.tostring(doc_content, encoding=str),

@@ -32,3 +32,8 @@
     <span class="post-subject">[{{ item.subject }}]</span>
     {%- endif -%}
 {%- endmacro %}
+
+{% macro author_text(item) -%}
+    {%- set role = item.author_role if item.author_role in ["manager", "submanager"] else None -%}
+    <span class="author-text{% if role %} author-role-{{ role }}{% endif %}">{{ item.author }}{% if item.author_code %}({{ item.author_code }}){% endif %}</span>
+{%- endmacro %}

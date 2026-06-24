@@ -169,6 +169,14 @@
         return null;
     }
 
+    function getAuthorRoleClass(item) {
+        var role = String((item && item.author_role) || "").trim();
+        if (role === "manager" || role === "submanager") {
+            return " author-role-" + role;
+        }
+        return "";
+    }
+
     function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, headId) {
         var postId = getItemPostId(item);
         var li = document.createElement("li");
@@ -213,7 +221,7 @@
         }
 
         var author = document.createElement("span");
-        author.className = "author-text";
+        author.className = "author-text" + getAuthorRoleClass(item);
         author.textContent = (item.author || "익명") + (item.author_code ? "(" + String(item.author_code) + ")" : "");
         metaLeft.appendChild(author);
 

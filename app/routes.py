@@ -46,6 +46,13 @@ def _safe_bool(value):
     return bool(value)
 
 
+def _safe_author_role(value):
+    role = str(value or "").strip().lower()
+    if role in {"manager", "submanager"}:
+        return role
+    return None
+
+
 def _positive_int_arg(name, default=1):
     return max(_safe_int(request.args.get(name, default), default), 1)
 
@@ -162,6 +169,7 @@ def _serialize_related_posts(posts):
                 "has_video": has_video,
                 "author": item.get("author", "익명"),
                 "author_code": item.get("author_code"),
+                "author_role": _safe_author_role(item.get("author_role")),
                 "time": str(item.get("time_display") or item.get("time", "")),
                 "comment_count": _safe_int(item.get("comment_count", 0), 0),
                 "voteup_count": _safe_int(item.get("voteup_count", 0), 0),
