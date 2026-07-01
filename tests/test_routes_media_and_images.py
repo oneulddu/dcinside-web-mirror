@@ -1479,8 +1479,10 @@ def test_theme_toggle_persists_and_updates_accessibility_state():
     assert "aria-pressed" in script
     assert "aria-label" in script
     assert "mirror-light-theme-overrides" not in script
-    assert "html[data-theme='light'] .related-more-wrap" in style
-    assert "html[data-theme='light'] .board-head" in style
+    # Light theme is now driven by a single token contract, not per-component overrides.
+    assert "html[data-theme='light'] {" in style
+    assert "--page-bg: #f2f4f6;" in style
+    assert "--blue: #3182f6;" in style
 
 
 def test_read_passes_head_id_to_initial_document_fetch(monkeypatch):

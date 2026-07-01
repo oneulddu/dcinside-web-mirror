@@ -6,34 +6,6 @@
     var MAX_ENTRIES = 1500;
     var DEFAULT_THEME = "dark";
     var readStore = null;
-    var THEME_VARIABLES = {
-        dark: {
-            "--page-bg": "#09090b",
-            "--shell-bg": "#18181b",
-            "--shell-border": "rgba(255, 255, 255, 0.08)",
-            "--header-top": "rgba(24, 24, 27, 0.85)",
-            "--header-tab": "#18181b",
-            "--text-main": "#e4e4e7",
-            "--text-title": "#ffffff",
-            "--text-sub": "#a1a1aa",
-            "--text-soft": "#71717a",
-            "--blue": "#3b82f6",
-            "--blue-hover": "#60a5fa"
-        },
-        light: {
-            "--page-bg": "#f4f4f5",
-            "--shell-bg": "#ffffff",
-            "--shell-border": "rgba(24, 24, 27, 0.10)",
-            "--header-top": "rgba(255, 255, 255, 0.88)",
-            "--header-tab": "#ffffff",
-            "--text-main": "#27272a",
-            "--text-title": "#09090b",
-            "--text-sub": "#52525b",
-            "--text-soft": "#71717a",
-            "--blue": "#2563eb",
-            "--blue-hover": "#1d4ed8"
-        }
-    };
 
     function safeParse(jsonText) {
         if (!jsonText) {
@@ -115,17 +87,6 @@
     }
 
 
-    function applyThemeVariables(theme) {
-        var variables = THEME_VARIABLES[theme] || THEME_VARIABLES[DEFAULT_THEME];
-        var rootStyle = document.documentElement.style;
-        var name;
-        for (name in variables) {
-            if (Object.prototype.hasOwnProperty.call(variables, name)) {
-                rootStyle.setProperty(name, variables[name]);
-            }
-        }
-    }
-
     function updateThemeToggle(theme) {
         var button = document.querySelector(".theme-toggle");
         if (!button) {
@@ -147,7 +108,6 @@
 
         document.documentElement.dataset.theme = nextTheme;
         document.documentElement.style.colorScheme = nextTheme;
-        applyThemeVariables(nextTheme);
 
         if (body) {
             body.dataset.theme = nextTheme;
