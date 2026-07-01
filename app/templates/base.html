@@ -21,7 +21,7 @@
     </script>
     <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
     <link rel="stylesheet" href="{{ static_url('css/main.css') }}">
-    <title>{{ title or "머숨 미러" }}</title>
+    <title>{{ title or "숨터" }}</title>
     {% if social_meta %}
     <meta property="og:site_name" content="{{ social_meta.site_name }}">
     <meta property="og:type" content="{{ social_meta.type }}">
@@ -45,7 +45,7 @@
         <header class="app-header">
             <div class="header-top">
                 <div class="header-left">
-                    <a class="brand" href="/">머숨 <span>머숨들의 휴식공간</span></a>
+                    <a class="brand" href="/">숨터 <span>가볍게 읽는 공간</span></a>
                 </div>
                 <button class="theme-toggle" type="button" aria-label="어두운 테마 사용 중, 밝은 테마로 전환" aria-pressed="false" title="밝은 테마로 전환">☀</button>
             </div>
@@ -58,7 +58,6 @@
                 <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url('dcbest', recommend=0, page=1) }}">베스트</a>
                 {% endif %}
                 <a class="tab-item {% if nav_tab == 'recent' %}active{% endif %}" href="/recent">최근</a>
-                <a class="tab-item" href="{{ board_url('100toron', recommend=0, page=1) }}">⚔ 토론장</a>
             </nav>
         </header>
 
