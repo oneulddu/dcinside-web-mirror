@@ -20,6 +20,9 @@ html[data-theme='dark'] {
     --blue-hover: #60a5fa;
     --blue-soft: rgba(59, 130, 246, 0.12);
     --blue-ring: rgba(59, 130, 246, 0.22);
+    --reply-bg: rgba(59, 130, 246, 0.03);
+    --reply-border: rgba(96, 165, 250, 0.14);
+    --reply-line: rgba(96, 165, 250, 0.46);
     --hot: #fb923c;
     --hot-video: #ec4899;
     --role-manager: #fb923c;
@@ -61,6 +64,9 @@ html[data-theme='light'] {
     --blue-hover: #1b64da;
     --blue-soft: rgba(49, 130, 246, 0.09);
     --blue-ring: rgba(49, 130, 246, 0.18);
+    --reply-bg: rgba(49, 130, 246, 0.032);
+    --reply-border: rgba(49, 130, 246, 0.12);
+    --reply-line: rgba(49, 130, 246, 0.42);
     --hot: #f04452; /* Toss Red */
     --hot-video: #f04452;
     --role-manager: #ff6b00;
@@ -1099,8 +1105,8 @@ a {
 
 .comment-list li.is-reply {
     margin-left: 32px;
-    border-color: var(--blue-soft);
-    background: var(--blue-soft);
+    border-color: var(--reply-border);
+    background: var(--reply-bg);
     position: relative;
 }
 
@@ -1111,7 +1117,7 @@ a {
     top: 32px;
     width: 16px;
     height: 1px;
-    background: var(--blue);
+    background: var(--reply-line);
 }
 
 .reply-badge {
