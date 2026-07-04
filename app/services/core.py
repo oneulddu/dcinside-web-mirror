@@ -56,7 +56,7 @@ _LATEST_ID_CACHE_LOCK = threading.Lock()
 _AUTHOR_CODE_CACHE_LOCK = threading.Lock()
 _CACHE_PRUNE_STATE = {}
 _CACHE_PRUNE_STATE_LOCK = threading.Lock()
-_TIME_SECONDS_RE = re.compile(r"(\b\d{1,2}:\d{2}):\d{2}\b")
+_TIME_SECONDS_RE = re.compile(r"(\b\d{1,2}:\d{2}):\d{2}(?:\.\d+)?")
 
 
 def _safe_int(value, default=0):
@@ -124,6 +124,11 @@ def _is_reply_comment(parent_id):
 
 
 def format_display_time(value):
+    if hasattr(value, "strftime") and not isinstance(value, str):
+        try:
+            return value.strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            pass
     text = str(value or "").strip()
     if not text:
         return "-"

@@ -2,6 +2,7 @@ import base64
 import json
 import threading
 import time
+from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
@@ -1678,7 +1679,7 @@ def test_read_omits_seconds_from_post_comment_and_related_times(monkeypatch):
                 "title": "title",
                 "author": "익명",
                 "author_code": None,
-                "time": "2026-04-16 12:34:56",
+                "time": datetime(2026, 4, 16, 12, 34, 56, 123456),
                 "voteup_count": 0,
                 "html": "<p>body</p>",
                 "related_posts": [
@@ -1722,6 +1723,7 @@ def test_read_omits_seconds_from_post_comment_and_related_times(monkeypatch):
     assert "12:34:56" not in text
     assert "12:35:57" not in text
     assert "12:36:58" not in text
+    assert ".123456" not in text
 
 
 def test_read_renders_embedded_related_posts_without_extra_related_request(monkeypatch):
