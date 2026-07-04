@@ -489,6 +489,10 @@ mark.search-highlight {
     color: var(--accent);
 }
 
+.is-ranked-gallery .feed-meta-row {
+    padding-left: calc(2ch + var(--space-2));
+}
+
 .gallery-badge {
     flex: none;
     font-size: 12.5px;
