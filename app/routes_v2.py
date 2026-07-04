@@ -14,6 +14,7 @@ from .routes import (
     _add_search_params,
     _current_search_context,
     _external_url_for,
+    _format_read_payload_times,
     _format_cache_time,
     _load_board_payload,
     _nav_tab_for_gallery,
@@ -341,6 +342,7 @@ def read():
             **_search_call_kwargs(search_type, search_keyword),
         )
     )
+    _format_read_payload_times(data, comments)
     embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
 
     for comment in comments:

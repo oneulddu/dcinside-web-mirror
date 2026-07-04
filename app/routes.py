@@ -8,7 +8,13 @@ from urllib.parse import urljoin, urlparse
 from flask import Blueprint, abort, current_app, jsonify, make_response, render_template, request, url_for
 
 from .services.async_bridge import run_async
-from .services.core import async_board_precise_times, async_index_with_head_categories, async_read, async_related_after_position
+from .services.core import (
+    async_board_precise_times,
+    async_index_with_head_categories,
+    async_read,
+    async_related_after_position,
+    format_display_time,
+)
 from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
@@ -170,7 +176,7 @@ def _serialize_related_posts(posts):
                 "author": item.get("author", "익명"),
                 "author_code": item.get("author_code"),
                 "author_role": _safe_author_role(item.get("author_role")),
-                "time": str(item.get("time_display") or item.get("time", "")),
+                "time": format_display_time(item.get("time_display") or item.get("time")),
                 "comment_count": _safe_int(item.get("comment_count", 0), 0),
                 "voteup_count": _safe_int(item.get("voteup_count", 0), 0),
                 "source_page": _safe_int(item.get("source_page", 0), 0),
@@ -180,6 +186,13 @@ def _serialize_related_posts(posts):
             }
         )
     return rows
+
+
+def _format_read_payload_times(data, comments):
+    if data is not None:
+        data["time"] = format_display_time(data.get("time"))
+    for comment in comments or []:
+        comment["time"] = format_display_time(comment.get("time"))
 
 
 def _format_cache_time(ts):
@@ -519,7 +532,7 @@ def board_times():
         current_app.logger.exception("Failed to fetch board precise times")
         return jsonify({"ok": False, "times": {}, "error": "board_time_fetch_failed"}), 502
 
-    return jsonify({"ok": True, "times": times})
+    return jsonify({"ok": True, "times": {str(key): format_display_time(value) for key, value in (times or {}).items()}})
 
 
 @bp.route("/media")
@@ -562,6 +575,7 @@ def read():
             **_search_call_kwargs(search_type, search_keyword),
         )
     )
+    _format_read_payload_times(data, comments)
     embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
 
     for comment in comments:
