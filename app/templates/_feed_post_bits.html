@@ -29,7 +29,8 @@
 
 {% macro feed_subject(item) -%}
     {%- if item.subject -%}
-    <span class="post-subject">[{{ item.subject }}]</span>
+    {%- set subject_text = item.subject|string|trim -%}
+    <span class="post-subject">{% if subject_text[:1] == "[" and subject_text[-1:] == "]" %}{{ subject_text }}{% else %}[{{ subject_text }}]{% endif %}</span>
     {%- endif -%}
 {%- endmacro %}
 

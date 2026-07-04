@@ -1,15 +1,17 @@
-/* 숨터 v2 — 잉크와 인주 에디토리얼. 토큰 계약: /DESIGN.md */
+/* 숨터 v2 — v1 색상 계열을 따르는 고밀도 읽기 화면. 토큰 계약: /DESIGN.md */
 
 :root {
-    --bg: #FCFCF9;
-    --fg: #191A16;
-    --muted: #6D6F66;
-    --line: #E3E2DA;
-    --hover: #F1F0E8;
-    --surface: #F4F3EC;
-    --accent: #BC3F26;
-    --accent-wash: #F7E7E2;
+    --bg: #FFFFFF;
+    --fg: #191F28;
+    --muted: #6B7684;
+    --line: #E5E8EB;
+    --hover: #F2F4F6;
+    --surface: #F9FAFB;
+    --accent: #3182F6;
+    --accent-wash: rgba(49, 130, 246, 0.09);
     --on-accent: #FFFFFF;
+    --hot: #F04452;
+    --hot-video: #F04452;
 
     --space-1: 4px;
     --space-2: 8px;
@@ -35,15 +37,17 @@
 }
 
 html[data-theme="dark"] {
-    --bg: #16171A;
-    --fg: #E8E7E1;
-    --muted: #9A9B93;
-    --line: #2C2D31;
-    --hover: #1E1F23;
-    --surface: #1C1D21;
-    --accent: #E2694E;
-    --accent-wash: #3A241E;
-    --on-accent: #16171A;
+    --bg: #18181B;
+    --fg: #E4E4E7;
+    --muted: #A1A1AA;
+    --line: rgba(255, 255, 255, 0.08);
+    --hover: rgba(255, 255, 255, 0.045);
+    --surface: #1F1F23;
+    --accent: #3B82F6;
+    --accent-wash: rgba(59, 130, 246, 0.12);
+    --on-accent: #FFFFFF;
+    --hot: #FB923C;
+    --hot-video: #EC4899;
 }
 
 * {
@@ -61,7 +65,7 @@ body {
     font-family: var(--font-sans);
     font-size: 16.5px;
     line-height: 1.75;
-    word-break: break-word;
+    word-break: normal;
 }
 
 a {
@@ -168,6 +172,10 @@ button {
     padding-top: var(--space-6);
 }
 
+.page.board-page {
+    padding-top: 0;
+}
+
 .site-foot {
     margin-top: var(--space-12);
     padding-top: var(--space-3);
@@ -201,6 +209,10 @@ button {
     gap: var(--space-4);
     padding-bottom: var(--space-2);
     border-bottom: 1px solid var(--fg);
+}
+
+.masthead-board-head {
+    margin-top: var(--space-6);
 }
 
 .board-head h1,
@@ -239,8 +251,11 @@ button {
 
 .board-category-scroll {
     display: flex;
+    align-items: center;
     gap: var(--space-4);
     overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: var(--rule-bold);
     scrollbar-width: thin;
     scrollbar-color: var(--line) transparent;
 }
@@ -260,6 +275,8 @@ button {
 
 .board-category-tab {
     flex: none;
+    display: inline-flex;
+    align-items: center;
     padding: var(--space-2) 0;
     margin-bottom: -1px;
     border-bottom: var(--rule-bold) solid transparent;
@@ -328,6 +345,7 @@ button {
     font-weight: 600;
     line-height: 1.45;
     min-width: 0;
+    overflow-wrap: break-word;
 }
 
 .feed-item:hover .feed-title {
@@ -433,7 +451,11 @@ button {
 }
 
 .feed-recommend-icon svg {
-    fill: var(--accent);
+    fill: var(--hot);
+}
+
+.feed-recommend-icon.is-video svg {
+    fill: var(--hot-video);
 }
 
 .feed-recommend-icon .flame-inner {
@@ -467,7 +489,8 @@ mark.search-highlight {
 
 .rank-no {
     flex: none;
-    width: var(--space-8);
+    width: 2ch;
+    text-align: right;
     font-size: 15.5px;
     font-weight: 700;
     line-height: 1.45;
@@ -477,6 +500,10 @@ mark.search-highlight {
 
 .rank-no.is-top {
     color: var(--accent);
+}
+
+.is-ranked-gallery .feed-meta-row {
+    padding-left: calc(2ch + var(--space-2));
 }
 
 .gallery-badge {
@@ -494,19 +521,18 @@ mark.search-highlight {
 /* ===== 검색 폼 (게시판 하단 / 홈 점프 패널) ===== */
 
 .jump-panel {
-    border: 1px solid var(--line);
-    border-radius: var(--radius-m);
-    background: var(--surface);
-    padding: var(--space-4);
-    margin-bottom: var(--space-6);
+    padding: 0 0 var(--space-5);
+    margin-bottom: var(--space-5);
+    border-bottom: 1px solid var(--line);
 }
 
-.jump-panel h2 {
-    margin: 0 0 var(--space-2);
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1.2;
-    color: var(--muted);
+.jump-panel-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
 }
 
 .jump-form {
@@ -515,8 +541,8 @@ mark.search-highlight {
     gap: var(--space-2);
     border: 1px solid var(--line);
     border-radius: var(--radius-s);
-    background: var(--bg);
-    padding: 0 var(--space-1);
+    background: transparent;
+    padding: var(--space-1);
     transition: border-color var(--dur) ease-out;
 }
 
@@ -793,6 +819,7 @@ a.pager-btn:hover {
     margin: 0;
     font-size: 14px;
     line-height: 1.65;
+    overflow-wrap: break-word;
 }
 
 .comment-main a {

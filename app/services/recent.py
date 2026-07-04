@@ -37,6 +37,7 @@ RECENT_COOKIE_TTL = _env_int("MIRROR_RECENT_COOKIE_TTL", 60 * 60 * 24 * 30)
 RECENT_MAX_ITEMS = _env_int("MIRROR_RECENT_MAX_ITEMS", 30)
 RECENT_SERVER_CACHE_TTL = _env_int("MIRROR_RECENT_SERVER_CACHE_TTL", min(RECENT_COOKIE_TTL, 60 * 60 * 24))
 RECENT_SERVER_CACHE_MAX_KEYS = _env_int("MIRROR_RECENT_SERVER_CACHE_MAX_KEYS", 2048)
+RECENT_COOKIE_MAX_BYTES = _env_int("MIRROR_RECENT_COOKIE_MAX_BYTES", 3600)
 RECENT_SERVER_CACHE = {}
 RECENT_SERVER_CACHE_LOCK = threading.Lock()
 RECENT_CACHE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
@@ -69,9 +70,13 @@ def normalize_recent_entry(item):
     board = (item.get("board") or "").strip()
     if not board:
         return None
+    name = (item.get("name") or "").strip()
+    if name == board:
+        name = ""
 
     return {
         "board": board,
+        "name": name[:80] or None,
         "kind": (item.get("kind") or "").strip().lower() or None,
         "recommend": 1 if _safe_int(item.get("recommend", 0), 0) == 1 else 0,
         "visited_at": _safe_float(item.get("visited_at", 0), 0.0),
@@ -91,9 +96,31 @@ def merge_recent_entries(new_row, rows):
     deduped = [new_row]
     for row in rows:
         if recent_entry_identity(row) == new_identity:
+            if not new_row.get("name") and row.get("name"):
+                new_row["name"] = row.get("name")
             continue
         deduped.append(row)
     return deduped[:RECENT_MAX_ITEMS]
+
+
+def merge_recent_entry_names(rows, named_rows):
+    if not rows or not named_rows:
+        return rows
+
+    names_by_identity = {
+        recent_entry_identity(row): row.get("name")
+        for row in named_rows
+        if isinstance(row, dict) and row.get("name")
+    }
+    merged = []
+    for row in rows:
+        copied = dict(row)
+        if not copied.get("name"):
+            name = names_by_identity.get(recent_entry_identity(copied))
+            if name:
+                copied["name"] = name
+        merged.append(copied)
+    return merged
 
 
 def make_recent_server_cache_entry(entries, now, ttl):
@@ -201,14 +228,23 @@ def load_recent_entries():
                     rows.append(row)
 
     if rows:
-        return rows
+        return merge_recent_entry_names(rows, get_recent_server_cache(recent_cache_key()))
 
     return get_recent_server_cache(recent_cache_key())
 
 
 def save_recent_cookie(response, entries):
-    payload = json.dumps(entries[:RECENT_MAX_ITEMS], ensure_ascii=False, separators=(",", ":"))
+    rows = entries[:RECENT_MAX_ITEMS]
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+    if len(encoded.encode("ascii")) > RECENT_COOKIE_MAX_BYTES:
+        compact_rows = []
+        for row in rows:
+            compact = dict(row)
+            compact.pop("name", None)
+            compact_rows.append(compact)
+        payload = json.dumps(compact_rows, ensure_ascii=False, separators=(",", ":"))
+        encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
     response.set_cookie(
         RECENT_COOKIE_NAME,
         encoded,
@@ -233,7 +269,7 @@ def save_recent_cache_key_cookie(response, key):
     )
 
 
-def touch_recent_gallery(response, board, kind, recommend=0):
+def touch_recent_gallery(response, board, kind, recommend=0, name=None):
     board_id = (board or "").strip()
     if not board_id:
         return
@@ -242,6 +278,7 @@ def touch_recent_gallery(response, board, kind, recommend=0):
     rows = load_recent_entries()
     new_row = normalize_recent_entry({
         "board": board_id,
+        "name": name,
         "kind": (kind or "").strip().lower() or None,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
         "visited_at": time.time(),

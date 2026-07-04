@@ -41,8 +41,51 @@ from .services.recent import (
 
 bp_v2 = Blueprint("v2", __name__, url_prefix="/v2")
 
+GALLERY_KIND_LABELS = {
+    None: "일반",
+    "normal": "일반",
+    "minor": "마이너",
+    "mini": "미니",
+    "person": "인물",
+}
 
-def board_url_v2(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None):
+
+def _clean_gallery_name(value):
+    name = " ".join(str(value or "").split())
+    return name[:80] or None
+
+
+def _stored_gallery_name(row):
+    board = (row.get("board") or "").strip()
+    name = _clean_gallery_name(row.get("name"))
+    if not name or name == board:
+        return None
+    return name
+
+
+def _gallery_display_name(board, gallery_name=None):
+    name = _clean_gallery_name(gallery_name)
+    board_id = (board or "").strip()
+    if name and name != board_id:
+        return name
+    return board_id
+
+
+def _recent_gallery_name_lookup(rows):
+    return {}
+
+
+def board_url_v2(
+    board,
+    recommend=0,
+    page=1,
+    kind=None,
+    nav=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+    gallery_name=None,
+):
     params = {
         "board": board,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
@@ -55,10 +98,23 @@ def board_url_v2(board, recommend=0, page=1, kind=None, nav=None, search_type=No
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword)
+    clean_name = _clean_gallery_name(gallery_name)
+    if clean_name:
+        params["gallery_name"] = clean_name
     return url_for("v2.board", **params)
 
 
-def read_url_v2(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None):
+def read_url_v2(
+    board,
+    pid,
+    recommend=0,
+    source_page=None,
+    kind=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+    gallery_name=None,
+):
     params = {
         "board": board,
         "pid": pid,
@@ -73,6 +129,9 @@ def read_url_v2(board, pid, recommend=0, source_page=None, kind=None, search_typ
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword)
+    clean_name = _clean_gallery_name(gallery_name)
+    if clean_name:
+        params["gallery_name"] = clean_name
     return url_for("v2.read", **params)
 
 
@@ -175,11 +234,37 @@ def index():
 def recent():
     rows = load_recent_entries()
     recent_items = []
-    for row in rows[:RECENT_MAX_ITEMS]:
+    recent_rows = rows[:RECENT_MAX_ITEMS]
+    stored_names = {}
+    for row in recent_rows:
+        board = (row.get("board") or "").strip()
+        if not board:
+            continue
+        kind = row.get("kind")
+        name = _stored_gallery_name(row)
+        if name:
+            stored_names.setdefault((board, kind), name)
+            stored_names.setdefault((board, None), name)
+
+    gallery_names = _recent_gallery_name_lookup(recent_rows)
+    for row in recent_rows:
+        board = row["board"]
+        kind = row.get("kind")
+        saved_name = _stored_gallery_name(row)
+        looked_up_name = (
+            stored_names.get((board, kind))
+            or stored_names.get((board, None))
+            or gallery_names.get((board, kind))
+            or gallery_names.get((board, None))
+        )
+        display_name = saved_name or looked_up_name or board
         recent_items.append(
             {
-                "board": row["board"],
-                "kind": row.get("kind"),
+                "board": board,
+                "display_name": display_name,
+                "gallery_name": saved_name or looked_up_name,
+                "kind": kind,
+                "kind_label": GALLERY_KIND_LABELS.get(kind, kind or "일반"),
                 "recommend": 1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
                 "visited_at_str": format_recent_time(row.get("visited_at")),
             }
@@ -193,6 +278,8 @@ def board():
     board = _normalize_board_id(request.args.get("board", "airforce"))
     recommend = _normalize_recommend()
     kind = _normalize_gallery_kind(request.args.get("kind"))
+    gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
+    gallery_display_name = _gallery_display_name(board, gallery_name)
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
@@ -211,12 +298,14 @@ def board():
     response = make_response(
         render_template(
             "v2/board.html",
-            title="%s 게시판 - 숨터" % board,
+            title="%s 게시판 - 숨터" % gallery_display_name,
             datas=ret,
             page=page,
             board=board,
             recommend=recommend,
             kind=kind,
+            gallery_name=gallery_name,
+            gallery_display_name=gallery_display_name,
             nav_tab=_nav_tab_for_gallery(board, recommend, nav_mode),
             nav_mode=nav_mode,
             search_type=search_type,
@@ -225,7 +314,7 @@ def board():
             head_categories=head_categories,
         )
     )
-    touch_recent_gallery(response, board, kind, recommend=recommend)
+    touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
     return response
 
 
@@ -236,6 +325,8 @@ def read():
         abort(404)
     board = _normalize_board_id(request.args.get("board", "airforce"))
     kind = _normalize_gallery_kind(request.args.get("kind"))
+    gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
+    gallery_display_name = _gallery_display_name(board, gallery_name)
     recommend = _normalize_recommend()
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
@@ -267,6 +358,8 @@ def read():
             board=board,
             pid=pid,
             kind=kind,
+            gallery_name=gallery_name,
+            gallery_display_name=gallery_display_name,
             recommend=recommend,
             source_page=source_page,
             head_id=head_id,
@@ -288,5 +381,5 @@ def read():
             nav_tab=_nav_tab_for_gallery(board, recommend),
         )
     )
-    touch_recent_gallery(response, board, kind, recommend=recommend)
+    touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
     return response

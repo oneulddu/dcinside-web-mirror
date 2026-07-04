@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
 from bs4 import BeautifulSoup
-from flask import jsonify
+from flask import Response, jsonify
 
 from app import create_app
 from app import routes
@@ -927,7 +927,7 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
                 "id": "123",
                 "title": "v2 title",
                 "comment_count": 2,
-                "subject": "말머리",
+                "subject": "[잡갤]",
                 "author": "익명",
                 "author_code": "1.2",
                 "time": "-",
@@ -945,17 +945,73 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
     monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
     app = create_app()
 
-    response = app.test_client().get("/v2/board?board=test&recommend=1&page=3&kind=minor&headid=10")
+    response = app.test_client().get(
+        "/v2/board?board=test&recommend=1&page=3&kind=minor&headid=10&gallery_name=%ED%85%8C%EC%8A%A4%ED%8A%B8%20%EA%B0%A4%EB%9F%AC%EB%A6%AC"
+    )
     soup = BeautifulSoup(response.data, "html.parser")
     read_link = soup.select_one("a.feed-item")
+    read_query = parse_qs(urlparse(read_link["href"]).query)
 
     assert response.status_code == 200
     assert soup.select_one("link[href*='/static/v2/css/main.css']") is not None
     assert soup.select_one("script[src*='/static/v2/javascript/read_state.js']") is not None
+    assert soup.select_one(".board-head h1").get_text(strip=True) == "테스트 갤러리 게시판"
     assert urlparse(read_link["href"]).path == "/v2/read"
-    assert parse_qs(urlparse(read_link["href"]).query)["source_page"] == ["3"]
+    assert read_query["source_page"] == ["3"]
+    assert read_query["gallery_name"] == ["테스트 갤러리"]
     assert soup.select_one(".board-category-tab.active").get_text(strip=True) == "말머리"
+    assert soup.select_one(".post-subject").get_text(strip=True) == "[잡갤]"
+    assert "[[잡갤]]" not in response.get_data(as_text=True)
     assert soup.select_one(".feed-recommend-icon.is-hot") is not None
+
+
+def test_v2_index_board_links_include_gallery_name(monkeypatch):
+    def fake_heung_galleries():
+        return [
+            {
+                "rank": 1,
+                "name": "특이점이 온다",
+                "board_id": "thesingularity",
+                "board_kind": "minor",
+            }
+        ], 1
+
+    monkeypatch.setattr(routes_v2, "get_heung_galleries", fake_heung_galleries)
+    app = create_app()
+
+    response = app.test_client().get("/v2/")
+    soup = BeautifulSoup(response.data, "html.parser")
+    query = parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)
+
+    assert response.status_code == 200
+    assert query["board"] == ["thesingularity"]
+    assert query["kind"] == ["minor"]
+    assert query["gallery_name"] == ["특이점이 온다"]
+
+
+def test_v2_board_visit_stores_gallery_name_for_recent(monkeypatch):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        return [], []
+
+    monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
+    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
+    monkeypatch.setattr(routes_v2, "search_galleries", lambda query: [])
+    app = create_app()
+    client = app.test_client()
+
+    board_response = client.get(
+        "/v2/board?board=thesingularity&kind=minor&gallery_name=%ED%8A%B9%EC%9D%B4%EC%A0%90%EC%9D%B4%20%EC%98%A8%EB%8B%A4"
+    )
+    recent_response = client.get("/v2/recent")
+    soup = BeautifulSoup(recent_response.data, "html.parser")
+    row = soup.select_one("a.feed-item")
+    query = parse_qs(urlparse(row["href"]).query)
+
+    assert board_response.status_code == 200
+    assert recent_response.status_code == 200
+    assert row.select_one(".feed-title").get_text(strip=True) == "특이점이 온다"
+    assert "thesingularity" in row.select_one(".feed-meta-left").get_text(" ", strip=True)
+    assert query["gallery_name"] == ["특이점이 온다"]
 
 
 def test_board_renders_date_only_time_for_async_hydration(monkeypatch):
@@ -1015,7 +1071,7 @@ def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
     app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
 
     response = app.test_client().get(
-        "/v2/read?board=test&pid=123&kind=minor&recommend=1&source_page=2&headid=10",
+        "/v2/read?board=test&pid=123&kind=minor&recommend=1&source_page=2&headid=10&gallery_name=%ED%85%8C%EC%8A%A4%ED%8A%B8%20%EA%B0%A4%EB%9F%AC%EB%A6%AC",
         base_url="http://internal.local",
     )
     soup = BeautifulSoup(response.data, "html.parser")
@@ -1024,9 +1080,11 @@ def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
 
     assert response.status_code == 200
     assert og_url == "https://mirror.example/v2/read?board=test&pid=123&recommend=1&source_page=2&kind=minor&headid=10"
+    assert soup.select_one(".crumb-link").get_text(strip=True) == "← 테스트 갤러리 게시판"
     assert soup.select_one("script[src*='/static/v2/javascript/read_related_loader.js']") is not None
     assert related_section["data-head-id"] == "10"
     assert related_section["data-recommend"] == "1"
+    assert related_section["data-gallery-name"] == "테스트 갤러리"
 
 
 def test_board_times_endpoint_returns_precise_times(monkeypatch):
@@ -1667,6 +1725,14 @@ def test_comment_spam_filter_keeps_summary_even_when_every_comment_is_filtered()
     assert 'li.classList.add("comment-spam-hidden")' in script
 
 
+def test_v2_related_loader_does_not_double_wrap_bracketed_subject():
+    script = Path(routes.BASE_DIR, "app/static/v2/javascript/read_related_loader.js").read_text()
+
+    assert "function formatSubject" in script
+    assert 'subject.charAt(0) === "["' in script
+    assert 'subject.textContent = formatSubject(item.subject);' in script
+
+
 def _encode_recent_cookie(rows):
     payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
@@ -1724,6 +1790,222 @@ def test_recent_gallery_old_cookie_without_recommend_defaults_to_normal():
     assert query["board"] == ["legacy"]
     assert query["recommend"] == ["0"]
     assert query["kind"] == ["minor"]
+
+
+def test_v2_recent_gallery_renders_kind_labels_in_korean(monkeypatch):
+    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
+    monkeypatch.setattr(routes_v2, "search_galleries", lambda query: [])
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie(
+            [
+                {"board": "minor_board", "kind": "minor", "recommend": 0, "visited_at": 1},
+                {"board": "mini_board", "kind": "mini", "recommend": 0, "visited_at": 2},
+                {"board": "normal_board", "kind": None, "recommend": 0, "visited_at": 3},
+            ]
+        ),
+    )
+
+    response = client.get("/v2/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    badges = [node.get_text(strip=True) for node in soup.select(".gallery-badge")]
+
+    assert response.status_code == 200
+    assert badges == ["마이너", "미니", "일반"]
+
+
+def test_v2_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
+    def fake_heung_galleries():
+        raise AssertionError("/v2/recent should not load heung galleries while rendering")
+
+    def fake_search_galleries(query):
+        raise AssertionError("/v2/recent should not search galleries while rendering")
+
+    monkeypatch.setattr(routes_v2, "get_heung_galleries", fake_heung_galleries)
+    monkeypatch.setattr(routes_v2, "search_galleries", fake_search_galleries)
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie(
+            [
+                {
+                    "board": "thesingularity",
+                    "name": "특이점이 온다",
+                    "kind": "minor",
+                    "recommend": 0,
+                    "visited_at": 1,
+                },
+                {"board": "dcbest", "name": "실시간 베스트", "kind": None, "recommend": 0, "visited_at": 2},
+            ]
+        ),
+    )
+
+    response = client.get("/v2/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    rows = soup.select("a.feed-item")
+
+    assert response.status_code == 200
+    assert rows[0].select_one(".feed-title").get_text(strip=True) == "특이점이 온다"
+    assert "thesingularity" in rows[0].select_one(".feed-meta-left").get_text(" ", strip=True)
+    assert rows[1].select_one(".feed-title").get_text(strip=True) == "실시간 베스트"
+    assert "dcbest" in rows[1].select_one(".feed-meta-left").get_text(" ", strip=True)
+
+
+def test_v2_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
+    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
+    monkeypatch.setattr(routes_v2, "search_galleries", lambda query: [])
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie(
+            [
+                {
+                    "board": "thesingularity",
+                    "name": "특이점이 온다",
+                    "kind": "minor",
+                    "recommend": 0,
+                    "visited_at": 2,
+                },
+                {
+                    "board": "thesingularity",
+                    "name": "thesingularity",
+                    "kind": "minor",
+                    "recommend": 1,
+                    "visited_at": 1,
+                },
+            ]
+        ),
+    )
+
+    response = client.get("/v2/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    rows = soup.select("a.feed-item")
+    recommend_query = parse_qs(urlparse(rows[1]["href"]).query)
+
+    assert response.status_code == 200
+    assert rows[1].select_one(".feed-title").get_text(strip=True) == "특이점이 온다"
+    assert "개념글" in rows[1].get_text(" ", strip=True)
+    assert recommend_query["recommend"] == ["1"]
+    assert recommend_query["gallery_name"] == ["특이점이 온다"]
+
+
+def test_v2_recent_gallery_does_not_search_missing_names(monkeypatch):
+    def fail_heung():
+        raise AssertionError("/v2/recent should not call get_heung_galleries")
+
+    def fail_search(query):
+        raise AssertionError("/v2/recent should not call search_galleries")
+
+    monkeypatch.setattr(routes_v2, "get_heung_galleries", fail_heung)
+    monkeypatch.setattr(routes_v2, "search_galleries", fail_search)
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie(
+            [
+                {"board": "unknown_a", "kind": "minor", "recommend": 0, "visited_at": 1},
+                {"board": "unknown_b", "kind": "minor", "recommend": 1, "visited_at": 2},
+            ]
+        ),
+    )
+
+    response = client.get("/v2/recent")
+
+    assert response.status_code == 200
+
+
+def test_recent_cookie_strips_names_when_payload_is_too_large(monkeypatch):
+    monkeypatch.setattr(recent, "RECENT_COOKIE_MAX_BYTES", 120)
+    app = create_app()
+    rows = [
+        {
+            "board": "longname",
+            "name": "가" * 80,
+            "kind": "minor",
+            "recommend": 0,
+            "visited_at": 1,
+        }
+    ]
+
+    with app.test_request_context("/"):
+        response = Response("")
+        recent.save_recent_cookie(response, rows)
+
+    cookie_header = next(
+        header
+        for header in response.headers.getlist("Set-Cookie")
+        if header.startswith(f"{recent.RECENT_COOKIE_NAME}=")
+    )
+    encoded = cookie_header.split(";", 1)[0].split("=", 1)[1]
+    decoded = base64.urlsafe_b64decode((encoded + "=" * (-len(encoded) % 4)).encode("ascii")).decode("utf-8")
+
+    assert "name" not in json.loads(decoded)[0]
+
+
+def test_recent_cookie_compact_rows_merge_names_from_server_cache():
+    app = create_app()
+    cache_key = "visitor-name-key"
+    compact_rows = [{"board": "thesingularity", "kind": "minor", "recommend": 0, "visited_at": 1}]
+    named_rows = [
+        {
+            "board": "thesingularity",
+            "name": "특이점이 온다",
+            "kind": "minor",
+            "recommend": 0,
+            "visited_at": 1,
+        }
+    ]
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        recent.RECENT_SERVER_CACHE.clear()
+    recent.set_recent_server_cache(cache_key, named_rows)
+
+    with app.test_request_context(
+        "/recent",
+        headers={
+            "Cookie": (
+                f"{recent.RECENT_COOKIE_NAME}={_encode_recent_cookie(compact_rows)}; "
+                f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={cache_key}"
+            )
+        },
+    ):
+        rows = recent.load_recent_entries()
+
+    assert rows[0]["name"] == "특이점이 온다"
+
+
+def test_touch_recent_gallery_keeps_existing_name_when_new_visit_has_no_name(monkeypatch):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        return [], []
+
+    monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie(
+            [
+                {
+                    "board": "thesingularity",
+                    "name": "특이점이 온다",
+                    "kind": "minor",
+                    "recommend": 1,
+                    "visited_at": 1,
+                }
+            ]
+        ),
+    )
+
+    client.get("/v2/board?board=thesingularity&recommend=1&kind=minor")
+    response = client.get("/v2/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    row = soup.select_one("a.feed-item")
+
+    assert row.select_one(".feed-title").get_text(strip=True) == "특이점이 온다"
 
 
 def test_recent_gallery_ignores_bad_visited_at_in_cookie():
