@@ -243,8 +243,11 @@ button {
 
 .board-category-scroll {
     display: flex;
+    align-items: center;
     gap: var(--space-4);
     overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: var(--rule-bold);
     scrollbar-width: thin;
     scrollbar-color: var(--line) transparent;
 }
@@ -264,6 +267,8 @@ button {
 
 .board-category-tab {
     flex: none;
+    display: inline-flex;
+    align-items: center;
     padding: var(--space-2) 0;
     margin-bottom: -1px;
     border-bottom: var(--rule-bold) solid transparent;
