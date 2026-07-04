@@ -71,6 +71,20 @@ def test_static_files_are_compressed_when_client_accepts_gzip(monkeypatch):
     assert response.headers["Content-Encoding"] == "gzip"
 
 
+def test_static_range_requests_skip_compression(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    app = create_app()
+
+    response = app.test_client().get(
+        "/static/css/main.css",
+        headers={"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
+    )
+
+    assert response.status_code == 206
+    assert "Content-Encoding" not in response.headers
+    assert response.headers["Content-Range"].startswith("bytes 0-99/")
+
+
 def test_request_logging_skips_static_files_but_records_routes(monkeypatch, caplog):
     monkeypatch.setenv("MIRROR_ENV", "development")
     app = create_app()

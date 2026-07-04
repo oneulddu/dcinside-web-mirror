@@ -27,6 +27,8 @@ def _init_response_compression(app):
     def compress_response(response):
         if request.endpoint in {"main.media", "main.movie"}:
             return response
+        if request.endpoint == "static" and (request.headers.get("Range") or response.status_code == 206):
+            return response
         if request.endpoint == "static" and response.mimetype in app.config["COMPRESS_MIMETYPES"]:
             response.direct_passthrough = False
             if response.is_streamed:
