@@ -61,16 +61,46 @@ def test_static_files_use_immutable_cache_headers(monkeypatch):
     assert "immutable" in response.headers["Cache-Control"]
 
 
-def test_request_logging_records_path_status_and_duration(monkeypatch, caplog):
+def test_static_files_are_compressed_when_client_accepts_gzip(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    app = create_app()
+
+    response = app.test_client().get("/static/css/main.css", headers={"Accept-Encoding": "gzip"})
+
+    assert response.status_code == 200
+    assert response.headers["Content-Encoding"] == "gzip"
+
+
+def test_static_range_requests_skip_compression(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    app = create_app()
+
+    response = app.test_client().get(
+        "/static/css/main.css",
+        headers={"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
+    )
+
+    assert response.status_code == 206
+    assert "Content-Encoding" not in response.headers
+    assert response.headers["Content-Range"].startswith("bytes 0-99/")
+
+
+def test_request_logging_skips_static_files_but_records_routes(monkeypatch, caplog):
     monkeypatch.setenv("MIRROR_ENV", "development")
     app = create_app()
     caplog.set_level(logging.INFO, logger=app.logger.name)
 
-    response = app.test_client().get("/static/css/main.css")
+    static_response = app.test_client().get("/static/css/main.css")
+    route_response = app.test_client().get("/healthz")
 
-    assert response.status_code == 200
-    assert any(
+    assert static_response.status_code == 200
+    assert route_response.status_code == 200
+    assert not any(
         "request path=/static/css/main.css status=200 duration_ms=" in record.getMessage()
+        for record in caplog.records
+    )
+    assert any(
+        "request path=/healthz status=200 duration_ms=" in record.getMessage()
         for record in caplog.records
     )
 

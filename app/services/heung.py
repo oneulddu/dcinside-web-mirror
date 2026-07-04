@@ -24,8 +24,12 @@ def _env_int(name, default):
 HTTP_TIMEOUT = _env_int("MIRROR_HTTP_TIMEOUT", 20)
 HEUNG_CACHE_TTL = _env_int("MIRROR_HEUNG_CACHE_TTL", 3600)
 HEUNG_CACHE_FILE = os.getenv("MIRROR_HEUNG_CACHE_FILE", os.path.join(INSTANCE_DIR, "heung_gallery_cache.json"))
+SEARCH_CACHE_TTL = max(_env_int("MIRROR_HEUNG_SEARCH_CACHE_TTL", 60), 0)
+SEARCH_CACHE_MAX_ITEMS = max(_env_int("MIRROR_HEUNG_SEARCH_CACHE_MAX_ITEMS", 256), 0)
 HEUNG_CACHE = {"updated_at": 0.0, "items": []}
+SEARCH_CACHE = {}
 HEUNG_CACHE_LOCK = threading.Lock()
+SEARCH_CACHE_LOCK = threading.Lock()
 HEUNG_REFRESH_LOCK = threading.Lock()
 
 
@@ -41,7 +45,7 @@ def _fetch_heung_galleries():
     headers = {"User-Agent": "Mozilla/5.0"}
     res = requests.get("https://gall.dcinside.com/", headers=headers, timeout=HTTP_TIMEOUT)
     res.raise_for_status()
-    soup = BeautifulSoup(res.text, "html.parser")
+    soup = BeautifulSoup(res.text, "lxml")
     layer = soup.select_one("#heung_gall_all_lyr")
     if layer is None:
         raise RuntimeError("heung_gall_all_lyr not found")
@@ -207,16 +211,66 @@ def get_heung_galleries():
         HEUNG_REFRESH_LOCK.release()
 
 
+def _copy_search_items(items):
+    return [dict(item) for item in (items or [])]
+
+
+def _search_cache_get(key):
+    if SEARCH_CACHE_TTL <= 0 or SEARCH_CACHE_MAX_ITEMS <= 0:
+        return None
+    now = time.time()
+    with SEARCH_CACHE_LOCK:
+        entry = SEARCH_CACHE.get(key)
+        if not entry:
+            return None
+        if entry["expires_at"] <= now:
+            SEARCH_CACHE.pop(key, None)
+            return None
+        return _copy_search_items(entry["items"])
+
+
+def _prune_search_cache_locked(now):
+    expired_keys = [key for key, entry in SEARCH_CACHE.items() if entry["expires_at"] <= now]
+    for key in expired_keys:
+        SEARCH_CACHE.pop(key, None)
+    overflow = len(SEARCH_CACHE) - SEARCH_CACHE_MAX_ITEMS
+    if overflow <= 0:
+        return
+    oldest_keys = sorted(SEARCH_CACHE, key=lambda key: SEARCH_CACHE[key]["expires_at"])[:overflow]
+    for key in oldest_keys:
+        SEARCH_CACHE.pop(key, None)
+
+
+def _search_cache_set(key, items):
+    if SEARCH_CACHE_TTL <= 0 or SEARCH_CACHE_MAX_ITEMS <= 0:
+        return
+    now = time.time()
+    with SEARCH_CACHE_LOCK:
+        _prune_search_cache_locked(now)
+        SEARCH_CACHE[key] = {
+            "items": _copy_search_items(items),
+            "expires_at": now + SEARCH_CACHE_TTL,
+        }
+        _prune_search_cache_locked(now)
+
+
 def search_galleries(query):
+    query_text = (query or "").strip()
+    cache_key = query_text.lower()
+    cached = _search_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     headers = {"User-Agent": "Mozilla/5.0"}
-    encoded = quote(query, safe="")
+    encoded = quote(query_text, safe="")
     url = f"https://search.dcinside.com/gallery/q/{encoded}"
     res = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT)
     res.raise_for_status()
-    soup = BeautifulSoup(res.text, "html.parser")
+    soup = BeautifulSoup(res.text, "lxml")
 
     container = soup.select_one("div.integrate_cont.gallsch_result_all")
     if container is None:
+        _search_cache_set(cache_key, [])
         return []
 
     def infer_kind(href):
@@ -268,4 +322,5 @@ def search_galleries(query):
             "internal_supported": board_kind in {"normal", "minor", "mini", "person"},
         })
         seen.add(board_id)
+    _search_cache_set(cache_key, items)
     return items
