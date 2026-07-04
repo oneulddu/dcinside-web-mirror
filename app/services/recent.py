@@ -103,6 +103,26 @@ def merge_recent_entries(new_row, rows):
     return deduped[:RECENT_MAX_ITEMS]
 
 
+def merge_recent_entry_names(rows, named_rows):
+    if not rows or not named_rows:
+        return rows
+
+    names_by_identity = {
+        recent_entry_identity(row): row.get("name")
+        for row in named_rows
+        if isinstance(row, dict) and row.get("name")
+    }
+    merged = []
+    for row in rows:
+        copied = dict(row)
+        if not copied.get("name"):
+            name = names_by_identity.get(recent_entry_identity(copied))
+            if name:
+                copied["name"] = name
+        merged.append(copied)
+    return merged
+
+
 def make_recent_server_cache_entry(entries, now, ttl):
     return {
         "entries": copy_recent_entries(entries),
@@ -208,7 +228,7 @@ def load_recent_entries():
                     rows.append(row)
 
     if rows:
-        return rows
+        return merge_recent_entry_names(rows, get_recent_server_cache(recent_cache_key()))
 
     return get_recent_server_cache(recent_cache_key())
 

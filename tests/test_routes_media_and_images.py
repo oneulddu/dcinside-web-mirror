@@ -1801,9 +1801,7 @@ def test_v2_recent_gallery_renders_kind_labels_in_korean(monkeypatch):
 
 def test_v2_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
     def fake_heung_galleries():
-        return [
-            {"board_id": "dcbest", "name": "실시간 베스트"},
-        ], 1
+        raise AssertionError("/v2/recent should not load heung galleries while rendering")
 
     def fake_search_galleries(query):
         raise AssertionError("/v2/recent should not search galleries while rendering")
@@ -1823,7 +1821,7 @@ def test_v2_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
                     "recommend": 0,
                     "visited_at": 1,
                 },
-                {"board": "dcbest", "kind": None, "recommend": 0, "visited_at": 2},
+                {"board": "dcbest", "name": "실시간 베스트", "kind": None, "recommend": 0, "visited_at": 2},
             ]
         ),
     )
@@ -1879,11 +1877,13 @@ def test_v2_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
 
 
 def test_v2_recent_gallery_does_not_search_missing_names(monkeypatch):
-    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
+    def fail_heung():
+        raise AssertionError("/v2/recent should not call get_heung_galleries")
 
     def fail_search(query):
         raise AssertionError("/v2/recent should not call search_galleries")
 
+    monkeypatch.setattr(routes_v2, "get_heung_galleries", fail_heung)
     monkeypatch.setattr(routes_v2, "search_galleries", fail_search)
     app = create_app()
     client = app.test_client()
@@ -1928,6 +1928,37 @@ def test_recent_cookie_strips_names_when_payload_is_too_large(monkeypatch):
     decoded = base64.urlsafe_b64decode((encoded + "=" * (-len(encoded) % 4)).encode("ascii")).decode("utf-8")
 
     assert "name" not in json.loads(decoded)[0]
+
+
+def test_recent_cookie_compact_rows_merge_names_from_server_cache():
+    app = create_app()
+    cache_key = "visitor-name-key"
+    compact_rows = [{"board": "thesingularity", "kind": "minor", "recommend": 0, "visited_at": 1}]
+    named_rows = [
+        {
+            "board": "thesingularity",
+            "name": "특이점이 온다",
+            "kind": "minor",
+            "recommend": 0,
+            "visited_at": 1,
+        }
+    ]
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        recent.RECENT_SERVER_CACHE.clear()
+    recent.set_recent_server_cache(cache_key, named_rows)
+
+    with app.test_request_context(
+        "/recent",
+        headers={
+            "Cookie": (
+                f"{recent.RECENT_COOKIE_NAME}={_encode_recent_cookie(compact_rows)}; "
+                f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={cache_key}"
+            )
+        },
+    ):
+        rows = recent.load_recent_entries()
+
+    assert rows[0]["name"] == "특이점이 온다"
 
 
 def test_touch_recent_gallery_keeps_existing_name_when_new_visit_has_no_name(monkeypatch):

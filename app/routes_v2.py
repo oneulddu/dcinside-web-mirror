@@ -64,29 +64,7 @@ def _stored_gallery_name(row):
 
 
 def _recent_gallery_name_lookup(rows):
-    board_ids = set()
-    for row in rows:
-        if _stored_gallery_name(row):
-            continue
-        board = (row.get("board") or "").strip()
-        if board:
-            board_ids.add(board)
-
-    if not board_ids:
-        return {}
-
-    names = {}
-    try:
-        heung_items, _updated_at = get_heung_galleries()
-        for item in heung_items:
-            board_id = (item.get("board_id") or "").strip()
-            name = (item.get("name") or "").strip()
-            if board_id in board_ids and name:
-                names[(board_id, None)] = name
-    except Exception:
-        current_app.logger.exception("Failed to resolve recent gallery names from heung cache")
-
-    return names
+    return {}
 
 
 def board_url_v2(
