@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
 from bs4 import BeautifulSoup
-from flask import jsonify
+from flask import Response, jsonify
 
 from app import create_app
 from app import routes
@@ -1806,15 +1806,7 @@ def test_v2_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
         ], 1
 
     def fake_search_galleries(query):
-        if query == "thesingularity":
-            return [
-                {
-                    "board_id": "thesingularity",
-                    "name": "특이점이 온다",
-                    "board_kind": "minor",
-                }
-            ]
-        return []
+        raise AssertionError("/v2/recent should not search galleries while rendering")
 
     monkeypatch.setattr(routes_v2, "get_heung_galleries", fake_heung_galleries)
     monkeypatch.setattr(routes_v2, "search_galleries", fake_search_galleries)
@@ -1824,7 +1816,13 @@ def test_v2_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
         recent.RECENT_COOKIE_NAME,
         _encode_recent_cookie(
             [
-                {"board": "thesingularity", "kind": "minor", "recommend": 0, "visited_at": 1},
+                {
+                    "board": "thesingularity",
+                    "name": "특이점이 온다",
+                    "kind": "minor",
+                    "recommend": 0,
+                    "visited_at": 1,
+                },
                 {"board": "dcbest", "kind": None, "recommend": 0, "visited_at": 2},
             ]
         ),
@@ -1878,6 +1876,58 @@ def test_v2_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
     assert "개념글" in rows[1].get_text(" ", strip=True)
     assert recommend_query["recommend"] == ["1"]
     assert recommend_query["gallery_name"] == ["특이점이 온다"]
+
+
+def test_v2_recent_gallery_does_not_search_missing_names(monkeypatch):
+    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
+
+    def fail_search(query):
+        raise AssertionError("/v2/recent should not call search_galleries")
+
+    monkeypatch.setattr(routes_v2, "search_galleries", fail_search)
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie(
+            [
+                {"board": "unknown_a", "kind": "minor", "recommend": 0, "visited_at": 1},
+                {"board": "unknown_b", "kind": "minor", "recommend": 1, "visited_at": 2},
+            ]
+        ),
+    )
+
+    response = client.get("/v2/recent")
+
+    assert response.status_code == 200
+
+
+def test_recent_cookie_strips_names_when_payload_is_too_large(monkeypatch):
+    monkeypatch.setattr(recent, "RECENT_COOKIE_MAX_BYTES", 120)
+    app = create_app()
+    rows = [
+        {
+            "board": "longname",
+            "name": "가" * 80,
+            "kind": "minor",
+            "recommend": 0,
+            "visited_at": 1,
+        }
+    ]
+
+    with app.test_request_context("/"):
+        response = Response("")
+        recent.save_recent_cookie(response, rows)
+
+    cookie_header = next(
+        header
+        for header in response.headers.getlist("Set-Cookie")
+        if header.startswith(f"{recent.RECENT_COOKIE_NAME}=")
+    )
+    encoded = cookie_header.split(";", 1)[0].split("=", 1)[1]
+    decoded = base64.urlsafe_b64decode((encoded + "=" * (-len(encoded) % 4)).encode("ascii")).decode("utf-8")
+
+    assert "name" not in json.loads(decoded)[0]
 
 
 def test_touch_recent_gallery_keeps_existing_name_when_new_visit_has_no_name(monkeypatch):

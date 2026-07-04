@@ -37,6 +37,7 @@ RECENT_COOKIE_TTL = _env_int("MIRROR_RECENT_COOKIE_TTL", 60 * 60 * 24 * 30)
 RECENT_MAX_ITEMS = _env_int("MIRROR_RECENT_MAX_ITEMS", 30)
 RECENT_SERVER_CACHE_TTL = _env_int("MIRROR_RECENT_SERVER_CACHE_TTL", min(RECENT_COOKIE_TTL, 60 * 60 * 24))
 RECENT_SERVER_CACHE_MAX_KEYS = _env_int("MIRROR_RECENT_SERVER_CACHE_MAX_KEYS", 2048)
+RECENT_COOKIE_MAX_BYTES = _env_int("MIRROR_RECENT_COOKIE_MAX_BYTES", 3600)
 RECENT_SERVER_CACHE = {}
 RECENT_SERVER_CACHE_LOCK = threading.Lock()
 RECENT_CACHE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
@@ -213,8 +214,17 @@ def load_recent_entries():
 
 
 def save_recent_cookie(response, entries):
-    payload = json.dumps(entries[:RECENT_MAX_ITEMS], ensure_ascii=False, separators=(",", ":"))
+    rows = entries[:RECENT_MAX_ITEMS]
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+    if len(encoded.encode("ascii")) > RECENT_COOKIE_MAX_BYTES:
+        compact_rows = []
+        for row in rows:
+            compact = dict(row)
+            compact.pop("name", None)
+            compact_rows.append(compact)
+        payload = json.dumps(compact_rows, ensure_ascii=False, separators=(",", ":"))
+        encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
     response.set_cookie(
         RECENT_COOKIE_NAME,
         encoded,

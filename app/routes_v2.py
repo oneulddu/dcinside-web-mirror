@@ -64,22 +64,17 @@ def _stored_gallery_name(row):
 
 
 def _recent_gallery_name_lookup(rows):
-    requested = []
-    seen = set()
+    board_ids = set()
     for row in rows:
         if _stored_gallery_name(row):
             continue
         board = (row.get("board") or "").strip()
-        kind = row.get("kind")
-        key = (board, kind)
-        if board and key not in seen:
-            requested.append(key)
-            seen.add(key)
+        if board:
+            board_ids.add(board)
 
-    if not requested:
+    if not board_ids:
         return {}
 
-    board_ids = {board for board, _kind in requested}
     names = {}
     try:
         heung_items, _updated_at = get_heung_galleries()
@@ -90,31 +85,6 @@ def _recent_gallery_name_lookup(rows):
                 names[(board_id, None)] = name
     except Exception:
         current_app.logger.exception("Failed to resolve recent gallery names from heung cache")
-
-    for board, kind in requested:
-        if names.get((board, kind)) or names.get((board, None)):
-            continue
-        try:
-            candidates = search_galleries(board)
-        except Exception:
-            current_app.logger.exception("Failed to resolve recent gallery name via search")
-            continue
-
-        exact = None
-        fallback = None
-        for item in candidates:
-            if (item.get("board_id") or "").strip() != board:
-                continue
-            if fallback is None:
-                fallback = item
-            if kind is None or item.get("board_kind") == kind:
-                exact = item
-                break
-
-        match = exact or fallback
-        name = (match.get("name") or "").strip() if match else ""
-        if name:
-            names[(board, kind)] = name
 
     return names
 
