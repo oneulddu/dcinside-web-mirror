@@ -9,16 +9,18 @@
     <ul>
         {% for item in recent_items %}
         <li>
-            <a class="feed-item" href="{{ board_url(item.board, recommend=item.recommend or 0, page=1, kind=item.kind) }}">
+            <a class="feed-item" href="{{ board_url(item.board, recommend=item.recommend or 0, page=1, kind=item.kind, gallery_name=item.gallery_name) }}">
                 <div class="feed-title-wrap">
-                    <h2 class="feed-title">{{ item.board }}</h2>
-                    <span class="gallery-badge">{{ item.kind or "normal" }}</span>
+                    <h2 class="feed-title">{{ item.display_name }}</h2>
+                    <span class="gallery-badge">{{ item.kind_label }}</span>
                     {% if item.recommend == 1 %}
                     <span class="gallery-badge is-hot">개념글</span>
                     {% endif %}
                 </div>
                 <div class="feed-meta-row">
                     <div class="feed-meta-left">
+                        <span>{{ item.board }}</span>
+                        <span class="sep">|</span>
                         <span>최근 방문</span>
                         <span class="sep">|</span>
                         <span>{{ item.visited_at_str }}</span>

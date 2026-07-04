@@ -69,9 +69,11 @@ def normalize_recent_entry(item):
     board = (item.get("board") or "").strip()
     if not board:
         return None
+    name = (item.get("name") or "").strip()
 
     return {
         "board": board,
+        "name": name[:80] or None,
         "kind": (item.get("kind") or "").strip().lower() or None,
         "recommend": 1 if _safe_int(item.get("recommend", 0), 0) == 1 else 0,
         "visited_at": _safe_float(item.get("visited_at", 0), 0.0),
@@ -233,7 +235,7 @@ def save_recent_cache_key_cookie(response, key):
     )
 
 
-def touch_recent_gallery(response, board, kind, recommend=0):
+def touch_recent_gallery(response, board, kind, recommend=0, name=None):
     board_id = (board or "").strip()
     if not board_id:
         return
@@ -242,6 +244,7 @@ def touch_recent_gallery(response, board, kind, recommend=0):
     rows = load_recent_entries()
     new_row = normalize_recent_entry({
         "board": board_id,
+        "name": name,
         "kind": (kind or "").strip().lower() or None,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
         "visited_at": time.time(),

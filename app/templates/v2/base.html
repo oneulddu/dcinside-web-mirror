@@ -52,8 +52,8 @@
             </div>
             <nav class="top-tabs">
                 {% if board is defined and board %}
-                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind, head_id=head_id|default(none)) }}">전체</a>
-                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind, head_id=head_id|default(none)) }}">베스트</a>
+                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind, head_id=head_id|default(none), gallery_name=gallery_name|default(none)) }}">전체</a>
+                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind, head_id=head_id|default(none), gallery_name=gallery_name|default(none)) }}">베스트</a>
                 {% else %}
                 <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/v2/">전체</a>
                 <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url('dcbest', recommend=0, page=1) }}">베스트</a>

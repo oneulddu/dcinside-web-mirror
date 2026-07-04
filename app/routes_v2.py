@@ -41,8 +41,87 @@ from .services.recent import (
 
 bp_v2 = Blueprint("v2", __name__, url_prefix="/v2")
 
+GALLERY_KIND_LABELS = {
+    None: "일반",
+    "normal": "일반",
+    "minor": "마이너",
+    "mini": "미니",
+    "person": "인물",
+}
 
-def board_url_v2(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None):
+
+def _clean_gallery_name(value):
+    name = " ".join(str(value or "").split())
+    return name[:80] or None
+
+
+def _recent_gallery_name_lookup(rows):
+    requested = []
+    seen = set()
+    for row in rows:
+        if _clean_gallery_name(row.get("name")):
+            continue
+        board = (row.get("board") or "").strip()
+        kind = row.get("kind")
+        key = (board, kind)
+        if board and key not in seen:
+            requested.append(key)
+            seen.add(key)
+
+    if not requested:
+        return {}
+
+    board_ids = {board for board, _kind in requested}
+    names = {}
+    try:
+        heung_items, _updated_at = get_heung_galleries()
+        for item in heung_items:
+            board_id = (item.get("board_id") or "").strip()
+            name = (item.get("name") or "").strip()
+            if board_id in board_ids and name:
+                names[(board_id, None)] = name
+    except Exception:
+        current_app.logger.exception("Failed to resolve recent gallery names from heung cache")
+
+    for board, kind in requested:
+        if names.get((board, kind)) or names.get((board, None)):
+            continue
+        try:
+            candidates = search_galleries(board)
+        except Exception:
+            current_app.logger.exception("Failed to resolve recent gallery name via search")
+            continue
+
+        exact = None
+        fallback = None
+        for item in candidates:
+            if (item.get("board_id") or "").strip() != board:
+                continue
+            if fallback is None:
+                fallback = item
+            if kind is None or item.get("board_kind") == kind:
+                exact = item
+                break
+
+        match = exact or fallback
+        name = (match.get("name") or "").strip() if match else ""
+        if name:
+            names[(board, kind)] = name
+
+    return names
+
+
+def board_url_v2(
+    board,
+    recommend=0,
+    page=1,
+    kind=None,
+    nav=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+    gallery_name=None,
+):
     params = {
         "board": board,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
@@ -55,10 +134,23 @@ def board_url_v2(board, recommend=0, page=1, kind=None, nav=None, search_type=No
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword)
+    clean_name = _clean_gallery_name(gallery_name)
+    if clean_name:
+        params["gallery_name"] = clean_name
     return url_for("v2.board", **params)
 
 
-def read_url_v2(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None):
+def read_url_v2(
+    board,
+    pid,
+    recommend=0,
+    source_page=None,
+    kind=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+    gallery_name=None,
+):
     params = {
         "board": board,
         "pid": pid,
@@ -73,6 +165,9 @@ def read_url_v2(board, pid, recommend=0, source_page=None, kind=None, search_typ
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword)
+    clean_name = _clean_gallery_name(gallery_name)
+    if clean_name:
+        params["gallery_name"] = clean_name
     return url_for("v2.read", **params)
 
 
@@ -175,11 +270,21 @@ def index():
 def recent():
     rows = load_recent_entries()
     recent_items = []
-    for row in rows[:RECENT_MAX_ITEMS]:
+    recent_rows = rows[:RECENT_MAX_ITEMS]
+    gallery_names = _recent_gallery_name_lookup(recent_rows)
+    for row in recent_rows:
+        board = row["board"]
+        kind = row.get("kind")
+        saved_name = _clean_gallery_name(row.get("name"))
+        looked_up_name = gallery_names.get((board, kind)) or gallery_names.get((board, None))
+        display_name = saved_name or looked_up_name or board
         recent_items.append(
             {
-                "board": row["board"],
-                "kind": row.get("kind"),
+                "board": board,
+                "display_name": display_name,
+                "gallery_name": saved_name or looked_up_name,
+                "kind": kind,
+                "kind_label": GALLERY_KIND_LABELS.get(kind, kind or "일반"),
                 "recommend": 1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
                 "visited_at_str": format_recent_time(row.get("visited_at")),
             }
@@ -193,6 +298,7 @@ def board():
     board = _normalize_board_id(request.args.get("board", "airforce"))
     recommend = _normalize_recommend()
     kind = _normalize_gallery_kind(request.args.get("kind"))
+    gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
@@ -217,6 +323,7 @@ def board():
             board=board,
             recommend=recommend,
             kind=kind,
+            gallery_name=gallery_name,
             nav_tab=_nav_tab_for_gallery(board, recommend, nav_mode),
             nav_mode=nav_mode,
             search_type=search_type,
@@ -225,7 +332,7 @@ def board():
             head_categories=head_categories,
         )
     )
-    touch_recent_gallery(response, board, kind, recommend=recommend)
+    touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
     return response
 
 
@@ -236,6 +343,7 @@ def read():
         abort(404)
     board = _normalize_board_id(request.args.get("board", "airforce"))
     kind = _normalize_gallery_kind(request.args.get("kind"))
+    gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
     recommend = _normalize_recommend()
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
@@ -267,6 +375,7 @@ def read():
             board=board,
             pid=pid,
             kind=kind,
+            gallery_name=gallery_name,
             recommend=recommend,
             source_page=source_page,
             head_id=head_id,
@@ -288,5 +397,5 @@ def read():
             nav_tab=_nav_tab_for_gallery(board, recommend),
         )
     )
-    touch_recent_gallery(response, board, kind, recommend=recommend)
+    touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
     return response
