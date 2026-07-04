@@ -4,7 +4,7 @@
 {% block content %}
 <section class="feed-list" id="board-list" data-board="{{ board }}" data-page="{{ page }}" data-recommend="{{ recommend }}" data-kind="{{ kind or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
     <div class="board-head">
-        <h1>{{ board }} 게시판</h1>
+        <h1>{{ gallery_display_name }} 게시판</h1>
         {% if recommend == 1 %}
         <a href="{{ board_url(board, recommend=0, page=page, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">전체 보기</a>
         {% else %}

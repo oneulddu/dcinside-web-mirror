@@ -63,6 +63,14 @@ def _stored_gallery_name(row):
     return name
 
 
+def _gallery_display_name(board, gallery_name=None):
+    name = _clean_gallery_name(gallery_name)
+    board_id = (board or "").strip()
+    if name and name != board_id:
+        return name
+    return board_id
+
+
 def _recent_gallery_name_lookup(rows):
     return {}
 
@@ -271,6 +279,7 @@ def board():
     recommend = _normalize_recommend()
     kind = _normalize_gallery_kind(request.args.get("kind"))
     gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
+    gallery_display_name = _gallery_display_name(board, gallery_name)
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
@@ -289,13 +298,14 @@ def board():
     response = make_response(
         render_template(
             "v2/board.html",
-            title="%s 게시판 - 숨터" % board,
+            title="%s 게시판 - 숨터" % gallery_display_name,
             datas=ret,
             page=page,
             board=board,
             recommend=recommend,
             kind=kind,
             gallery_name=gallery_name,
+            gallery_display_name=gallery_display_name,
             nav_tab=_nav_tab_for_gallery(board, recommend, nav_mode),
             nav_mode=nav_mode,
             search_type=search_type,
@@ -316,6 +326,7 @@ def read():
     board = _normalize_board_id(request.args.get("board", "airforce"))
     kind = _normalize_gallery_kind(request.args.get("kind"))
     gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
+    gallery_display_name = _gallery_display_name(board, gallery_name)
     recommend = _normalize_recommend()
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
@@ -348,6 +359,7 @@ def read():
             pid=pid,
             kind=kind,
             gallery_name=gallery_name,
+            gallery_display_name=gallery_display_name,
             recommend=recommend,
             source_page=source_page,
             head_id=head_id,

@@ -945,15 +945,20 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
     monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
     app = create_app()
 
-    response = app.test_client().get("/v2/board?board=test&recommend=1&page=3&kind=minor&headid=10")
+    response = app.test_client().get(
+        "/v2/board?board=test&recommend=1&page=3&kind=minor&headid=10&gallery_name=%ED%85%8C%EC%8A%A4%ED%8A%B8%20%EA%B0%A4%EB%9F%AC%EB%A6%AC"
+    )
     soup = BeautifulSoup(response.data, "html.parser")
     read_link = soup.select_one("a.feed-item")
+    read_query = parse_qs(urlparse(read_link["href"]).query)
 
     assert response.status_code == 200
     assert soup.select_one("link[href*='/static/v2/css/main.css']") is not None
     assert soup.select_one("script[src*='/static/v2/javascript/read_state.js']") is not None
+    assert soup.select_one(".board-head h1").get_text(strip=True) == "테스트 갤러리 게시판"
     assert urlparse(read_link["href"]).path == "/v2/read"
-    assert parse_qs(urlparse(read_link["href"]).query)["source_page"] == ["3"]
+    assert read_query["source_page"] == ["3"]
+    assert read_query["gallery_name"] == ["테스트 갤러리"]
     assert soup.select_one(".board-category-tab.active").get_text(strip=True) == "말머리"
     assert soup.select_one(".feed-recommend-icon.is-hot") is not None
 
@@ -1064,7 +1069,7 @@ def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
     app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
 
     response = app.test_client().get(
-        "/v2/read?board=test&pid=123&kind=minor&recommend=1&source_page=2&headid=10",
+        "/v2/read?board=test&pid=123&kind=minor&recommend=1&source_page=2&headid=10&gallery_name=%ED%85%8C%EC%8A%A4%ED%8A%B8%20%EA%B0%A4%EB%9F%AC%EB%A6%AC",
         base_url="http://internal.local",
     )
     soup = BeautifulSoup(response.data, "html.parser")
@@ -1073,9 +1078,11 @@ def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
 
     assert response.status_code == 200
     assert og_url == "https://mirror.example/v2/read?board=test&pid=123&recommend=1&source_page=2&kind=minor&headid=10"
+    assert soup.select_one(".crumb-link").get_text(strip=True) == "← 테스트 갤러리 게시판"
     assert soup.select_one("script[src*='/static/v2/javascript/read_related_loader.js']") is not None
     assert related_section["data-head-id"] == "10"
     assert related_section["data-recommend"] == "1"
+    assert related_section["data-gallery-name"] == "테스트 갤러리"
 
 
 def test_board_times_endpoint_returns_precise_times(monkeypatch):
