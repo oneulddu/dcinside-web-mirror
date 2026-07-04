@@ -172,6 +172,10 @@ button {
     padding-top: var(--space-6);
 }
 
+.page.board-page {
+    padding-top: 0;
+}
+
 .site-foot {
     margin-top: var(--space-12);
     padding-top: var(--space-3);
@@ -205,6 +209,10 @@ button {
     gap: var(--space-4);
     padding-bottom: var(--space-2);
     border-bottom: 1px solid var(--fg);
+}
+
+.masthead-board-head {
+    margin-top: var(--space-6);
 }
 
 .board-head h1,
