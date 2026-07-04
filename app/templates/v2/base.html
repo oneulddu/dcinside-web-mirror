@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script>
+        (function () {
+            "use strict";
+
+            var theme = "dark";
+            try {
+                theme = window.localStorage.getItem("mirror_theme_v1") === "light" ? "light" : "dark";
+            } catch (err) {
+                theme = "dark";
+            }
+
+            var root = document.documentElement;
+            root.dataset.theme = theme;
+            root.style.colorScheme = theme;
+        })();
+    </script>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="stylesheet" crossorigin href="https://cdn.jsdelivr.net/gh/sun-typeface/SUIT@2/fonts/variable/woff2/SUIT-Variable.css" />
+    <link rel="icon" href="{{ static_url('v2/favicon.svg') }}" type="image/svg+xml">
+    <link rel="stylesheet" href="{{ static_url('v2/css/main.css') }}">
+    <title>{{ title or "숨터" }}</title>
+    {% if social_meta %}
+    <meta property="og:site_name" content="{{ social_meta.site_name }}">
+    <meta property="og:type" content="{{ social_meta.type }}">
+    <meta property="og:title" content="{{ social_meta.title }}">
+    <meta property="og:description" content="{{ social_meta.description }}">
+    <meta property="og:url" content="{{ social_meta.url }}">
+    <meta name="twitter:card" content="{{ social_meta.twitter_card }}">
+    <meta name="twitter:title" content="{{ social_meta.title }}">
+    <meta name="twitter:description" content="{{ social_meta.description }}">
+    {% if social_meta.image %}
+    <meta property="og:image" content="{{ social_meta.image }}">
+    <meta property="og:image:secure_url" content="{{ social_meta.image }}">
+    <meta property="og:image:alt" content="{{ social_meta.image_alt }}">
+    <meta name="twitter:image" content="{{ social_meta.image }}">
+    <meta name="twitter:image:alt" content="{{ social_meta.image_alt }}">
+    {% endif %}
+    {% endif %}
+</head>
+<body>
+    <a class="skip-link" href="#content">본문 바로가기</a>
+    <div class="shell">
+        <header class="masthead">
+            <div class="masthead-row">
+                <a class="brand" href="/v2/">숨터<span class="brand-note">가볍게 읽는 공간</span></a>
+                <button class="theme-toggle" type="button" aria-label="어두운 테마 사용 중, 밝은 테마로 전환" aria-pressed="false" title="밝은 테마로 전환">☀</button>
+            </div>
+            <nav class="top-tabs">
+                {% if board is defined and board %}
+                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind, head_id=head_id|default(none)) }}">전체</a>
+                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind, head_id=head_id|default(none)) }}">베스트</a>
+                {% else %}
+                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/v2/">전체</a>
+                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url('dcbest', recommend=0, page=1) }}">베스트</a>
+                {% endif %}
+                <a class="tab-item {% if nav_tab == 'recent' %}active{% endif %}" href="/v2/recent">최근</a>
+            </nav>
+        </header>
+
+        <main class="page" id="content">
+            {% block content %}{% endblock %}
+        </main>
+
+        <footer class="site-foot">
+            <span>읽기 전용 미러</span>
+            <a href="/">기존 화면으로 보기</a>
+        </footer>
+    </div>
+    <script src="{{ static_url('v2/javascript/read_state.js') }}"></script>
+</body>
+</html>
