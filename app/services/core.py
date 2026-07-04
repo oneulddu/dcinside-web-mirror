@@ -235,6 +235,11 @@ def _copy_read_payload(payload):
     return copied_data, _copy_rows(comments), list(images or [])
 
 
+def _is_read_payload_cacheable(payload):
+    data, _comments, _images = payload
+    return (data or {}).get("html") != "게시글 데이터를 가져오는 데 실패했습니다."
+
+
 def _board_index_cache_key(
     page,
     board,
@@ -589,7 +594,7 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
             search_keyword=search_keyword,
             head_id=head_id,
         )
-    if READ_CACHE_TTL > 0:
+    if READ_CACHE_TTL > 0 and _is_read_payload_cacheable(payload):
         _cache_set(
             _READ_CACHE,
             _READ_CACHE_LOCK,
@@ -698,14 +703,15 @@ async def async_index_with_head_categories(
             data.append(_index_item_to_dict(item))
         await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
         categories = _normalize_head_categories(headtexts, head_id=head_id)
-    _cache_set(
-        _BOARD_INDEX_CACHE,
-        _BOARD_INDEX_CACHE_LOCK,
-        cache_key,
-        (_copy_rows(data), _copy_categories(categories)),
-        BOARD_PAGE_CACHE_TTL,
-        BOARD_INDEX_CACHE_MAX_ITEMS,
-    )
+    if data or categories:
+        _cache_set(
+            _BOARD_INDEX_CACHE,
+            _BOARD_INDEX_CACHE_LOCK,
+            cache_key,
+            (_copy_rows(data), _copy_categories(categories)),
+            BOARD_PAGE_CACHE_TTL,
+            BOARD_INDEX_CACHE_MAX_ITEMS,
+        )
     return data, categories
 
 

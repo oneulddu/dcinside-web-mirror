@@ -214,7 +214,7 @@ async def test_async_index_cache_key_includes_limit_and_scan_bounds(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_async_index_with_head_categories_caches_empty_results(monkeypatch):
+async def test_async_index_with_head_categories_does_not_cache_empty_results(monkeypatch):
     class FakeAPI:
         calls = 0
 
@@ -236,7 +236,7 @@ async def test_async_index_with_head_categories_caches_empty_results(monkeypatch
 
     assert first_rows == second_rows == []
     assert first_categories == second_categories == []
-    assert FakeAPI.calls == 1
+    assert FakeAPI.calls == 2
 
 
 @pytest.mark.asyncio
@@ -565,6 +565,33 @@ async def test_async_read_cache_returns_mutation_safe_copies(monkeypatch):
     assert cached_data["related_posts"][0]["title"] == "title 456"
     assert cached_comments[0]["dccon"] == "https://dccon.dcinside.com/original.png"
     assert cached_images == ["https://img.dcinside.com/original.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_async_read_cache_skips_missing_document_payload(monkeypatch):
+    monkeypatch.setattr(core, "READ_CACHE_TTL", 30)
+
+    class FakeAPI:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def document(self, **kwargs):
+            self.__class__.calls += 1
+            return None
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    first_data, _first_comments, _first_images = await core.async_read("123", "test")
+    second_data, _second_comments, _second_images = await core.async_read("123", "test")
+
+    assert first_data["html"] == "게시글 데이터를 가져오는 데 실패했습니다."
+    assert second_data["html"] == "게시글 데이터를 가져오는 데 실패했습니다."
+    assert FakeAPI.calls == 2
 
 
 @pytest.mark.asyncio
