@@ -56,6 +56,7 @@ _LATEST_ID_CACHE_LOCK = threading.Lock()
 _AUTHOR_CODE_CACHE_LOCK = threading.Lock()
 _CACHE_PRUNE_STATE = {}
 _CACHE_PRUNE_STATE_LOCK = threading.Lock()
+_TIME_SECONDS_RE = re.compile(r"(\b\d{1,2}:\d{2}):\d{2}\b")
 
 
 def _safe_int(value, default=0):
@@ -122,11 +123,18 @@ def _is_reply_comment(parent_id):
         return False
 
 
+def format_display_time(value):
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    return _TIME_SECONDS_RE.sub(r"\1", text)
+
+
 def _comment_to_dict(comment):
     comment_author, comment_author_code = _normalize_author(comment.author, comment.author_id)
     is_reply = bool(getattr(comment, "is_reply", False)) or _is_reply_comment(comment.parent_id)
     return {
-        "time": comment.time,
+        "time": format_display_time(comment.time),
         "contents": comment.contents,
         "author": comment_author,
         "author_code": comment_author_code,
@@ -141,7 +149,7 @@ def _index_time_display(item):
     raw_time = (getattr(item, "time_text", None) or "").strip()
     if not bool(getattr(item, "time_is_precise", True)):
         return raw_time or "-"
-    return str(getattr(item, "time", "") or "-")
+    return format_display_time(getattr(item, "time", None))
 
 
 def _index_item_to_dict(item):
@@ -156,7 +164,7 @@ def _index_item_to_dict(item):
         "author": author,
         "author_code": author_code,
         "author_role": _normalize_author_role(getattr(item, "author_role", None)),
-        "time": item.time,
+        "time": format_display_time(item.time),
         "time_display": _index_time_display(item),
         "needs_time_hydrate": needs_time_hydrate,
         "comment_count": item.comment_count,
@@ -408,7 +416,7 @@ async def async_board_precise_times(
             target_ids=normalized_target_ids,
         )
 
-    result = {str(doc_id): str(value) for doc_id, value in (precise_times or {}).items()}
+    result = {str(doc_id): format_display_time(value) for doc_id, value in (precise_times or {}).items()}
     _cache_set(
         _BOARD_TIME_CACHE,
         _BOARD_TIME_CACHE_LOCK,
@@ -535,7 +543,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         "author": author,
         "author_code": author_code,
         "author_role": author_role,
-        "time": doc.time,
+        "time": format_display_time(doc.time),
         "voteup_count": doc.voteup_count,
         "contents": getattr(doc, "contents", ""),
         "html": doc.html,

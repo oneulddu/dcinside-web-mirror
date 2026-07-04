@@ -1113,7 +1113,7 @@ def test_board_times_endpoint_returns_precise_times(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {"ok": True, "times": {"123": "2026-04-16 12:00:00"}}
+    assert response.get_json() == {"ok": True, "times": {"123": "2026-04-16 12:00"}}
     assert seen == {
         "page": 2,
         "board": "test",
@@ -1669,6 +1669,59 @@ def test_read_passes_head_id_to_initial_document_fetch(monkeypatch):
     assert response.status_code == 200
     assert seen == {"pid": 123, "board": "test", "kind": "minor", "head_id": "10"}
     assert soup.select_one("#related-section")["data-head-id"] == "10"
+
+
+def test_read_omits_seconds_from_post_comment_and_related_times(monkeypatch):
+    async def fake_async_read(pid, board, kind=None, recommend=0, **kwargs):
+        return (
+            {
+                "title": "title",
+                "author": "익명",
+                "author_code": None,
+                "time": "2026-04-16 12:34:56",
+                "voteup_count": 0,
+                "html": "<p>body</p>",
+                "related_posts": [
+                    {
+                        "id": "122",
+                        "title": "related title",
+                        "author": "작성자",
+                        "author_code": None,
+                        "time": "2026-04-16 12:36:58",
+                        "comment_count": 0,
+                        "voteup_count": 2,
+                        "source_page": 0,
+                    }
+                ],
+            },
+            [
+                {
+                    "author": "댓글러",
+                    "author_code": None,
+                    "time": "04.16 12:35:57",
+                    "contents": "댓글",
+                    "parent_id": None,
+                    "is_reply": False,
+                    "dccon": None,
+                }
+            ],
+            [],
+        )
+
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    app = create_app()
+
+    response = app.test_client().get("/read?board=test&pid=123")
+    text = response.get_data(as_text=True)
+    soup = BeautifulSoup(response.data, "html.parser")
+
+    assert response.status_code == 200
+    assert "2026-04-16 12:34" in soup.select_one(".article-meta").get_text(" ", strip=True)
+    assert "04.16 12:35" in soup.select_one(".comment-meta").get_text(" ", strip=True)
+    assert "2026-04-16 12:36" in soup.select_one("#related-list").get_text(" ", strip=True)
+    assert "12:34:56" not in text
+    assert "12:35:57" not in text
+    assert "12:36:58" not in text
 
 
 def test_read_renders_embedded_related_posts_without_extra_related_request(monkeypatch):
