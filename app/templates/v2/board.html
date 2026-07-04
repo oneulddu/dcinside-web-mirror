@@ -1,0 +1,98 @@
+{% extends "v2/base.html" %}
+{% from "v2/_bits.html" import author_text, feed_status_icon, feed_subject %}
+
+{% block content %}
+<section class="feed-list" id="board-list" data-board="{{ board }}" data-page="{{ page }}" data-recommend="{{ recommend }}" data-kind="{{ kind or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
+    <div class="board-head">
+        <h1>{{ board }} 게시판</h1>
+        {% if recommend == 1 %}
+        <a href="{{ board_url(board, recommend=0, page=page, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}">전체 보기</a>
+        {% else %}
+        <a href="{{ board_url(board, recommend=1, page=page, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}">추천 보기</a>
+        {% endif %}
+    </div>
+    {% if head_categories %}
+    <nav class="board-category-tabs" aria-label="게시글 분류">
+        <div class="board-category-scroll">
+            {% for category in head_categories %}
+            <a class="board-category-tab{% if category.active %} active{% endif %}" href="{{ board_url(board, recommend=recommend, page=1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=category.head_id) }}" {% if category.active %}aria-current="page"{% endif %}>
+                {{ category.label }}
+            </a>
+            {% endfor %}
+        </div>
+    </nav>
+    {% endif %}
+    {% if search_keyword %}
+    <div class="board-search-summary">
+        <b>{{ search_keyword }}</b> 검색 결과
+    </div>
+    {% endif %}
+    <ul>
+        {% for index in datas %}
+        <li>
+            <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}" data-post-id="{{ index.id }}">
+                <div class="feed-title-wrap">
+                    {{ feed_status_icon(index) }}
+                    <h2 class="feed-title">
+                        {{ index.title|highlight_search(search_keyword) }}
+                    </h2>
+                    {% if index.comment_count > 0 %}
+                    <span class="reply-count">[{{ index.comment_count }}]</span>
+                    {% endif %}
+                </div>
+                <div class="feed-meta-row">
+                    <div class="feed-meta-left">
+                        {{ feed_subject(index) }}
+                        {{ author_text(index) }}
+                        <span class="sep">|</span>
+                        <span data-board-time data-post-id="{{ index.id }}" {% if index.needs_time_hydrate %}data-needs-time-hydrate="1"{% endif %}>{{ index.time_display or index.time }}</span>
+                    </div>
+                    <div class="feed-meta-right">
+                        <div class="score-box">
+                            <span>추천</span>
+                            <b>{{ index.voteup_count }}</b>
+                        </div>
+                    </div>
+                </div>
+            </a>
+        </li>
+        {% else %}
+        <li class="empty-row">게시글이 없습니다.</li>
+        {% endfor %}
+    </ul>
+    <form class="board-search-form" method="get" action="/v2/board" role="search">
+        <input type="hidden" name="board" value="{{ board }}">
+        <input type="hidden" name="recommend" value="{{ recommend }}">
+        <input type="hidden" name="page" value="1">
+        {% if kind %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
+        {% if nav_mode %}<input type="hidden" name="nav" value="{{ nav_mode }}">{% endif %}
+        {% if head_id is not none %}<input type="hidden" name="headid" value="{{ head_id }}">{% endif %}
+        <label class="board-search-label" for="board-search-type">검색</label>
+        <select class="board-search-select" id="board-search-type" name="s_type" aria-label="검색 범위">
+            <option value="subject_m" {% if search_type == 'subject_m' %}selected{% endif %}>제목+내용</option>
+            <option value="subject" {% if search_type == 'subject' %}selected{% endif %}>제목</option>
+            <option value="memo" {% if search_type == 'memo' %}selected{% endif %}>내용</option>
+            <option value="name" {% if search_type == 'name' %}selected{% endif %}>글쓴이</option>
+            <option value="comment" {% if search_type == 'comment' %}selected{% endif %}>댓글</option>
+        </select>
+        <input class="board-search-input" type="search" name="serval" value="{{ search_keyword or '' }}" placeholder="검색어를 입력하세요." autocomplete="off" required>
+        {% if search_keyword %}
+        <a class="board-search-clear" href="{{ board_url(board, recommend=recommend, page=1, kind=kind, nav=nav_mode, head_id=head_id) }}" aria-label="검색 해제">×</a>
+        {% endif %}
+        <button class="board-search-submit" type="submit" aria-label="검색">검색</button>
+    </form>
+    <div class="pager-row board-pager">
+        <a class="pager-btn pager-home" href="/v2/">갤러리</a>
+        <div class="pager-center">
+            {% if page > 1 %}
+            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page - 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}">이전</a>
+            {% else %}
+            <span class="pager-btn off">이전</span>
+            {% endif %}
+            <span class="pager-current">{{ page }}</span>
+            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page + 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}">다음</a>
+        </div>
+    </div>
+</section>
+<script src="{{ static_url('javascript/board_time_hydrator.js') }}"></script>
+{% endblock %}

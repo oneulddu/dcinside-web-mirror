@@ -1,0 +1,35 @@
+{% extends "v2/base.html" %}
+
+{% block content %}
+<section class="feed-list">
+    <div class="board-head">
+        <h1>최근 방문 갤러리</h1>
+        <span class="board-head-note">최대 30개</span>
+    </div>
+    <ul>
+        {% for item in recent_items %}
+        <li>
+            <a class="feed-item" href="{{ board_url(item.board, recommend=item.recommend or 0, page=1, kind=item.kind) }}">
+                <div class="feed-title-wrap">
+                    <h2 class="feed-title">{{ item.board }}</h2>
+                    <span class="gallery-badge">{{ item.kind or "normal" }}</span>
+                    {% if item.recommend == 1 %}
+                    <span class="gallery-badge is-hot">개념글</span>
+                    {% endif %}
+                </div>
+                <div class="feed-meta-row">
+                    <div class="feed-meta-left">
+                        <span>최근 방문</span>
+                        <span class="sep">|</span>
+                        <span>{{ item.visited_at_str }}</span>
+                    </div>
+                    <div class="feed-meta-right">바로가기</div>
+                </div>
+            </a>
+        </li>
+        {% else %}
+        <li class="empty-row">최근 방문한 갤러리가 없습니다.</li>
+        {% endfor %}
+    </ul>
+</section>
+{% endblock %}

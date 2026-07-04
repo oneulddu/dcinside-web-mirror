@@ -10,6 +10,7 @@ from flask import jsonify
 
 from app import create_app
 from app import routes
+from app import routes_v2
 from app.services import heung
 from app.services import html_sanitizer
 from app.services import media_proxy
@@ -94,6 +95,16 @@ def test_media_and_movie_routes_are_not_compressed(monkeypatch):
 
     assert "Content-Encoding" not in media_response.headers
     assert "Content-Encoding" not in movie_response.headers
+
+
+def test_favicon_route_serves_svg_icon():
+    app = create_app()
+
+    response = app.test_client().get("/favicon.ico")
+
+    assert response.status_code == 200
+    assert response.mimetype == "image/svg+xml"
+    assert b"<svg" in response.data
 
 
 def test_read_limited_media_body_closes_after_success(monkeypatch):
@@ -904,6 +915,49 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     assert seen_scan_limits == [1, 1]
 
 
+def test_v2_board_renders_v2_assets_and_links(monkeypatch):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        assert page == 3
+        assert board == "test"
+        assert recommend == 1
+        assert kind == "minor"
+        assert kwargs["head_id"] == "10"
+        return [
+            {
+                "id": "123",
+                "title": "v2 title",
+                "comment_count": 2,
+                "subject": "말머리",
+                "author": "익명",
+                "author_code": "1.2",
+                "time": "-",
+                "time_display": "-",
+                "needs_time_hydrate": False,
+                "voteup_count": 4,
+                "has_image": True,
+                "isimage": True,
+                "has_video": False,
+                "isvideo": False,
+                "isrecommend": True,
+            }
+        ], [{"head_id": "10", "label": "말머리", "active": True}]
+
+    monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
+    app = create_app()
+
+    response = app.test_client().get("/v2/board?board=test&recommend=1&page=3&kind=minor&headid=10")
+    soup = BeautifulSoup(response.data, "html.parser")
+    read_link = soup.select_one("a.feed-item")
+
+    assert response.status_code == 200
+    assert soup.select_one("link[href*='/static/v2/css/main.css']") is not None
+    assert soup.select_one("script[src*='/static/v2/javascript/read_state.js']") is not None
+    assert urlparse(read_link["href"]).path == "/v2/read"
+    assert parse_qs(urlparse(read_link["href"]).query)["source_page"] == ["3"]
+    assert soup.select_one(".board-category-tab.active").get_text(strip=True) == "말머리"
+    assert soup.select_one(".feed-recommend-icon.is-hot") is not None
+
+
 def test_board_renders_date_only_time_for_async_hydration(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [
@@ -932,6 +986,47 @@ def test_board_renders_date_only_time_for_async_hydration(monkeypatch):
     assert time_node["data-needs-time-hydrate"] == "1"
     assert "2026-04-16 23:59:59" not in response.get_data(as_text=True)
     assert soup.select_one("script[src*='board_time_hydrator.js']") is not None
+
+
+def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
+    async def fake_async_read(pid, board, kind=None, recommend=0, head_id=None, **kwargs):
+        assert pid == 123
+        assert board == "test"
+        assert kind == "minor"
+        assert recommend == 1
+        assert head_id == "10"
+        return (
+            {
+                "title": "v2 공유 글",
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+                "contents": "v2 미리보기 설명",
+                "html": "<p>본문</p>",
+                "related_posts": [],
+            },
+            [],
+            ["https://images.dcinside.com/post-a.jpg"],
+        )
+
+    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    app = create_app()
+    app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
+
+    response = app.test_client().get(
+        "/v2/read?board=test&pid=123&kind=minor&recommend=1&source_page=2&headid=10",
+        base_url="http://internal.local",
+    )
+    soup = BeautifulSoup(response.data, "html.parser")
+    og_url = soup.select_one('meta[property="og:url"]')["content"]
+    related_section = soup.select_one("#related-section")
+
+    assert response.status_code == 200
+    assert og_url == "https://mirror.example/v2/read?board=test&pid=123&recommend=1&source_page=2&kind=minor&headid=10"
+    assert soup.select_one("script[src*='/static/v2/javascript/read_related_loader.js']") is not None
+    assert related_section["data-head-id"] == "10"
+    assert related_section["data-recommend"] == "1"
 
 
 def test_board_times_endpoint_returns_precise_times(monkeypatch):

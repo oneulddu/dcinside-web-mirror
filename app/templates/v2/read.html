@@ -1,0 +1,102 @@
+{% extends "v2/base.html" %}
+{% from "v2/_bits.html" import author_text, feed_status_icon, feed_subject %}
+
+{% block content %}
+<section class="read-shell">
+    <div class="crumb-row">
+        <a class="crumb-link" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}">← {{ board }} 게시판</a>
+    </div>
+    <div class="article-head">
+        <h1>{{ data.title }}</h1>
+        <div class="article-meta">
+            {{ author_text(data) }}
+            <span>{{ data.time }}</span>
+            <span>추천 {{ data.voteup_count }}</span>
+        </div>
+    </div>
+
+    <article class="article-body">
+        {{ data.html | safe }}
+    </article>
+
+    <section class="comment-shell">
+        <h2>댓글 {{ comments|length }}</h2>
+        <ul class="comment-list">
+            {% for comment in comments %}
+            <li class="comment-item{% if comment.is_reply %} is-reply{% endif %}"{% if comment.parent_id %} data-parent-id="{{ comment.parent_id }}"{% endif %}>
+                <div class="comment-main">
+                    {% if comment.is_reply %}
+                    <span class="reply-badge">답글</span>
+                    {% endif %}
+                    {% if comment.dccon != None %}
+                    <img class="dccon" src="{{ comment.dccon }}" alt="dccon" loading="lazy" decoding="async">
+                    {% else %}
+                    <p>{{ comment.contents|linkify_comment }}</p>
+                    {% endif %}
+                </div>
+                <div class="comment-meta">
+                    {{ author_text(comment) }}
+                    <span>{{ comment.time }}</span>
+                </div>
+            </li>
+            {% else %}
+            <li class="empty-row">아직 댓글이 없습니다.</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
+        <div class="board-head related-head">
+            <h2>{% if search_keyword %}다른 검색 결과{% elif recommend == 1 %}다른 개념글{% else %}다른 게시글{% endif %}</h2>
+        </div>
+        <ul id="related-list">
+            {% if embedded_related_posts %}
+            {% for item in embedded_related_posts %}
+            <li data-post-id="{{ item.id }}">
+                <a class="feed-item" data-post-id="{{ item.id }}" href="{{ read_url(board, item.id, recommend=recommend, source_page=source_page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}">
+                    <div class="feed-title-wrap">
+                        {{ feed_status_icon(item) }}
+                        <h2 class="feed-title">{{ item.title|highlight_search(search_keyword) }}</h2>
+                        {% if item.comment_count > 0 %}
+                        <span class="reply-count">[{{ item.comment_count }}]</span>
+                        {% endif %}
+                    </div>
+                    <div class="feed-meta-row">
+                        <div class="feed-meta-left">
+                            {{ feed_subject(item) }}
+                            {{ author_text(item) }}
+                            <span class="sep">|</span>
+                            <span>{{ item.time }}</span>
+                        </div>
+                        <div class="feed-meta-right">추천 {{ item.voteup_count }}</div>
+                    </div>
+                </a>
+            </li>
+            {% endfor %}
+            {% else %}
+            {% if search_keyword %}
+            <li class="empty-row">다른 검색 결과는 더보기를 누르면 불러옵니다.</li>
+            {% elif recommend == 1 %}
+            <li class="empty-row">다른 개념글은 더보기를 누르면 불러옵니다.</li>
+            {% else %}
+            <li class="empty-row">다른 게시글은 더보기를 누르면 불러옵니다.</li>
+            {% endif %}
+            {% endif %}
+        </ul>
+        <div class="related-more-wrap">
+            <button class="related-more-btn" id="related-load-button" type="button" aria-controls="related-list" data-default-label="더보기">
+                <span class="related-more-label" data-related-more-label>더보기</span>
+                <span class="sp-arrow arrow-down-lg related-more-arrow" aria-hidden="true"></span>
+            </button>
+        </div>
+    </section>
+
+    <div class="pager-row single">
+        <a class="pager-btn" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id) }}">목록으로</a>
+    </div>
+</section>
+<button class="back-to-top" id="back-to-top" type="button" aria-label="맨 위로" title="맨 위로">↑</button>
+<script src="{{ static_url('v2/javascript/read_related_loader.js') }}"></script>
+<script src="{{ static_url('javascript/comment_spam_filter.js') }}"></script>
+<script src="{{ static_url('v2/javascript/back_to_top.js') }}"></script>
+{% endblock %}

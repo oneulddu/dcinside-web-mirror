@@ -442,6 +442,11 @@ def healthz():
     return jsonify({"ok": True})
 
 
+@bp.route("/favicon.ico")
+def favicon():
+    return current_app.send_static_file("v2/favicon.svg")
+
+
 # 공군갤 airforce
 # 야갤 baseball_new10
 # 싱벙갤 singlebungle1472
@@ -641,6 +646,9 @@ def read_related():
     )
 
 def register_routes(app):
+    from .routes_v2 import bp_v2
+
     app.add_template_global(board_url, "board_url")
     app.add_template_global(read_url, "read_url")
     app.register_blueprint(bp)
+    app.register_blueprint(bp_v2)
