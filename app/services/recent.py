@@ -70,6 +70,8 @@ def normalize_recent_entry(item):
     if not board:
         return None
     name = (item.get("name") or "").strip()
+    if name == board:
+        name = ""
 
     return {
         "board": board,
@@ -93,6 +95,8 @@ def merge_recent_entries(new_row, rows):
     deduped = [new_row]
     for row in rows:
         if recent_entry_identity(row) == new_identity:
+            if not new_row.get("name") and row.get("name"):
+                new_row["name"] = row.get("name")
             continue
         deduped.append(row)
     return deduped[:RECENT_MAX_ITEMS]

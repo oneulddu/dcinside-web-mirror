@@ -55,11 +55,19 @@ def _clean_gallery_name(value):
     return name[:80] or None
 
 
+def _stored_gallery_name(row):
+    board = (row.get("board") or "").strip()
+    name = _clean_gallery_name(row.get("name"))
+    if not name or name == board:
+        return None
+    return name
+
+
 def _recent_gallery_name_lookup(rows):
     requested = []
     seen = set()
     for row in rows:
-        if _clean_gallery_name(row.get("name")):
+        if _stored_gallery_name(row):
             continue
         board = (row.get("board") or "").strip()
         kind = row.get("kind")
@@ -271,12 +279,28 @@ def recent():
     rows = load_recent_entries()
     recent_items = []
     recent_rows = rows[:RECENT_MAX_ITEMS]
+    stored_names = {}
+    for row in recent_rows:
+        board = (row.get("board") or "").strip()
+        if not board:
+            continue
+        kind = row.get("kind")
+        name = _stored_gallery_name(row)
+        if name:
+            stored_names.setdefault((board, kind), name)
+            stored_names.setdefault((board, None), name)
+
     gallery_names = _recent_gallery_name_lookup(recent_rows)
     for row in recent_rows:
         board = row["board"]
         kind = row.get("kind")
-        saved_name = _clean_gallery_name(row.get("name"))
-        looked_up_name = gallery_names.get((board, kind)) or gallery_names.get((board, None))
+        saved_name = _stored_gallery_name(row)
+        looked_up_name = (
+            stored_names.get((board, kind))
+            or stored_names.get((board, None))
+            or gallery_names.get((board, kind))
+            or gallery_names.get((board, None))
+        )
         display_name = saved_name or looked_up_name or board
         recent_items.append(
             {
