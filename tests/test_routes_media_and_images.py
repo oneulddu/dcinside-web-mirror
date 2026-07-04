@@ -927,7 +927,7 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
                 "id": "123",
                 "title": "v2 title",
                 "comment_count": 2,
-                "subject": "말머리",
+                "subject": "[잡갤]",
                 "author": "익명",
                 "author_code": "1.2",
                 "time": "-",
@@ -960,6 +960,8 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
     assert read_query["source_page"] == ["3"]
     assert read_query["gallery_name"] == ["테스트 갤러리"]
     assert soup.select_one(".board-category-tab.active").get_text(strip=True) == "말머리"
+    assert soup.select_one(".post-subject").get_text(strip=True) == "[잡갤]"
+    assert "[[잡갤]]" not in response.get_data(as_text=True)
     assert soup.select_one(".feed-recommend-icon.is-hot") is not None
 
 
@@ -1721,6 +1723,14 @@ def test_comment_spam_filter_keeps_summary_even_when_every_comment_is_filtered()
     assert "getRepeatThreshold" in script
     assert "aria-expanded" in script
     assert 'li.classList.add("comment-spam-hidden")' in script
+
+
+def test_v2_related_loader_does_not_double_wrap_bracketed_subject():
+    script = Path(routes.BASE_DIR, "app/static/v2/javascript/read_related_loader.js").read_text()
+
+    assert "function formatSubject" in script
+    assert 'subject.charAt(0) === "["' in script
+    assert 'subject.textContent = formatSubject(item.subject);' in script
 
 
 def _encode_recent_cookie(rows):

@@ -101,6 +101,17 @@
         );
     }
 
+    function formatSubject(value) {
+        var subject = String(value || "").trim();
+        if (!subject) {
+            return "";
+        }
+        if (subject.charAt(0) === "[" && subject.charAt(subject.length - 1) === "]") {
+            return subject;
+        }
+        return "[" + subject + "]";
+    }
+
     function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName) {
         var pid = getItemPostId(item);
         var href = "/v2/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
@@ -219,7 +230,7 @@
         if (item.subject) {
             var subject = document.createElement("span");
             subject.className = "post-subject";
-            subject.textContent = "[" + String(item.subject) + "]";
+            subject.textContent = formatSubject(item.subject);
             metaLeft.appendChild(subject);
         }
 
