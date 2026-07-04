@@ -29,21 +29,33 @@ RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1
 RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
 BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)
 BOARD_TIME_CACHE_TTL = max(_env_int("MIRROR_BOARD_TIME_CACHE_TTL", BOARD_PAGE_CACHE_TTL), 0)
+READ_CACHE_TTL = max(_env_int("MIRROR_READ_CACHE_TTL", 0), 0)
 BOARD_FILL_AUTHOR_CODES = _env_bool("MIRROR_BOARD_FILL_AUTHOR_CODES", False)
 LATEST_ID_CACHE_TTL = 20
 AUTHOR_CODE_CACHE_TTL = 3600
 BOARD_PAGE_CACHE_MAX_ITEMS = 2048
+BOARD_INDEX_CACHE_MAX_ITEMS = 2048
+BOARD_TIME_CACHE_MAX_ITEMS = BOARD_PAGE_CACHE_MAX_ITEMS
+READ_CACHE_MAX_ITEMS = 512
 LATEST_ID_CACHE_MAX_ITEMS = 512
 AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
+CACHE_PRUNE_EVERY = max(_env_int("MIRROR_CACHE_PRUNE_EVERY", 64), 1)
+CACHE_PRUNE_MIN_INTERVAL = max(_env_int("MIRROR_CACHE_PRUNE_MIN_INTERVAL", 1), 0)
 
 _BOARD_PAGE_CACHE = {}
+_BOARD_INDEX_CACHE = {}
 _BOARD_TIME_CACHE = {}
+_READ_CACHE = {}
 _LATEST_ID_CACHE = {}
 _AUTHOR_CODE_CACHE = {}
 _BOARD_PAGE_CACHE_LOCK = threading.Lock()
+_BOARD_INDEX_CACHE_LOCK = threading.Lock()
 _BOARD_TIME_CACHE_LOCK = threading.Lock()
+_READ_CACHE_LOCK = threading.Lock()
 _LATEST_ID_CACHE_LOCK = threading.Lock()
 _AUTHOR_CODE_CACHE_LOCK = threading.Lock()
+_CACHE_PRUNE_STATE = {}
+_CACHE_PRUNE_STATE_LOCK = threading.Lock()
 
 
 def _safe_int(value, default=0):
@@ -183,11 +195,84 @@ def _cache_prune(cache, now, max_items):
         cache.pop(key, None)
 
 
+def _should_prune_cache(cache, now, max_items):
+    with _CACHE_PRUNE_STATE_LOCK:
+        state = _CACHE_PRUNE_STATE.setdefault(id(cache), {"sets": 0, "last_pruned_at": 0.0})
+        state["sets"] += 1
+        should_prune = (
+            state["sets"] >= CACHE_PRUNE_EVERY
+            or now - float(state["last_pruned_at"] or 0.0) >= CACHE_PRUNE_MIN_INTERVAL
+            or len(cache) > max(max_items, 0)
+        )
+        if should_prune:
+            state["sets"] = 0
+            state["last_pruned_at"] = now
+        return should_prune
+
+
 def _cache_set(cache, lock, key, value, ttl, max_items):
     expires_at = time.time() + max(_safe_int(ttl, 0), 0)
     with lock:
-        _cache_prune(cache, time.time(), max_items)
+        now = time.time()
+        if _should_prune_cache(cache, now, max_items):
+            _cache_prune(cache, now, max_items)
         cache[key] = {"value": value, "expires_at": expires_at}
+
+
+def _copy_rows(rows):
+    return [dict(row) for row in (rows or [])]
+
+
+def _copy_categories(categories):
+    return [dict(row) for row in (categories or [])]
+
+
+def _copy_read_payload(payload):
+    data, comments, images = payload
+    copied_data = dict(data or {})
+    if "related_posts" in copied_data:
+        copied_data["related_posts"] = _copy_rows(copied_data.get("related_posts"))
+    return copied_data, _copy_rows(comments), list(images or [])
+
+
+def _board_index_cache_key(
+    page,
+    board,
+    recommend,
+    kind=None,
+    fetch_num=MAX_PAGE,
+    scan_limit=None,
+    document_id_upper_limit=None,
+    document_id_lower_limit=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+):
+    return (
+        board,
+        kind or "",
+        _safe_int(recommend, 0),
+        _safe_int(page, 1),
+        _safe_int(fetch_num, MAX_PAGE),
+        None if scan_limit is None else _safe_int(scan_limit, 0),
+        "" if document_id_upper_limit is None else str(document_id_upper_limit).strip(),
+        "" if document_id_lower_limit is None else str(document_id_lower_limit).strip(),
+        (search_type or "").strip(),
+        (search_keyword or "").strip(),
+        "" if head_id is None else str(head_id).strip(),
+    )
+
+
+def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+    return (
+        board,
+        kind or "",
+        str(api_id),
+        _safe_int(recommend, 0),
+        (search_type or "").strip(),
+        (search_keyword or "").strip(),
+        "" if head_id is None else str(head_id).strip(),
+    )
 
 
 def _author_code_cache_key(board, kind, doc_id):
@@ -234,7 +319,7 @@ async def _fetch_board_page(
     )
     cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
-        return [dict(row) for row in cached]
+        return _copy_rows(cached)
 
     posts = []
     async for item in api.board(
@@ -257,7 +342,7 @@ async def _fetch_board_page(
             _BOARD_PAGE_CACHE,
             _BOARD_PAGE_CACHE_LOCK,
             cache_key,
-            [dict(row) for row in posts],
+            _copy_rows(posts),
             BOARD_PAGE_CACHE_TTL,
             BOARD_PAGE_CACHE_MAX_ITEMS,
         )
@@ -325,7 +410,7 @@ async def async_board_precise_times(
         cache_key,
         dict(result),
         BOARD_TIME_CACHE_TTL,
-        BOARD_PAGE_CACHE_MAX_ITEMS,
+        BOARD_TIME_CACHE_MAX_ITEMS,
     )
     return result
 
@@ -479,8 +564,22 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
 
 
 async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+    cache_key = _read_cache_key(
+        api_id,
+        board,
+        kind=kind,
+        recommend=recommend,
+        search_type=search_type,
+        search_keyword=search_keyword,
+        head_id=head_id,
+    )
+    if READ_CACHE_TTL > 0:
+        cached = _cache_get(_READ_CACHE, _READ_CACHE_LOCK, cache_key)
+        if cached is not None:
+            return _copy_read_payload(cached)
+
     async with dc_api_context() as api:
-        return await _read_document_with_api(
+        payload = await _read_document_with_api(
             api,
             api_id,
             board,
@@ -490,6 +589,16 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
             search_keyword=search_keyword,
             head_id=head_id,
         )
+    if READ_CACHE_TTL > 0:
+        _cache_set(
+            _READ_CACHE,
+            _READ_CACHE_LOCK,
+            cache_key,
+            _copy_read_payload(payload),
+            READ_CACHE_TTL,
+            READ_CACHE_MAX_ITEMS,
+        )
+    return payload
 
 
 async def async_index(
@@ -551,6 +660,24 @@ async def async_index_with_head_categories(
         except (TypeError, ValueError):
             scan_limit = None
 
+    cache_key = _board_index_cache_key(
+        page,
+        board,
+        recommend,
+        kind=kind,
+        fetch_num=fetch_num,
+        scan_limit=scan_limit,
+        document_id_upper_limit=document_id_upper_limit,
+        document_id_lower_limit=document_id_lower_limit,
+        search_type=search_type,
+        search_keyword=search_keyword,
+        head_id=head_id,
+    )
+    cached = _cache_get(_BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK, cache_key)
+    if cached is not None:
+        rows, categories = cached
+        return _copy_rows(rows), _copy_categories(categories)
+
     data = []
     headtexts = []
     async with dc_api_context() as api:
@@ -571,6 +698,14 @@ async def async_index_with_head_categories(
             data.append(_index_item_to_dict(item))
         await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
         categories = _normalize_head_categories(headtexts, head_id=head_id)
+    _cache_set(
+        _BOARD_INDEX_CACHE,
+        _BOARD_INDEX_CACHE_LOCK,
+        cache_key,
+        (_copy_rows(data), _copy_categories(categories)),
+        BOARD_PAGE_CACHE_TTL,
+        BOARD_INDEX_CACHE_MAX_ITEMS,
+    )
     return data, categories
 
 

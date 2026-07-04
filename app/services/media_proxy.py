@@ -382,7 +382,7 @@ def movie_player_candidates(movie_no, board, pid, kind=None):
 
 
 def parse_movie_media(text):
-    soup = BeautifulSoup(text or "", "html.parser")
+    soup = BeautifulSoup(text or "", "lxml")
     video = soup.find("video")
     source = video.find("source") if video else soup.find("source")
     source_url = source.get("src") if source else None

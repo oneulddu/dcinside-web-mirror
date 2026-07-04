@@ -1802,6 +1802,8 @@ def test_get_heung_galleries_returns_stale_while_refreshing(monkeypatch):
 
 
 def test_search_galleries_parses_gallery_search_results(monkeypatch):
+    heung.SEARCH_CACHE.clear()
+
     class FakeResponse:
         text = """
         <div class="integrate_cont gallsch_result_all">
@@ -1835,3 +1837,37 @@ def test_search_galleries_parses_gallery_search_results(monkeypatch):
     assert items[0]["extra"] == "흥한갤 1위 | 글 123개"
     assert items[0]["internal_supported"] is True
     assert items[1]["board_kind"] == "normal"
+
+
+def test_search_galleries_reuses_short_cache(monkeypatch):
+    heung.SEARCH_CACHE.clear()
+
+    class FakeResponse:
+        text = """
+        <div class="integrate_cont gallsch_result_all">
+          <ul class="integrate_cont_list">
+            <li>
+              <a class="gallname_txt" href="https://gall.dcinside.com/board/lists/?id=test_normal">테스트 일반</a>
+            </li>
+          </ul>
+        </div>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    calls = []
+
+    def fake_get(*args, **kwargs):
+        calls.append(args[0])
+        return FakeResponse()
+
+    monkeypatch.setattr(heung, "SEARCH_CACHE_TTL", 60)
+    monkeypatch.setattr(heung.requests, "get", fake_get)
+
+    first = heung.search_galleries(" 테스트 ")
+    first[0]["name"] = "mutated"
+    second = heung.search_galleries("테스트")
+
+    assert len(calls) == 1
+    assert second[0]["name"] == "테스트 일반"

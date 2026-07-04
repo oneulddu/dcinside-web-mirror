@@ -17,13 +17,20 @@ compress = Compress()
 
 def _init_response_compression(app):
     app.config.setdefault("COMPRESS_REGISTER", False)
-    app.config.setdefault("COMPRESS_MIMETYPES", ["text/html", "application/json"])
+    app.config.setdefault(
+        "COMPRESS_MIMETYPES",
+        ["text/html", "application/json", "text/css", "application/javascript", "text/javascript"],
+    )
     compress.init_app(app)
 
     @app.after_request
     def compress_response(response):
         if request.endpoint in {"main.media", "main.movie"}:
             return response
+        if request.endpoint == "static" and response.mimetype in app.config["COMPRESS_MIMETYPES"]:
+            response.direct_passthrough = False
+            if response.is_streamed:
+                response.set_data(response.get_data())
         return compress.after_request(response)
 
 
@@ -54,6 +61,8 @@ def _init_request_logging(app):
 
     @app.after_request
     def log_request(response):
+        if request.endpoint == "static":
+            return response
         started_at = getattr(g, "request_started_at", None)
         duration_ms = 0.0
         if started_at is not None:
