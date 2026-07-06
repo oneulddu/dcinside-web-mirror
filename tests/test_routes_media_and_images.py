@@ -931,6 +931,7 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
                 "subject": "[잡갤]",
                 "author": "익명",
                 "author_code": "1.2",
+                "author_role": "manager",
                 "time": "-",
                 "time_display": "-",
                 "needs_time_hydrate": False,
@@ -964,6 +965,17 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
     assert soup.select_one(".post-subject").get_text(strip=True) == "[잡갤]"
     assert "[[잡갤]]" not in response.get_data(as_text=True)
     assert soup.select_one(".feed-recommend-icon.is-hot") is not None
+    assert soup.select_one(".author-text.author-role-manager") is not None
+
+
+def test_v2_manager_author_color_uses_role_token():
+    style = Path(routes.BASE_DIR, "app/static/v2/css/main.css").read_text()
+
+    assert "--role-manager: #FF6B00;" in style
+    assert "--role-submanager: #3182F6;" in style
+    assert ".author-text.author-role-manager {\n    color: var(--role-manager);" in style
+    assert ".author-text.author-role-submanager {\n    color: var(--role-submanager);" in style
+    assert ".author-text.author-role-manager,\n.author-text.author-role-submanager {\n    color: var(--accent);" not in style
 
 
 def test_v2_index_board_links_include_gallery_name(monkeypatch):
