@@ -92,14 +92,11 @@
         if (!button) {
             return;
         }
+        // 아이콘은 html[data-theme] 기반 CSS가 그린다. 여기서는 레이블만 맞춘다.
         var isLight = theme === "light";
-        button.textContent = isLight ? "☾" : "☀";
-        button.setAttribute("aria-pressed", isLight ? "true" : "false");
-        button.setAttribute(
-            "aria-label",
-            isLight ? "밝은 테마 사용 중, 어두운 테마로 전환" : "어두운 테마 사용 중, 밝은 테마로 전환"
-        );
-        button.title = isLight ? "어두운 테마로 전환" : "밝은 테마로 전환";
+        var actionLabel = isLight ? "어두운 테마로 전환" : "밝은 테마로 전환";
+        button.setAttribute("aria-label", actionLabel);
+        button.title = actionLabel;
     }
 
     function applyTheme(theme, shouldSave) {

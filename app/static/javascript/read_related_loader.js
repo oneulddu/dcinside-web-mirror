@@ -209,7 +209,7 @@
             titleWrap.appendChild(icon);
         }
 
-        var title = document.createElement("h2");
+        var title = document.createElement("span");
         title.className = "feed-title";
         title.innerHTML = highlightSearchTerm(item.title || "제목 없음", searchKeyword);
         titleWrap.appendChild(title);

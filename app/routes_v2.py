@@ -1,7 +1,7 @@
 #-*- coding:utf-8 -*-
 """기본 프론트엔드 블루프린트.
 
-v2 템플릿/정적 자원을 루트 화면으로 렌더링한다. 레거시 화면은 `routes.py`의
+기본 템플릿/정적 자원을 루트 화면으로 렌더링한다. 레거시 화면은 `routes.py`의
 `/legacy` 경로에 남기고, `/media`, `/movie`, `/read/related`, `/board/times`
 등 JSON/프록시 엔드포인트는 main 블루프린트 것을 그대로 사용한다.
 """
@@ -249,7 +249,7 @@ def index():
     page_items = heung_items[start:end]
 
     return render_template(
-        "v2/index.html",
+        "index.html",
         title=("%s 갤러리 검색 - 숨터" % heung_q) if heung_q else "숨터 - 가볍게 읽는 공간",
         nav_tab="all",
         heung_items=page_items,
@@ -308,7 +308,7 @@ def recent():
                 "visited_at_str": format_recent_time(row.get("visited_at")),
             }
         )
-    return render_template("v2/recent.html", title="최근 방문 갤러리 - 숨터", nav_tab="recent", recent_items=recent_items)
+    return render_template("recent.html", title="최근 방문 갤러리 - 숨터", nav_tab="recent", recent_items=recent_items)
 
 
 @bp_v2.route("/v2/board")
@@ -341,7 +341,7 @@ def board():
 
     response = make_response(
         render_template(
-            "v2/board.html",
+            "board.html",
             title="%s 게시판 - 숨터" % gallery_display_name,
             datas=ret,
             page=page,
@@ -400,7 +400,7 @@ def read():
     data["html"] = prepare_read_html(data.get("html"), images, board, pid, kind, search_keyword=search_keyword)
     response = make_response(
         render_template(
-            "v2/read.html",
+            "read.html",
             title="%s - 숨터" % (data.get("title") or board),
             data=data,
             comments=comments,
