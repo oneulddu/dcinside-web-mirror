@@ -47,7 +47,7 @@
     <div class="shell">
         <header class="masthead">
             <div class="masthead-row">
-                <a class="brand" href="/v2/">숨터<span class="brand-note">가볍게 읽는 공간</span></a>
+                <a class="brand" href="/">숨터<span class="brand-note">가볍게 읽는 공간</span></a>
                 <button class="theme-toggle" type="button" aria-label="어두운 테마 사용 중, 밝은 테마로 전환" aria-pressed="false" title="밝은 테마로 전환">☀</button>
             </div>
             {% block masthead_context %}{% endblock %}
@@ -56,10 +56,10 @@
                 <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind, head_id=head_id|default(none), gallery_name=gallery_name|default(none)) }}">전체</a>
                 <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind, head_id=head_id|default(none), gallery_name=gallery_name|default(none)) }}">베스트</a>
                 {% else %}
-                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/v2/">전체</a>
+                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/">전체</a>
                 <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url('dcbest', recommend=0, page=1) }}">베스트</a>
                 {% endif %}
-                <a class="tab-item {% if nav_tab == 'recent' %}active{% endif %}" href="/v2/recent">최근</a>
+                <a class="tab-item {% if nav_tab == 'recent' %}active{% endif %}" href="/recent">최근</a>
             </nav>
         </header>
 
@@ -69,7 +69,7 @@
 
         <footer class="site-foot">
             <span>읽기 전용 미러</span>
-            <a href="/">기존 화면으로 보기</a>
+            <a href="/legacy/">기존 화면으로 보기</a>
         </footer>
     </div>
     <script src="{{ static_url('v2/javascript/read_state.js') }}"></script>

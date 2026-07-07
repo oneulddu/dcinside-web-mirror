@@ -65,7 +65,7 @@
         <li class="empty-row">게시글이 없습니다.</li>
         {% endfor %}
     </ul>
-    <form class="board-search-form" method="get" action="/v2/board" role="search">
+    <form class="board-search-form" method="get" action="/board" role="search">
         <input type="hidden" name="board" value="{{ board }}">
         <input type="hidden" name="recommend" value="{{ recommend }}">
         <input type="hidden" name="page" value="1">
@@ -88,7 +88,7 @@
         <button class="board-search-submit" type="submit" aria-label="검색">검색</button>
     </form>
     <div class="pager-row board-pager">
-        <a class="pager-btn pager-home" href="/v2/">갤러리</a>
+        <a class="pager-btn pager-home" href="/">갤러리</a>
         <div class="pager-center">
             {% if page > 1 %}
             <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page - 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">이전</a>

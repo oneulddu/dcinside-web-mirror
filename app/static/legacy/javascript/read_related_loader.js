@@ -103,7 +103,7 @@
 
     function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId) {
         var pid = getItemPostId(item);
-        var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
+        var href = "/legacy/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
         if (recommend === "1") {
             href += "&recommend=1";

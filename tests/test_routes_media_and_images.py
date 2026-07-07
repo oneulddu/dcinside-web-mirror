@@ -948,7 +948,7 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
     app = create_app()
 
     response = app.test_client().get(
-        "/v2/board?board=test&recommend=1&page=3&kind=minor&headid=10&gallery_name=%ED%85%8C%EC%8A%A4%ED%8A%B8%20%EA%B0%A4%EB%9F%AC%EB%A6%AC"
+        "/board?board=test&recommend=1&page=3&kind=minor&headid=10&gallery_name=%ED%85%8C%EC%8A%A4%ED%8A%B8%20%EA%B0%A4%EB%9F%AC%EB%A6%AC"
     )
     soup = BeautifulSoup(response.data, "html.parser")
     read_link = soup.select_one("a.feed-item")
@@ -958,7 +958,7 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
     assert soup.select_one("link[href*='/static/v2/css/main.css']") is not None
     assert soup.select_one("script[src*='/static/v2/javascript/read_state.js']") is not None
     assert soup.select_one(".board-head h1").get_text(strip=True) == "테스트 갤러리 게시판"
-    assert urlparse(read_link["href"]).path == "/v2/read"
+    assert urlparse(read_link["href"]).path == "/read"
     assert read_query["source_page"] == ["3"]
     assert read_query["gallery_name"] == ["테스트 갤러리"]
     assert soup.select_one(".board-category-tab.active").get_text(strip=True) == "말머리"
@@ -992,7 +992,7 @@ def test_v2_index_board_links_include_gallery_name(monkeypatch):
     monkeypatch.setattr(routes_v2, "get_heung_galleries", fake_heung_galleries)
     app = create_app()
 
-    response = app.test_client().get("/v2/")
+    response = app.test_client().get("/")
     soup = BeautifulSoup(response.data, "html.parser")
     query = parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)
 
@@ -1013,9 +1013,9 @@ def test_v2_board_visit_stores_gallery_name_for_recent(monkeypatch):
     client = app.test_client()
 
     board_response = client.get(
-        "/v2/board?board=thesingularity&kind=minor&gallery_name=%ED%8A%B9%EC%9D%B4%EC%A0%90%EC%9D%B4%20%EC%98%A8%EB%8B%A4"
+        "/board?board=thesingularity&kind=minor&gallery_name=%ED%8A%B9%EC%9D%B4%EC%A0%90%EC%9D%B4%20%EC%98%A8%EB%8B%A4"
     )
-    recent_response = client.get("/v2/recent")
+    recent_response = client.get("/recent")
     soup = BeautifulSoup(recent_response.data, "html.parser")
     row = soup.select_one("a.feed-item")
     query = parse_qs(urlparse(row["href"]).query)
@@ -1084,7 +1084,7 @@ def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
     app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
 
     response = app.test_client().get(
-        "/v2/read?board=test&pid=123&kind=minor&recommend=1&source_page=2&headid=10&gallery_name=%ED%85%8C%EC%8A%A4%ED%8A%B8%20%EA%B0%A4%EB%9F%AC%EB%A6%AC",
+        "/read?board=test&pid=123&kind=minor&recommend=1&source_page=2&headid=10&gallery_name=%ED%85%8C%EC%8A%A4%ED%8A%B8%20%EA%B0%A4%EB%9F%AC%EB%A6%AC",
         base_url="http://internal.local",
     )
     soup = BeautifulSoup(response.data, "html.parser")
@@ -1092,7 +1092,7 @@ def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
     related_section = soup.select_one("#related-section")
 
     assert response.status_code == 200
-    assert og_url == "https://mirror.example/v2/read?board=test&pid=123&recommend=1&source_page=2&kind=minor&headid=10"
+    assert og_url == "https://mirror.example/read?board=test&pid=123&recommend=1&source_page=2&kind=minor&headid=10"
     assert soup.select_one(".crumb-link").get_text(strip=True) == "← 테스트 갤러리 게시판"
     assert soup.select_one("script[src*='/static/v2/javascript/read_related_loader.js']") is not None
     assert related_section["data-head-id"] == "10"
@@ -1170,7 +1170,7 @@ def test_board_head_category_tabs_filter_and_preserve_links(monkeypatch):
     read_query = parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)
     main_tab_queries = [
         parse_qs(urlparse(link["href"]).query)
-        for link in soup.select(".main-tabs a.tab-item")[:2]
+        for link in soup.select(".top-tabs a.tab-item")[:2]
     ]
 
     assert seen["head_id"] == "10"
@@ -1369,7 +1369,7 @@ def test_read_renders_embedded_related_post_icons_and_subject(monkeypatch):
             [],
         )
 
-    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=100")
@@ -1410,7 +1410,7 @@ def test_read_renders_social_preview_meta_with_public_image_url(monkeypatch):
             ["https://images.dcinside.com/post-a.jpg"],
         )
 
-    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
     app = create_app()
     app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
 
@@ -1460,7 +1460,7 @@ def test_read_social_preview_skips_video_sources_for_image_meta(monkeypatch):
             ],
         )
 
-    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
     app = create_app()
     app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
 
@@ -1580,14 +1580,14 @@ def test_read_rejects_non_positive_pid(monkeypatch):
     async def fail_async_read(*args, **kwargs):
         raise AssertionError("invalid pid must be rejected before upstream fetch")
 
-    monkeypatch.setattr(routes, "async_read", fail_async_read)
+    monkeypatch.setattr(routes_v2, "async_read", fail_async_read)
     app = create_app()
 
     assert app.test_client().get("/read?board=test&pid=0").status_code == 404
 
 
 def test_related_loader_appends_related_results_without_replacing_existing_rows():
-    script = Path(routes.BASE_DIR, "app/static/javascript/read_related_loader.js").read_text()
+    script = Path(routes.BASE_DIR, "app/static/legacy/javascript/read_related_loader.js").read_text()
 
     assert "function appendItems(" in script
     assert "[data-related-loader-status='1'], .empty-row" in script
@@ -1630,9 +1630,9 @@ def test_board_time_hydrator_sends_rendered_post_ids():
 
 
 def test_theme_toggle_persists_and_updates_accessibility_state():
-    template = Path(routes.BASE_DIR, "app/templates/base.html").read_text()
-    script = Path(routes.BASE_DIR, "app/static/javascript/read_state.js").read_text()
-    style = Path(routes.BASE_DIR, "app/static/css/main.css").read_text()
+    template = Path(routes.BASE_DIR, "app/templates/legacy/base.html").read_text()
+    script = Path(routes.BASE_DIR, "app/static/legacy/javascript/read_state.js").read_text()
+    style = Path(routes.BASE_DIR, "app/static/legacy/css/main.css").read_text()
 
     assert 'class="theme-toggle"' in template
     assert 'aria-pressed="false"' in template
@@ -1673,7 +1673,7 @@ def test_read_passes_head_id_to_initial_document_fetch(monkeypatch):
             [],
         )
 
-    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=123&kind=minor&headid=10")
@@ -1721,7 +1721,7 @@ def test_read_omits_seconds_from_post_comment_and_related_times(monkeypatch):
             [],
         )
 
-    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=123")
@@ -1767,7 +1767,7 @@ def test_read_renders_embedded_related_posts_without_extra_related_request(monke
             [],
         )
 
-    monkeypatch.setattr(routes, "async_read", fake_async_read)
+    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=123&recommend=1&source_page=2")
@@ -1875,7 +1875,7 @@ def test_v2_recent_gallery_renders_kind_labels_in_korean(monkeypatch):
         ),
     )
 
-    response = client.get("/v2/recent")
+    response = client.get("/recent")
     soup = BeautifulSoup(response.data, "html.parser")
     badges = [node.get_text(strip=True) for node in soup.select(".gallery-badge")]
 
@@ -1885,10 +1885,10 @@ def test_v2_recent_gallery_renders_kind_labels_in_korean(monkeypatch):
 
 def test_v2_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
     def fake_heung_galleries():
-        raise AssertionError("/v2/recent should not load heung galleries while rendering")
+        raise AssertionError("/recent should not load heung galleries while rendering")
 
     def fake_search_galleries(query):
-        raise AssertionError("/v2/recent should not search galleries while rendering")
+        raise AssertionError("/recent should not search galleries while rendering")
 
     monkeypatch.setattr(routes_v2, "get_heung_galleries", fake_heung_galleries)
     monkeypatch.setattr(routes_v2, "search_galleries", fake_search_galleries)
@@ -1910,7 +1910,7 @@ def test_v2_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
         ),
     )
 
-    response = client.get("/v2/recent")
+    response = client.get("/recent")
     soup = BeautifulSoup(response.data, "html.parser")
     rows = soup.select("a.feed-item")
 
@@ -1948,7 +1948,7 @@ def test_v2_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
         ),
     )
 
-    response = client.get("/v2/recent")
+    response = client.get("/recent")
     soup = BeautifulSoup(response.data, "html.parser")
     rows = soup.select("a.feed-item")
     recommend_query = parse_qs(urlparse(rows[1]["href"]).query)
@@ -1960,14 +1960,24 @@ def test_v2_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
     assert recommend_query["gallery_name"] == ["특이점이 온다"]
 
 
-def test_v2_recent_gallery_does_not_search_missing_names(monkeypatch):
-    def fail_heung():
-        raise AssertionError("/v2/recent should not call get_heung_galleries")
-
+def test_v2_recent_gallery_uses_heung_cache_for_missing_names(monkeypatch):
     def fail_search(query):
-        raise AssertionError("/v2/recent should not call search_galleries")
+        raise AssertionError("/recent should not call search_galleries")
 
-    monkeypatch.setattr(routes_v2, "get_heung_galleries", fail_heung)
+    monkeypatch.setattr(
+        routes_v2,
+        "get_heung_galleries",
+        lambda: (
+            [
+                {
+                    "board_id": "unknown_a",
+                    "board_kind": "minor",
+                    "name": "알려진 갤러리",
+                }
+            ],
+            1,
+        ),
+    )
     monkeypatch.setattr(routes_v2, "search_galleries", fail_search)
     app = create_app()
     client = app.test_client()
@@ -1981,9 +1991,14 @@ def test_v2_recent_gallery_does_not_search_missing_names(monkeypatch):
         ),
     )
 
-    response = client.get("/v2/recent")
+    response = client.get("/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    rows = soup.select("a.feed-item")
 
     assert response.status_code == 200
+    titles = {row.select_one(".feed-meta-left span").get_text(strip=True): row.select_one(".feed-title").get_text(strip=True) for row in rows}
+    assert titles["unknown_a"] == "알려진 갤러리"
+    assert titles["unknown_b"] == "unknown_b"
 
 
 def test_recent_cookie_strips_names_when_payload_is_too_large(monkeypatch):
@@ -2067,8 +2082,8 @@ def test_touch_recent_gallery_keeps_existing_name_when_new_visit_has_no_name(mon
         ),
     )
 
-    client.get("/v2/board?board=thesingularity&recommend=1&kind=minor")
-    response = client.get("/v2/recent")
+    client.get("/board?board=thesingularity&recommend=1&kind=minor")
+    response = client.get("/recent")
     soup = BeautifulSoup(response.data, "html.parser")
     row = soup.select_one("a.feed-item")
 

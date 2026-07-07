@@ -40,20 +40,20 @@ def test_static_url_adds_mtime_version(monkeypatch):
     app = create_app()
 
     with app.test_request_context():
-        url = app.jinja_env.globals["static_url"]("css/main.css")
+        url = app.jinja_env.globals["static_url"]("v2/css/main.css")
 
     parsed = urlparse(url)
     version = parse_qs(parsed.query).get("v")
 
-    assert parsed.path == "/static/css/main.css"
-    assert version == [str(int(os.path.getmtime(os.path.join(app.static_folder, "css/main.css"))))]
+    assert parsed.path == "/static/v2/css/main.css"
+    assert version == [str(int(os.path.getmtime(os.path.join(app.static_folder, "v2/css/main.css"))))]
 
 
 def test_static_files_use_immutable_cache_headers(monkeypatch):
     monkeypatch.setenv("MIRROR_ENV", "development")
     app = create_app()
 
-    response = app.test_client().get("/static/css/main.css")
+    response = app.test_client().get("/static/v2/css/main.css")
 
     assert response.status_code == 200
     assert "public" in response.headers["Cache-Control"]
@@ -65,7 +65,7 @@ def test_static_files_are_compressed_when_client_accepts_gzip(monkeypatch):
     monkeypatch.setenv("MIRROR_ENV", "development")
     app = create_app()
 
-    response = app.test_client().get("/static/css/main.css", headers={"Accept-Encoding": "gzip"})
+    response = app.test_client().get("/static/v2/css/main.css", headers={"Accept-Encoding": "gzip"})
 
     assert response.status_code == 200
     assert response.headers["Content-Encoding"] == "gzip"
@@ -76,7 +76,7 @@ def test_static_range_requests_skip_compression(monkeypatch):
     app = create_app()
 
     response = app.test_client().get(
-        "/static/css/main.css",
+        "/static/v2/css/main.css",
         headers={"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
     )
 
@@ -90,13 +90,13 @@ def test_request_logging_skips_static_files_but_records_routes(monkeypatch, capl
     app = create_app()
     caplog.set_level(logging.INFO, logger=app.logger.name)
 
-    static_response = app.test_client().get("/static/css/main.css")
+    static_response = app.test_client().get("/static/v2/css/main.css")
     route_response = app.test_client().get("/healthz")
 
     assert static_response.status_code == 200
     assert route_response.status_code == 200
     assert not any(
-        "request path=/static/css/main.css status=200 duration_ms=" in record.getMessage()
+        "request path=/static/v2/css/main.css status=200 duration_ms=" in record.getMessage()
         for record in caplog.records
     )
     assert any(
