@@ -283,14 +283,22 @@ def search_galleries(query):
         return "normal"
 
     items = []
-    seen = set()
+    seen = {}
+
+    def kind_priority(kind):
+        if kind == "normal":
+            return 0
+        if kind in {"minor", "mini", "person"}:
+            return 1
+        return -1
+
     for li in container.select("ul.integrate_cont_list > li"):
         anchor = li.select_one("a.gallname_txt[href]")
         if anchor is None:
             continue
         href = anchor.get("href", "")
         board_id = _extract_board_id(href)
-        if not board_id or board_id in seen:
+        if not board_id:
             continue
 
         name = " ".join(anchor.stripped_strings)
@@ -321,6 +329,14 @@ def search_galleries(query):
             "source_url": href,
             "internal_supported": board_kind in {"normal", "minor", "mini", "person"},
         })
-        seen.add(board_id)
+        existing_index = seen.get(board_id)
+        if existing_index is None:
+            seen[board_id] = len(items) - 1
+            continue
+        existing = items[existing_index]
+        if kind_priority(board_kind) > kind_priority(existing.get("board_kind")):
+            items[existing_index] = items.pop()
+        else:
+            items.pop()
     _search_cache_set(cache_key, items)
     return items

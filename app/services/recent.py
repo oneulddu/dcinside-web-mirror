@@ -41,6 +41,7 @@ RECENT_COOKIE_MAX_BYTES = _env_int("MIRROR_RECENT_COOKIE_MAX_BYTES", 3600)
 RECENT_SERVER_CACHE = {}
 RECENT_SERVER_CACHE_LOCK = threading.Lock()
 RECENT_CACHE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+RECENT_GALLERY_KINDS = {"minor", "mini", "person"}
 
 
 def format_recent_time(ts):
@@ -63,6 +64,13 @@ def copy_recent_entries(entries):
     return [dict(row) for row in (entries or [])[:RECENT_MAX_ITEMS] if isinstance(row, dict)]
 
 
+def normalize_recent_kind(value):
+    kind = (value or "").strip().lower()
+    if kind == "normal" or kind not in RECENT_GALLERY_KINDS:
+        return None
+    return kind
+
+
 def normalize_recent_entry(item):
     if not isinstance(item, dict):
         return None
@@ -77,7 +85,7 @@ def normalize_recent_entry(item):
     return {
         "board": board,
         "name": name[:80] or None,
-        "kind": (item.get("kind") or "").strip().lower() or None,
+        "kind": normalize_recent_kind(item.get("kind")),
         "recommend": 1 if _safe_int(item.get("recommend", 0), 0) == 1 else 0,
         "visited_at": _safe_float(item.get("visited_at", 0), 0.0),
     }
@@ -91,15 +99,49 @@ def recent_entry_identity(row):
     )
 
 
+def recent_entry_visit_identity(row):
+    return (
+        row.get("board"),
+        1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
+    )
+
+
+def recent_entries_may_be_same_gallery(left, right):
+    if recent_entry_identity(left) == recent_entry_identity(right):
+        return True
+    if recent_entry_visit_identity(left) != recent_entry_visit_identity(right):
+        return False
+    return not left.get("kind") or not right.get("kind")
+
+
+def merge_recent_entry_detail(primary, secondary):
+    secondary_kind = normalize_recent_kind(secondary.get("kind"))
+    if not primary.get("kind") and secondary_kind:
+        primary["kind"] = secondary_kind
+    if not primary.get("name") and secondary.get("name"):
+        primary["name"] = secondary.get("name")
+    return primary
+
+
 def merge_recent_entries(new_row, rows):
-    new_identity = recent_entry_identity(new_row)
     deduped = [new_row]
     for row in rows:
-        if recent_entry_identity(row) == new_identity:
-            if not new_row.get("name") and row.get("name"):
-                new_row["name"] = row.get("name")
+        if recent_entries_may_be_same_gallery(new_row, row):
+            merge_recent_entry_detail(new_row, row)
             continue
         deduped.append(row)
+    return deduped[:RECENT_MAX_ITEMS]
+
+
+def dedupe_recent_entries(rows):
+    deduped = []
+    for row in rows:
+        for existing in deduped:
+            if recent_entries_may_be_same_gallery(existing, row):
+                merge_recent_entry_detail(existing, row)
+                break
+        else:
+            deduped.append(row)
     return deduped[:RECENT_MAX_ITEMS]
 
 
@@ -117,8 +159,27 @@ def merge_recent_entry_names(rows, named_rows):
         copied = dict(row)
         if not copied.get("name"):
             name = names_by_identity.get(recent_entry_identity(copied))
+            if not name:
+                for named_row in named_rows:
+                    if (
+                        isinstance(named_row, dict)
+                        and named_row.get("name")
+                        and recent_entries_may_be_same_gallery(copied, named_row)
+                    ):
+                        name = named_row.get("name")
+                        break
             if name:
                 copied["name"] = name
+        if not copied.get("kind"):
+            for named_row in named_rows:
+                named_kind = normalize_recent_kind(named_row.get("kind")) if isinstance(named_row, dict) else None
+                if (
+                    isinstance(named_row, dict)
+                    and named_kind
+                    and recent_entries_may_be_same_gallery(copied, named_row)
+                ):
+                    copied["kind"] = named_kind
+                    break
         merged.append(copied)
     return merged
 
@@ -228,9 +289,9 @@ def load_recent_entries():
                     rows.append(row)
 
     if rows:
-        return merge_recent_entry_names(rows, get_recent_server_cache(recent_cache_key()))
+        return dedupe_recent_entries(merge_recent_entry_names(rows, get_recent_server_cache(recent_cache_key())))
 
-    return get_recent_server_cache(recent_cache_key())
+    return dedupe_recent_entries(get_recent_server_cache(recent_cache_key()))
 
 
 def save_recent_cookie(response, entries):
