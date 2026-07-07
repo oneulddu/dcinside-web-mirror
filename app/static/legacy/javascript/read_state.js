@@ -3,6 +3,7 @@
 
     var STORAGE_KEY = "read_posts_v1";
     var THEME_STORAGE_KEY = "mirror_theme_v1";
+    var DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1";
     var MAX_ENTRIES = 1500;
     var DEFAULT_THEME = "dark";
     var readStore = null;
@@ -86,6 +87,21 @@
         }
     }
 
+    function loadDcconBlocked() {
+        try {
+            return window.localStorage.getItem(DCCON_BLOCK_STORAGE_KEY) === "1";
+        } catch (err) {
+            return false;
+        }
+    }
+
+    function saveDcconBlocked(isBlocked) {
+        try {
+            window.localStorage.setItem(DCCON_BLOCK_STORAGE_KEY, isBlocked ? "1" : "0");
+        } catch (err) {
+        }
+    }
+
 
     function updateThemeToggle(theme) {
         var button = document.querySelector(".theme-toggle");
@@ -121,6 +137,51 @@
         }
     }
 
+    function updateDcconToggle(isBlocked) {
+        var button = document.querySelector(".dccon-toggle");
+        if (!button) {
+            return;
+        }
+        button.textContent = isBlocked ? "▨" : "▧";
+        button.setAttribute("aria-pressed", isBlocked ? "true" : "false");
+        button.setAttribute(
+            "aria-label",
+            isBlocked ? "디시콘 차단 중, 표시로 전환" : "디시콘 표시 중, 차단으로 전환"
+        );
+        button.title = isBlocked ? "디시콘 표시로 전환" : "디시콘 차단으로 전환";
+    }
+
+    function hydrateDccons(root, isBlocked) {
+        var scope = root || document;
+        var images = scope.querySelectorAll("img.dccon[data-dccon-src]");
+        var i;
+        for (i = 0; i < images.length; i += 1) {
+            var image = images[i];
+            if (isBlocked) {
+                image.removeAttribute("src");
+                image.hidden = true;
+                continue;
+            }
+            if (!image.getAttribute("src")) {
+                image.setAttribute("src", image.getAttribute("data-dccon-src"));
+            }
+            image.hidden = false;
+        }
+    }
+
+    function applyDcconBlock(isBlocked, shouldSave) {
+        var blocked = !!isBlocked;
+        document.documentElement.dataset.dcconBlocked = blocked ? "true" : "false";
+        if (document.body) {
+            document.body.dataset.dcconBlocked = blocked ? "true" : "false";
+        }
+        hydrateDccons(document, blocked);
+        updateDcconToggle(blocked);
+        if (shouldSave) {
+            saveDcconBlocked(blocked);
+        }
+    }
+
     function wireThemeToggle() {
         var button = document.querySelector(".theme-toggle");
         if (!button) {
@@ -129,6 +190,17 @@
         button.addEventListener("click", function () {
             var currentTheme = normalizeTheme(document.documentElement.dataset.theme || loadTheme());
             applyTheme(currentTheme === "light" ? "dark" : "light", true);
+        });
+    }
+
+    function wireDcconToggle() {
+        var button = document.querySelector(".dccon-toggle");
+        if (!button) {
+            return;
+        }
+        button.addEventListener("click", function () {
+            var isBlocked = document.documentElement.dataset.dcconBlocked === "true";
+            applyDcconBlock(!isBlocked, true);
         });
     }
 
@@ -224,6 +296,8 @@
     function boot() {
         applyTheme(loadTheme(), false);
         wireThemeToggle();
+        applyDcconBlock(loadDcconBlocked(), false);
+        wireDcconToggle();
         readStore = loadStore();
         markCurrentRead();
         applyReadState(document, readStore);
