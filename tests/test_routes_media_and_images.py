@@ -1842,6 +1842,64 @@ def test_recent_gallery_dedupes_by_recommend_context(monkeypatch):
     assert recommends[:2] == ["0", "1"]
 
 
+def test_recent_gallery_dedupes_missing_kind_against_specific_kind(monkeypatch):
+    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie(
+            [
+                {"board": "thesingularity", "kind": None, "recommend": 0, "visited_at": 3},
+                {"board": "thesingularity", "kind": "minor", "recommend": 0, "visited_at": 2},
+            ]
+        ),
+    )
+
+    response = client.get("/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    rows = soup.select("a.feed-item")
+    query = parse_qs(urlparse(rows[0]["href"]).query)
+
+    assert len(rows) == 1
+    assert query["board"] == ["thesingularity"]
+    assert query["kind"] == ["minor"]
+    assert "마이너" in rows[0].get_text(" ", strip=True)
+
+
+def test_recent_gallery_keeps_specific_kind_when_followup_visit_omits_kind(monkeypatch):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        return [], []
+
+    monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(
+        recent.RECENT_COOKIE_NAME,
+        _encode_recent_cookie(
+            [
+                {
+                    "board": "thesingularity",
+                    "name": "특이점이 온다",
+                    "kind": "minor",
+                    "recommend": 0,
+                    "visited_at": 1,
+                }
+            ]
+        ),
+    )
+
+    client.get("/board?board=thesingularity")
+    response = client.get("/recent")
+    soup = BeautifulSoup(response.data, "html.parser")
+    rows = soup.select("a.feed-item")
+    query = parse_qs(urlparse(rows[0]["href"]).query)
+
+    assert len(rows) == 1
+    assert rows[0].select_one(".feed-title").get_text(strip=True) == "특이점이 온다"
+    assert query["kind"] == ["minor"]
+
+
 def test_recent_gallery_old_cookie_without_recommend_defaults_to_normal():
     app = create_app()
     client = app.test_client()
@@ -2058,6 +2116,40 @@ def test_recent_cookie_compact_rows_merge_names_from_server_cache():
         rows = recent.load_recent_entries()
 
     assert rows[0]["name"] == "특이점이 온다"
+    assert rows[0]["kind"] == "minor"
+
+
+def test_recent_cookie_compact_normal_row_merges_specific_name_from_server_cache():
+    app = create_app()
+    cache_key = "visitor-name-key"
+    compact_rows = [{"board": "thesingularity", "kind": None, "recommend": 0, "visited_at": 2}]
+    named_rows = [
+        {
+            "board": "thesingularity",
+            "name": "특이점이 온다",
+            "kind": "minor",
+            "recommend": 0,
+            "visited_at": 1,
+        }
+    ]
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        recent.RECENT_SERVER_CACHE.clear()
+    recent.set_recent_server_cache(cache_key, named_rows)
+
+    with app.test_request_context(
+        "/recent",
+        headers={
+            "Cookie": (
+                f"{recent.RECENT_COOKIE_NAME}={_encode_recent_cookie(compact_rows)}; "
+                f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={cache_key}"
+            )
+        },
+    ):
+        rows = recent.load_recent_entries()
+
+    assert len(rows) == 1
+    assert rows[0]["name"] == "특이점이 온다"
+    assert rows[0]["kind"] == "minor"
 
 
 def test_touch_recent_gallery_keeps_existing_name_when_new_visit_has_no_name(monkeypatch):
@@ -2296,6 +2388,37 @@ def test_search_galleries_parses_gallery_search_results(monkeypatch):
     assert items[0]["extra"] == "흥한갤 1위 | 글 123개"
     assert items[0]["internal_supported"] is True
     assert items[1]["board_kind"] == "normal"
+
+
+def test_search_galleries_prefers_specific_kind_for_duplicate_board_id(monkeypatch):
+    heung.SEARCH_CACHE.clear()
+
+    class FakeResponse:
+        text = """
+        <div class="integrate_cont gallsch_result_all">
+          <ul class="integrate_cont_list">
+            <li>
+              <a class="gallname_txt" href="https://gall.dcinside.com/board/lists/?id=dup_board">중복 일반</a>
+            </li>
+            <li>
+              <a class="gallname_txt" href="https://gall.dcinside.com/mgallery/board/lists/?id=dup_board">중복 마이너 ⓜ</a>
+            </li>
+          </ul>
+        </div>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(heung.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    items = heung.search_galleries("중복")
+
+    assert len(items) == 1
+    assert items[0]["board_id"] == "dup_board"
+    assert items[0]["name"] == "중복 마이너"
+    assert items[0]["board_kind"] == "minor"
+    assert items[0]["kind"] == "마이너"
 
 
 def test_search_galleries_reuses_short_cache(monkeypatch):
