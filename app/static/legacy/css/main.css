@@ -223,6 +223,12 @@ a {
     background: var(--surface-soft);
 }
 
+.jump-panel-bottom {
+    margin-top: 24px;
+    border-top: 1px solid var(--shell-border);
+    border-bottom: none;
+}
+
 .jump-panel h2 {
     margin: 0 0 16px;
     font-size: 0.9375rem;
