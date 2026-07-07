@@ -669,6 +669,13 @@ mark.search-highlight {
     border-bottom: var(--rule) solid var(--line);
 }
 
+.jump-panel-bottom {
+    padding: var(--space-5) 0 0;
+    margin: var(--space-6) 0 0;
+    border-top: var(--rule) solid var(--line);
+    border-bottom: none;
+}
+
 .jump-panel-title {
     position: absolute;
     width: 1px;

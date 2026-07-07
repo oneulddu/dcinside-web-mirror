@@ -79,5 +79,19 @@
         <span class="pager-btn off">다음</span>
         {% endif %}
     </div>
+    {% if heung_q %}
+    <div class="jump-panel jump-panel-bottom">
+        <h2>갤러리 다시 검색</h2>
+        <form class="jump-form" action="/legacy/" method="get" role="search">
+            <label for="heung_q_bottom">검색어</label>
+            <input id="heung_q_bottom" name="heung_q" type="search" value="{{ heung_q }}" placeholder="갤러리명 또는 board id">
+            <div class="jump-row">
+                <span></span>
+                <button type="submit">검색</button>
+                <a class="pager-btn" href="/legacy/">초기화</a>
+            </div>
+        </form>
+    </div>
+    {% endif %}
 </section>
 {% endblock %}
