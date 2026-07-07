@@ -823,6 +823,23 @@ a.pager-btn:hover {
     padding: 0 var(--space-1);
 }
 
+.comment-main {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.comment-main .reply-badge {
+    order: 1;
+}
+
+.comment-main .dccon,
+.comment-main p {
+    order: 2;
+}
+
 .comment-main p {
     margin: 0;
     font-size: 14px;
