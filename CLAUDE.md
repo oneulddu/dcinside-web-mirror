@@ -86,6 +86,22 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
 - `static/javascript/comment_spam_filter.js`: Client-side spam filtering
 - `static/css/main.css`: Pretendard font and responsive light/dark UI
 
+### Frontend Skill Priority
+
+When a user explicitly names a frontend skill or workflow, that named workflow takes priority over
+general visual QA helpers.
+
+- `$ux-first-fable`: first inspect the target screen, write or update `docs/ux-flow.md`, prepare
+  `docs/fable-handoff.md`, and run the Fable/Claude Code handoff before making or finalizing UI
+  changes when the CLI is available. If the handoff cannot run, report the exact blocker.
+- Superloopy: treat as opt-in visual QA, not an automatic frontend owner. Use it only when the user
+  explicitly asks for Superloopy/loopy, strict visual evidence, anti-slop auditing, or a
+  Superloopy evidence trail.
+- If both are explicitly requested, run the UX/Fable workflow first. Use Superloopy afterward as a
+  verification gate for tokens, anti-slop checks, browser screenshots, and evidence files.
+- For ordinary UI edits without a named workflow, follow `DESIGN.md`, keep changes scoped, and run
+  real browser checks when visual quality is part of the task.
+
 ## Configuration
 
 Environment variables use the `MIRROR_` prefix:

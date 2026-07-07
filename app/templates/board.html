@@ -1,5 +1,5 @@
-{% extends "v2/base.html" %}
-{% from "v2/_bits.html" import author_text, feed_status_icon, feed_subject %}
+{% extends "base.html" %}
+{% from "_bits.html" import author_text, feed_status_icon, feed_subject %}
 
 {% block masthead_context %}
 <div class="board-head masthead-board-head">
@@ -38,9 +38,9 @@
             <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}" data-post-id="{{ index.id }}">
                 <div class="feed-title-wrap">
                     {{ feed_status_icon(index) }}
-                    <h2 class="feed-title">
+                    <span class="feed-title">
                         {{ index.title|highlight_search(search_keyword) }}
-                    </h2>
+                    </span>
                     {% if index.comment_count > 0 %}
                     <span class="reply-count">[{{ index.comment_count }}]</span>
                     {% endif %}

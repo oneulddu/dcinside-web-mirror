@@ -955,8 +955,8 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
     read_query = parse_qs(urlparse(read_link["href"]).query)
 
     assert response.status_code == 200
-    assert soup.select_one("link[href*='/static/v2/css/main.css']") is not None
-    assert soup.select_one("script[src*='/static/v2/javascript/read_state.js']") is not None
+    assert soup.select_one("link[href*='/static/css/main.css']") is not None
+    assert soup.select_one("script[src*='/static/javascript/read_state.js']") is not None
     assert soup.select_one(".board-head h1").get_text(strip=True) == "테스트 갤러리 게시판"
     assert urlparse(read_link["href"]).path == "/read"
     assert read_query["source_page"] == ["3"]
@@ -969,7 +969,7 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
 
 
 def test_v2_manager_author_color_uses_role_token():
-    style = Path(routes.BASE_DIR, "app/static/v2/css/main.css").read_text()
+    style = Path(routes.BASE_DIR, "app/static/css/main.css").read_text()
 
     assert "--role-manager: #FF6B00;" in style
     assert "--role-submanager: #3182F6;" in style
@@ -1094,7 +1094,7 @@ def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
     assert response.status_code == 200
     assert og_url == "https://mirror.example/read?board=test&pid=123&recommend=1&source_page=2&kind=minor&headid=10"
     assert soup.select_one(".crumb-link").get_text(strip=True) == "← 테스트 갤러리 게시판"
-    assert soup.select_one("script[src*='/static/v2/javascript/read_related_loader.js']") is not None
+    assert soup.select_one("script[src*='/static/javascript/read_related_loader.js']") is not None
     assert related_section["data-head-id"] == "10"
     assert related_section["data-recommend"] == "1"
     assert related_section["data-gallery-name"] == "테스트 갤러리"
@@ -1793,7 +1793,7 @@ def test_comment_spam_filter_keeps_summary_even_when_every_comment_is_filtered()
 
 
 def test_v2_related_loader_does_not_double_wrap_bracketed_subject():
-    script = Path(routes.BASE_DIR, "app/static/v2/javascript/read_related_loader.js").read_text()
+    script = Path(routes.BASE_DIR, "app/static/javascript/read_related_loader.js").read_text()
 
     assert "function formatSubject" in script
     assert 'subject.charAt(0) === "["' in script

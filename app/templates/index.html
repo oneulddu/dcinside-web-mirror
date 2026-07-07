@@ -1,4 +1,4 @@
-{% extends "v2/base.html" %}
+{% extends "base.html" %}
 
 {% block content %}
 <section class="feed-list">
@@ -31,7 +31,7 @@
                     {% if item.rank %}
                     <span class="rank-no{% if item.rank <= 20 %} is-top{% endif %}">{{ item.rank }}</span>
                     {% endif %}
-                    <h2 class="feed-title">{{ item.name }}</h2>
+                    <span class="feed-title">{{ item.name }}</span>
                     {% if item.rank %}
                     <span class="gallery-badge{% if item.rank <= 20 %} is-hot{% endif %}">{% if item.rank <= 20 %}대흥갤{% else %}흥한갤{% endif %}</span>
                     {% else %}

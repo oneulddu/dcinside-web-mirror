@@ -21,8 +21,8 @@
     </script>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link rel="stylesheet" crossorigin href="https://cdn.jsdelivr.net/gh/sun-typeface/SUIT@2/fonts/variable/woff2/SUIT-Variable.css" />
-    <link rel="icon" href="{{ static_url('v2/favicon.svg') }}" type="image/svg+xml">
-    <link rel="stylesheet" href="{{ static_url('v2/css/main.css') }}">
+    <link rel="icon" href="{{ static_url('favicon.svg') }}" type="image/svg+xml">
+    <link rel="stylesheet" href="{{ static_url('css/main.css') }}">
     <title>{{ title or "숨터" }}</title>
     {% if social_meta %}
     <meta property="og:site_name" content="{{ social_meta.site_name }}">
@@ -47,8 +47,25 @@
     <div class="shell">
         <header class="masthead">
             <div class="masthead-row">
-                <a class="brand" href="/">숨터<span class="brand-note">가볍게 읽는 공간</span></a>
-                <button class="theme-toggle" type="button" aria-label="어두운 테마 사용 중, 밝은 테마로 전환" aria-pressed="false" title="밝은 테마로 전환">☀</button>
+                <a class="brand" href="/">
+                    {# favicon.svg와 같은 브랜드 표식. 테마 색을 따르도록 인라인으로 넣는다. #}
+                    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+                        <rect width="32" height="32" rx="6"/>
+                        <circle cx="23" cy="9" r="4"/>
+                        <path d="M7.2 10.4h11.2v2.4H9.9v3.3h7.7v2.3H9.9v3.4h8.8v2.4H7.2z"/>
+                    </svg>
+                    <span class="brand-name">숨터</span>
+                    <span class="brand-note">가볍게 읽는 공간</span>
+                </a>
+                <button class="theme-toggle" type="button" aria-label="테마 전환" title="테마 전환">
+                    <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <circle cx="12" cy="12" r="4.2"/>
+                        <path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/>
+                    </svg>
+                    <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M20.2 13.6A8.2 8.2 0 1 1 10.4 3.8a6.6 6.6 0 0 0 9.8 9.8z"/>
+                    </svg>
+                </button>
             </div>
             {% block masthead_context %}{% endblock %}
             <nav class="top-tabs">
@@ -72,6 +89,6 @@
             <a href="/legacy/">기존 화면으로 보기</a>
         </footer>
     </div>
-    <script src="{{ static_url('v2/javascript/read_state.js') }}"></script>
+    <script src="{{ static_url('javascript/read_state.js') }}"></script>
 </body>
 </html>

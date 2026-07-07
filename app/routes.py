@@ -457,7 +457,7 @@ def healthz():
 
 @bp.route("/favicon.ico")
 def favicon():
-    return current_app.send_static_file("v2/favicon.svg")
+    return current_app.send_static_file("favicon.svg")
 
 
 # 공군갤 airforce

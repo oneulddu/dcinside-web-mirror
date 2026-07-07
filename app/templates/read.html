@@ -1,5 +1,5 @@
-{% extends "v2/base.html" %}
-{% from "v2/_bits.html" import author_text, feed_status_icon, feed_subject %}
+{% extends "base.html" %}
+{% from "_bits.html" import author_text, feed_status_icon, feed_subject %}
 
 {% block content %}
 <section class="read-shell">
@@ -56,7 +56,7 @@
                 <a class="feed-item" data-post-id="{{ item.id }}" href="{{ read_url(board, item.id, recommend=recommend, source_page=source_page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">
                     <div class="feed-title-wrap">
                         {{ feed_status_icon(item) }}
-                        <h2 class="feed-title">{{ item.title|highlight_search(search_keyword) }}</h2>
+                        <span class="feed-title">{{ item.title|highlight_search(search_keyword) }}</span>
                         {% if item.comment_count > 0 %}
                         <span class="reply-count">[{{ item.comment_count }}]</span>
                         {% endif %}
@@ -96,7 +96,7 @@
     </div>
 </section>
 <button class="back-to-top" id="back-to-top" type="button" aria-label="맨 위로" title="맨 위로">↑</button>
-<script src="{{ static_url('v2/javascript/read_related_loader.js') }}"></script>
+<script src="{{ static_url('javascript/read_related_loader.js') }}"></script>
 <script src="{{ static_url('javascript/comment_spam_filter.js') }}"></script>
-<script src="{{ static_url('v2/javascript/back_to_top.js') }}"></script>
+<script src="{{ static_url('javascript/back_to_top.js') }}"></script>
 {% endblock %}
