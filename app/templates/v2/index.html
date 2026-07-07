@@ -4,12 +4,12 @@
 <section class="feed-list">
     <div class="jump-panel">
         <h2 class="jump-panel-title">갤러리 검색</h2>
-        <form class="jump-form" action="/v2/" method="get">
+        <form class="jump-form" action="/" method="get">
             <input id="heung_q" name="heung_q" type="text" value="{{ heung_q }}" placeholder="갤러리명 또는 board id" aria-label="갤러리 검색어">
             <button type="submit">검색</button>
         </form>
         {% if heung_q %}
-        <div class="jump-reset-row"><a class="pager-btn" href="/v2/">검색 초기화</a></div>
+        <div class="jump-reset-row"><a class="pager-btn" href="/">검색 초기화</a></div>
         {% endif %}
     </div>
 

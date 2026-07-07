@@ -1,13 +1,13 @@
 #-*- coding:utf-8 -*-
-"""v2 프론트엔드 블루프린트.
+"""기본 프론트엔드 블루프린트.
 
-기존 v1 라우트(`routes.py`)는 건드리지 않고 `/v2` 경로에 새 템플릿/정적 자원으로
-같은 서비스 계층을 렌더링한다. `/media`, `/movie`, `/read/related`, `/board/times`
+v2 템플릿/정적 자원을 루트 화면으로 렌더링한다. 레거시 화면은 `routes.py`의
+`/legacy` 경로에 남기고, `/media`, `/movie`, `/read/related`, `/board/times`
 등 JSON/프록시 엔드포인트는 main 블루프린트 것을 그대로 사용한다.
 """
 import time
 
-from flask import Blueprint, abort, current_app, make_response, render_template, request, url_for
+from flask import Blueprint, abort, current_app, make_response, redirect, render_template, request, url_for
 
 from .routes import (
     _add_kind_param,
@@ -40,7 +40,7 @@ from .services.recent import (
     touch_recent_gallery,
 )
 
-bp_v2 = Blueprint("v2", __name__, url_prefix="/v2")
+bp_v2 = Blueprint("v2", __name__)
 
 GALLERY_KIND_LABELS = {
     None: "일반",
@@ -73,7 +73,35 @@ def _gallery_display_name(board, gallery_name=None):
 
 
 def _recent_gallery_name_lookup(rows):
-    return {}
+    need_lookup = {
+        ((row.get("board") or "").strip(), row.get("kind"))
+        for row in rows or []
+        if (row.get("board") or "").strip() and not _stored_gallery_name(row)
+    }
+    if not need_lookup:
+        return {}
+
+    try:
+        heung_items, _updated_at = get_heung_galleries()
+    except Exception:
+        current_app.logger.exception("Failed to look up recent gallery names")
+        return {}
+
+    names = {}
+    for item in heung_items or []:
+        board = (item.get("board_id") or "").strip()
+        name = _clean_gallery_name(item.get("name"))
+        if not board or not name:
+            continue
+        kind = _normalize_gallery_kind(item.get("board_kind"), abort_on_invalid=False)
+        names.setdefault((board, kind), name)
+        names.setdefault((board, None), name)
+
+    return {key: value for key, value in names.items() if key in need_lookup or (key[0], None) in need_lookup}
+
+
+def _redirect_v2_alias(endpoint):
+    return redirect(url_for(endpoint, **request.args.to_dict(flat=True)), code=308)
 
 
 def board_url_v2(
@@ -182,8 +210,13 @@ def _read_social_meta_v2(data, images, board, pid, kind, recommend, source_page,
 
 @bp_v2.context_processor
 def _inject_v2_url_helpers():
-    # v2 템플릿에서는 board_url/read_url이 v2 엔드포인트를 가리키도록 전역을 가린다.
+    # 기본 템플릿에서는 board_url/read_url이 v2 엔드포인트를 가리키도록 전역을 가린다.
     return {"board_url": board_url_v2, "read_url": read_url_v2}
+
+
+@bp_v2.route("/v2/")
+def index_v2_alias():
+    return _redirect_v2_alias("v2.index")
 
 
 @bp_v2.route("/")
@@ -231,6 +264,11 @@ def index():
     )
 
 
+@bp_v2.route("/v2/recent")
+def recent_v2_alias():
+    return _redirect_v2_alias("v2.recent")
+
+
 @bp_v2.route("/recent")
 def recent():
     rows = load_recent_entries()
@@ -271,6 +309,11 @@ def recent():
             }
         )
     return render_template("v2/recent.html", title="최근 방문 갤러리 - 숨터", nav_tab="recent", recent_items=recent_items)
+
+
+@bp_v2.route("/v2/board")
+def board_v2_alias():
+    return _redirect_v2_alias("v2.board")
 
 
 @bp_v2.route("/board")
@@ -317,6 +360,11 @@ def board():
     )
     touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
     return response
+
+
+@bp_v2.route("/v2/read")
+def read_v2_alias():
+    return _redirect_v2_alias("v2.read")
 
 
 @bp_v2.route("/read")

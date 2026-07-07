@@ -21,7 +21,7 @@
     </script>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
-    <link rel="stylesheet" href="{{ static_url('css/main.css') }}">
+    <link rel="stylesheet" href="{{ static_url('legacy/css/main.css') }}">
     <title>{{ title or "숨터" }}</title>
     {% if social_meta %}
     <meta property="og:site_name" content="{{ social_meta.site_name }}">
@@ -46,7 +46,7 @@
         <header class="app-header">
             <div class="header-top">
                 <div class="header-left">
-                    <a class="brand" href="/">숨터 <span>가볍게 읽는 공간</span></a>
+                    <a class="brand" href="/legacy/">숨터 <span>가볍게 읽는 공간</span></a>
                 </div>
                 <button class="theme-toggle" type="button" aria-label="어두운 테마 사용 중, 밝은 테마로 전환" aria-pressed="false" title="밝은 테마로 전환">☀</button>
             </div>
@@ -55,10 +55,10 @@
                 <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind, head_id=head_id|default(none)) }}">전체</a>
                 <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind, head_id=head_id|default(none)) }}">베스트</a>
                 {% else %}
-                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/">전체</a>
+                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/legacy/">전체</a>
                 <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url('dcbest', recommend=0, page=1) }}">베스트</a>
                 {% endif %}
-                <a class="tab-item {% if nav_tab == 'recent' %}active{% endif %}" href="/recent">최근</a>
+                <a class="tab-item {% if nav_tab == 'recent' %}active{% endif %}" href="/legacy/recent">최근</a>
             </nav>
         </header>
 
@@ -66,6 +66,6 @@
             {% block content %}{% endblock %}
         </section>
     </main>
-    <script src="{{ static_url('javascript/read_state.js') }}"></script>
+    <script src="{{ static_url('legacy/javascript/read_state.js') }}"></script>
 </body>
 </html>

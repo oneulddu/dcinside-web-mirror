@@ -114,7 +114,7 @@
 
     function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName) {
         var pid = getItemPostId(item);
-        var href = "/v2/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
+        var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
         if (recommend === "1") {
             href += "&recommend=1";
@@ -249,7 +249,7 @@
         metaLeft.appendChild(time);
 
         var metaRight = document.createElement("div");
-        metaRight.className = "feed-meta-right soft";
+        metaRight.className = "feed-meta-right";
         metaRight.textContent = "추천 " + String(item.voteup_count || 0);
 
         metaRow.appendChild(metaLeft);

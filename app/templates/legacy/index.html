@@ -1,17 +1,17 @@
-{% extends "base.html" %}
+{% extends "legacy/base.html" %}
 
 {% block content %}
 <section class="feed-list">
     <div class="jump-panel">
         <h2>갤러리 검색</h2>
-        <form class="jump-form" action="/" method="get">
+        <form class="jump-form" action="/legacy/" method="get">
             <label for="heung_q">검색어</label>
             <input id="heung_q" name="heung_q" type="text" value="{{ heung_q }}" placeholder="갤러리명 또는 board id">
             <div class="jump-row">
                 <span></span>
                 <button type="submit">검색</button>
                 {% if heung_q %}
-                <a class="pager-btn" href="/">초기화</a>
+                <a class="pager-btn" href="/legacy/">초기화</a>
                 {% endif %}
             </div>
         </form>

@@ -142,7 +142,7 @@
         } catch (err) {
             return null;
         }
-        if (url.pathname !== "/v2/read") {
+        if (url.pathname !== "/read" && url.pathname !== "/v2/read") {
             return null;
         }
         return toReadKey(url.searchParams.get("board"), url.searchParams.get("pid"));
@@ -159,7 +159,7 @@
     }
 
     function markCurrentRead() {
-        if (window.location.pathname !== "/v2/read") {
+        if (window.location.pathname !== "/read" && window.location.pathname !== "/v2/read") {
             return;
         }
         var params = new URLSearchParams(window.location.search || "");

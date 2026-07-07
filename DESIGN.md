@@ -1,7 +1,9 @@
 # DESIGN.md — 숨터 v2 프론트엔드 디자인 시스템
 
-적용 범위: `/v2` 프론트엔드 (`app/templates/v2/`, `app/static/v2/`).
-기존 v1 프론트엔드(`app/templates/*.html`, `app/static/css/main.css`)는 이 계약의 대상이 아니다.
+적용 범위: 기본 프론트엔드 루트(`/`, `/board`, `/read`, `/recent`)와 v2 자원
+(`app/templates/v2/`, `app/static/v2/`).
+기존 v1 프론트엔드는 `/legacy` 경로와 `app/templates/legacy/`,
+`app/static/legacy/` 아래에 분리되어 있으며 이 계약의 대상이 아니다.
 
 ## 1. Atmosphere / Signature
 

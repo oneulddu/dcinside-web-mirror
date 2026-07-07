@@ -387,7 +387,7 @@ def _nav_tab_for_gallery(board, recommend=0, nav_mode=None):
     return "all"
 
 
-@bp.route("/")
+@bp.route("/legacy/")
 def index():
     page = _safe_int(request.args.get("heung_page", 1), 1)
     heung_q = (request.args.get("heung_q") or "").strip()
@@ -417,7 +417,7 @@ def index():
     page_items = heung_items[start:end]
 
     return render_template(
-        "index.html",
+        "legacy/index.html",
         nav_tab="all",
         heung_items=page_items,
         heung_page=page,
@@ -431,7 +431,7 @@ def index():
     )
 
 
-@bp.route("/recent")
+@bp.route("/legacy/recent")
 def recent():
     rows = load_recent_entries()
     recent_items = []
@@ -444,7 +444,7 @@ def recent():
                 "visited_at_str": format_recent_time(row.get("visited_at")),
             }
         )
-    return render_template("recent.html", nav_tab="recent", recent_items=recent_items)
+    return render_template("legacy/recent.html", nav_tab="recent", recent_items=recent_items)
 
 
 @bp.route("/healthz")
@@ -464,7 +464,7 @@ def favicon():
 # 야갤 baseball_new10
 # 싱벙갤 singlebungle1472
 # 그림갤 drawing
-@bp.route('/board')
+@bp.route("/legacy/board")
 def board():
     page = _positive_int_arg("page", 1)
     board = _normalize_board_id(request.args.get("board", "airforce"))
@@ -487,7 +487,7 @@ def board():
 
     response = make_response(
         render_template(
-            "board.html",
+            "legacy/board.html",
             datas=ret,
             page=page,
             board=board,
@@ -554,7 +554,7 @@ def movie():
     return build_movie_response(movie_no, board, pid, kind=kind)
 
 
-@bp.route("/read")
+@bp.route("/legacy/read")
 def read():
     pid = _safe_int(request.args.get("pid", 0), 0)
     if pid <= 0:
@@ -585,7 +585,7 @@ def read():
     data["html"] = prepare_read_html(data.get("html"), images, board, pid, kind, search_keyword=search_keyword)
     response = make_response(
         render_template(
-            "read.html",
+            "legacy/read.html",
             data=data,
             comments=comments,
             images=images,
