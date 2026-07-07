@@ -4,11 +4,10 @@
 
 ## 0. 사전 설정
 
-- Git 자동화 훅은 한 번 설치해둔다.
-- 이 저장소에서는 `.githooks/post-commit`, `.githooks/commit-msg`, `.githooks/pre-push`를 사용한다.
-- `pre-push`는 `main` 또는 `master` 직접 push를 막는다.
-- `commit-msg`는 커밋 제목 형식을 검사한다.
-- GitHub Actions는 PR 브랜치명, PR 제목, PR 본문 형식을 검사한다.
+- Git 자동화 훅은 저장소에 제공될 때만 설치한다.
+- 현재 저장소 기준으로는 `.githooks` 디렉터리가 없으므로 훅 설치를 전제로 작업하지 않는다.
+- 훅이 추가된 경우 `commit-msg`는 커밋 제목 형식을 검사하고, `pre-push`는 큰 변경의 무분별한 `main` 직접 push를 막는 용도로 둔다.
+- GitHub Actions는 PR과 `main` push에서 테스트와 배포를 실행한다.
 
 설치:
 
@@ -18,12 +17,39 @@ bash ./scripts/install-git-hooks.sh
 
 ## 1. 브랜치 규칙
 
-- `main`에서 직접 작업하지 않는다.
-- 작업 시작 전에 반드시 feature 브랜치를 만든다.
-- 브랜치명 형식은 `feature/<작업요약-MMDD>`를 사용한다.
+- 기본은 feature 브랜치에서 작업한 뒤 PR로 `main`에 머지한다.
+- 다만 작은 저위험 변경은 `main`에서 직접 작업할 수 있다.
+- feature 브랜치를 만들 때는 `feature/<작업요약-MMDD>` 형식을 사용한다.
 - 작업요약은 영문 소문자와 하이픈만 사용한다.
-- `scripts/start-feature-branch.sh`는 현재 날짜 기준 `MMDD`를 자동으로 붙인다.
 - 자동 충돌 회피 브랜치는 예외적으로 `feature/<작업요약-MMDD-HHMMSS>` 형식을 사용할 수 있다.
+
+### `main` 직접 작업이 가능한 경우
+
+아래 조건을 모두 만족하면 `main`에서 직접 수정, 커밋, push할 수 있다.
+
+- CSS 간격, 색상, 테두리, 정렬처럼 화면의 작은 시각 보정이다.
+- 문구, 오탈자, 주석, 문서처럼 동작 영향이 없거나 매우 낮다.
+- 라우팅, 데이터 처리, 스크래핑, 캐시, 보안, 배포 설정, 의존성, 테스트 기대값을 건드리지 않는다.
+- 변경 파일과 diff를 보고 저위험이라고 명확히 설명할 수 있다.
+
+`main` 직접 작업 전에는 항상 최신 상태를 받는다.
+
+```bash
+git checkout main
+git pull --ff-only origin main
+```
+
+`main` 직접 작업 후에는 필요한 최소 검증을 실행한다. CSS 미세 조정은 브라우저 확인이나 `git diff --check` 정도로 충분할 수 있고, 동작 영향이 있으면 `make test`를 실행한다.
+
+### 브랜치가 필요한 경우
+
+아래 변경은 작은 수정처럼 보여도 브랜치를 만든다.
+
+- 라우트, 템플릿 구조, API 응답, 데이터 모델 변경
+- 스크래핑, 캐시, 미디어 프록시, 보안 관련 변경
+- 배포 설정, GitHub Actions, 의존성 변경
+- 테스트 기대값 변경
+- 여러 파일에 걸친 리팩터링이나 되돌리기 어려운 변경
 
 예시:
 
@@ -136,7 +162,7 @@ public/index.html
 ## 6. 머지 규칙
 
 - 기본은 PR 리뷰 후 `main`으로 머지한다.
-- 직접 `main`에 push하지 않는다.
+- 작은 저위험 변경은 `main`에 직접 push할 수 있다.
 - 머지는 가능하면 `squash merge`를 사용한다.
 - 최종 main 커밋 제목은 아래 형식을 맞춘다.
 
@@ -164,11 +190,11 @@ git push origin --delete feature/<브랜치명>
 
 ## 8. 예외 상황
 
-- 긴급 hotfix처럼 정말 필요한 경우에만 `main` 직접 push를 고려한다.
-- 이 경우에도 왜 예외 처리를 했는지 남겨둔다.
+- 작은 저위험 변경이 아니어도 긴급 hotfix라면 `main` 직접 push를 고려할 수 있다.
+- 이 경우에는 왜 예외 처리를 했는지 남겨둔다.
 - 히스토리 재작성이나 force push는 필요 범위를 최소화하고, 가능하면 backup 브랜치를 먼저 만든다.
 
-직접 `main` push가 정말 필요할 때:
+훅이나 보호 규칙이 `main` push를 막고 있고 예외 처리가 정말 필요할 때:
 
 ```bash
 export ALLOW_MAIN_PUSH=1
