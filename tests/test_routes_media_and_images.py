@@ -1651,6 +1651,62 @@ def test_theme_toggle_persists_and_updates_accessibility_state():
     assert "--blue: #3182f6;" in style
 
 
+def test_dccon_block_toggle_persists_and_prevents_initial_image_src(monkeypatch):
+    async def fake_async_read(pid, board, kind=None, recommend=0, **kwargs):
+        return (
+            {
+                "title": "title",
+                "author": "익명",
+                "author_code": None,
+                "time": "-",
+                "voteup_count": 0,
+                "html": "<p>body</p>",
+                "related_posts": [],
+            },
+            [
+                {
+                    "author": "댓글러",
+                    "author_code": None,
+                    "time": "-",
+                    "contents": "",
+                    "parent_id": None,
+                    "is_reply": False,
+                    "dccon": "https://dccon.dcinside.com/original.png",
+                }
+            ],
+            [],
+        )
+
+    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    app = create_app()
+
+    response = app.test_client().get("/read?board=test&pid=123")
+    soup = BeautifulSoup(response.data, "html.parser")
+    dccon = soup.select_one("img.dccon")
+    template = Path(routes.BASE_DIR, "app/templates/base.html").read_text()
+    legacy_template = Path(routes.BASE_DIR, "app/templates/legacy/base.html").read_text()
+    script = Path(routes.BASE_DIR, "app/static/javascript/read_state.js").read_text()
+    legacy_script = Path(routes.BASE_DIR, "app/static/legacy/javascript/read_state.js").read_text()
+    style = Path(routes.BASE_DIR, "app/static/css/main.css").read_text()
+    legacy_style = Path(routes.BASE_DIR, "app/static/legacy/css/main.css").read_text()
+
+    assert response.status_code == 200
+    assert soup.select_one(".dccon-toggle") is not None
+    assert dccon is not None
+    assert not dccon.has_attr("src")
+    assert dccon["data-dccon-src"].startswith("/media?src=https")
+    assert dccon.has_attr("hidden")
+    assert soup.select_one(".dccon-blocked-note").get_text(strip=True) == "디시콘 차단됨"
+    assert 'window.localStorage.getItem("mirror_dccon_block_v1") === "1"' in template
+    assert 'window.localStorage.getItem("mirror_dccon_block_v1") === "1"' in legacy_template
+    assert 'DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1"' in script
+    assert 'DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1"' in legacy_script
+    assert 'image.removeAttribute("src")' in script
+    assert 'image.removeAttribute("src")' in legacy_script
+    assert 'html[data-dccon-blocked="true"] .dccon-blocked-note' in style
+    assert "html[data-dccon-blocked='true'] .dccon-blocked-note" in legacy_style
+
+
 def test_read_passes_head_id_to_initial_document_fetch(monkeypatch):
     seen = {}
 

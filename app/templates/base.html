@@ -8,14 +8,18 @@
             "use strict";
 
             var theme = "dark";
+            var dcconBlocked = false;
             try {
                 theme = window.localStorage.getItem("mirror_theme_v1") === "light" ? "light" : "dark";
+                dcconBlocked = window.localStorage.getItem("mirror_dccon_block_v1") === "1";
             } catch (err) {
                 theme = "dark";
+                dcconBlocked = false;
             }
 
             var root = document.documentElement;
             root.dataset.theme = theme;
+            root.dataset.dcconBlocked = dcconBlocked ? "true" : "false";
             root.style.colorScheme = theme;
         })();
     </script>
@@ -57,15 +61,28 @@
                     <span class="brand-name">숨터</span>
                     <span class="brand-note">가볍게 읽는 공간</span>
                 </a>
-                <button class="theme-toggle" type="button" aria-label="테마 전환" title="테마 전환">
-                    <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                        <circle cx="12" cy="12" r="4.2"/>
-                        <path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/>
-                    </svg>
-                    <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                        <path d="M20.2 13.6A8.2 8.2 0 1 1 10.4 3.8a6.6 6.6 0 0 0 9.8 9.8z"/>
-                    </svg>
-                </button>
+                <div class="header-actions">
+                    <button class="dccon-toggle" type="button" aria-label="디시콘 자동 차단 전환" aria-pressed="false" title="디시콘 자동 차단">
+                        <svg class="dccon-icon dccon-icon-show" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <rect x="3.5" y="5" width="17" height="14" rx="2.5"/>
+                            <circle cx="8.2" cy="9.2" r="1.4"/>
+                            <path d="M5.8 16.4l4.2-4.2 3.1 3.1 1.8-1.8 3.4 3.4"/>
+                        </svg>
+                        <svg class="dccon-icon dccon-icon-block" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <rect x="3.5" y="5" width="17" height="14" rx="2.5"/>
+                            <path d="M5 5l14 14"/>
+                        </svg>
+                    </button>
+                    <button class="theme-toggle" type="button" aria-label="테마 전환" title="테마 전환">
+                        <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <circle cx="12" cy="12" r="4.2"/>
+                            <path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/>
+                        </svg>
+                        <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path d="M20.2 13.6A8.2 8.2 0 1 1 10.4 3.8a6.6 6.6 0 0 0 9.8 9.8z"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
             {% block masthead_context %}{% endblock %}
             <nav class="top-tabs">

@@ -8,14 +8,18 @@
             "use strict";
 
             var theme = "dark";
+            var dcconBlocked = false;
             try {
                 theme = window.localStorage.getItem("mirror_theme_v1") === "light" ? "light" : "dark";
+                dcconBlocked = window.localStorage.getItem("mirror_dccon_block_v1") === "1";
             } catch (err) {
                 theme = "dark";
+                dcconBlocked = false;
             }
 
             var root = document.documentElement;
             root.dataset.theme = theme;
+            root.dataset.dcconBlocked = dcconBlocked ? "true" : "false";
             root.style.colorScheme = theme;
         })();
     </script>
@@ -48,7 +52,10 @@
                 <div class="header-left">
                     <a class="brand" href="/legacy/">숨터 <span>가볍게 읽는 공간</span></a>
                 </div>
-                <button class="theme-toggle" type="button" aria-label="어두운 테마 사용 중, 밝은 테마로 전환" aria-pressed="false" title="밝은 테마로 전환">☀</button>
+                <div class="header-actions">
+                    <button class="dccon-toggle" type="button" aria-label="디시콘 자동 차단 전환" aria-pressed="false" title="디시콘 자동 차단">▧</button>
+                    <button class="theme-toggle" type="button" aria-label="어두운 테마 사용 중, 밝은 테마로 전환" aria-pressed="false" title="밝은 테마로 전환">☀</button>
+                </div>
             </div>
             <nav class="main-tabs">
                 {% if board is defined and board %}
