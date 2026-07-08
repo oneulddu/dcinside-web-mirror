@@ -1078,22 +1078,6 @@ a.pager-btn:active {
     max-width: 100%;
 }
 
-.dccon-blocked-note {
-    display: none;
-    min-height: var(--space-8);
-    align-items: center;
-    border: var(--rule) solid var(--line);
-    border-radius: var(--radius-xs);
-    background: var(--surface);
-    color: var(--muted);
-    font: var(--type-meta);
-    padding: 0 var(--space-3);
-}
-
-html[data-dccon-blocked="true"] .dccon-blocked-note {
-    display: inline-flex;
-}
-
 .comment-meta {
     display: flex;
     align-items: baseline;
@@ -1118,6 +1102,10 @@ html[data-dccon-blocked="true"] .dccon-blocked-note {
 }
 
 .comment-spam-hidden {
+    display: none;
+}
+
+.comment-dccon-block-hidden {
     display: none;
 }
 

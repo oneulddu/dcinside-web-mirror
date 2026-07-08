@@ -28,7 +28,6 @@
                     {% if comment.dccon != None %}
                     <span class="dccon-frame">
                         <img class="dccon" data-dccon-src="{{ comment.dccon }}" alt="dccon" loading="lazy" decoding="async" hidden>
-                        <span class="dccon-blocked-note">디시콘 차단됨</span>
                     </span>
                     {% else %}
                     <p>{{ comment.contents|linkify_comment }}</p>
