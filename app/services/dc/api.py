@@ -1226,64 +1226,80 @@ class API(ParserMixin):
                     break
             else:
                 break
+
+    @staticmethod
+    def __comment_id(comment):
+        return str(getattr(comment, "id", None) or "").strip()
+
+    @staticmethod
+    def __pc_comment_fetch_num(remaining, yielded_count):
+        if remaining == -1:
+            return -1
+        if yielded_count:
+            return remaining + yielded_count
+        return remaining
+
+    async def __deduped_comments(self, comments, yielded_ids, remaining_state, stats, skip_seen=False):
+        async for comment in comments:
+            stats["seen"] = True
+            comment_id = self.__comment_id(comment)
+            if skip_seen and comment_id and comment_id in yielded_ids:
+                continue
+            if comment_id:
+                yielded_ids.add(comment_id)
+            if remaining_state["value"] != -1:
+                remaining_state["value"] -= 1
+            yield comment
+            if remaining_state["value"] == 0:
+                return
+
     async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=True):
         if num == 0:
             return
-        yielded_from_pc = False
         yielded_ids = set()
-        remaining = num
+        remaining_state = {"value": num}
+
         if prefer_mobile:
-            yielded_from_mobile = False
+            mobile_stats = {"seen": False}
             try:
-                async for comment in self.__comments_from_mobile(
+                mobile_comments = self.__comments_from_mobile(
                     board_id,
                     document_id,
                     num=num,
                     start_page=start_page,
                     fail_fast=True,
+                )
+                async for comment in self.__deduped_comments(
+                    mobile_comments,
+                    yielded_ids,
+                    remaining_state,
+                    mobile_stats,
                 ):
-                    yielded_from_mobile = True
-                    comment_id = str(getattr(comment, "id", None) or "").strip()
-                    if comment_id:
-                        yielded_ids.add(comment_id)
-                    if remaining != -1:
-                        remaining -= 1
                     yield comment
-                    if remaining == 0:
-                        return
-                if yielded_from_mobile:
+                if mobile_stats["seen"]:
                     return
             except Exception:
                 pass
+
+        pc_stats = {"seen": False}
         try:
-            if remaining == -1:
-                pc_fetch_num = -1
-            elif yielded_ids:
-                pc_fetch_num = remaining + len(yielded_ids)
-            else:
-                pc_fetch_num = remaining
-            async for comment in self.__comments_from_pc(
+            pc_fetch_num = self.__pc_comment_fetch_num(remaining_state["value"], len(yielded_ids))
+            pc_comments = self.__comments_from_pc(
                 board_id,
                 document_id,
                 num=pc_fetch_num,
                 start_page=start_page,
                 kind=kind,
+            )
+            async for comment in self.__deduped_comments(
+                pc_comments,
+                yielded_ids,
+                remaining_state,
+                pc_stats,
+                skip_seen=True,
             ):
-                yielded_from_pc = True
-                comment_id = str(getattr(comment, "id", None) or "").strip()
-                if comment_id and comment_id in yielded_ids:
-                    continue
-                if comment_id:
-                    yielded_ids.add(comment_id)
-                if remaining != -1:
-                    remaining -= 1
                 yield comment
-                if remaining == 0:
-                    return
-            if yielded_from_pc and remaining != -1:
-                if remaining <= 0:
-                    return
-            elif yielded_from_pc and remaining == -1:
+            if pc_stats["seen"] and (remaining_state["value"] == -1 or remaining_state["value"] <= 0):
                 return
         except Exception:
             pass
@@ -1291,20 +1307,21 @@ class API(ParserMixin):
         if prefer_mobile:
             return
 
-        async for comment in self.__comments_from_mobile(
+        mobile_comments = self.__comments_from_mobile(
             board_id,
             document_id,
             num=-1,
             start_page=start_page,
+        )
+        mobile_stats = {"seen": False}
+        async for comment in self.__deduped_comments(
+            mobile_comments,
+            yielded_ids,
+            remaining_state,
+            mobile_stats,
+            skip_seen=True,
         ):
-            comment_id = str(getattr(comment, "id", None) or "").strip()
-            if comment_id and comment_id in yielded_ids:
-                continue
             yield comment
-            if remaining != -1:
-                remaining -= 1
-                if remaining == 0:
-                    return
     # The Flask app is read-only today, so these write helpers are intentionally
     # not connected to routes. Keep them isolated until write support is planned.
     async def write_comment(self, board_id, document_id, contents="", dccon_id="", dccon_src="", parent_comment_id="", name="", password="", is_minor=False):

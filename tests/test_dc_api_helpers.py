@@ -505,3 +505,108 @@ async def test_replace_poll_iframes_handles_relative_poll_src():
         "https://m.dcinside.com/poll?vote_id=123"
     ]
     assert doc_content.xpath(".//iframe/@src") == ["//evil.com/poll"]
+
+
+class _DummyComment:
+    def __init__(self, comment_id):
+        self.id = comment_id
+
+
+@pytest.mark.asyncio
+async def test_comments_mobile_success_skips_pc_fallback():
+    api = API.__new__(API)
+    calls = []
+
+    async def fake_mobile(board_id, document_id, num=-1, start_page=1, fail_fast=False):
+        calls.append(("mobile", num, start_page, fail_fast))
+        yield _DummyComment("m1")
+
+    async def fail_pc(*args, **kwargs):
+        raise AssertionError("successful mobile comments should not fall back to pc")
+        if False:
+            yield None
+
+    api._API__comments_from_mobile = fake_mobile
+    api._API__comments_from_pc = fail_pc
+
+    comments = [item.id async for item in api.comments("test", "123", num=5, prefer_mobile=True)]
+
+    assert comments == ["m1"]
+    assert calls == [("mobile", 5, 1, True)]
+
+
+@pytest.mark.asyncio
+async def test_comments_mobile_partial_failure_falls_back_to_pc_with_remaining_limit():
+    api = API.__new__(API)
+    pc_calls = []
+
+    async def partial_mobile(board_id, document_id, num=-1, start_page=1, fail_fast=False):
+        yield _DummyComment("1")
+        raise RuntimeError("mobile page failed")
+
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+        pc_calls.append((num, start_page, kind))
+        yield _DummyComment("1")
+        yield _DummyComment("2")
+        yield _DummyComment("3")
+        yield _DummyComment("4")
+
+    api._API__comments_from_mobile = partial_mobile
+    api._API__comments_from_pc = fake_pc
+
+    comments = [
+        item.id
+        async for item in api.comments("test", "123", num=3, start_page=2, kind="minor", prefer_mobile=True)
+    ]
+
+    assert comments == ["1", "2", "3"]
+    assert pc_calls == [(3, 2, "minor")]
+
+
+@pytest.mark.asyncio
+async def test_comments_pc_duplicates_are_skipped_on_mobile_fallback():
+    api = API.__new__(API)
+
+    async def partial_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+        yield _DummyComment("1")
+        raise RuntimeError("pc page failed")
+
+    async def fake_mobile(board_id, document_id, num=-1, start_page=1):
+        assert num == -1
+        yield _DummyComment("1")
+        yield _DummyComment("2")
+        yield _DummyComment("3")
+
+    api._API__comments_from_pc = partial_pc
+    api._API__comments_from_mobile = fake_mobile
+
+    comments = [item.id async for item in api.comments("test", "123", num=2, prefer_mobile=False)]
+
+    assert comments == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_comments_pc_fetch_expands_limit_to_cover_mobile_duplicates():
+    api = API.__new__(API)
+    pc_calls = []
+
+    async def partial_mobile(board_id, document_id, num=-1, start_page=1, fail_fast=False):
+        yield _DummyComment("1")
+        yield _DummyComment("2")
+        raise RuntimeError("mobile page failed")
+
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+        pc_calls.append(num)
+        yield _DummyComment("1")
+        yield _DummyComment("2")
+        yield _DummyComment("3")
+        yield _DummyComment("4")
+        yield _DummyComment("5")
+
+    api._API__comments_from_mobile = partial_mobile
+    api._API__comments_from_pc = fake_pc
+
+    comments = [item.id async for item in api.comments("test", "123", num=4, prefer_mobile=True)]
+
+    assert comments == ["1", "2", "3", "4"]
+    assert pc_calls == [4]
