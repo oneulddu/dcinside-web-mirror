@@ -1,16 +1,14 @@
 import asyncio
-import itertools
 import json
 import logging
 import os
 import re
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
 import aiohttp
-import filetype
 import lxml.html
 
 logger = logging.getLogger(__name__)
@@ -74,8 +72,9 @@ def cache_prune(cache, now, max_items):
 def cache_set(cache, lock, key, value, ttl, max_items):
     expires_at = time.time() + max(to_int(ttl, 0), 0)
     with lock:
-        cache_prune(cache, time.time(), max_items)
         cache[key] = {"value": value, "expires_at": expires_at}
+        if len(cache) > max(max_items, 0):
+            cache_prune(cache, time.time(), max_items)
 
 
 def cache_delete(cache, lock, key):
@@ -120,8 +119,8 @@ POST_HEADERS = {
 }
 
 GALLERY_POSTS_COOKIES = {
-    "__gat_mobile_search": 1,
-    "list_count": DOCS_PER_PAGE,
+    "__gat_mobile_search": "1",
+    "list_count": str(DOCS_PER_PAGE),
 }
 
 _BOARD_KIND_CACHE = {}
@@ -139,38 +138,10 @@ def quote(decoded):
         else:
             arr.append("%" + t)
     return "".join(arr)
-def peek(iterable):
-    try:
-        first = next(iterable)
-    except StopIteration:
-        return None
-    return first, itertools.chain((first,), iterable)
-
-
-def has_gallery_image_icon(value):
-    classes = set(str(value or "").split())
-    return bool(
-        classes.intersection({"sp-lst-img", "sp-lst-recoimg", "icon_pic", "icon_recomimg", "icon_recoimg"})
-        or any(token.startswith("icon_pic") for token in classes)
-    )
-
-
-def has_gallery_video_icon(value):
-    classes = set(str(value or "").split())
-    return bool(
-        classes.intersection({
-            "sp-lst-play",
-            "sp-lst-recoplay",
-            "icon_play",
-            "icon_movie",
-            "icon_video",
-        })
-        or any(token.startswith(("icon_play", "icon_movie", "icon_video")) for token in classes)
-    )
 
 
 from .models import Comment, Document, DocumentIndex, Image
-from .parsers import ParserMixin
+from .parsers import ParserMixin, has_gallery_image_icon, has_gallery_video_icon
 
 
 class API(ParserMixin):

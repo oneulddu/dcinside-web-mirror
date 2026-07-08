@@ -1,7 +1,10 @@
+from datetime import datetime
+
 import lxml.html
 import pytest
 
-from app.services.dc_api import API, GET_HEADERS, MOBILE_USER_AGENT, POST_HEADERS, XML_HTTP_REQ_HEADERS, to_int
+from app.services.dc import parsers
+from app.services.dc_api import API, Document, GET_HEADERS, MOBILE_USER_AGENT, POST_HEADERS, XML_HTTP_REQ_HEADERS, to_int
 
 
 def test_to_int_extracts_numbers_and_falls_back_safely():
@@ -16,6 +19,45 @@ def test_mobile_request_headers_use_ios_user_agent():
     assert GET_HEADERS["User-Agent"] == MOBILE_USER_AGENT
     assert XML_HTTP_REQ_HEADERS["User-Agent"] == MOBILE_USER_AGENT
     assert POST_HEADERS["User-Agent"] == MOBILE_USER_AGENT
+
+
+def test_document_str_does_not_require_comment_count():
+    doc = Document(
+        id="123",
+        board_id="test",
+        title="title",
+        author="author",
+        author_id=None,
+        contents="contents",
+        images=[],
+        html="<p>contents</p>",
+        view_count=10,
+        voteup_count=2,
+        votedown_count=1,
+        logined_voteup_count=0,
+        time=datetime(2026, 1, 1, 12, 0),
+        comments=[],
+        subject="subject",
+    )
+
+    rendered = str(doc)
+
+    assert "title +2 -1" in rendered
+    assert "contents" in rendered
+
+
+def test_parse_time_rolls_future_month_day_back_to_previous_year(monkeypatch):
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 1, 1, 12, 0, 0)
+
+    monkeypatch.setattr(parsers, "datetime", FrozenDatetime)
+    api = API.__new__(API)
+
+    parsed = api._API__parse_time("12.31 23:59")
+
+    assert parsed == datetime(2025, 12, 31, 23, 59)
 
 
 def test_parse_mobile_list_item_extracts_gallog_author_id():

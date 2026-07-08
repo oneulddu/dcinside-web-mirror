@@ -56,6 +56,9 @@ _LATEST_ID_CACHE_LOCK = threading.Lock()
 _AUTHOR_CODE_CACHE_LOCK = threading.Lock()
 _CACHE_PRUNE_STATE = {}
 _CACHE_PRUNE_STATE_LOCK = threading.Lock()
+_AUTHOR_CODE_SUFFIX_RE = re.compile(r"\(([^()\s]{1,64})\)\s*$")
+_AUTHOR_CODE_OPEN_RE = re.compile(r"\(([^()\s]{1,64})$")
+_ANON_NAME_RE = re.compile(r"ㅇㅇ(\d*)")
 _TIME_SECONDS_RE = re.compile(r"(\b\d{1,2}:\d{2}):\d{2}(?:\.\d+)?")
 
 
@@ -81,10 +84,10 @@ def _split_name_and_inline_code(author):
         return "", None
 
     # Prefer clean "(code)" suffix, but also tolerate malformed trailing "(code".
-    matched = re.search(r"\(([^()\s]{1,64})\)\s*$", raw)
+    matched = _AUTHOR_CODE_SUFFIX_RE.search(raw)
     if matched:
         return raw[:matched.start()].strip(), matched.group(1).strip()
-    matched = re.search(r"\(([^()\s]{1,64})$", raw)
+    matched = _AUTHOR_CODE_OPEN_RE.search(raw)
     if matched:
         return raw[:matched.start()].strip(), matched.group(1).strip()
     return raw, None
@@ -96,7 +99,7 @@ def _normalize_author(author, author_id=None):
     code = _clean_author_code(author_id) or _clean_author_code(inline_code)
     if not name:
         return "익명", code
-    anon_match = re.fullmatch(r"ㅇㅇ(\d*)", name)
+    anon_match = _ANON_NAME_RE.fullmatch(name)
     if anon_match:
         suffix = anon_match.group(1) or ""
         return f"익명{suffix}", code

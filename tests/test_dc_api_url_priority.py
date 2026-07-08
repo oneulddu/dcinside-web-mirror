@@ -1,9 +1,13 @@
-from app.services import dc_api
-from app.services.dc_api import API
+import threading
+
 from aiohttp import CookieJar
 import lxml.html
 import pytest
 from yarl import URL
+
+from app.services import dc_api
+from app.services.dc import api as dc_api_impl
+from app.services.dc_api import API
 
 
 def _pc_board_html(doc_id="123", title="pc title"):
@@ -34,6 +38,27 @@ def test_board_kind_cache_ttl_default_is_six_hours():
 def test_dc_session_connector_defaults():
     assert dc_api.DC_CONN_LIMIT == 20
     assert dc_api.DC_DNS_CACHE_TTL == 60
+
+
+def test_cache_set_defers_prune_until_cache_exceeds_limit(monkeypatch):
+    prune_calls = []
+
+    def fake_prune(cache, now, max_items):
+        prune_calls.append((dict(cache), max_items))
+
+    monkeypatch.setattr(dc_api_impl, "cache_prune", fake_prune)
+    cache = {}
+    lock = threading.Lock()
+
+    dc_api_impl.cache_set(cache, lock, "a", "value", ttl=30, max_items=2)
+    dc_api_impl.cache_set(cache, lock, "b", "value", ttl=30, max_items=2)
+
+    assert prune_calls == []
+
+    dc_api_impl.cache_set(cache, lock, "c", "value", ttl=30, max_items=2)
+
+    assert len(prune_calls) == 1
+    assert set(prune_calls[0][0]) == {"a", "b", "c"}
 
 
 @pytest.mark.asyncio

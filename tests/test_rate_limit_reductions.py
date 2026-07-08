@@ -70,6 +70,14 @@ def test_board_time_cache_has_dedicated_max_items_constant():
     assert core.BOARD_TIME_CACHE_MAX_ITEMS == core.BOARD_PAGE_CACHE_MAX_ITEMS
 
 
+def test_normalize_author_preserves_existing_name_and_code_rules():
+    assert core._normalize_author("닉네임(abc123)") == ("닉네임", "abc123")
+    assert core._normalize_author("닉네임(abc123") == ("닉네임", "abc123")
+    assert core._normalize_author("ㅇㅇ(1.2)") == ("익명", "1.2")
+    assert core._normalize_author("테스트갤러") == ("익명", None)
+    assert core._normalize_author("닉\u00ad네임", " (ipcode) ") == ("닉네임", "ipcode")
+
+
 def test_shared_api_head_categories_are_request_scoped(monkeypatch):
     async_bridge.shutdown_async_bridge()
 

@@ -113,7 +113,7 @@ Environment variables use the `MIRROR_` prefix:
 - `MIRROR_HTTP_TIMEOUT`: DCinside request timeout (default: 20s)
 - `MIRROR_HEUNG_CACHE_TTL`, `MIRROR_HEUNG_CACHE_FILE`: Heung gallery cache settings
 - `MIRROR_BOARD_PAGE_CACHE_TTL`: Short board-page cache TTL
-- `MIRROR_AUTHOR_CODE_FETCH_CONCURRENCY`: Author code backfill concurrency
+- `MIRROR_BOARD_FILL_AUTHOR_CODES`: Enable cached board-list author code backfill
 - `MIRROR_RELATED_PAGE_PROBE_STEPS`, `MIRROR_RELATED_TAIL_PAGES`: Related-post probing limits
 - `MIRROR_MEDIA_*`: Media proxy cache, size, streaming, redirect, and allowlist settings
 - `MIRROR_RECENT_*`: Recent-gallery cookie and server helper cache settings
