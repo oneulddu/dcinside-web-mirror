@@ -140,6 +140,16 @@ app.config.setdefault("COMPRESS_MIMETYPES", [
 
 **변경(안).** 저장 N회마다(예: 64회) 또는 마지막 prune 후 일정 시간 경과 시에만 prune을 수행하도록 카운터/타임스탬프 가드를 추가한다. 캐시 최대치가 수천 개 수준이라 효과는 작으므로 P3로 둔다.
 
+**검증 메모(2026-07-09).** `git blame` 기준 `CACHE_PRUNE_EVERY`,
+`CACHE_PRUNE_MIN_INTERVAL`, `_should_prune_cache()`는 `b9d8c8b`(`perf: 최적화 작업 적용`)에서
+위 변경안과 함께 도입됐다. 현재 조건은 저장 횟수 기준, 마지막 prune 이후 경과 시간 기준, max_items 초과 기준 중 하나라도
+충족하면 prune하는 OR 정책이다. 기존 테스트에는 이 정책을 직접 고정하는 회귀 테스트가 없다.
+
+`CACHE_PRUNE_MIN_INTERVAL`이라는 이름만 보면 “이 시간 전에는 어떤 경우에도 prune하지 않는다”는 절대 하한으로
+읽힐 수 있고, 그런 의미라면 현재 OR 조건은 고빈도 저장에서 횟수 기준 prune을 허용한다. 다만 도입 문서가 명시적으로
+“저장 N회마다 또는 마지막 prune 후 일정 시간 경과”라고 적고 있어 현재 OR 정책을 의도와 다른 버그로 볼 코드 근거는
+부족하다. 검증 결과 보류: 동작 변경 없이 문서에 근거만 남긴다.
+
 ### P3-4. `/board/times` 캐시 max_items 상수 정리
 
 **배경.** `core.py`의 `async_board_precise_times()`가 `_BOARD_TIME_CACHE`에 저장할 때 max_items로 `BOARD_PAGE_CACHE_MAX_ITEMS`를 넘긴다. 동작에는 문제없지만 보드 시간 캐시 전용 상수가 없어 의도가 불분명하다. `BOARD_TIME_CACHE_MAX_ITEMS`를 분리 정의한다 (값은 동일해도 무방).
