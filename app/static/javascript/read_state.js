@@ -7,6 +7,7 @@
     var MAX_ENTRIES = 1500;
     var DEFAULT_THEME = "dark";
     var readStore = null;
+    var dcconFoldShowing = false;
 
     function safeParse(jsonText) {
         if (!jsonText) {
@@ -139,7 +140,7 @@
         if (!button) {
             return;
         }
-        var label = isBlocked ? "디시콘 차단 중, 표시로 전환" : "디시콘 표시 중, 차단으로 전환";
+        var label = isBlocked ? "이모티콘 차단 중, 표시로 전환" : "이모티콘 표시 중, 차단으로 전환";
         button.setAttribute("aria-label", label);
         button.setAttribute("aria-pressed", isBlocked ? "true" : "false");
         button.title = label;
@@ -163,13 +164,87 @@
         }
     }
 
+    function dcconCommentItems() {
+        var images = document.querySelectorAll("img.dccon[data-dccon-src]");
+        var items = [];
+        var i;
+        for (i = 0; i < images.length; i += 1) {
+            var item = images[i].closest(".comment-item");
+            if (item && items.indexOf(item) === -1) {
+                items.push(item);
+            }
+        }
+        return items;
+    }
+
+    function removeDcconFoldToggle() {
+        var button = document.querySelector(".comment-dccon-block-toggle");
+        if (button) {
+            button.remove();
+        }
+    }
+
+    function updateDcconFoldToggle(button, count) {
+        button.setAttribute("aria-expanded", dcconFoldShowing ? "true" : "false");
+        button.textContent = dcconFoldShowing ? "차단된 이모티콘 숨기기" : "차단된 이모티콘 보기 (" + count + ")";
+    }
+
+    function ensureDcconFoldToggle(count) {
+        var shell = document.querySelector(".comment-shell");
+        if (!shell || !count) {
+            removeDcconFoldToggle();
+            return null;
+        }
+        var button = document.querySelector(".comment-dccon-block-toggle");
+        if (!button) {
+            button = document.createElement("button");
+            button.type = "button";
+            button.className = "comment-spam-toggle comment-dccon-block-toggle";
+            button.addEventListener("click", function () {
+                dcconFoldShowing = !dcconFoldShowing;
+                syncDcconCommentFold(true);
+            });
+            var title = shell.querySelector("h2");
+            if (title) {
+                title.insertAdjacentElement("afterend", button);
+            } else {
+                shell.prepend(button);
+            }
+        }
+        updateDcconFoldToggle(button, count);
+        return button;
+    }
+
+    function syncDcconCommentFold(isBlocked) {
+        var items = dcconCommentItems();
+        var i;
+        if (!isBlocked || !items.length) {
+            removeDcconFoldToggle();
+            for (i = 0; i < items.length; i += 1) {
+                items[i].classList.remove("comment-dccon-block-hidden", "comment-spam-highlight");
+            }
+            hydrateDccons(document, false);
+            return;
+        }
+
+        ensureDcconFoldToggle(items.length);
+        for (i = 0; i < items.length; i += 1) {
+            items[i].classList.toggle("comment-dccon-block-hidden", !dcconFoldShowing);
+            items[i].classList.toggle("comment-spam-highlight", dcconFoldShowing);
+            hydrateDccons(items[i], !dcconFoldShowing);
+        }
+    }
+
     function applyDcconBlock(isBlocked, shouldSave) {
         var blocked = !!isBlocked;
         document.documentElement.dataset.dcconBlocked = blocked ? "true" : "false";
         if (document.body) {
             document.body.dataset.dcconBlocked = blocked ? "true" : "false";
         }
-        hydrateDccons(document, blocked);
+        if (!blocked) {
+            dcconFoldShowing = false;
+        }
+        syncDcconCommentFold(blocked);
         updateDcconToggle(blocked);
         if (shouldSave) {
             saveDcconBlocked(blocked);

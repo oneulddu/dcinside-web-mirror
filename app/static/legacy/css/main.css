@@ -1200,22 +1200,6 @@ a {
     max-width: 100%;
 }
 
-.dccon-blocked-note {
-    display: none;
-    min-height: 36px;
-    align-items: center;
-    border: 1px solid var(--shell-border);
-    border-radius: var(--radius-sm);
-    background: var(--surface-soft);
-    color: var(--text-soft);
-    font-size: 0.8125rem;
-    padding: 0 12px;
-}
-
-html[data-dccon-blocked='true'] .dccon-blocked-note {
-    display: inline-flex;
-}
-
 .comment-meta {
     margin-top: 14px;
     display: flex;
@@ -1243,6 +1227,10 @@ html[data-dccon-blocked='true'] .dccon-blocked-note {
 }
 
 .comment-spam-hidden {
+    display: none !important;
+}
+
+.comment-dccon-block-hidden {
     display: none !important;
 }
 

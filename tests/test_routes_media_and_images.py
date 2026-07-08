@@ -1651,7 +1651,7 @@ def test_theme_toggle_persists_and_updates_accessibility_state():
     assert "--blue: #3182f6;" in style
 
 
-def test_dccon_block_toggle_persists_and_prevents_initial_image_src(monkeypatch):
+def test_dccon_block_toggle_folds_comments_and_prevents_initial_image_src(monkeypatch):
     async def fake_async_read(pid, board, kind=None, recommend=0, **kwargs):
         return (
             {
@@ -1696,15 +1696,21 @@ def test_dccon_block_toggle_persists_and_prevents_initial_image_src(monkeypatch)
     assert not dccon.has_attr("src")
     assert dccon["data-dccon-src"].startswith("/media?src=https")
     assert dccon.has_attr("hidden")
-    assert soup.select_one(".dccon-blocked-note").get_text(strip=True) == "디시콘 차단됨"
+    assert soup.select_one(".dccon-blocked-note") is None
+    assert "이모티콘 자동 차단 전환" in template
+    assert "이모티콘 자동 차단 전환" in legacy_template
     assert 'window.localStorage.getItem("mirror_dccon_block_v1") === "1"' in template
     assert 'window.localStorage.getItem("mirror_dccon_block_v1") === "1"' in legacy_template
     assert 'DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1"' in script
     assert 'DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1"' in legacy_script
     assert 'image.removeAttribute("src")' in script
     assert 'image.removeAttribute("src")' in legacy_script
-    assert 'html[data-dccon-blocked="true"] .dccon-blocked-note' in style
-    assert "html[data-dccon-blocked='true'] .dccon-blocked-note" in legacy_style
+    assert "차단된 이모티콘 보기" in script
+    assert "차단된 이모티콘 보기" in legacy_script
+    assert "comment-dccon-block-hidden" in script
+    assert "comment-dccon-block-hidden" in legacy_script
+    assert ".comment-dccon-block-hidden" in style
+    assert ".comment-dccon-block-hidden" in legacy_style
 
 
 def test_read_passes_head_id_to_initial_document_fetch(monkeypatch):
