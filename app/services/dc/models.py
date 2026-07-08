@@ -6,8 +6,8 @@ GET_HEADERS = {
     "User-Agent": MOBILE_USER_AGENT,
 }
 GALLERY_POSTS_COOKIES = {
-    "__gat_mobile_search": 1,
-    "list_count": 200,
+    "__gat_mobile_search": "1",
+    "list_count": "200",
 }
 
 
@@ -65,7 +65,7 @@ class Document:
         self.embedded_comments = list(embedded_comments or [])
         self.embedded_comment_total = embedded_comment_total
     def __str__(self):
-        return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
+        return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title} +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
 
 class Comment:
     __slots__ = ["id", "parent_id", "author", "author_id", "author_role", "contents", "dccon", "voice", "time", "is_reply"]
@@ -100,7 +100,7 @@ class Image:
         headers["Referer"] = "https://m.dcinside.com/board/{}/{}".format(self.board_id, self.document_id)
         async with self.session.get(self.src, cookies=GALLERY_POSTS_COOKIES, headers=headers) as res:
             bytes = await res.read()
-            ext = filetype.guess(bytes).extension
+            guessed = filetype.guess(bytes)
+            ext = guessed.extension if guessed else "bin"
             with open(path + '.' + ext, 'wb') as f:
                 f.write(bytes)
-

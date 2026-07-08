@@ -163,7 +163,6 @@ def is_public_hostname(hostname):
     # repeated bad lookups without weakening the allow path.
     if not result:
         with _PUBLIC_HOST_CACHE_LOCK:
-            _prune_public_host_cache_locked(now)
             _PUBLIC_HOST_CACHE[host] = {"value": False, "expires_at": now + MEDIA_DNS_CACHE_TTL}
             _prune_public_host_cache_locked(now)
     return result

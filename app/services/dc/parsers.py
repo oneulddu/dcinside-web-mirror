@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlparse
 
 import lxml.etree
@@ -1146,16 +1146,22 @@ class ParserMixin:
         )
 
     def __parse_time(self, time): 
+        def fill_missing_year(parsed):
+            value = parsed.replace(year=today.year)
+            if value > today + timedelta(days=1):
+                value = value.replace(year=today.year - 1)
+            return value
+
         try:
             today = datetime.now() 
             if len(time) <= 5: 
                 if time.find(":") > 0:
                     return datetime.strptime(time, "%H:%M").replace(year=today.year, month=today.month, day=today.day)
                 else:
-                    return datetime.strptime(time, "%m.%d").replace(year=today.year, hour=23, minute=59, second=59)
+                    return fill_missing_year(datetime.strptime(time, "%m.%d").replace(hour=23, minute=59, second=59))
             elif len(time) <= 11:
                 if time.find(":") > 0:
-                    return datetime.strptime(time, "%m.%d %H:%M").replace(year=today.year)
+                    return fill_missing_year(datetime.strptime(time, "%m.%d %H:%M"))
                 else:
                     try:
                         return datetime.strptime(time, "%y.%m.%d").replace(year=today.year, hour=23, minute=59, second=59)
@@ -1165,7 +1171,7 @@ class ParserMixin:
                 if time.count(".") >= 2:
                     return datetime.strptime(time, "%Y.%m.%d %H:%M")
                 else:
-                    return datetime.strptime(time, "%m.%d %H:%M:%S").replace(year=today.year)
+                    return fill_missing_year(datetime.strptime(time, "%m.%d %H:%M:%S"))
             else:
                 if "." in time:
                     return datetime.strptime(time, "%Y.%m.%d %H:%M:%S")
