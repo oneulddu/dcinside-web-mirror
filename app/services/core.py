@@ -5,13 +5,10 @@ import time
 
 from . import dc_api
 from .async_bridge import dc_api_context
-
-
-def _env_int(name, default):
-    try:
-        return int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
+from .cache_utils import cache_get as _shared_cache_get
+from .cache_utils import cache_prune as _shared_cache_prune
+from .cache_utils import env_int as _env_int
+from .cache_utils import safe_int as _safe_int
 
 
 def _env_bool(name, default=False):
@@ -60,13 +57,6 @@ _AUTHOR_CODE_SUFFIX_RE = re.compile(r"\(([^()\s]{1,64})\)\s*$")
 _AUTHOR_CODE_OPEN_RE = re.compile(r"\(([^()\s]{1,64})$")
 _ANON_NAME_RE = re.compile(r"ㅇㅇ(\d*)")
 _TIME_SECONDS_RE = re.compile(r"(\b\d{1,2}:\d{2}):\d{2}(?:\.\d+)?")
-
-
-def _safe_int(value, default=0):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _clean_author_code(code):
@@ -188,27 +178,11 @@ def _index_item_to_dict(item):
 
 
 def _cache_get(cache, lock, key):
-    now = time.time()
-    with lock:
-        entry = cache.get(key)
-        if not entry:
-            return None
-        if entry["expires_at"] < now:
-            cache.pop(key, None)
-            return None
-        return entry["value"]
+    return _shared_cache_get(cache, lock, key)
 
 
 def _cache_prune(cache, now, max_items):
-    expired_keys = [key for key, entry in cache.items() if entry["expires_at"] < now]
-    for key in expired_keys:
-        cache.pop(key, None)
-    overflow = len(cache) - max(max_items, 0)
-    if overflow <= 0:
-        return
-    oldest_keys = sorted(cache, key=lambda key: cache[key]["expires_at"])[:overflow]
-    for key in oldest_keys:
-        cache.pop(key, None)
+    _shared_cache_prune(cache, now, max_items)
 
 
 def _should_prune_cache(cache, now, max_items):
