@@ -2,7 +2,8 @@ import pytest
 
 from app.services import core
 from app.services.core import _fill_missing_author_code
-from app.services.dc_api import API, DocumentIndex
+from app.services.dc.api import API
+from app.services.dc.models import DocumentIndex
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
-from . import dc_api
+from .dc import api as dc_api
 
 
 def _env_int(name, default):

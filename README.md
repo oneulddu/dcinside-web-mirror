@@ -145,7 +145,7 @@ MIRROR_PORT=8080
 flowchart TD
     A["사용자 브라우저"] --> B["Flask routes.py"]
     B --> C["core.py<br/>캐시 · 게시판 · 게시글 · 관련 글"]
-    C --> D["dc_api.py<br/>aiohttp + lxml 스크래핑"]
+    C --> D["dc/api.py<br/>aiohttp + lxml 스크래핑"]
     D --> E["DCinside<br/>m.dcinside.com · gall.dcinside.com"]
     E --> D
     D --> C
@@ -159,7 +159,7 @@ flowchart TD
 
 1. 사용자가 게시판 / 글 주소에 접속합니다.
 2. Flask 라우트가 입력값을 정규화하고 비동기 작업을 시작합니다.
-3. `core.py`가 캐시를 확인한 뒤 부족한 부분만 `dc_api.py`로 조회합니다.
+3. `core.py`가 캐시를 확인한 뒤 부족한 부분만 `dc/api.py`로 조회합니다.
 4. 스크래퍼가 DCinside HTML에서 게시글·댓글·이미지를 추출합니다.
 5. 본문 HTML은 허용 목록 기반으로 정리되어 XSS를 차단합니다.
 6. 이미지·영상은 `/media`, `/movie` 프록시 주소로 다시 쓰여 브라우저로 전달됩니다.
@@ -188,7 +188,7 @@ mirror/
 │   ├── services/
 │   │   ├── async_bridge.py    # 동기 ↔ asyncio 연결
 │   │   ├── core.py            # 게시판·게시글·관련 글 + 캐시
-│   │   ├── dc_api.py          # DCinside 비동기 스크래퍼
+│   │   ├── dc/api.py          # DCinside 비동기 스크래퍼
 │   │   ├── heung.py           # 흥한 갤러리 + 파일 캐시
 │   │   ├── html_sanitizer.py  # 본문 정리 · 이미지 주소 재작성
 │   │   ├── media_proxy.py     # 미디어 프록시 + SSRF 검증
@@ -318,7 +318,7 @@ make test
 
 ## 🛠️ 기술 스택
 
-`Python 3.9+` · `Flask 3.1` · `Gunicorn 23` · `aiohttp` · `asgiref` · `lxml` · `BeautifulSoup4` · `Jinja2` · `Pretendard` · `PM2` · `pytest` · `GitHub Actions`
+`Python 3.9+` · `Flask 3.1` · `Gunicorn 23` · `aiohttp` · `lxml` · `BeautifulSoup4` · `Jinja2` · `SUIT` · `PM2` · `pytest` · `GitHub Actions`
 
 <br/>
 

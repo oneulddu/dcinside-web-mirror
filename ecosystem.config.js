@@ -7,7 +7,7 @@ module.exports = {
       interpreter: 'none',
       cwd: '/home/ubuntu/mirror',
       watch: false,
-      ignore_watch: ['.git', 'logs', '__pycache__', '*.pyc', '.venv', 'venv', 'legacy', 'instance'],
+      ignore_watch: ['.git', 'logs', '__pycache__', '*.pyc', '.venv', 'venv', 'instance'],
       autorestart: true,
       max_restarts: 20,
       restart_delay: 1000,

@@ -128,10 +128,6 @@ def normalize_safe_iframe_src(value):
     return None
 
 
-def is_safe_iframe_src(value):
-    return normalize_safe_iframe_src(value) is not None
-
-
 def default_iframe_title(src):
     parsed = _safe_urlparse(src)
     if parsed is None:

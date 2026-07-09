@@ -524,18 +524,6 @@ class ParserMixin:
                 return match.group(1).strip()
         return None
 
-    def __upsert_gallery(self, gallerys, board_name, board_id):
-        if not board_name or not board_id:
-            return
-        current = gallerys.get(board_name)
-        if current is None:
-            gallerys[board_name] = board_id
-            return
-        if current == board_id:
-            return
-        # Avoid dropping one of duplicated names by attaching board_id.
-        gallerys[f"{board_name} ({board_id})"] = board_id
-
     def __parse_legacy_mobile_board_row(self, doc, board_id, kind=None, recommend=False, is_mobile_source=True):
         href = ""
         title = ""
@@ -891,14 +879,6 @@ class ParserMixin:
             if not (self.__pick_document_image_src(img) or "").startswith("https://img.iacstatic.co.kr")
         ]
 
-    def __real_document_image_sources(self, doc_content):
-        sources = []
-        for img in self.__document_image_elements(doc_content):
-            src = self.__pick_document_image_src(img)
-            if src and not self.__is_placeholder_document_image_src(src):
-                sources.append(src)
-        return sources
-
     def __real_document_video_sources(self, doc_content):
         sources = []
         for video in doc_content.xpath(".//video"):
@@ -992,9 +972,6 @@ class ParserMixin:
         if not parsed.scheme and not parsed.netloc:
             return parsed._replace(scheme="https", netloc="m.dcinside.com").geturl()
         return None
-
-    def __is_poll_url(self, src):
-        return self.__normalize_poll_url(src) is not None
 
     def __poll_card_element(self, src, poll=None):
         card = lxml.html.Element("div")

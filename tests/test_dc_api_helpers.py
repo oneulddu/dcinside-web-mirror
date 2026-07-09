@@ -4,7 +4,8 @@ import lxml.html
 import pytest
 
 from app.services.dc import parsers
-from app.services.dc_api import API, Document, GET_HEADERS, MOBILE_USER_AGENT, POST_HEADERS, XML_HTTP_REQ_HEADERS, to_int
+from app.services.dc.api import API, GET_HEADERS, MOBILE_USER_AGENT, XML_HTTP_REQ_HEADERS, to_int
+from app.services.dc.models import Document
 
 
 def test_to_int_extracts_numbers_and_falls_back_safely():
@@ -18,7 +19,6 @@ def test_mobile_request_headers_use_ios_user_agent():
     assert "iPhone" in MOBILE_USER_AGENT
     assert GET_HEADERS["User-Agent"] == MOBILE_USER_AGENT
     assert XML_HTTP_REQ_HEADERS["User-Agent"] == MOBILE_USER_AGENT
-    assert POST_HEADERS["User-Agent"] == MOBILE_USER_AGENT
 
 
 def test_document_str_does_not_require_comment_count():

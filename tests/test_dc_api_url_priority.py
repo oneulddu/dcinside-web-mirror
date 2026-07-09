@@ -5,9 +5,8 @@ import lxml.html
 import pytest
 from yarl import URL
 
-from app.services import dc_api
-from app.services.dc import api as dc_api_impl
-from app.services.dc_api import API
+from app.services.dc import api as dc_api
+from app.services.dc.api import API
 
 
 def _pc_board_html(doc_id="123", title="pc title"):
@@ -46,16 +45,16 @@ def test_cache_set_defers_prune_until_cache_exceeds_limit(monkeypatch):
     def fake_prune(cache, now, max_items):
         prune_calls.append((dict(cache), max_items))
 
-    monkeypatch.setattr(dc_api_impl, "cache_prune", fake_prune)
+    monkeypatch.setattr(dc_api, "cache_prune", fake_prune)
     cache = {}
     lock = threading.Lock()
 
-    dc_api_impl.cache_set(cache, lock, "a", "value", ttl=30, max_items=2)
-    dc_api_impl.cache_set(cache, lock, "b", "value", ttl=30, max_items=2)
+    dc_api.cache_set(cache, lock, "a", "value", ttl=30, max_items=2)
+    dc_api.cache_set(cache, lock, "b", "value", ttl=30, max_items=2)
 
     assert prune_calls == []
 
-    dc_api_impl.cache_set(cache, lock, "c", "value", ttl=30, max_items=2)
+    dc_api.cache_set(cache, lock, "c", "value", ttl=30, max_items=2)
 
     assert len(prune_calls) == 1
     assert set(prune_calls[0][0]) == {"a", "b", "c"}
@@ -831,49 +830,6 @@ def _make_fake_request_text(responses):
     return fake_request_text
 
 
-class _FakeResponse:
-    def __init__(self, text, status=200, headers=None, url=""):
-        self._text = text
-        self.status = status
-        self.headers = headers or {}
-        self.url = url
-
-    async def text(self):
-        return self._text
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-
-class _FakeSession:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.requests = []
-
-    def post(self, url, headers=None, data=None, cookies=None):
-        self.requests.append(("POST", url, data))
-        if not self.responses:
-            raise AssertionError(f"unexpected POST: {url}")
-        expected_url, response = self.responses.pop(0)
-        assert url == expected_url
-        return response
-
-
-def _write_form_html():
-    return """
-    <html><head>
-      <meta name="csrf-token" content="csrf-token">
-    </head><body>
-      <a class="gall-tit-lnk">테스트갤</a>
-      <input id="mobile_key" value="mobile-key">
-      <input class="hide-robot" name="robot-check">
-    </body></html>
-    """
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("start_html", "expected_text"),
@@ -945,100 +901,6 @@ async def test_fetch_parsed_from_urls_preserves_recommend_on_top_level_redirect(
     assert requested_urls == [start_url, target_url]
     assert used_url == target_url
     assert parsed.xpath("string(//*[@id='ok'])") == "recommend-ready"
-
-
-def test_password_check_response_rejects_json_and_alert_failures():
-    api = API.__new__(API)
-
-    api._API__validate_password_check_response('{"result": true}')
-
-    with pytest.raises(Exception, match="비밀번호"):
-        api._API__validate_password_check_response('{"result": false, "msg": "비밀번호가 틀립니다"}')
-
-    with pytest.raises(Exception, match="오류"):
-        api._API__validate_password_check_response("<script>alert('오류입니다');</script>")
-
-
-def test_write_response_extracts_document_id_only_from_clear_signals():
-    api = API.__new__(API)
-
-    assert (
-        api._API__extract_document_id_from_write_response(
-            "<script>location.href='/board/test/123';</script>"
-        )
-        == "123"
-    )
-    assert api._API__extract_document_id_from_write_response('{"no":"456"}') == "456"
-    assert api._API__extract_document_id_from_write_response("<html>이전 글 no=999</html>") is None
-
-
-@pytest.mark.asyncio
-async def test_modify_document_rejects_2xx_alert_error_page():
-    api = API.__new__(API)
-
-    async def fake_access(*args, **kwargs):
-        return "con-key"
-
-    api._API__access = fake_access
-    api.session = _FakeSession(
-        [
-            (
-                "https://m.dcinside.com/ajax/w_filter",
-                _FakeResponse('{"result": true}'),
-            ),
-            (
-                "https://mupload.dcinside.com/write_new.php",
-                _FakeResponse("<script>alert('오류입니다'); location.href='/board/test/123';</script>"),
-            ),
-        ]
-    )
-
-    with pytest.raises(Exception, match="오류"):
-        await api._API__write_or_modify_document(
-            "test",
-            title="제목",
-            contents="본문",
-            name="닉네임",
-            password="비밀번호",
-            intermediate=_write_form_html(),
-            intermediate_referer="https://m.dcinside.com/write/test/modify/123",
-            document_id="123",
-        )
-
-
-@pytest.mark.asyncio
-async def test_modify_document_requires_clear_success_signal():
-    api = API.__new__(API)
-
-    async def fake_access(*args, **kwargs):
-        return "con-key"
-
-    api._API__access = fake_access
-    api.session = _FakeSession(
-        [
-            (
-                "https://m.dcinside.com/ajax/w_filter",
-                _FakeResponse('{"result": true}'),
-            ),
-            (
-                "https://mupload.dcinside.com/write_new.php",
-                _FakeResponse("<script>alert('수정되었습니다'); location.href='/board/test/123';</script>"),
-            ),
-        ]
-    )
-
-    document_id = await api._API__write_or_modify_document(
-        "test",
-        title="제목",
-        contents="본문",
-        name="닉네임",
-        password="비밀번호",
-        intermediate=_write_form_html(),
-        intermediate_referer="https://m.dcinside.com/write/test/modify/123",
-        document_id="123",
-    )
-
-    assert document_id == "123"
 
 
 @pytest.mark.asyncio

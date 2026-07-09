@@ -1,16 +1,3 @@
-import filetype
-
-
-MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-GET_HEADERS = {
-    "User-Agent": MOBILE_USER_AGENT,
-}
-GALLERY_POSTS_COOKIES = {
-    "__gat_mobile_search": "1",
-    "list_count": "200",
-}
-
-
 class DocumentIndex:
     __slots__ = ["id", "subject", "title", "board_id", "has_image", "has_video", "author", "author_id", "author_role", "time", "time_text", "time_is_precise", "view_count", "comment_count", "voteup_count",
             "document", "comments", "isimage", "isvideo", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
@@ -90,17 +77,3 @@ class Image:
         self.document_id = document_id
         self.board_id = board_id
         self.session = session
-    async def load(self):
-        headers = GET_HEADERS.copy()
-        headers["Referer"] = "https://m.dcinside.com/board/{}/{}".format(self.board_id, self.document_id)
-        async with self.session.get(self.src, cookies=GALLERY_POSTS_COOKIES, headers=headers) as res:
-            return await res.read()
-    async def download(self, path):
-        headers = GET_HEADERS.copy()
-        headers["Referer"] = "https://m.dcinside.com/board/{}/{}".format(self.board_id, self.document_id)
-        async with self.session.get(self.src, cookies=GALLERY_POSTS_COOKIES, headers=headers) as res:
-            bytes = await res.read()
-            guessed = filetype.guess(bytes)
-            ext = guessed.extension if guessed else "bin"
-            with open(path + '.' + ext, 'wb') as f:
-                f.write(bytes)

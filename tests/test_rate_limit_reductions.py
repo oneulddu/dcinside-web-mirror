@@ -4,7 +4,7 @@ import pytest
 
 from app.services import async_bridge
 from app.services import core
-from app.services.dc_api import Comment, DocumentIndex
+from app.services.dc.models import Comment, DocumentIndex
 
 
 def _index_item(doc_id, *, author_id=None, is_mobile_source=False):
@@ -360,9 +360,10 @@ async def test_async_index_does_not_fetch_documents_for_missing_author_codes_by_
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
-    rows = await core.async_index(1, "test", 0)
+    rows, categories = await core.async_index_with_head_categories(1, "test", 0)
 
     assert [row["id"] for row in rows] == ["123"]
+    assert categories == []
     assert rows[0]["author_code"] is None
     assert FakeAPI.instances[0].board_calls == 1
     assert FakeAPI.instances[0].document_calls == 0

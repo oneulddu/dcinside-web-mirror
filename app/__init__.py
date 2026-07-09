@@ -115,6 +115,3 @@ def create_app():
     _init_static_cache_busting(app)
     _init_response_compression(app)
     return app
-
-
-app = create_app()
