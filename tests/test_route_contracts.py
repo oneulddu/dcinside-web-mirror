@@ -2,7 +2,7 @@ from urllib.parse import parse_qsl, urlparse
 
 from bs4 import BeautifulSoup
 
-from app import create_app, routes, routes_v2
+from app import create_app, routes
 
 
 async def _board_payload(*args, **kwargs):
@@ -77,36 +77,33 @@ def test_screen_and_service_route_map_contract():
     app = create_app()
 
     assert _rule_endpoints(app) == {
-        "/": "v2.index",
-        "/board": "v2.board",
+        "/": "main.index",
+        "/board": "main.board",
         "/board/times": "main.board_times",
         "/favicon.ico": "main.favicon",
         "/healthz": "main.healthz",
-        "/legacy/": "main.index",
-        "/legacy/board": "main.board",
-        "/legacy/read": "main.read",
-        "/legacy/recent": "main.recent",
+        "/legacy/": "main.index_compat_redirect",
+        "/legacy/board": "main.board_compat_redirect",
+        "/legacy/read": "main.read_compat_redirect",
+        "/legacy/recent": "main.recent_compat_redirect",
         "/media": "main.media",
         "/movie": "main.movie",
-        "/read": "v2.read",
+        "/read": "main.read",
         "/read/related": "main.read_related",
-        "/recent": "v2.recent",
-        "/v2/": "v2.index_v2_alias",
-        "/v2/board": "v2.board_v2_alias",
-        "/v2/read": "v2.read_v2_alias",
-        "/v2/recent": "v2.recent_v2_alias",
+        "/recent": "main.recent",
+        "/v2/": "main.index_compat_redirect",
+        "/v2/board": "main.board_compat_redirect",
+        "/v2/read": "main.read_compat_redirect",
+        "/v2/recent": "main.recent_compat_redirect",
     }
+    assert all(rule.endpoint.startswith("main.") for rule in app.url_map.iter_rules() if rule.endpoint != "static")
 
 
 def test_screen_status_redirect_cookie_and_html_contract(monkeypatch):
     monkeypatch.setattr(routes, "get_heung_galleries", _gallery_payload)
     monkeypatch.setattr(routes, "search_galleries", lambda query: [])
-    monkeypatch.setattr(routes, "async_index_with_head_categories", _board_payload)
+    monkeypatch.setattr(routes, "_load_board_payload", _board_payload)
     monkeypatch.setattr(routes, "async_read", _read_payload)
-    monkeypatch.setattr(routes_v2, "get_heung_galleries", _gallery_payload)
-    monkeypatch.setattr(routes_v2, "search_galleries", lambda query: [])
-    monkeypatch.setattr(routes_v2, "_load_board_payload", _board_payload)
-    monkeypatch.setattr(routes_v2, "async_read", _read_payload)
 
     app = create_app()
     client = app.test_client()
@@ -133,23 +130,24 @@ def test_screen_status_redirect_cookie_and_html_contract(monkeypatch):
     assert {"recent_galleries", "recent_galleries_key"} <= _cookie_names(read_response)
 
     for alias, target in (
-        ("/v2/?heung_q=a&x=1&x=2", "/?heung_q=a&x=1"),
-        ("/v2/board?board=test&page=2&x=1&x=2", "/board?board=test&page=2&x=1"),
-        ("/v2/read?board=test&pid=123&x=1&x=2", "/read?board=test&pid=123&x=1"),
-        ("/v2/recent?x=1&x=2", "/recent?x=1"),
+        ("/v2/?heung_q=a&x=1&x=2", "/?heung_q=a&x=1&x=2"),
+        ("/v2/board?board=test&page=2&x=1&x=2", "/board?board=test&page=2&x=1&x=2"),
+        ("/v2/read?board=test&pid=123&x=1&x=2", "/read?board=test&pid=123&x=1&x=2"),
+        ("/v2/recent?x=1&x=2", "/recent?x=1&x=2"),
+        ("/legacy/?heung_q=a&x=1&x=2", "/?heung_q=a&x=1&x=2"),
+        ("/legacy/board?board=test&page=2&x=1&x=2", "/board?board=test&page=2&x=1&x=2"),
+        ("/legacy/read?board=test&pid=123&x=1&x=2", "/read?board=test&pid=123&x=1&x=2"),
+        ("/legacy/recent?x=1&x=2", "/recent?x=1&x=2"),
     ):
-        response = client.get(alias, follow_redirects=False)
-        assert response.status_code == 308
-        assert response.headers["Location"] == target
-        assert parse_qsl(urlparse(response.headers["Location"]).query) == parse_qsl(urlparse(target).query)
+        for method in ("GET", "HEAD"):
+            response = client.open(alias, method=method, follow_redirects=False)
+            assert response.status_code == 308
+            assert response.headers["Location"] == target
+            assert parse_qsl(urlparse(response.headers["Location"]).query) == parse_qsl(urlparse(target).query)
+            assert _cookie_names(response) == set()
 
-    for legacy_path, expected_cookies in (
-        ("/legacy/?heung_q=a&x=1&x=2", set()),
-        ("/legacy/board?board=test&page=2&x=1&x=2", {"recent_galleries", "recent_galleries_key"}),
-        ("/legacy/read?board=test&pid=123&x=1&x=2", {"recent_galleries", "recent_galleries_key"}),
-        ("/legacy/recent?x=1&x=2", set()),
-    ):
-        response = client.get(legacy_path, follow_redirects=False)
-        assert response.status_code == 200
-        assert expected_cookies <= _cookie_names(response)
-        assert response.mimetype == "text/html"
+    exact_query = "x=1&x=2&blank=&encoded=%2F%20"
+    response = client.get(f"/legacy/read?{exact_query}", follow_redirects=False)
+    assert response.headers["Location"] == f"/read?{exact_query}"
+    assert client.get("/legacy/unknown", follow_redirects=False).status_code == 404
+    assert client.get("/static/legacy/css/main.css", follow_redirects=False).status_code == 404

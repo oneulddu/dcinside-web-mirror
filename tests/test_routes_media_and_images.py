@@ -13,11 +13,13 @@ from flask import Response, jsonify
 
 from app import create_app
 from app import routes
-from app import routes_v2
 from app.services import heung
 from app.services import html_sanitizer
 from app.services import media_proxy
 from app.services import recent
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class DummyUpstream:
@@ -1296,7 +1298,7 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
     assert seen_scan_limits == [1, 1]
 
 
-def test_v2_board_renders_v2_assets_and_links(monkeypatch):
+def test_board_renders_current_assets_and_links(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         assert page == 3
         assert board == "test"
@@ -1324,7 +1326,7 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
             }
         ], [{"head_id": "10", "label": "말머리", "active": True}]
 
-    monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
+    monkeypatch.setattr(routes, "_load_board_payload", fake_board_payload)
     app = create_app()
 
     response = app.test_client().get(
@@ -1348,8 +1350,8 @@ def test_v2_board_renders_v2_assets_and_links(monkeypatch):
     assert soup.select_one(".author-text.author-role-manager") is not None
 
 
-def test_v2_manager_author_color_uses_role_token():
-    style = Path(routes.BASE_DIR, "app/static/css/main.css").read_text()
+def test_manager_author_color_uses_role_token():
+    style = (PROJECT_ROOT / "app/static/css/main.css").read_text()
 
     assert "--role-manager: #FF6B00;" in style
     assert "--role-submanager: #3182F6;" in style
@@ -1358,7 +1360,7 @@ def test_v2_manager_author_color_uses_role_token():
     assert ".author-text.author-role-manager,\n.author-text.author-role-submanager {\n    color: var(--accent);" not in style
 
 
-def test_v2_index_board_links_include_gallery_name(monkeypatch):
+def test_index_board_links_include_gallery_name(monkeypatch):
     def fake_heung_galleries():
         return [
             {
@@ -1369,7 +1371,7 @@ def test_v2_index_board_links_include_gallery_name(monkeypatch):
             }
         ], 1
 
-    monkeypatch.setattr(routes_v2, "get_heung_galleries", fake_heung_galleries)
+    monkeypatch.setattr(routes, "get_heung_galleries", fake_heung_galleries)
     app = create_app()
 
     response = app.test_client().get("/")
@@ -1382,13 +1384,13 @@ def test_v2_index_board_links_include_gallery_name(monkeypatch):
     assert query["gallery_name"] == ["특이점이 온다"]
 
 
-def test_v2_board_visit_stores_gallery_name_for_recent(monkeypatch):
+def test_board_visit_stores_gallery_name_for_recent(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [], []
 
-    monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
-    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
-    monkeypatch.setattr(routes_v2, "search_galleries", lambda query: [])
+    monkeypatch.setattr(routes, "_load_board_payload", fake_board_payload)
+    monkeypatch.setattr(routes, "get_heung_galleries", lambda: ([], 1))
+    monkeypatch.setattr(routes, "search_galleries", lambda query: [])
     app = create_app()
     client = app.test_client()
 
@@ -1437,7 +1439,7 @@ def test_board_renders_date_only_time_for_async_hydration(monkeypatch):
     assert soup.select_one("script[src*='board_time_hydrator.js']") is not None
 
 
-def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
+def test_read_social_meta_uses_canonical_url(monkeypatch):
     async def fake_async_read(pid, board, kind=None, recommend=0, head_id=None, **kwargs):
         assert pid == 123
         assert board == "test"
@@ -1459,7 +1461,7 @@ def test_v2_read_social_meta_uses_v2_canonical_url(monkeypatch):
             ["https://images.dcinside.com/post-a.jpg"],
         )
 
-    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
     app = create_app()
     app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
 
@@ -1749,7 +1751,7 @@ def test_read_renders_embedded_related_post_icons_and_subject(monkeypatch):
             [],
         )
 
-    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=100")
@@ -1790,7 +1792,7 @@ def test_read_renders_social_preview_meta_with_public_image_url(monkeypatch):
             ["https://images.dcinside.com/post-a.jpg"],
         )
 
-    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
     app = create_app()
     app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
 
@@ -1840,7 +1842,7 @@ def test_read_social_preview_skips_video_sources_for_image_meta(monkeypatch):
             ],
         )
 
-    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
     app = create_app()
     app.config["PUBLIC_BASE_URL"] = "https://mirror.example"
 
@@ -1960,14 +1962,14 @@ def test_read_rejects_non_positive_pid(monkeypatch):
     async def fail_async_read(*args, **kwargs):
         raise AssertionError("invalid pid must be rejected before upstream fetch")
 
-    monkeypatch.setattr(routes_v2, "async_read", fail_async_read)
+    monkeypatch.setattr(routes, "async_read", fail_async_read)
     app = create_app()
 
     assert app.test_client().get("/read?board=test&pid=0").status_code == 404
 
 
 def test_related_loader_appends_related_results_without_replacing_existing_rows():
-    script = Path(routes.BASE_DIR, "app/static/legacy/javascript/read_related_loader.js").read_text()
+    script = (PROJECT_ROOT / "app/static/javascript/read_related_loader.js").read_text()
 
     assert "function appendItems(" in script
     assert "[data-related-loader-status='1'], .empty-row" in script
@@ -1988,8 +1990,7 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "feed-recommend-icon" in script
     assert "post-subject" in script
     assert '"has_next"' in script
-    assert "clearLegacySessionCache()" in script
-    assert "window.sessionStorage.removeItem(key)" in script
+    assert "mirror:related:" not in script
     assert "cachedResult.items.length > 0" not in script
     assert "payload.ok === false" in script
     assert 'setButtonState(button, "idle");' in script
@@ -2002,7 +2003,7 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
 
 
 def test_board_time_hydrator_sends_rendered_post_ids():
-    script = Path(routes.BASE_DIR, "app/static/javascript/board_time_hydrator.js").read_text()
+    script = (PROJECT_ROOT / "app/static/javascript/board_time_hydrator.js").read_text()
 
     assert 'params.set("ids", postIds.join(","))' in script
     assert "var postIds = Object.keys(targets)" in script
@@ -2010,25 +2011,21 @@ def test_board_time_hydrator_sends_rendered_post_ids():
 
 
 def test_theme_toggle_persists_and_updates_accessibility_state():
-    template = Path(routes.BASE_DIR, "app/templates/legacy/base.html").read_text()
-    script = Path(routes.BASE_DIR, "app/static/legacy/javascript/read_state.js").read_text()
-    style = Path(routes.BASE_DIR, "app/static/legacy/css/main.css").read_text()
+    template = (PROJECT_ROOT / "app/templates/base.html").read_text()
+    script = (PROJECT_ROOT / "app/static/javascript/read_state.js").read_text()
+    style = (PROJECT_ROOT / "app/static/css/main.css").read_text()
 
     assert 'class="theme-toggle"' in template
-    assert 'aria-pressed="false"' in template
     assert 'window.localStorage.getItem("mirror_theme_v1") === "light"' in template
     assert 'root.dataset.theme = theme' in template
     assert 'THEME_STORAGE_KEY = "mirror_theme_v1"' in script
     assert "window.localStorage.setItem(THEME_STORAGE_KEY" in script
     assert "document.documentElement.dataset.theme" in script
     assert "body.dataset.theme" in script
-    assert "aria-pressed" in script
-    assert "aria-label" in script
+    assert 'button.setAttribute("aria-label", actionLabel)' in script
     assert "mirror-light-theme-overrides" not in script
-    # Light theme is now driven by a single token contract, not per-component overrides.
-    assert "html[data-theme='light'] {" in style
-    assert "--page-bg: #f2f4f6;" in style
-    assert "--blue: #3182f6;" in style
+    assert "--bg: #FFFFFF;" in style
+    assert "--accent: #3182F6;" in style
 
 
 def test_dccon_block_toggle_folds_comments_and_prevents_initial_image_src(monkeypatch):
@@ -2057,18 +2054,15 @@ def test_dccon_block_toggle_folds_comments_and_prevents_initial_image_src(monkey
             [],
         )
 
-    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=123")
     soup = BeautifulSoup(response.data, "html.parser")
     dccon = soup.select_one("img.dccon")
-    template = Path(routes.BASE_DIR, "app/templates/base.html").read_text()
-    legacy_template = Path(routes.BASE_DIR, "app/templates/legacy/base.html").read_text()
-    script = Path(routes.BASE_DIR, "app/static/javascript/read_state.js").read_text()
-    legacy_script = Path(routes.BASE_DIR, "app/static/legacy/javascript/read_state.js").read_text()
-    style = Path(routes.BASE_DIR, "app/static/css/main.css").read_text()
-    legacy_style = Path(routes.BASE_DIR, "app/static/legacy/css/main.css").read_text()
+    template = (PROJECT_ROOT / "app/templates/base.html").read_text()
+    script = (PROJECT_ROOT / "app/static/javascript/read_state.js").read_text()
+    style = (PROJECT_ROOT / "app/static/css/main.css").read_text()
 
     assert response.status_code == 200
     assert soup.select_one(".dccon-toggle") is not None
@@ -2078,19 +2072,12 @@ def test_dccon_block_toggle_folds_comments_and_prevents_initial_image_src(monkey
     assert dccon.has_attr("hidden")
     assert soup.select_one(".dccon-blocked-note") is None
     assert "이모티콘 자동 차단 전환" in template
-    assert "이모티콘 자동 차단 전환" in legacy_template
     assert 'window.localStorage.getItem("mirror_dccon_block_v1") === "1"' in template
-    assert 'window.localStorage.getItem("mirror_dccon_block_v1") === "1"' in legacy_template
     assert 'DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1"' in script
-    assert 'DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1"' in legacy_script
     assert 'image.removeAttribute("src")' in script
-    assert 'image.removeAttribute("src")' in legacy_script
     assert "차단된 이모티콘 보기" in script
-    assert "차단된 이모티콘 보기" in legacy_script
     assert "comment-dccon-block-hidden" in script
-    assert "comment-dccon-block-hidden" in legacy_script
     assert ".comment-dccon-block-hidden" in style
-    assert ".comment-dccon-block-hidden" in legacy_style
 
 
 def test_read_passes_head_id_to_initial_document_fetch(monkeypatch):
@@ -2115,7 +2102,7 @@ def test_read_passes_head_id_to_initial_document_fetch(monkeypatch):
             [],
         )
 
-    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=123&kind=minor&headid=10")
@@ -2163,7 +2150,7 @@ def test_read_omits_seconds_from_post_comment_and_related_times(monkeypatch):
             [],
         )
 
-    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=123")
@@ -2209,7 +2196,7 @@ def test_read_renders_embedded_related_posts_without_extra_related_request(monke
             [],
         )
 
-    monkeypatch.setattr(routes_v2, "async_read", fake_async_read)
+    monkeypatch.setattr(routes, "async_read", fake_async_read)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=123&recommend=1&source_page=2")
@@ -2225,7 +2212,7 @@ def test_read_renders_embedded_related_posts_without_extra_related_request(monke
 
 
 def test_comment_spam_filter_keeps_summary_even_when_every_comment_is_filtered():
-    script = Path(routes.BASE_DIR, "app/static/javascript/comment_spam_filter.js").read_text()
+    script = (PROJECT_ROOT / "app/static/javascript/comment_spam_filter.js").read_text()
 
     assert "hidden.length >= items.length" not in script
     assert "SHORT_REACTION_REPEAT_THRESHOLD" in script
@@ -2234,8 +2221,8 @@ def test_comment_spam_filter_keeps_summary_even_when_every_comment_is_filtered()
     assert 'li.classList.add("comment-spam-hidden")' in script
 
 
-def test_v2_related_loader_does_not_double_wrap_bracketed_subject():
-    script = Path(routes.BASE_DIR, "app/static/javascript/read_related_loader.js").read_text()
+def test_related_loader_does_not_double_wrap_bracketed_subject():
+    script = (PROJECT_ROOT / "app/static/javascript/read_related_loader.js").read_text()
 
     assert "function formatSubject" in script
     assert 'subject.charAt(0) === "["' in script
@@ -2285,7 +2272,7 @@ def test_recent_gallery_dedupes_by_recommend_context(monkeypatch):
 
 
 def test_recent_gallery_dedupes_missing_kind_against_specific_kind(monkeypatch):
-    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
+    monkeypatch.setattr(routes, "get_heung_galleries", lambda: ([], 1))
     app = create_app()
     client = app.test_client()
     client.set_cookie(
@@ -2313,7 +2300,7 @@ def test_recent_gallery_keeps_specific_kind_when_followup_visit_omits_kind(monke
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [], []
 
-    monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
+    monkeypatch.setattr(routes, "_load_board_payload", fake_board_payload)
     app = create_app()
     client = app.test_client()
     client.set_cookie(
@@ -2347,21 +2334,21 @@ def test_recent_gallery_old_cookie_without_recommend_defaults_to_normal():
     client = app.test_client()
     client.set_cookie(
         recent.RECENT_COOKIE_NAME,
-        _encode_recent_cookie([{"board": "legacy", "kind": "minor", "visited_at": 1}]),
+        _encode_recent_cookie([{"board": "old_cookie", "kind": "minor", "visited_at": 1}]),
     )
 
     response = client.get("/recent")
     soup = BeautifulSoup(response.data, "html.parser")
     query = parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)
 
-    assert query["board"] == ["legacy"]
+    assert query["board"] == ["old_cookie"]
     assert query["recommend"] == ["0"]
     assert query["kind"] == ["minor"]
 
 
-def test_v2_recent_gallery_renders_kind_labels_in_korean(monkeypatch):
-    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
-    monkeypatch.setattr(routes_v2, "search_galleries", lambda query: [])
+def test_recent_gallery_renders_kind_labels_in_korean(monkeypatch):
+    monkeypatch.setattr(routes, "get_heung_galleries", lambda: ([], 1))
+    monkeypatch.setattr(routes, "search_galleries", lambda query: [])
     app = create_app()
     client = app.test_client()
     client.set_cookie(
@@ -2383,15 +2370,15 @@ def test_v2_recent_gallery_renders_kind_labels_in_korean(monkeypatch):
     assert badges == ["마이너", "미니", "일반"]
 
 
-def test_v2_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
+def test_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
     def fake_heung_galleries():
         raise AssertionError("/recent should not load heung galleries while rendering")
 
     def fake_search_galleries(query):
         raise AssertionError("/recent should not search galleries while rendering")
 
-    monkeypatch.setattr(routes_v2, "get_heung_galleries", fake_heung_galleries)
-    monkeypatch.setattr(routes_v2, "search_galleries", fake_search_galleries)
+    monkeypatch.setattr(routes, "get_heung_galleries", fake_heung_galleries)
+    monkeypatch.setattr(routes, "search_galleries", fake_search_galleries)
     app = create_app()
     client = app.test_client()
     client.set_cookie(
@@ -2421,9 +2408,9 @@ def test_v2_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
     assert "dcbest" in rows[1].select_one(".feed-meta-left").get_text(" ", strip=True)
 
 
-def test_v2_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
-    monkeypatch.setattr(routes_v2, "get_heung_galleries", lambda: ([], 1))
-    monkeypatch.setattr(routes_v2, "search_galleries", lambda query: [])
+def test_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
+    monkeypatch.setattr(routes, "get_heung_galleries", lambda: ([], 1))
+    monkeypatch.setattr(routes, "search_galleries", lambda query: [])
     app = create_app()
     client = app.test_client()
     client.set_cookie(
@@ -2484,12 +2471,12 @@ def test_recent_route_tolerates_non_finite_cookie_timestamp():
     assert "안전한 최근 방문" in response.get_data(as_text=True)
 
 
-def test_v2_recent_gallery_uses_heung_cache_for_missing_names(monkeypatch):
+def test_recent_gallery_uses_heung_cache_for_missing_names(monkeypatch):
     def fail_search(query):
         raise AssertionError("/recent should not call search_galleries")
 
     monkeypatch.setattr(
-        routes_v2,
+        routes,
         "get_heung_galleries",
         lambda: (
             [
@@ -2502,7 +2489,7 @@ def test_v2_recent_gallery_uses_heung_cache_for_missing_names(monkeypatch):
             1,
         ),
     )
-    monkeypatch.setattr(routes_v2, "search_galleries", fail_search)
+    monkeypatch.setattr(routes, "search_galleries", fail_search)
     app = create_app()
     client = app.test_client()
     client.set_cookie(
@@ -2757,7 +2744,7 @@ def test_touch_recent_gallery_keeps_existing_name_when_new_visit_has_no_name(mon
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [], []
 
-    monkeypatch.setattr(routes_v2, "_load_board_payload", fake_board_payload)
+    monkeypatch.setattr(routes, "_load_board_payload", fake_board_payload)
     app = create_app()
     client = app.test_client()
     client.set_cookie(
@@ -2788,7 +2775,7 @@ def test_recent_gallery_ignores_bad_visited_at_in_cookie():
     client = app.test_client()
     client.set_cookie(
         recent.RECENT_COOKIE_NAME,
-        _encode_recent_cookie([{"board": "legacy", "kind": "minor", "visited_at": "bad"}]),
+        _encode_recent_cookie([{"board": "bad_time", "kind": "minor", "visited_at": "bad"}]),
     )
 
     response = client.get("/recent")
@@ -2816,10 +2803,10 @@ def test_recent_server_cache_prunes_expired_fallback():
     assert key not in recent.RECENT_SERVER_CACHE
 
 
-def test_recent_server_cache_accepts_legacy_list_shape():
+def test_recent_server_cache_discards_obsolete_list_shape():
     app = create_app()
     key = "visitor-test-key"
-    rows = [{"board": "legacy", "kind": None, "recommend": 0, "visited_at": 1}]
+    rows = [{"board": "obsolete", "kind": None, "recommend": 0, "visited_at": 1}]
     with recent.RECENT_SERVER_CACHE_LOCK:
         recent.RECENT_SERVER_CACHE.clear()
         recent.RECENT_SERVER_CACHE[key] = rows
@@ -2828,10 +2815,10 @@ def test_recent_server_cache_accepts_legacy_list_shape():
         "/recent",
         headers={"Cookie": f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={key}"},
     ):
-        assert recent.load_recent_entries() == rows
+        assert recent.load_recent_entries() == []
 
     with recent.RECENT_SERVER_CACHE_LOCK:
-        assert isinstance(recent.RECENT_SERVER_CACHE[key], dict)
+        assert key not in recent.RECENT_SERVER_CACHE
 
 
 def test_recent_server_cache_does_not_share_by_ip_and_user_agent():

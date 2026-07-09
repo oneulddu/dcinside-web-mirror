@@ -501,22 +501,6 @@
         }
     }
 
-    function clearLegacySessionCache() {
-        try {
-            if (!window.sessionStorage) {
-                return;
-            }
-            for (var i = window.sessionStorage.length - 1; i >= 0; i -= 1) {
-                var key = window.sessionStorage.key(i);
-                if (key && key.indexOf("mirror:related:") === 0) {
-                    window.sessionStorage.removeItem(key);
-                }
-            }
-        } catch (err) {
-            // 저장 공간 접근이 차단된 환경에서는 캐시 정리 없이 동작한다.
-        }
-    }
-
     function bindRelatedLoader() {
         var button = document.getElementById("related-load-button");
         var section = document.getElementById("related-section");
@@ -532,7 +516,6 @@
             renderedIds: renderedState.ids,
             lastPostId: renderedState.lastPostId
         };
-        clearLegacySessionCache();
         if (!button.dataset.defaultLabel) {
             button.dataset.defaultLabel = "더보기";
         }
