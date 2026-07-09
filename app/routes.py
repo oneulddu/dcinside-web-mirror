@@ -554,7 +554,14 @@ def media():
     if not normalized_src:
         abort(400)
     board, pid, kind = _media_request_context()
-    return build_media_response(normalized_src, board, pid, kind=kind, range_header=request.headers.get("Range"))
+    return build_media_response(
+        normalized_src,
+        board,
+        pid,
+        kind=kind,
+        range_header=request.headers.get("Range"),
+        head_only=request.method == "HEAD",
+    )
 
 
 @bp.route("/movie")

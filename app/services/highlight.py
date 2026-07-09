@@ -7,6 +7,7 @@ from .dc_links import dcinside_internal_href
 
 
 SEARCH_HIGHLIGHT_CLASS = "search-highlight"
+HTML_HIGHLIGHT_MAX_MATCHES = 2000
 HTML_HIGHLIGHT_IGNORED_PARENTS = {"script", "style", "textarea", "code", "pre", "mark"}
 COMMENT_URL_RE = re.compile(r"(?P<url>(?:https?://|www\.)[^\s<]+)", re.IGNORECASE)
 COMMENT_LINK_TRAILING_CHARS = ".,!?;:)]}>'\""
@@ -89,8 +90,11 @@ def highlight_soup_text(soup, keyword):
     if not pattern:
         return soup
 
+    matches_left = HTML_HIGHLIGHT_MAX_MATCHES
     for node in list(soup.find_all(string=pattern)):
-        if not isinstance(node, NavigableString):
+        if matches_left <= 0:
+            break
+        if type(node) is not NavigableString:
             continue
         parent = node.parent
         if parent and parent.name in HTML_HIGHLIGHT_IGNORED_PARENTS:
@@ -99,6 +103,8 @@ def highlight_soup_text(soup, keyword):
         parts = []
         last = 0
         for match in pattern.finditer(text):
+            if matches_left <= 0:
+                break
             start, end = match.span()
             if start > last:
                 parts.append(NavigableString(text[last:start]))
@@ -107,6 +113,7 @@ def highlight_soup_text(soup, keyword):
             mark.string = text[start:end]
             parts.append(mark)
             last = end
+            matches_left -= 1
         if last < len(text):
             parts.append(NavigableString(text[last:]))
         if parts:

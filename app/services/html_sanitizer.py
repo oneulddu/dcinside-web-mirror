@@ -31,11 +31,20 @@ DC_MOVIE_VIEW_URL = "https://gall.dcinside.com/board/movie/movie_view?no={}"
 HTML_PARSER = "lxml"
 
 
+def _safe_urlparse(value):
+    try:
+        return urlparse(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def is_safe_href(value):
-    url = (value or "").strip()
+    url = str(value or "").strip()
     if not url:
         return False
-    parsed = urlparse(url)
+    parsed = _safe_urlparse(url)
+    if parsed is None:
+        return False
     if not parsed.scheme:
         return url.startswith(("#", "/")) and not url.startswith("//")
     return parsed.scheme in {"http", "https", "mailto"}
@@ -67,10 +76,13 @@ def dc_movie_id_from_parsed_url(parsed):
 
 
 def dc_movie_id_from_iframe_src(value):
-    url = (value or "").strip()
+    url = str(value or "").strip()
     if not url:
         return None
-    return dc_movie_id_from_parsed_url(urlparse(url))
+    parsed = _safe_urlparse(url)
+    if parsed is None:
+        return None
+    return dc_movie_id_from_parsed_url(parsed)
 
 
 def normalize_dc_movie_iframe_src(parsed):
@@ -84,10 +96,12 @@ def normalize_dc_movie_iframe_src(parsed):
 
 
 def normalize_safe_iframe_src(value):
-    url = (value or "").strip()
+    url = str(value or "").strip()
     if not url:
         return None
-    parsed = urlparse(url)
+    parsed = _safe_urlparse(url)
+    if parsed is None:
+        return None
     host = (parsed.netloc or "").lower()
 
     if not parsed.scheme and not host:
@@ -119,7 +133,9 @@ def is_safe_iframe_src(value):
 
 
 def default_iframe_title(src):
-    parsed = urlparse(src or "")
+    parsed = _safe_urlparse(src)
+    if parsed is None:
+        return "첨부 콘텐츠"
     if parsed.netloc == "m.dcinside.com" and parsed.path == "/poll":
         return "DCInside 투표"
     if (
@@ -138,6 +154,8 @@ def parse_html_fragment(raw_html):
 
 def sanitize_html_tree(soup):
     for tag in list(soup.find_all(True)):
+        if tag.parent is None or not tag.name:
+            continue
         name = (tag.name or "").lower()
         if name in HTML_DROP_TAGS:
             tag.decompose()

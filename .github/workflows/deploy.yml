@@ -39,7 +39,7 @@ jobs:
 
   deploy:
     needs: test
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -69,12 +69,22 @@ jobs:
             -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
             -o StrictHostKeyChecking=yes \
-            "${SSH_USER}@${SSH_HOST}" <<'EOF'
+            "${SSH_USER}@${SSH_HOST}" \
+            "TARGET_SHA='${GITHUB_SHA}' bash -s" <<'EOF'
             set -e
             cd /home/ubuntu/mirror
             git fetch origin main
+            if ! git diff-index --quiet HEAD --; then
+              echo "tracked deployment files have local changes"
+              exit 1
+            fi
+            if [ "$(git rev-parse origin/main)" != "${TARGET_SHA}" ]; then
+              echo "origin/main does not match the tested commit"
+              exit 1
+            fi
             git checkout main
-            git pull --ff-only origin main
+            git merge --ff-only "${TARGET_SHA}"
+            test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
 
             if [ ! -d .venv ]; then
               python3 -m venv .venv
@@ -94,12 +104,23 @@ jobs:
               exit 1
             fi
 
-            "${PM2_BIN}" delete dc-mirror >/dev/null 2>&1 || true
-            "${PM2_BIN}" start ecosystem.config.js --only dc-mirror
+            if "${PM2_BIN}" describe dc-mirror >/dev/null 2>&1; then
+              "${PM2_BIN}" reload ecosystem.config.js --only dc-mirror --update-env
+            else
+              "${PM2_BIN}" start ecosystem.config.js --only dc-mirror
+            fi
             "${PM2_BIN}" save
 
             "${PM2_BIN}" describe dc-mirror >/dev/null
-            curl --fail --silent --show-error --max-time 10 http://127.0.0.1:6100/healthz >/dev/null
+            curl --fail --silent --show-error \
+              --retry 15 \
+              --retry-delay 1 \
+              --retry-connrefused \
+              --retry-max-time 30 \
+              --max-time 5 \
+              http://127.0.0.1:6100/healthz >/dev/null
+            git diff-index --quiet HEAD --
+            test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
           EOF
 
       - name: Verify remote commit
@@ -128,7 +149,7 @@ jobs:
             -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
             -o StrictHostKeyChecking=yes \
             "${SSH_USER}@${SSH_HOST}" \
-            'cd /home/ubuntu/mirror && git rev-parse HEAD')
+            'cd /home/ubuntu/mirror && git diff-index --quiet HEAD -- && git rev-parse HEAD')
 
           echo "current=${CURRENT}"
           echo "target=${GITHUB_SHA}"

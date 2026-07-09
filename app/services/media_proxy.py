@@ -1,7 +1,9 @@
+from dataclasses import dataclass
 import ipaddress
 import os
 import re
 import socket
+import tempfile
 import threading
 import time
 from html import escape
@@ -44,9 +46,69 @@ MEDIA_ALLOWED_HOST_SUFFIXES = tuple(
 PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 _ORIGINAL_REQUESTS_GET = requests.get
+_ORIGINAL_REQUESTS_HEAD = requests.head
 _MEDIA_SESSION_LOCAL = threading.local()
 _PUBLIC_HOST_CACHE = {}
 _PUBLIC_HOST_CACHE_LOCK = threading.Lock()
+_MEDIA_SPOOL_MEMORY_BYTES = 1024 * 1024
+_PINNED_ADDRESS_ATTEMPT_LIMIT = 2
+
+
+class UnsafeMediaAddress(requests.RequestException):
+    pass
+
+
+@dataclass(frozen=True)
+class ResolvedMediaTarget:
+    scheme: str
+    hostname: str
+    port: int
+    host_header: str
+    addresses: tuple
+
+
+class PinnedMediaAdapter(HTTPAdapter):
+    def __init__(self, target):
+        super().__init__(
+            pool_connections=MEDIA_HTTP_POOL_MAXSIZE,
+            pool_maxsize=MEDIA_HTTP_POOL_MAXSIZE,
+        )
+        self.target = target
+        self._active_address = None
+
+    def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
+        host_params, pool_kwargs = self.build_connection_pool_key_attributes(
+            request,
+            verify,
+            cert,
+        )
+        host_params["host"] = self._active_address
+        if host_params["scheme"] == "https":
+            pool_kwargs["assert_hostname"] = self.target.hostname
+            pool_kwargs["server_hostname"] = self.target.hostname
+        return self.poolmanager.connection_from_host(
+            **host_params,
+            pool_kwargs=pool_kwargs,
+        )
+
+    def send(self, request, **kwargs):
+        kwargs["proxies"] = {}
+        last_error = None
+        for address in self.target.addresses:
+            prepared = request.copy()
+            prepared.headers["Host"] = self.target.host_header
+            self._active_address = address
+            try:
+                return super().send(prepared, **kwargs)
+            except (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.SSLError,
+                requests.exceptions.Timeout,
+            ) as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise UnsafeMediaAddress("no validated media address")
 
 
 def _media_http_session():
@@ -55,20 +117,47 @@ def _media_http_session():
         return session
 
     session = requests.Session()
-    adapter = HTTPAdapter(pool_connections=MEDIA_HTTP_POOL_MAXSIZE, pool_maxsize=MEDIA_HTTP_POOL_MAXSIZE)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
+    session.trust_env = False
     _MEDIA_SESSION_LOCAL.session = session
     return session
+
+
+def _pinned_media_adapter(target):
+    adapter = getattr(_MEDIA_SESSION_LOCAL, "adapter", None)
+    if adapter is None:
+        adapter = PinnedMediaAdapter(target)
+        _MEDIA_SESSION_LOCAL.adapter = adapter
+    else:
+        adapter.target = target
+    return adapter
 
 
 def _http_get(url, **kwargs):
     if requests.get is not _ORIGINAL_REQUESTS_GET:
         return requests.get(url, **kwargs)
+    target = resolve_media_target(url)
+    if target is None:
+        raise UnsafeMediaAddress("media host did not resolve exclusively to public addresses")
     session = _media_http_session()
+    session.mount(f"{target.scheme}://", _pinned_media_adapter(target))
     try:
         session.cookies.clear()
         return session.get(url, **kwargs)
+    finally:
+        session.cookies.clear()
+
+
+def _http_head(url, **kwargs):
+    if requests.head is not _ORIGINAL_REQUESTS_HEAD:
+        return requests.head(url, **kwargs)
+    target = resolve_media_target(url)
+    if target is None:
+        raise UnsafeMediaAddress("media host did not resolve exclusively to public addresses")
+    session = _media_http_session()
+    session.mount(f"{target.scheme}://", _pinned_media_adapter(target))
+    try:
+        session.cookies.clear()
+        return session.head(url, **kwargs)
     finally:
         session.cookies.clear()
 
@@ -192,6 +281,72 @@ def _parse_media_url(raw_url, base_url=None):
     return url, parsed
 
 
+def _select_pinned_addresses(addresses):
+    selected = []
+    selected_versions = set()
+    for address in addresses:
+        version = ipaddress.ip_address(address).version
+        if version in selected_versions:
+            continue
+        selected.append(address)
+        selected_versions.add(version)
+        if len(selected) >= _PINNED_ADDRESS_ATTEMPT_LIMIT:
+            return tuple(selected)
+
+    for address in addresses:
+        if address in selected:
+            continue
+        selected.append(address)
+        if len(selected) >= _PINNED_ADDRESS_ATTEMPT_LIMIT:
+            break
+    return tuple(selected)
+
+
+def resolve_media_target(raw_url, base_url=None):
+    url, parsed = _parse_media_url(raw_url, base_url=base_url)
+    if not url:
+        return None
+
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        infos = socket.getaddrinfo(
+            hostname,
+            port,
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+    except (OSError, ValueError):
+        return None
+
+    addresses = []
+    for info in infos:
+        if not info or not info[4]:
+            return None
+        address = info[4][0]
+        try:
+            parsed_address = ipaddress.ip_address(address)
+        except ValueError:
+            return None
+        if not parsed_address.is_global:
+            return None
+        normalized_address = str(parsed_address)
+        if normalized_address not in addresses:
+            addresses.append(normalized_address)
+    if not addresses:
+        return None
+
+    default_port = 443 if parsed.scheme == "https" else 80
+    host_header = hostname if port == default_port else f"{hostname}:{port}"
+    return ResolvedMediaTarget(
+        scheme=parsed.scheme,
+        hostname=hostname,
+        port=port,
+        host_header=host_header,
+        addresses=_select_pinned_addresses(addresses),
+    )
+
+
 def normalize_media_url_shape(raw_url, base_url=None):
     url, _ = _parse_media_url(raw_url, base_url=base_url)
     return url
@@ -207,14 +362,15 @@ def validate_media_url(raw_url, base_url=None):
     return url
 
 
-def fetch_media_response(src, headers, cookies):
-    url = validate_media_url(src)
+def fetch_media_response(src, headers, cookies, method="GET"):
+    url = normalize_media_url_shape(src)
     if not url:
         return None, 400
+    requester = _http_head if method == "HEAD" else _http_get
 
     for _ in range(MEDIA_REDIRECT_LIMIT + 1):
         try:
-            upstream = _http_get(
+            upstream = requester(
                 url,
                 headers=headers,
                 cookies=cookies,
@@ -222,6 +378,8 @@ def fetch_media_response(src, headers, cookies):
                 stream=True,
                 allow_redirects=False,
             )
+        except UnsafeMediaAddress:
+            return None, 400
         except requests.RequestException:
             return None, 502
 
@@ -230,7 +388,7 @@ def fetch_media_response(src, headers, cookies):
 
         location = upstream.headers.get("Location")
         upstream.close()
-        url = validate_media_url(location, base_url=url)
+        url = normalize_media_url_shape(location, base_url=url)
         if not url:
             return None, 400
 
@@ -288,23 +446,34 @@ def read_limited_media_body(upstream):
         upstream.close()
 
 
-def stream_media_body(upstream):
+def stream_media_body(upstream, max_bytes=None):
+    remaining = max(_safe_int(MEDIA_MAX_BYTES if max_bytes is None else max_bytes, 0), 0)
     try:
         for chunk in upstream.iter_content(chunk_size=MEDIA_CHUNK_BYTES):
-            if chunk:
-                yield chunk
+            if not chunk:
+                continue
+            if remaining <= 0:
+                break
+            if len(chunk) > remaining:
+                yield chunk[:remaining]
+                remaining = 0
+                break
+            yield chunk
+            remaining -= len(chunk)
     finally:
         upstream.close()
 
 
-def build_streaming_media_response(upstream, content_type):
+def build_streaming_media_response(upstream, content_type, content_length=None):
     response = Response(
-        stream_with_context(stream_media_body(upstream)),
+        stream_with_context(stream_media_body(upstream, max_bytes=content_length)),
         status=upstream.status_code,
         direct_passthrough=True,
     )
     response.headers["Content-Type"] = content_type
-    for header in ("Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"):
+    if content_length is not None:
+        response.headers["Content-Length"] = str(content_length)
+    for header in ("Content-Range", "Accept-Ranges", "ETag", "Last-Modified"):
         value = upstream.headers.get(header)
         if value:
             response.headers[header] = value
@@ -314,7 +483,98 @@ def build_streaming_media_response(upstream, content_type):
     return response
 
 
-def build_media_response(src, board, pid, kind=None, range_header=None):
+def read_limited_media_spool(upstream):
+    total = 0
+    spool = tempfile.SpooledTemporaryFile(max_size=_MEDIA_SPOOL_MEMORY_BYTES, mode="w+b")
+    try:
+        for chunk in upstream.iter_content(chunk_size=MEDIA_CHUNK_BYTES):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > MEDIA_MAX_BYTES:
+                spool.close()
+                return None, 0, 413
+            spool.write(chunk)
+        spool.seek(0)
+        return spool, total, None
+    except (requests.RequestException, OSError):
+        spool.close()
+        return None, 0, 502
+    finally:
+        upstream.close()
+
+
+def stream_spooled_media_body(spool):
+    try:
+        while True:
+            chunk = spool.read(MEDIA_CHUNK_BYTES)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        spool.close()
+
+
+def build_spooled_media_response(spool, content_length, upstream, content_type):
+    response = Response(
+        stream_with_context(stream_spooled_media_body(spool)),
+        status=upstream.status_code,
+        direct_passthrough=True,
+    )
+    response.headers["Content-Type"] = content_type
+    response.headers["Content-Length"] = str(content_length)
+    for header in ("Content-Range", "Accept-Ranges", "ETag", "Last-Modified"):
+        value = upstream.headers.get(header)
+        if value:
+            response.headers[header] = value
+    response.headers.setdefault("Accept-Ranges", "bytes")
+    response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+def build_head_media_response(upstream, content_type, content_length=None):
+    try:
+        response = Response(status=upstream.status_code)
+        response.automatically_set_content_length = False
+        response.headers["Content-Type"] = content_type
+        if content_length is not None:
+            response.headers["Content-Length"] = str(content_length)
+        for header in ("Content-Range", "Accept-Ranges", "ETag", "Last-Modified"):
+            value = upstream.headers.get(header)
+            if value:
+                response.headers[header] = value
+        response.headers.setdefault("Accept-Ranges", "bytes")
+        response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    finally:
+        upstream.close()
+
+
+def parse_media_content_length(headers):
+    transfer_encoding = (headers.get("Transfer-Encoding") or "").strip().lower()
+    if transfer_encoding and transfer_encoding != "identity":
+        return None, None
+
+    raw_value = headers.get("Content-Length")
+    if raw_value in (None, ""):
+        return None, None
+    values = [part.strip() for part in str(raw_value).split(",")]
+    if not values or any(not value.isdigit() for value in values):
+        return None, 502
+    if any(len(value) > 20 for value in values):
+        return None, 413
+    try:
+        parsed_values = {int(value) for value in values}
+    except (OverflowError, ValueError):
+        return None, 502
+    if len(parsed_values) != 1:
+        return None, 502
+    return parsed_values.pop(), None
+
+
+def build_media_response(src, board, pid, kind=None, range_header=None, head_only=False):
     headers = {
         "Accept-Encoding": "identity",
         "User-Agent": PC_USER_AGENT,
@@ -324,7 +584,10 @@ def build_media_response(src, board, pid, kind=None, range_header=None):
     if normalized_range:
         headers["Range"] = normalized_range
     cookies = {"__gat_mobile_search": "1", "list_count": "200"}
-    upstream, error_status = fetch_media_response(src, headers, cookies)
+    if head_only:
+        upstream, error_status = fetch_media_response(src, headers, cookies, method="HEAD")
+    else:
+        upstream, error_status = fetch_media_response(src, headers, cookies)
     if error_status:
         return "", error_status
 
@@ -335,23 +598,32 @@ def build_media_response(src, board, pid, kind=None, range_header=None):
 
     content_encoding = upstream.headers.get("Content-Encoding")
     can_stream_decoded_body = is_identity_content_encoding(content_encoding)
-    if can_stream_decoded_body and is_streaming_media_response(content_type, upstream.status_code, normalized_range):
-        return build_streaming_media_response(upstream, content_type)
+    content_length, length_error = parse_media_content_length(upstream.headers)
+    if length_error:
+        upstream.close()
+        return "", length_error
+    if content_length is not None and content_length > MEDIA_MAX_BYTES:
+        upstream.close()
+        return "", 413
     if not can_stream_decoded_body and upstream.status_code == 206:
         upstream.close()
         return "", 502
-
-    raw_content_length = upstream.headers.get("Content-Length")
-    content_length = _safe_int(raw_content_length, 0)
-    if content_length and content_length > MEDIA_MAX_BYTES:
-        upstream.close()
-        return "", 413
+    if head_only:
+        verified_length = content_length if can_stream_decoded_body else None
+        return build_head_media_response(upstream, content_type, content_length=verified_length)
+    if can_stream_decoded_body and is_streaming_media_response(content_type, upstream.status_code, normalized_range):
+        if content_length is not None:
+            return build_streaming_media_response(upstream, content_type, content_length=content_length)
+        spool, verified_length, error_status = read_limited_media_spool(upstream)
+        if error_status:
+            return "", error_status
+        return build_spooled_media_response(spool, verified_length, upstream, content_type)
     if (
-        content_length
+        content_length is not None
         and can_stream_decoded_body
         and should_stream_known_length_media(content_type, content_length)
     ):
-        return build_streaming_media_response(upstream, content_type)
+        return build_streaming_media_response(upstream, content_type, content_length=content_length)
 
     body, error_status = read_limited_media_body(upstream)
     if error_status:
@@ -396,16 +668,34 @@ def parse_movie_media(text):
 def fetch_movie_media(movie_no, board, pid, kind=None):
     if not str(movie_no or "").isdigit():
         return None
-    for url, headers in movie_player_candidates(movie_no, board, pid, kind=kind):
-        try:
-            response = _http_get(url, headers=headers, timeout=HTTP_TIMEOUT)
-        except requests.RequestException:
-            continue
-        if response.status_code >= 400 or not response.text:
-            continue
-        media = parse_movie_media(response.text)
-        if media:
-            return media
+    for candidate_url, headers in movie_player_candidates(movie_no, board, pid, kind=kind):
+        url = candidate_url
+        for _ in range(MEDIA_REDIRECT_LIMIT + 1):
+            response = None
+            try:
+                response = _http_get(
+                    url,
+                    headers=headers,
+                    timeout=HTTP_TIMEOUT,
+                    allow_redirects=False,
+                )
+                if getattr(response, "is_redirect", False):
+                    next_url = normalize_media_url_shape(response.headers.get("Location"), base_url=url)
+                    if not next_url:
+                        break
+                    url = next_url
+                    continue
+                if response.status_code >= 400 or not response.text:
+                    break
+                media = parse_movie_media(response.text)
+                if media:
+                    return media
+                break
+            except requests.RequestException:
+                break
+            finally:
+                if response is not None:
+                    response.close()
     return None
 
 

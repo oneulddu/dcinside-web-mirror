@@ -60,6 +60,20 @@ def test_parse_time_rolls_future_month_day_back_to_previous_year(monkeypatch):
     assert parsed == datetime(2025, 12, 31, 23, 59)
 
 
+def test_parse_time_preserves_two_digit_year(monkeypatch):
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 7, 10, 12, 0, 0)
+
+    monkeypatch.setattr(parsers, "datetime", FrozenDatetime)
+    api = API.__new__(API)
+
+    parsed = api._API__parse_time("25.12.31")
+
+    assert parsed == datetime(2025, 12, 31, 23, 59, 59)
+
+
 def test_parse_mobile_list_item_extracts_gallog_author_id():
     api = API.__new__(API)
     row = lxml.html.fromstring(

@@ -57,10 +57,24 @@ def _init_static_cache_busting(app):
 
     @app.after_request
     def add_static_cache_headers(response):
-        if request.endpoint == "static":
-            response.cache_control.public = True
-            response.cache_control.max_age = 31536000
-            response.cache_control.immutable = True
+        if request.endpoint != "static" or response.status_code >= 400:
+            return response
+
+        filename = (request.view_args or {}).get("filename")
+        if not filename:
+            return response
+        path = os.path.join(app.static_folder, filename)
+        try:
+            current_version = str(int(os.path.getmtime(path)))
+        except OSError:
+            return response
+        if request.args.get("v") != current_version:
+            return response
+
+        response.cache_control.no_cache = None
+        response.cache_control.public = True
+        response.cache_control.max_age = 31536000
+        response.cache_control.immutable = True
         return response
 
 

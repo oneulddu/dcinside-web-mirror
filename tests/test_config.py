@@ -82,12 +82,96 @@ def test_static_files_use_immutable_cache_headers(monkeypatch):
     monkeypatch.setenv("MIRROR_ENV", "development")
     app = create_app()
 
-    response = app.test_client().get("/static/css/main.css")
+    with app.test_request_context():
+        static_path = app.jinja_env.globals["static_url"]("css/main.css")
+    response = app.test_client().get(static_path)
 
     assert response.status_code == 200
     assert "public" in response.headers["Cache-Control"]
     assert "max-age=31536000" in response.headers["Cache-Control"]
     assert "immutable" in response.headers["Cache-Control"]
+
+
+def test_production_static_files_do_not_force_revalidation(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "production")
+    monkeypatch.setenv("MIRROR_SECRET_KEY", "stable-secret")
+    app = create_app()
+
+    with app.test_request_context():
+        static_path = app.jinja_env.globals["static_url"]("css/main.css")
+
+    client = app.test_client()
+    response = client.get(static_path, headers={"Accept-Encoding": "gzip"})
+
+    assert response.status_code == 200
+    assert "no-cache" not in response.headers["Cache-Control"]
+    assert "public" in response.headers["Cache-Control"]
+    assert "max-age=31536000" in response.headers["Cache-Control"]
+    assert "immutable" in response.headers["Cache-Control"]
+    etag = response.headers["ETag"]
+
+    conditional_response = client.get(
+        static_path,
+        headers={"Accept-Encoding": "gzip", "If-None-Match": etag},
+    )
+
+    assert conditional_response.status_code == 304
+    assert conditional_response.headers["ETag"] == etag
+    assert "no-cache" not in conditional_response.headers["Cache-Control"]
+
+
+def test_missing_static_files_are_not_cached_as_immutable(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "production")
+    monkeypatch.setenv("MIRROR_SECRET_KEY", "stable-secret")
+    app = create_app()
+
+    response = app.test_client().get("/static/missing-file.css")
+
+    assert response.status_code == 404
+    assert "immutable" not in response.headers.get("Cache-Control", "")
+    assert "max-age=31536000" not in response.headers.get("Cache-Control", "")
+
+
+@pytest.mark.parametrize(
+    "static_path",
+    [
+        "/static/css/main.css",
+        "/static/css/main.css?v=bogus",
+    ],
+)
+def test_unversioned_or_mismatched_static_files_require_revalidation(monkeypatch, static_path):
+    monkeypatch.setenv("MIRROR_ENV", "production")
+    monkeypatch.setenv("MIRROR_SECRET_KEY", "stable-secret")
+    app = create_app()
+
+    response = app.test_client().get(static_path)
+
+    assert response.status_code == 200
+    assert "no-cache" in response.headers["Cache-Control"]
+    assert "immutable" not in response.headers["Cache-Control"]
+    assert "max-age=31536000" not in response.headers["Cache-Control"]
+
+
+def test_stale_production_static_url_is_not_cached_as_immutable(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "production")
+    monkeypatch.setenv("MIRROR_SECRET_KEY", "stable-secret")
+    calls = [0]
+
+    def changing_mtime(_path):
+        calls[0] += 1
+        return 1000 if calls[0] == 1 else 2000
+
+    monkeypatch.setattr(os.path, "getmtime", changing_mtime)
+    app = create_app()
+    with app.test_request_context():
+        stale_url = app.jinja_env.globals["static_url"]("css/main.css")
+
+    response = app.test_client().get(stale_url)
+
+    assert parse_qs(urlparse(stale_url).query)["v"] == ["1000"]
+    assert response.status_code == 200
+    assert "no-cache" in response.headers["Cache-Control"]
+    assert "immutable" not in response.headers["Cache-Control"]
 
 
 def test_static_files_are_compressed_when_client_accepts_gzip(monkeypatch):

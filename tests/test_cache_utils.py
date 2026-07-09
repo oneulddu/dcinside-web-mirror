@@ -1,6 +1,7 @@
 import threading
 
 from app.services import cache_utils
+from app.services import core
 
 
 def test_cache_entry_expires_exactly_at_deadline(monkeypatch):
@@ -22,3 +23,17 @@ def test_cache_prune_expires_exact_deadline():
 
     assert "expired" not in cache
     assert "fresh" in cache
+
+
+def test_core_cache_set_never_exceeds_max_items(monkeypatch):
+    cache = {}
+    lock = threading.Lock()
+    core._CACHE_PRUNE_STATE.clear()
+    monkeypatch.setattr(core, "CACHE_PRUNE_EVERY", 1000)
+    monkeypatch.setattr(core, "CACHE_PRUNE_MIN_INTERVAL", 1000)
+    monkeypatch.setattr(core.time, "time", lambda: 100.0)
+
+    for key in ("oldest", "middle", "newest"):
+        core._cache_set(cache, lock, key, key, ttl=60, max_items=2)
+
+    assert list(cache) == ["middle", "newest"]
