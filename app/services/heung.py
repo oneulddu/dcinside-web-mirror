@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
 from urllib.parse import parse_qs, quote, urlparse
@@ -98,10 +99,32 @@ def _read_heung_cache_file():
 
 def _write_heung_cache_file(updated_at, items):
     payload = {"updated_at": float(updated_at), "items": items}
-    tmp = HEUNG_CACHE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    os.replace(tmp, HEUNG_CACHE_FILE)
+    cache_dir = os.path.dirname(HEUNG_CACHE_FILE) or "."
+    cache_name = os.path.basename(HEUNG_CACHE_FILE)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=cache_dir,
+            prefix=f".{cache_name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as file_obj:
+            tmp = file_obj.name
+            json.dump(payload, file_obj, ensure_ascii=False)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(tmp, HEUNG_CACHE_FILE)
+        tmp = None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("Failed to clean up heung gallery cache temp file", exc_info=True)
 
 
 def _heung_cache_snapshot():
@@ -142,6 +165,8 @@ def _is_heung_cache_fresh(items, updated_at, now=None):
 
 def _refresh_heung_galleries():
     fresh_items = _fetch_heung_galleries()
+    if not fresh_items:
+        raise RuntimeError("empty heung gallery result")
     fetched_at = time.time()
     fresh_items, fetched_at = _replace_heung_cache(fetched_at, fresh_items)
     try:

@@ -710,7 +710,7 @@ async def test_read_document_fetches_comments_when_embedded_total_is_unknown():
 
 
 @pytest.mark.asyncio
-async def test_related_after_position_uses_source_page_without_author_backfill(monkeypatch):
+async def test_related_after_position_uses_source_page_before_latest_lookup_without_author_backfill(monkeypatch):
     async def fail_author_backfill(*args, **kwargs):
         raise AssertionError("related posts should not fetch documents for author code backfill")
 
@@ -722,7 +722,9 @@ async def test_related_after_position_uses_source_page_without_author_backfill(m
 
         async def board(self, **kwargs):
             self.calls.append((kwargs["start_page"], kwargs["num"]))
-            if kwargs["start_page"] == 2:
+            if kwargs["start_page"] == 1 and kwargs["num"] == 1:
+                yield _index_item(500)
+            elif kwargs["start_page"] == 2:
                 yield _index_item(100)
                 yield _index_item(99)
                 yield _index_item(98)
@@ -740,7 +742,49 @@ async def test_related_after_position_uses_source_page_without_author_backfill(m
 
     assert [row["id"] for row in related] == ["99"]
     assert has_more is True
-    assert api.calls == [(1, 1), (2, core.RELATED_PAGE_FETCH_SIZE)]
+    assert api.calls == [(2, core.RELATED_PAGE_FETCH_SIZE)]
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_skips_shifted_page_overlap_before_cursor():
+    class FakeAPI:
+        def __init__(self):
+            self.calls = []
+
+        async def board(self, **kwargs):
+            self.calls.append((kwargs["start_page"], kwargs["num"]))
+            if kwargs["start_page"] == 1:
+                yield _index_item(102)
+                yield _index_item(101)
+                yield _index_item(100)
+            elif kwargs["start_page"] == 2:
+                # New posts can shift the old page prefix onto the next page
+                # between requests. Those rows are at or before the cursor.
+                yield _index_item(101)
+                yield _index_item(100)
+                yield _index_item(99)
+                yield _index_item(98)
+                yield _index_item(97)
+
+    api = FakeAPI()
+
+    related, has_more = await core._related_after_position_with_api(
+        api,
+        "200",
+        "100",
+        "test",
+        limit=2,
+        source_page=1,
+        recommend=1,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99", "98"]
+    assert has_more is True
+    assert api.calls == [
+        (1, core.RELATED_PAGE_FETCH_SIZE),
+        (2, core.RELATED_PAGE_FETCH_SIZE),
+    ]
 
 
 @pytest.mark.asyncio
@@ -812,8 +856,8 @@ async def test_related_after_position_falls_back_to_estimate_when_source_page_hi
     assert [row["id"] for row in related] == ["99"]
     assert has_more is True
     assert api.calls == [
-        (1, 1),
         (9, core.RELATED_PAGE_FETCH_SIZE),
+        (1, 1),
         (3, core.RELATED_PAGE_FETCH_SIZE),
     ]
 

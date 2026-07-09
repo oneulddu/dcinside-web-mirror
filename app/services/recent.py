@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 import os
 import re
 import secrets
@@ -26,9 +27,10 @@ def _safe_int(value, default):
 
 def _safe_float(value, default):
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
+    return parsed if math.isfinite(parsed) else default
 
 
 RECENT_COOKIE_NAME = "recent_galleries"
@@ -48,7 +50,13 @@ def format_recent_time(ts):
     if not ts:
         return "-"
     kst = timezone(timedelta(hours=9))
-    return datetime.fromtimestamp(float(ts), tz=kst).strftime("%Y-%m-%d %H:%M")
+    try:
+        parsed = float(ts)
+        if not math.isfinite(parsed):
+            return "-"
+        return datetime.fromtimestamp(parsed, tz=kst).strftime("%Y-%m-%d %H:%M")
+    except (OSError, OverflowError, TypeError, ValueError):
+        return "-"
 
 
 def recent_cache_key(create=False):
@@ -286,24 +294,54 @@ def load_recent_entries():
                 if row:
                     rows.append(row)
 
+    server_rows = get_recent_server_cache(recent_cache_key())
     if rows:
-        return dedupe_recent_entries(merge_recent_entry_names(rows, get_recent_server_cache(recent_cache_key())))
+        cookie_rows = merge_recent_entry_names(rows, server_rows)
+        return dedupe_recent_entries(cookie_rows + server_rows)
 
-    return dedupe_recent_entries(get_recent_server_cache(recent_cache_key()))
+    return dedupe_recent_entries(server_rows)
+
+
+def _encode_recent_rows(rows):
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _fit_recent_cookie_value(rows):
+    max_bytes = max(_safe_int(RECENT_COOKIE_MAX_BYTES, 0), 0)
+    encoded = _encode_recent_rows(rows)
+    if len(encoded.encode("ascii")) <= max_bytes:
+        return encoded
+
+    compact_rows = []
+    for row in rows:
+        compact = dict(row)
+        compact.pop("name", None)
+        compact_rows.append(compact)
+
+    encoded = _encode_recent_rows(compact_rows)
+    if len(encoded.encode("ascii")) <= max_bytes:
+        return encoded
+
+    low = 0
+    high = len(compact_rows)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = _encode_recent_rows(compact_rows[:middle])
+        if len(candidate.encode("ascii")) <= max_bytes:
+            low = middle
+        else:
+            high = middle - 1
+
+    encoded = _encode_recent_rows(compact_rows[:low])
+    if len(encoded.encode("ascii")) <= max_bytes:
+        return encoded
+    return ""
 
 
 def save_recent_cookie(response, entries):
     rows = entries[:RECENT_MAX_ITEMS]
-    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-    encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
-    if len(encoded.encode("ascii")) > RECENT_COOKIE_MAX_BYTES:
-        compact_rows = []
-        for row in rows:
-            compact = dict(row)
-            compact.pop("name", None)
-            compact_rows.append(compact)
-        payload = json.dumps(compact_rows, ensure_ascii=False, separators=(",", ":"))
-        encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+    encoded = _fit_recent_cookie_value(rows)
     response.set_cookie(
         RECENT_COOKIE_NAME,
         encoded,

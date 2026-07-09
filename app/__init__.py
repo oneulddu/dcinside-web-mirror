@@ -57,7 +57,8 @@ def _init_static_cache_busting(app):
 
     @app.after_request
     def add_static_cache_headers(response):
-        if request.endpoint == "static":
+        if request.endpoint == "static" and response.status_code < 400:
+            response.cache_control.no_cache = None
             response.cache_control.public = True
             response.cache_control.max_age = 31536000
             response.cache_control.immutable = True

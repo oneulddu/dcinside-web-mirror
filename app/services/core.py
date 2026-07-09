@@ -203,10 +203,10 @@ def _should_prune_cache(cache, now, max_items):
 def _cache_set(cache, lock, key, value, ttl, max_items):
     expires_at = time.time() + max(_safe_int(ttl, 0), 0)
     with lock:
+        cache[key] = {"value": value, "expires_at": expires_at}
         now = time.time()
         if _should_prune_cache(cache, now, max_items):
             _cache_prune(cache, now, max_items)
-        cache[key] = {"value": value, "expires_at": expires_at}
 
 
 def _copy_rows(rows):
@@ -815,24 +815,36 @@ async def _related_after_position_with_api(
 
         return None, -1, []
 
-    candidate_pages = []
-    if source_page_value > 0:
-        candidate_pages.append(source_page_value)
-
-    estimated_page = await estimate_page_from_latest_id()
-    if estimated_page and estimated_page not in candidate_pages:
-        candidate_pages.append(estimated_page)
-
-    if recommend_value and 1 not in candidate_pages:
-        candidate_pages.append(1)
-
     found_page = None
     found_index = -1
     found_posts = []
-    for candidate_page in candidate_pages or [1]:
+
+    attempted_candidate_pages = set()
+    candidate_pages = [source_page_value] if source_page_value > 0 else []
+    for candidate_page in candidate_pages:
+        attempted_candidate_pages.add(candidate_page)
         found_page, found_index, found_posts = await find_target_from_page(candidate_page)
         if found_page is not None:
             break
+
+    if found_page is None:
+        fallback_pages = []
+        estimated_page = await estimate_page_from_latest_id()
+        if estimated_page:
+            fallback_pages.append(estimated_page)
+        if recommend_value:
+            fallback_pages.append(1)
+        if not fallback_pages:
+            fallback_pages.append(1)
+
+        for candidate_page in fallback_pages:
+            candidate_page = max(_safe_int(candidate_page, 1), 1)
+            if candidate_page in attempted_candidate_pages:
+                continue
+            attempted_candidate_pages.add(candidate_page)
+            found_page, found_index, found_posts = await find_target_from_page(candidate_page)
+            if found_page is not None:
+                break
 
     if found_page is None:
         return [], False
@@ -840,6 +852,10 @@ async def _related_after_position_with_api(
     collect_limit = fetch_limit + 1
     related = []
     seen_ids = {str(current_id)}
+    for row in found_posts[: found_index + 1]:
+        prefix_id = _safe_int(row.get("id"), 0)
+        if prefix_id > 0:
+            seen_ids.add(str(prefix_id))
 
     def append_rows(rows):
         for row in rows:

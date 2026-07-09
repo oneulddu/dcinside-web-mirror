@@ -1164,7 +1164,7 @@ class ParserMixin:
                     return fill_missing_year(datetime.strptime(time, "%m.%d %H:%M"))
                 else:
                     try:
-                        return datetime.strptime(time, "%y.%m.%d").replace(year=today.year, hour=23, minute=59, second=59)
+                        return datetime.strptime(time, "%y.%m.%d").replace(hour=23, minute=59, second=59)
                     except ValueError:
                         return datetime.strptime(time, "%Y.%m.%d").replace(hour=23, minute=59, second=59)
             elif len(time) <= 16:

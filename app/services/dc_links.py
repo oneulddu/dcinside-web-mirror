@@ -165,9 +165,12 @@ def dcinside_internal_href(value):
     if not raw_url:
         return None
 
-    parsed = urlparse(raw_url)
+    try:
+        parsed = urlparse(raw_url)
+        query = parse_qs(parsed.query, keep_blank_values=False)
+    except (TypeError, ValueError):
+        return None
     host = (parsed.netloc or "").lower()
-    query = parse_qs(parsed.query, keep_blank_values=False)
 
     if host == MOBILE_GALLERY_HOST:
         return _mobile_gallery_href(parsed, query)

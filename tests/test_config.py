@@ -90,6 +90,46 @@ def test_static_files_use_immutable_cache_headers(monkeypatch):
     assert "immutable" in response.headers["Cache-Control"]
 
 
+def test_production_static_files_do_not_force_revalidation(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "production")
+    monkeypatch.setenv("MIRROR_SECRET_KEY", "stable-secret")
+    app = create_app()
+
+    with app.test_request_context():
+        static_path = app.jinja_env.globals["static_url"]("css/main.css")
+
+    client = app.test_client()
+    response = client.get(static_path, headers={"Accept-Encoding": "gzip"})
+
+    assert response.status_code == 200
+    assert "no-cache" not in response.headers["Cache-Control"]
+    assert "public" in response.headers["Cache-Control"]
+    assert "max-age=31536000" in response.headers["Cache-Control"]
+    assert "immutable" in response.headers["Cache-Control"]
+    etag = response.headers["ETag"]
+
+    conditional_response = client.get(
+        static_path,
+        headers={"Accept-Encoding": "gzip", "If-None-Match": etag},
+    )
+
+    assert conditional_response.status_code == 304
+    assert conditional_response.headers["ETag"] == etag
+    assert "no-cache" not in conditional_response.headers["Cache-Control"]
+
+
+def test_missing_static_files_are_not_cached_as_immutable(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "production")
+    monkeypatch.setenv("MIRROR_SECRET_KEY", "stable-secret")
+    app = create_app()
+
+    response = app.test_client().get("/static/missing-file.css")
+
+    assert response.status_code == 404
+    assert "immutable" not in response.headers.get("Cache-Control", "")
+    assert "max-age=31536000" not in response.headers.get("Cache-Control", "")
+
+
 def test_static_files_are_compressed_when_client_accepts_gzip(monkeypatch):
     monkeypatch.setenv("MIRROR_ENV", "development")
     app = create_app()
