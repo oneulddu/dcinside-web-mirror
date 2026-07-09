@@ -46,6 +46,7 @@ MEDIA_ALLOWED_HOST_SUFFIXES = tuple(
 PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 _ORIGINAL_REQUESTS_GET = requests.get
+_ORIGINAL_REQUESTS_HEAD = requests.head
 _MEDIA_SESSION_LOCAL = threading.local()
 _PUBLIC_HOST_CACHE = {}
 _PUBLIC_HOST_CACHE_LOCK = threading.Lock()
@@ -142,6 +143,21 @@ def _http_get(url, **kwargs):
     try:
         session.cookies.clear()
         return session.get(url, **kwargs)
+    finally:
+        session.cookies.clear()
+
+
+def _http_head(url, **kwargs):
+    if requests.head is not _ORIGINAL_REQUESTS_HEAD:
+        return requests.head(url, **kwargs)
+    target = resolve_media_target(url)
+    if target is None:
+        raise UnsafeMediaAddress("media host did not resolve exclusively to public addresses")
+    session = _media_http_session()
+    session.mount(f"{target.scheme}://", _pinned_media_adapter(target))
+    try:
+        session.cookies.clear()
+        return session.head(url, **kwargs)
     finally:
         session.cookies.clear()
 
@@ -325,14 +341,15 @@ def validate_media_url(raw_url, base_url=None):
     return url
 
 
-def fetch_media_response(src, headers, cookies):
+def fetch_media_response(src, headers, cookies, method="GET"):
     url = normalize_media_url_shape(src)
     if not url:
         return None, 400
+    requester = _http_head if method == "HEAD" else _http_get
 
     for _ in range(MEDIA_REDIRECT_LIMIT + 1):
         try:
-            upstream = _http_get(
+            upstream = requester(
                 url,
                 headers=headers,
                 cookies=cookies,
@@ -495,6 +512,25 @@ def build_spooled_media_response(spool, content_length, upstream, content_type):
     return response
 
 
+def build_head_media_response(upstream, content_type, content_length=None):
+    try:
+        response = Response(status=upstream.status_code)
+        response.automatically_set_content_length = False
+        response.headers["Content-Type"] = content_type
+        if content_length is not None:
+            response.headers["Content-Length"] = str(content_length)
+        for header in ("Content-Range", "Accept-Ranges", "ETag", "Last-Modified"):
+            value = upstream.headers.get(header)
+            if value:
+                response.headers[header] = value
+        response.headers.setdefault("Accept-Ranges", "bytes")
+        response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    finally:
+        upstream.close()
+
+
 def parse_media_content_length(headers):
     transfer_encoding = (headers.get("Transfer-Encoding") or "").strip().lower()
     if transfer_encoding and transfer_encoding != "identity":
@@ -517,7 +553,7 @@ def parse_media_content_length(headers):
     return parsed_values.pop(), None
 
 
-def build_media_response(src, board, pid, kind=None, range_header=None):
+def build_media_response(src, board, pid, kind=None, range_header=None, head_only=False):
     headers = {
         "Accept-Encoding": "identity",
         "User-Agent": PC_USER_AGENT,
@@ -527,7 +563,10 @@ def build_media_response(src, board, pid, kind=None, range_header=None):
     if normalized_range:
         headers["Range"] = normalized_range
     cookies = {"__gat_mobile_search": "1", "list_count": "200"}
-    upstream, error_status = fetch_media_response(src, headers, cookies)
+    if head_only:
+        upstream, error_status = fetch_media_response(src, headers, cookies, method="HEAD")
+    else:
+        upstream, error_status = fetch_media_response(src, headers, cookies)
     if error_status:
         return "", error_status
 
@@ -545,6 +584,12 @@ def build_media_response(src, board, pid, kind=None, range_header=None):
     if content_length is not None and content_length > MEDIA_MAX_BYTES:
         upstream.close()
         return "", 413
+    if not can_stream_decoded_body and upstream.status_code == 206:
+        upstream.close()
+        return "", 502
+    if head_only:
+        verified_length = content_length if can_stream_decoded_body else None
+        return build_head_media_response(upstream, content_type, content_length=verified_length)
     if can_stream_decoded_body and is_streaming_media_response(content_type, upstream.status_code, normalized_range):
         if content_length is not None:
             return build_streaming_media_response(upstream, content_type, content_length=content_length)
@@ -552,10 +597,6 @@ def build_media_response(src, board, pid, kind=None, range_header=None):
         if error_status:
             return "", error_status
         return build_spooled_media_response(spool, verified_length, upstream, content_type)
-    if not can_stream_decoded_body and upstream.status_code == 206:
-        upstream.close()
-        return "", 502
-
     if (
         content_length is not None
         and can_stream_decoded_body
@@ -606,16 +647,34 @@ def parse_movie_media(text):
 def fetch_movie_media(movie_no, board, pid, kind=None):
     if not str(movie_no or "").isdigit():
         return None
-    for url, headers in movie_player_candidates(movie_no, board, pid, kind=kind):
-        try:
-            response = _http_get(url, headers=headers, timeout=HTTP_TIMEOUT)
-        except requests.RequestException:
-            continue
-        if response.status_code >= 400 or not response.text:
-            continue
-        media = parse_movie_media(response.text)
-        if media:
-            return media
+    for candidate_url, headers in movie_player_candidates(movie_no, board, pid, kind=kind):
+        url = candidate_url
+        for _ in range(MEDIA_REDIRECT_LIMIT + 1):
+            response = None
+            try:
+                response = _http_get(
+                    url,
+                    headers=headers,
+                    timeout=HTTP_TIMEOUT,
+                    allow_redirects=False,
+                )
+                if getattr(response, "is_redirect", False):
+                    next_url = normalize_media_url_shape(response.headers.get("Location"), base_url=url)
+                    if not next_url:
+                        break
+                    url = next_url
+                    continue
+                if response.status_code >= 400 or not response.text:
+                    break
+                media = parse_movie_media(response.text)
+                if media:
+                    return media
+                break
+            except requests.RequestException:
+                break
+            finally:
+                if response is not None:
+                    response.close()
     return None
 
 

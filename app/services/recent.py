@@ -153,6 +153,20 @@ def dedupe_recent_entries(rows):
     return deduped[:RECENT_MAX_ITEMS]
 
 
+def merge_recent_generations(primary_rows, secondary_rows):
+    primary = copy_recent_entries(primary_rows)
+    secondary = copy_recent_entries(secondary_rows)
+    if not secondary:
+        return dedupe_recent_entries(primary)
+
+    combined = primary + secondary
+    combined.sort(
+        key=lambda row: _safe_float(row.get("visited_at", 0), 0.0),
+        reverse=True,
+    )
+    return dedupe_recent_entries(combined)
+
+
 def merge_recent_entry_names(rows, named_rows):
     if not rows or not named_rows:
         return rows
@@ -259,17 +273,26 @@ def get_recent_server_cache(key):
 
 def set_recent_server_cache(key, entries):
     if not key:
-        return
+        return copy_recent_entries(entries)
 
     ttl = max(_safe_int(RECENT_SERVER_CACHE_TTL, 0), 0)
     max_keys = max(_safe_int(RECENT_SERVER_CACHE_MAX_KEYS, 0), 0)
     if ttl <= 0 or max_keys <= 0:
-        return
+        return copy_recent_entries(entries)
 
     now = time.time()
     with RECENT_SERVER_CACHE_LOCK:
-        RECENT_SERVER_CACHE[key] = make_recent_server_cache_entry(entries, now, ttl)
+        current = RECENT_SERVER_CACHE.get(key)
+        current_rows = []
+        if isinstance(current, list):
+            current_rows = current
+        elif isinstance(current, dict) and float(current.get("expires_at", 0.0) or 0.0) > now:
+            current_rows = current.get("entries", [])
+
+        merged = merge_recent_generations(entries, current_rows)
+        RECENT_SERVER_CACHE[key] = make_recent_server_cache_entry(merged, now, ttl)
         prune_recent_server_cache_locked(now)
+        return copy_recent_entries(merged)
 
 
 def load_recent_entries():
@@ -297,7 +320,7 @@ def load_recent_entries():
     server_rows = get_recent_server_cache(recent_cache_key())
     if rows:
         cookie_rows = merge_recent_entry_names(rows, server_rows)
-        return dedupe_recent_entries(cookie_rows + server_rows)
+        return merge_recent_generations(cookie_rows, server_rows)
 
     return dedupe_recent_entries(server_rows)
 
@@ -381,7 +404,7 @@ def touch_recent_gallery(response, board, kind, recommend=0, name=None):
         "visited_at": time.time(),
     })
     deduped = merge_recent_entries(new_row, rows)
-    set_recent_server_cache(cache_key, deduped)
+    deduped = set_recent_server_cache(cache_key, deduped)
 
     save_recent_cache_key_cookie(response, cache_key)
     save_recent_cookie(response, deduped)

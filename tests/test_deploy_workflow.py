@@ -11,6 +11,8 @@ def test_deploy_is_limited_to_main_and_pins_tested_sha():
     assert "TARGET_SHA='${GITHUB_SHA}' bash -s" in workflow
     assert 'git rev-parse origin/main)" != "${TARGET_SHA}"' in workflow
     assert 'git rev-parse HEAD)" = "${TARGET_SHA}"' in workflow
+    assert 'git merge --ff-only "${TARGET_SHA}"' in workflow
+    assert "git pull" not in workflow
 
 
 def test_deploy_preserves_running_process_and_verifies_worktree_health():

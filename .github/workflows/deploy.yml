@@ -83,7 +83,7 @@ jobs:
               exit 1
             fi
             git checkout main
-            git pull --ff-only origin main
+            git merge --ff-only "${TARGET_SHA}"
             test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
 
             if [ ! -d .venv ]; then

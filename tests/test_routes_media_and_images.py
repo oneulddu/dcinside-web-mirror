@@ -44,9 +44,18 @@ class ExplodingUpstream(DummyUpstream):
 
 
 class DummyMovieResponse:
-    def __init__(self, text, status_code=200):
+    def __init__(self, text, status_code=200, headers=None):
         self.text = text
         self.status_code = status_code
+        self.headers = headers or {}
+        self.closed = False
+
+    @property
+    def is_redirect(self):
+        return self.status_code in {301, 302, 303, 307, 308} and bool(self.headers.get("Location"))
+
+    def close(self):
+        self.closed = True
 
 
 def test_media_proxy_mobile_user_agent_uses_ios():
@@ -432,6 +441,83 @@ def test_media_route_rejects_conflicting_content_lengths(monkeypatch):
     assert response.get_data() == b""
     assert upstream.iterated == 0
     assert upstream.closed is True
+
+
+def test_media_head_uses_upstream_head_without_reading_unknown_length_video(monkeypatch):
+    upstream = DummyUpstream(
+        [b"123", b"456"],
+        headers={"Content-Type": "video/mp4"},
+    )
+    captured = {}
+
+    def fake_fetch(src, headers, cookies, method="GET"):
+        captured["method"] = method
+        return upstream, None
+
+    monkeypatch.setattr(media_proxy, "fetch_media_response", fake_fetch)
+    app = create_app()
+
+    response = app.test_client().head("/media?src=https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4")
+
+    assert response.status_code == 200
+    assert response.data == b""
+    assert "Content-Length" not in response.headers
+    assert captured["method"] == "HEAD"
+    assert upstream.iterated == 0
+    assert upstream.closed is True
+
+
+def test_media_head_preserves_known_length_without_starting_stream(monkeypatch):
+    upstream = DummyUpstream(
+        [b"123", b"456"],
+        headers={"Content-Type": "video/mp4", "Content-Length": "6"},
+    )
+
+    def fake_fetch(src, headers, cookies, method="GET"):
+        assert method == "HEAD"
+        return upstream, None
+
+    monkeypatch.setattr(media_proxy, "fetch_media_response", fake_fetch)
+    app = create_app()
+
+    response = app.test_client().head("/media?src=https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4")
+
+    assert response.status_code == 200
+    assert response.data == b""
+    assert response.headers["Content-Length"] == "6"
+    assert upstream.iterated == 0
+    assert upstream.closed is True
+
+
+def test_media_fetch_uses_pinned_head_request(monkeypatch):
+    upstream = DummyUpstream([], headers={"Content-Type": "image/jpeg"})
+    upstream.is_redirect = False
+    captured = {}
+
+    def fake_head(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return upstream
+
+    def fail_get(*args, **kwargs):
+        raise AssertionError("HEAD media fetch must not issue an upstream GET")
+
+    monkeypatch.setattr(media_proxy, "_http_head", fake_head)
+    monkeypatch.setattr(media_proxy, "_http_get", fail_get)
+
+    response, error_status = media_proxy.fetch_media_response(
+        "https://images.dcinside.com/test.jpg",
+        headers={},
+        cookies={},
+        method="HEAD",
+    )
+
+    assert response is upstream
+    assert error_status is None
+    assert captured["url"] == "https://images.dcinside.com/test.jpg"
+    assert captured["kwargs"]["stream"] is True
+    assert captured["kwargs"]["allow_redirects"] is False
+    upstream.close()
 
 
 def test_media_fetch_rejects_dns_rebinding_before_local_connection(monkeypatch):
@@ -1072,8 +1158,8 @@ def test_movie_route_renders_same_origin_video_player(monkeypatch):
     """
     requests_seen = []
 
-    def fake_get(url, headers=None, timeout=None):
-        requests_seen.append((url, headers))
+    def fake_get(url, headers=None, timeout=None, allow_redirects=None):
+        requests_seen.append((url, headers, allow_redirects))
         return DummyMovieResponse(movie_html)
 
     monkeypatch.setattr(media_proxy.requests, "get", fake_get)
@@ -1089,6 +1175,71 @@ def test_movie_route_renders_same_origin_video_player(monkeypatch):
     assert poster_query["src"] == ["https://dcm6.dcinside.co.kr/viewmovie.php?type=jpg&code=poster"]
     assert requests_seen[0][0] == "https://gall.dcinside.com/board/movie/movie_view?no=6499430"
     assert requests_seen[0][1]["Referer"] == "https://gall.dcinside.com/mgallery/board/view/?id=idolism&no=1193413"
+    assert requests_seen[0][2] is False
+
+
+def test_movie_player_rejects_unsafe_redirect_without_following(monkeypatch):
+    redirect = DummyMovieResponse(
+        "",
+        status_code=302,
+        headers={"Location": "http://127.0.0.1:9999/private"},
+    )
+    calls = []
+
+    monkeypatch.setattr(
+        media_proxy,
+        "movie_player_candidates",
+        lambda *args, **kwargs: [("https://gall.dcinside.com/player", {})],
+    )
+
+    def fake_http_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return redirect
+
+    monkeypatch.setattr(media_proxy, "_http_get", fake_http_get)
+
+    media = media_proxy.fetch_movie_media("123", "test", 456)
+
+    assert media is None
+    assert len(calls) == 1
+    assert calls[0][1]["allow_redirects"] is False
+    assert redirect.closed is True
+
+
+def test_movie_player_revalidates_each_safe_redirect_hop(monkeypatch):
+    redirect = DummyMovieResponse(
+        "",
+        status_code=302,
+        headers={"Location": "/board/movie/final"},
+    )
+    final = DummyMovieResponse(
+        '<video><source src="https://dcm6.dcinside.co.kr/movie.mp4"></video>'
+    )
+    responses = [redirect, final]
+    calls = []
+
+    monkeypatch.setattr(
+        media_proxy,
+        "movie_player_candidates",
+        lambda *args, **kwargs: [("https://gall.dcinside.com/player", {})],
+    )
+
+    def fake_http_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return responses.pop(0)
+
+    monkeypatch.setattr(media_proxy, "_http_get", fake_http_get)
+
+    media = media_proxy.fetch_movie_media("123", "test", 456)
+
+    assert media == {"source": "https://dcm6.dcinside.co.kr/movie.mp4", "poster": None}
+    assert [call[0] for call in calls] == [
+        "https://gall.dcinside.com/player",
+        "https://gall.dcinside.com/board/movie/final",
+    ]
+    assert all(call[1]["allow_redirects"] is False for call in calls)
+    assert redirect.closed is True
+    assert final.closed is True
 
 
 def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
@@ -2453,6 +2604,70 @@ def test_recent_cookie_trimmed_rows_are_restored_from_server_cache(monkeypatch):
         restored = recent.load_recent_entries()
 
     assert [row["board"] for row in restored] == [row["board"] for row in rows]
+    recent.RECENT_SERVER_CACHE.clear()
+
+
+def test_recent_cookie_and_newer_server_generation_merge_by_visit_time():
+    app = create_app()
+    cache_key = "concurrent-visit-key"
+    cookie_rows = [
+        {"board": "a", "kind": "minor", "recommend": 0, "visited_at": 2},
+        {"board": "old", "kind": "minor", "recommend": 0, "visited_at": 1},
+    ]
+    server_rows = [
+        {"board": "b", "kind": "minor", "recommend": 0, "visited_at": 3},
+        *cookie_rows,
+    ]
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        recent.RECENT_SERVER_CACHE.clear()
+    recent.set_recent_server_cache(cache_key, server_rows)
+
+    with app.test_request_context(
+        "/recent",
+        headers={
+            "Cookie": (
+                f"{recent.RECENT_COOKIE_NAME}={_encode_recent_cookie(cookie_rows)}; "
+                f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={cache_key}"
+            )
+        },
+    ):
+        rows = recent.load_recent_entries()
+
+    assert [row["board"] for row in rows] == ["b", "a", "old"]
+    recent.RECENT_SERVER_CACHE.clear()
+
+
+def test_recent_server_cache_atomically_keeps_concurrent_visits():
+    app = create_app()
+    cache_key = "concurrent-write-key"
+    old_row = {"board": "old", "kind": "minor", "recommend": 0, "visited_at": 1}
+    stale_a_generation = [
+        {"board": "a", "kind": "minor", "recommend": 0, "visited_at": 2},
+        old_row,
+    ]
+    newer_b_generation = [
+        {"board": "b", "kind": "minor", "recommend": 0, "visited_at": 3},
+        old_row,
+    ]
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        recent.RECENT_SERVER_CACHE.clear()
+
+    recent.set_recent_server_cache(cache_key, newer_b_generation)
+    merged = recent.set_recent_server_cache(cache_key, stale_a_generation)
+
+    assert [row["board"] for row in merged] == ["b", "a", "old"]
+    with app.test_request_context(
+        "/recent",
+        headers={
+            "Cookie": (
+                f"{recent.RECENT_COOKIE_NAME}={_encode_recent_cookie(stale_a_generation)}; "
+                f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={cache_key}"
+            )
+        },
+    ):
+        rows = recent.load_recent_entries()
+
+    assert [row["board"] for row in rows] == ["b", "a", "old"]
     recent.RECENT_SERVER_CACHE.clear()
 
 
