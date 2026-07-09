@@ -22,14 +22,14 @@ def cache_get(cache, lock, key):
         entry = cache.get(key)
         if not entry:
             return None
-        if entry["expires_at"] < now:
+        if entry["expires_at"] <= now:
             cache.pop(key, None)
             return None
         return entry["value"]
 
 
 def cache_prune(cache, now, max_items):
-    expired_keys = [key for key, entry in cache.items() if entry["expires_at"] < now]
+    expired_keys = [key for key, entry in cache.items() if entry["expires_at"] <= now]
     for key in expired_keys:
         cache.pop(key, None)
     overflow = len(cache) - max(max_items, 0)

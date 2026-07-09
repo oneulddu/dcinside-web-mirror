@@ -2337,6 +2337,26 @@ def test_recent_server_cache_limits_total_keys(monkeypatch):
     assert len(recent.RECENT_SERVER_CACHE) <= 2
 
 
+def test_recent_server_cache_set_evicts_expired_foreign_keys(monkeypatch):
+    monkeypatch.setattr(recent, "RECENT_SERVER_CACHE_TTL", 60)
+    monkeypatch.setattr(recent, "RECENT_SERVER_CACHE_MAX_KEYS", 10)
+    now = [100.0]
+    monkeypatch.setattr(recent.time, "time", lambda: now[0])
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        recent.RECENT_SERVER_CACHE.clear()
+        recent.RECENT_SERVER_CACHE["expired"] = {
+            "entries": [{"board": "expired"}],
+            "expires_at": 99.0,
+            "last_seen": 1.0,
+        }
+
+    recent.set_recent_server_cache("fresh", [{"board": "fresh"}])
+
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        assert "expired" not in recent.RECENT_SERVER_CACHE
+        assert "fresh" in recent.RECENT_SERVER_CACHE
+
+
 def test_get_heung_galleries_does_not_hold_cache_lock_while_fetching_or_writing(monkeypatch):
     class TrackingLock:
         def __init__(self):

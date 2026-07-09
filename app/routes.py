@@ -1,5 +1,6 @@
 #-*- coding:utf-8 -*-
 import html
+import ipaddress
 import os
 import re
 import time
@@ -125,7 +126,7 @@ def _add_search_params(params, search_type=None, search_keyword=None):
     params["serval"] = keyword
 
 
-def board_url(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None):
+def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None):
     params = {
         "board": board,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
@@ -138,10 +139,15 @@ def board_url(board, recommend=0, page=1, kind=None, nav=None, search_type=None,
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword)
+    return params
+
+
+def board_url(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None):
+    params = _board_link_params(board, recommend, page, kind, nav, search_type, search_keyword, head_id)
     return url_for("main.board", **params)
 
 
-def read_url(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None):
+def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None):
     params = {
         "board": board,
         "pid": pid,
@@ -156,6 +162,11 @@ def read_url(board, pid, recommend=0, source_page=None, kind=None, search_type=N
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword)
+    return params
+
+
+def read_url(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None):
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id)
     return url_for("main.read", **params)
 
 
@@ -292,19 +303,7 @@ def _read_social_description(data):
 
 
 def _read_canonical_url(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id):
-    params = {
-        "board": board,
-        "pid": pid,
-    }
-    if _safe_int(recommend, 0) == 1:
-        params["recommend"] = 1
-    if _safe_int(source_page, 0) > 0:
-        params["source_page"] = _safe_int(source_page, 0)
-    _add_kind_param(params, kind)
-    normalized_head_id = _normalize_head_id(head_id)
-    if normalized_head_id is not None:
-        params["headid"] = normalized_head_id
-    _add_search_params(params, search_type, search_keyword)
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id)
     return _external_url_for("main.read", **params)
 
 
@@ -387,24 +386,23 @@ def _nav_tab_for_gallery(board, recommend=0, nav_mode=None):
     return "all"
 
 
-@bp.route("/legacy/")
-def index():
-    page = _safe_int(request.args.get("heung_page", 1), 1)
-    heung_q = (request.args.get("heung_q") or "").strip()
-
+def _heung_index_context(page, heung_q, get_heung_func=None, search_func=None, now_func=None):
+    get_heung_func = get_heung_galleries if get_heung_func is None else get_heung_func
+    search_func = search_galleries if search_func is None else search_func
+    now_func = time.time if now_func is None else now_func
     heung_items = []
     heung_updated_at = None
     heung_error = None
     if heung_q:
         try:
-            heung_items = search_galleries(heung_q)
-            heung_updated_at = time.time()
+            heung_items = search_func(heung_q)
+            heung_updated_at = now_func()
         except Exception:
             current_app.logger.exception("Failed to search DCinside galleries")
             heung_error = "갤러리 검색 결과를 가져오지 못했습니다."
     else:
         try:
-            heung_items, heung_updated_at = get_heung_galleries()
+            heung_items, heung_updated_at = get_heung_func()
         except Exception:
             current_app.logger.exception("Failed to load heung galleries")
             heung_error = "흥한 갤러리 목록을 가져오지 못했습니다."
@@ -416,19 +414,25 @@ def index():
     end = min(start + 20, total_items)
     page_items = heung_items[start:end]
 
-    return render_template(
-        "legacy/index.html",
-        nav_tab="all",
-        heung_items=page_items,
-        heung_page=page,
-        heung_total_pages=total_pages,
-        heung_total_items=total_items,
-        heung_start_rank=(start + 1) if total_items else 0,
-        heung_end_rank=end,
-        heung_error=heung_error,
-        heung_q=heung_q,
-        heung_updated_at_str=_format_cache_time(heung_updated_at) if heung_updated_at else "-",
-    )
+    return {
+        "nav_tab": "all",
+        "heung_items": page_items,
+        "heung_page": page,
+        "heung_total_pages": total_pages,
+        "heung_total_items": total_items,
+        "heung_start_rank": (start + 1) if total_items else 0,
+        "heung_end_rank": end,
+        "heung_error": heung_error,
+        "heung_q": heung_q,
+        "heung_updated_at_str": _format_cache_time(heung_updated_at) if heung_updated_at else "-",
+    }
+
+
+@bp.route("/legacy/")
+def index():
+    page = _safe_int(request.args.get("heung_page", 1), 1)
+    heung_q = (request.args.get("heung_q") or "").strip()
+    return render_template("legacy/index.html", **_heung_index_context(page, heung_q))
 
 
 @bp.route("/legacy/recent")
@@ -449,10 +453,18 @@ def recent():
 
 @bp.route("/healthz")
 def healthz():
-    remote_addr = request.remote_addr or ""
-    if remote_addr not in {"127.0.0.1", "::1"}:
+    if not _is_loopback_addr(request.remote_addr):
         abort(404)
     return jsonify({"ok": True})
+
+
+def _is_loopback_addr(raw):
+    try:
+        addr = ipaddress.ip_address((raw or "").strip())
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return (mapped or addr).is_loopback
 
 
 @bp.route("/favicon.ico")

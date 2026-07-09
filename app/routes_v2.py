@@ -10,12 +10,11 @@ import time
 from flask import Blueprint, abort, current_app, make_response, redirect, render_template, request, url_for
 
 from .routes import (
-    _add_kind_param,
-    _add_search_params,
+    _board_link_params,
     _current_search_context,
     _external_url_for,
     _format_read_payload_times,
-    _format_cache_time,
+    _heung_index_context,
     _load_board_payload,
     _nav_tab_for_gallery,
     _normalize_board_id,
@@ -24,6 +23,7 @@ from .routes import (
     _normalize_nav_mode,
     _normalize_recommend,
     _positive_int_arg,
+    _read_link_params,
     _read_social_meta,
     _safe_int,
     _search_call_kwargs,
@@ -115,18 +115,7 @@ def board_url_v2(
     head_id=None,
     gallery_name=None,
 ):
-    params = {
-        "board": board,
-        "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
-        "page": max(_safe_int(page, 1), 1),
-    }
-    _add_kind_param(params, kind)
-    if nav:
-        params["nav"] = nav
-    normalized_head_id = _normalize_head_id(head_id)
-    if normalized_head_id is not None:
-        params["headid"] = normalized_head_id
-    _add_search_params(params, search_type, search_keyword)
+    params = _board_link_params(board, recommend, page, kind, nav, search_type, search_keyword, head_id)
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
         params["gallery_name"] = clean_name
@@ -144,20 +133,7 @@ def read_url_v2(
     head_id=None,
     gallery_name=None,
 ):
-    params = {
-        "board": board,
-        "pid": pid,
-    }
-    if _safe_int(recommend, 0) == 1:
-        params["recommend"] = 1
-    source_page_int = _safe_int(source_page, 0)
-    if source_page_int > 0:
-        params["source_page"] = source_page_int
-    _add_kind_param(params, kind)
-    normalized_head_id = _normalize_head_id(head_id)
-    if normalized_head_id is not None:
-        params["headid"] = normalized_head_id
-    _add_search_params(params, search_type, search_keyword)
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id)
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
         params["gallery_name"] = clean_name
@@ -165,20 +141,7 @@ def read_url_v2(
 
 
 def _read_canonical_url_v2(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id):
-    params = {
-        "board": board,
-        "pid": pid,
-    }
-    if _safe_int(recommend, 0) == 1:
-        params["recommend"] = 1
-    source_page_int = _safe_int(source_page, 0)
-    if source_page_int > 0:
-        params["source_page"] = source_page_int
-    _add_kind_param(params, kind)
-    normalized_head_id = _normalize_head_id(head_id)
-    if normalized_head_id is not None:
-        params["headid"] = normalized_head_id
-    _add_search_params(params, search_type, search_keyword)
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id)
     return _external_url_for("v2.read", **params)
 
 
@@ -223,44 +186,12 @@ def index_v2_alias():
 def index():
     page = _safe_int(request.args.get("heung_page", 1), 1)
     heung_q = (request.args.get("heung_q") or "").strip()
-
-    heung_items = []
-    heung_updated_at = None
-    heung_error = None
-    if heung_q:
-        try:
-            heung_items = search_galleries(heung_q)
-            heung_updated_at = time.time()
-        except Exception:
-            current_app.logger.exception("Failed to search DCinside galleries")
-            heung_error = "갤러리 검색 결과를 가져오지 못했습니다."
-    else:
-        try:
-            heung_items, heung_updated_at = get_heung_galleries()
-        except Exception:
-            current_app.logger.exception("Failed to load heung galleries")
-            heung_error = "흥한 갤러리 목록을 가져오지 못했습니다."
-
-    total_items = len(heung_items)
-    total_pages = max(1, (total_items + 19) // 20)
-    page = max(1, min(page, total_pages))
-    start = (page - 1) * 20
-    end = min(start + 20, total_items)
-    page_items = heung_items[start:end]
+    context = _heung_index_context(page, heung_q, get_heung_galleries, search_galleries, time.time)
 
     return render_template(
         "index.html",
         title=("%s 갤러리 검색 - 숨터" % heung_q) if heung_q else "숨터 - 가볍게 읽는 공간",
-        nav_tab="all",
-        heung_items=page_items,
-        heung_page=page,
-        heung_total_pages=total_pages,
-        heung_total_items=total_items,
-        heung_start_rank=(start + 1) if total_items else 0,
-        heung_end_rank=end,
-        heung_error=heung_error,
-        heung_q=heung_q,
-        heung_updated_at_str=_format_cache_time(heung_updated_at) if heung_updated_at else "-",
+        **context,
     )
 
 
