@@ -1279,7 +1279,12 @@ class API(ParserMixin):
                 if mobile_stats["seen"]:
                     return
             except Exception:
-                pass
+                logger.debug(
+                    "mobile comments failed, falling back to pc: board=%s doc=%s",
+                    board_id,
+                    document_id,
+                    exc_info=True,
+                )
 
         pc_stats = {"seen": False}
         try:
@@ -1302,7 +1307,12 @@ class API(ParserMixin):
             if pc_stats["seen"] and (remaining_state["value"] == -1 or remaining_state["value"] <= 0):
                 return
         except Exception:
-            pass
+            logger.debug(
+                "pc comments failed, falling back to mobile: board=%s doc=%s",
+                board_id,
+                document_id,
+                exc_info=True,
+            )
 
         if prefer_mobile:
             return

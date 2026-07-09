@@ -37,10 +37,18 @@ def _init_response_compression(app):
 
 
 def _init_static_cache_busting(app):
+    mtime_cache = {}
+
     def static_url(filename):
         path = os.path.join(app.static_folder, filename)
         try:
-            version = str(int(os.path.getmtime(path)))
+            if app.debug:
+                version = str(int(os.path.getmtime(path)))
+            else:
+                version = mtime_cache.get(filename)
+                if version is None:
+                    version = str(int(os.path.getmtime(path)))
+                    mtime_cache[filename] = version
         except OSError:
             return url_for("static", filename=filename)
         return url_for("static", filename=filename, v=version)

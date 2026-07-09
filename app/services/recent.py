@@ -230,7 +230,6 @@ def get_recent_server_cache(key):
 
     now = time.time()
     with RECENT_SERVER_CACHE_LOCK:
-        prune_recent_server_cache_locked(now)
         entry = RECENT_SERVER_CACHE.get(key)
         if not entry:
             return []
@@ -261,7 +260,6 @@ def set_recent_server_cache(key, entries):
 
     now = time.time()
     with RECENT_SERVER_CACHE_LOCK:
-        prune_recent_server_cache_locked(now)
         RECENT_SERVER_CACHE[key] = make_recent_server_cache_entry(entries, now, ttl)
         prune_recent_server_cache_locked(now)
 

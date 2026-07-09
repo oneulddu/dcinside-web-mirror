@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import threading
@@ -9,6 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 
 
+logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 INSTANCE_DIR = os.path.join(BASE_DIR, "instance")
 os.makedirs(INSTANCE_DIR, exist_ok=True)
@@ -145,7 +147,7 @@ def _refresh_heung_galleries():
     try:
         _write_heung_cache_file(fetched_at, fresh_items)
     except Exception:
-        pass
+        logger.warning("Failed to write heung gallery cache file", exc_info=True)
     return fresh_items, fetched_at
 
 
@@ -153,7 +155,7 @@ def _refresh_heung_galleries_in_background():
     try:
         _refresh_heung_galleries()
     except Exception:
-        pass
+        logger.warning("Failed to refresh heung galleries in background", exc_info=True)
     finally:
         HEUNG_REFRESH_LOCK.release()
 

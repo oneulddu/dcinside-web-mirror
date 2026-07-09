@@ -49,6 +49,35 @@ def test_static_url_adds_mtime_version(monkeypatch):
     assert version == [str(int(os.path.getmtime(os.path.join(app.static_folder, "css/main.css"))))]
 
 
+def test_static_url_memoizes_mtime_in_production(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "production")
+    monkeypatch.setenv("MIRROR_SECRET_KEY", "stable-secret")
+    mtimes = iter([1000, 2000])
+    monkeypatch.setattr(os.path, "getmtime", lambda _path: next(mtimes))
+    app = create_app()
+
+    with app.test_request_context():
+        first_url = app.jinja_env.globals["static_url"]("css/main.css")
+        second_url = app.jinja_env.globals["static_url"]("css/main.css")
+
+    assert parse_qs(urlparse(first_url).query).get("v") == ["1000"]
+    assert second_url == first_url
+
+
+def test_static_url_rechecks_mtime_in_debug(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    mtimes = iter([1000, 2000])
+    monkeypatch.setattr(os.path, "getmtime", lambda _path: next(mtimes))
+    app = create_app()
+
+    with app.test_request_context():
+        first_url = app.jinja_env.globals["static_url"]("css/main.css")
+        second_url = app.jinja_env.globals["static_url"]("css/main.css")
+
+    assert parse_qs(urlparse(first_url).query).get("v") == ["1000"]
+    assert parse_qs(urlparse(second_url).query).get("v") == ["2000"]
+
+
 def test_static_files_use_immutable_cache_headers(monkeypatch):
     monkeypatch.setenv("MIRROR_ENV", "development")
     app = create_app()
@@ -115,3 +144,25 @@ def test_healthz_is_local_only(monkeypatch):
     assert response.status_code == 200
     assert response.get_json() == {"ok": True}
     assert external_response.status_code == 404
+
+
+def test_healthz_accepts_ipv4_mapped_loopback(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    app = create_app()
+
+    response = app.test_client().get("/healthz", environ_base={"REMOTE_ADDR": "::ffff:127.0.0.1"})
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True}
+
+
+def test_healthz_rejects_non_loopback_and_invalid_addresses(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "development")
+    app = create_app()
+    client = app.test_client()
+
+    mapped_external = client.get("/healthz", environ_base={"REMOTE_ADDR": "::ffff:203.0.113.10"})
+    invalid_addr = client.get("/healthz", environ_base={"REMOTE_ADDR": "not-an-ip"})
+
+    assert mapped_external.status_code == 404
+    assert invalid_addr.status_code == 404
