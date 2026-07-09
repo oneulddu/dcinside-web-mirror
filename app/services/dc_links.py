@@ -76,7 +76,7 @@ def _board_href(board_id, query, kind, fragment):
         params["page"] = int(page)
     _add_kind(params, kind)
     _add_board_context(params, query)
-    return _append_fragment(url_for("v2.board", **params), fragment)
+    return _append_fragment(url_for("main.board", **params), fragment)
 
 
 def _read_href(board_id, document_id, query, kind, fragment):
@@ -88,7 +88,7 @@ def _read_href(board_id, document_id, query, kind, fragment):
         params["source_page"] = int(source_page)
     _add_kind(params, kind)
     _add_board_context(params, query)
-    return _append_fragment(url_for("v2.read", **params), fragment)
+    return _append_fragment(url_for("main.read", **params), fragment)
 
 
 def _mobile_gallery_href(parsed, query):

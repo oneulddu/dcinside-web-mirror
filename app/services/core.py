@@ -3,7 +3,7 @@ import re
 import threading
 import time
 
-from . import dc_api
+from .dc import api as dc_api
 from .async_bridge import dc_api_context
 from .cache_utils import cache_get as _shared_cache_get
 from .cache_utils import cache_prune as _shared_cache_prune
@@ -594,35 +594,6 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
             READ_CACHE_MAX_ITEMS,
         )
     return payload
-
-
-async def async_index(
-    page,
-    board,
-    recommend,
-    kind=None,
-    document_id_upper_limit=None,
-    document_id_lower_limit=None,
-    limit=None,
-    max_scan_pages=None,
-    search_type=None,
-    search_keyword=None,
-    head_id=None,
-):
-    data, _categories = await async_index_with_head_categories(
-        page,
-        board,
-        recommend,
-        kind=kind,
-        document_id_upper_limit=document_id_upper_limit,
-        document_id_lower_limit=document_id_lower_limit,
-        limit=limit,
-        max_scan_pages=max_scan_pages,
-        search_type=search_type,
-        search_keyword=search_keyword,
-        head_id=head_id,
-    )
-    return data
 
 
 async def async_index_with_head_categories(

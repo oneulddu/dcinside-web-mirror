@@ -1,7 +1,6 @@
 # DESIGN.md - 숨터 기본 프론트엔드 디자인 시스템
 
 적용 범위: 루트 기본 화면(`/`, `/board`, `/read`, `/recent`)과 `app/templates/`, `app/static/`.
-레거시 화면(`/legacy`, `app/templates/legacy/`, `app/static/legacy/`)은 이 계약의 대상이 아니다.
 
 ## 1. Atmosphere / Signature
 

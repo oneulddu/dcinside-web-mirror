@@ -44,7 +44,7 @@ pm2 logs dc-mirror
 
 **Services Layer** (`app/services/`):
 
-- `dc_api.py`: Async DCinside scraper using `aiohttp` and `lxml`
+- `dc/api.py`: Async DCinside scraper using `aiohttp` and `lxml`
   - Data models: `DocumentIndex`, `Document`, `Comment`
   - Main runtime methods: `API.board()`, `API.document()`, `API.comments()`
   - Uses mobile and PC DCinside HTML fallbacks where needed
@@ -84,7 +84,7 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
 - `static/javascript/read_state.js`: Dark mode and read-state persistence
 - `static/javascript/read_related_loader.js`: Infinite scroll related-post loader
 - `static/javascript/comment_spam_filter.js`: Client-side spam filtering
-- `static/css/main.css`: Pretendard font and responsive light/dark UI
+- `static/css/main.css`: SUIT font and responsive light/dark UI
 
 ### Frontend Skill Priority
 

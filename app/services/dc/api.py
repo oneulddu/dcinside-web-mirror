@@ -1,10 +1,7 @@
-import asyncio
 import json
 import logging
 import re
 import threading
-import time
-from datetime import datetime
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
 import aiohttp
@@ -17,18 +14,6 @@ from app.services.cache_utils import cache_set_after_insert
 from app.services.cache_utils import env_int
 
 logger = logging.getLogger(__name__)
-
-
-def to_int(value, default=0):
-    if value is None:
-        return default
-    digits = re.sub(r"[^0-9-]", "", str(value))
-    if not digits:
-        return default
-    try:
-        return int(digits)
-    except ValueError:
-        return default
 
 
 def to_optional_int(value):
@@ -84,17 +69,6 @@ XML_HTTP_REQ_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
 }
 
-POST_HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "Pragma": "no-cache",
-    "Upgrade-Insecure-Requests": "1",
-    "User-Agent": MOBILE_USER_AGENT,
-}
-
 GALLERY_POSTS_COOKIES = {
     "__gat_mobile_search": "1",
     "list_count": str(DOCS_PER_PAGE),
@@ -104,21 +78,8 @@ _BOARD_KIND_CACHE = {}
 _BOARD_KIND_CACHE_LOCK = threading.Lock()
 
 
-def unquote(encoded):
-    return re.sub(r'\\u([a-fA-F0-9]{4}|[a-fA-F0-9]{2})', lambda m: chr(int(m.group(1), 16)), encoded)
-def quote(decoded):
-    arr = []
-    for c in decoded:
-        t = hex(ord(c))[2:].upper() 
-        if len(t) >= 4:
-            arr.append("%u" + t)
-        else:
-            arr.append("%" + t)
-    return "".join(arr)
-
-
 from .models import Comment, Document, DocumentIndex, Image
-from .parsers import ParserMixin, has_gallery_image_icon, has_gallery_video_icon
+from .parsers import ParserMixin, has_gallery_image_icon, has_gallery_video_icon, to_int
 
 
 class API(ParserMixin):
@@ -144,7 +105,6 @@ class API(ParserMixin):
     __extract_top_level_redirect_url = ParserMixin._ParserMixin__extract_top_level_redirect_url
     __extract_meta_refresh_url = ParserMixin._ParserMixin__extract_meta_refresh_url
     __extract_script_redirect_url = ParserMixin._ParserMixin__extract_script_redirect_url
-    __upsert_gallery = ParserMixin._ParserMixin__upsert_gallery
     __parse_legacy_mobile_board_row = ParserMixin._ParserMixin__parse_legacy_mobile_board_row
     __extract_pc_board_author = ParserMixin._ParserMixin__extract_pc_board_author
     __extract_pc_board_counts = ParserMixin._ParserMixin__extract_pc_board_counts
@@ -159,7 +119,6 @@ class API(ParserMixin):
     __pick_change_gif_fallback_image_src = ParserMixin._ParserMixin__pick_change_gif_fallback_image_src
     __is_placeholder_document_image_src = ParserMixin._ParserMixin__is_placeholder_document_image_src
     __document_image_elements = ParserMixin._ParserMixin__document_image_elements
-    __real_document_image_sources = ParserMixin._ParserMixin__real_document_image_sources
     __real_document_video_sources = ParserMixin._ParserMixin__real_document_video_sources
     __real_document_video_poster_sources = ParserMixin._ParserMixin__real_document_video_poster_sources
     __real_document_media_sources = ParserMixin._ParserMixin__real_document_media_sources
@@ -168,7 +127,6 @@ class API(ParserMixin):
     __document_contents_text = ParserMixin._ParserMixin__document_contents_text
     __document_images = ParserMixin._ParserMixin__document_images
     __normalize_poll_url = ParserMixin._ParserMixin__normalize_poll_url
-    __is_poll_url = ParserMixin._ParserMixin__is_poll_url
     __poll_card_element = ParserMixin._ParserMixin__poll_card_element
     __poll_preview_url = ParserMixin._ParserMixin__poll_preview_url
     __parse_poll_summary = ParserMixin._ParserMixin__parse_poll_summary
@@ -198,20 +156,6 @@ class API(ParserMixin):
         return self
     async def __aexit__(self, *args, **kwargs):
         await self.close()
-    async def watch(self, board_id):
-        pass
-    def __extract_board_id_from_href(self, href):
-        if not href:
-            return None
-        parsed = urlparse(href)
-        query = parse_qs(parsed.query)
-        if "id" in query and query["id"]:
-            return query["id"][0]
-        path = (parsed.path or "").rstrip("/")
-        if not path:
-            return None
-        return path.split("/")[-1]
-
     def __dedupe_urls(self, urls):
         seen = set()
         unique = []
@@ -287,10 +231,6 @@ class API(ParserMixin):
             prepared.setdefault("User-Agent", MOBILE_USER_AGENT)
         return prepared
 
-    def __is_pc_request(self, url):
-        host = (urlparse(url).netloc or "").lower()
-        return host in {"gall.dcinside.com", "search.dcinside.com"}
-
     def __is_mobile_request(self, url):
         host = (urlparse(url).netloc or "").lower()
         return host == "m.dcinside.com"
@@ -316,32 +256,6 @@ class API(ParserMixin):
         if not callable(clear):
             return
         clear(lambda morsel: morsel.key not in DC_SESSION_COOKIE_ALLOWLIST)
-
-    def __required_attr(self, parsed, xpath, attr, field_name):
-        nodes = parsed.xpath(xpath)
-        if not nodes:
-            raise RuntimeError(f"required field not found: {field_name}")
-        value = nodes[0].get(attr)
-        if value is None:
-            raise RuntimeError(f"required field is empty: {field_name}")
-        return value
-
-    def __optional_attr(self, parsed, xpath, attr, default=None):
-        nodes = parsed.xpath(xpath)
-        if not nodes:
-            return default
-        value = nodes[0].get(attr)
-        return default if value is None else value
-
-    def __required_text(self, parsed, xpath, field_name):
-        nodes = parsed.xpath(xpath)
-        if not nodes:
-            raise RuntimeError(f"required field not found: {field_name}")
-        text = nodes[0].text_content() if hasattr(nodes[0], "text_content") else str(nodes[0])
-        text = (text or "").strip()
-        if not text:
-            raise RuntimeError(f"required field is empty: {field_name}")
-        return text
 
     async def __request_text(self, method, url, headers=None, data=None, cookies=None):
         request_headers = self.__prepare_headers(url, headers)
@@ -625,105 +539,6 @@ class API(ParserMixin):
         if preserved_head_id is not None and not head_added:
             query_items.append((target_head_key, preserved_head_id))
         return parsed._replace(query=urlencode(query_items)).geturl()
-    async def __gallery_miner_from_web(self, category, category_code, name=None):
-        # Prime ci_c cookie required by search_gallmain endpoint.
-        await self.__request_text("GET", "https://gall.dcinside.com/m")
-
-        cookies = self.session.cookie_jar.filter_cookies("https://gall.dcinside.com")
-        ci_token = cookies.get("ci_c").value if cookies.get("ci_c") else ""
-
-        headers = XML_HTTP_REQ_HEADERS.copy()
-        headers["Referer"] = "https://gall.dcinside.com/m"
-        headers["Origin"] = "https://gall.dcinside.com"
-        headers["User-Agent"] = PC_USER_AGENT
-
-        payload = {
-            "ci_t": ci_token,
-            "key": category_code,
-            "type": "category",
-            "cateName": category,
-            "galltype": "M",
-        }
-
-        status, _, text = await self.__request_text(
-            "POST",
-            "https://gall.dcinside.com/ajax/gallery_main_ajax/search_gallmain/",
-            headers=headers,
-            data=payload,
-        )
-        if status != 200:
-            raise RuntimeError(f"search_gallmain failed: {status}")
-
-        parsed = lxml.html.fromstring(text)
-        gallerys = {}
-        for anchor in parsed.xpath("//a[@href]"):
-            board_name = anchor.text_content().strip()
-            board_id = self.__extract_board_id_from_href(anchor.get("href"))
-            if name and (not board_name or name not in board_name):
-                continue
-            self.__upsert_gallery(gallerys, board_name, board_id)
-
-        if not gallerys:
-            raise RuntimeError("empty gallery result from web")
-        return gallerys
-
-    async def __gallery_miner_from_mobile(self, category_code, name=None):
-        url = "https://m.dcinside.com/mcategory/" + category_code
-        gallerys = {}
-        lis = []
-
-        status, _, text = await self.__request_text("GET", url)
-        if status >= 400:
-            raise RuntimeError(f"gallery mobile failed: {status}")
-        parsed = lxml.html.fromstring(text)
-        for item in parsed.xpath("/html/body/div/div/div/section[3]/ul/li"):
-            lis.append(item)
-        for item in parsed.xpath('//*[@id="base-div"]/ul/li'):
-            lis.append(item)
-        for item in lis:
-            anchor = item[0]
-            board_name = (anchor.text or "").strip()
-            board_id = self.__extract_board_id_from_href(anchor.get("href"))
-            if name and (not board_name or name not in board_name):
-                continue
-            self.__upsert_gallery(gallerys, board_name, board_id)
-        return gallerys
-
-    async def gallery_miner(self, category="게임", name=None):
-        urllist = {
-            "여성":"3", "생물":"4", "이슈":"5", "여행/풍경":"6", "음식":"7",
-            "디지털/IT":"8", "합성":"9", "정부/기관":"10", "수능":"11", "취미":"12", "학술":"13",
-            "교육":"14", "교통/운송":"15", "패션":"16", "밀리터리":"17", "성인":"18",
-            "생활":"19", "직업":"20", "게임":"21", "국내방송":"22", "음악":"23", "스포츠":"24",
-            "스포츠스타":"25", "연예":"26", "대학":"27", "정치인/유명인":"28", "성공/계발":"29", "지역":"30", "해외방송":"31",
-            "질문":"33", "기타":"34", "기업":"35", "쇼핑/장터":"37", "미디어":"38",
-            "만화/애니":"39", "건강/심리":"40", "금융/재테크":"41", "공무원":"42",
-        }
-        category_code = urllist[category]
-        try:
-            return await self.__gallery_miner_from_web(category, category_code, name)
-        except Exception:
-            # Keep backward-compatible behavior if web endpoint changes.
-            return await self.__gallery_miner_from_mobile(category_code, name)
-
-    async def gallery(self, name=None):
-        url = "https://m.dcinside.com/galltotal"
-        gallerys={}
-        status, _, text = await self.__request_text("GET", url)
-        if status >= 400:
-            raise RuntimeError(f"gallery total failed: {status}")
-        parsed = lxml.html.fromstring(text)
-        for i in parsed.xpath('//*[@id="total_1"]/li'):
-            for e in i.iter():
-                if e.tag == "a":
-                    board_name = e.text
-                    board_id = e.get("href").split("/")[-1]
-                    if name:
-                        if name in board_name:
-                            gallerys[board_name] = board_id
-                    else:
-                        gallerys[board_name] = board_id
-        return gallerys
     async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None):
         page = start_page
         scanned_pages = 0
@@ -1332,486 +1147,3 @@ class API(ParserMixin):
             skip_seen=True,
         ):
             yield comment
-    # The Flask app is read-only today, so these write helpers are intentionally
-    # not connected to routes. Keep them isolated until write support is planned.
-    async def write_comment(self, board_id, document_id, contents="", dccon_id="", dccon_src="", parent_comment_id="", name="", password="", is_minor=False):
-        url = "https://m.dcinside.com/board/{}/{}".format(board_id, document_id)
-        async with self.session.get(url) as res:
-            parsed = lxml.html.fromstring(await res.text())
-        hide_robot = self.__required_attr(parsed, "//input[@class='hide-robot']", "name", "hide robot input")
-        csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
-        title = self.__required_text(parsed, "//span[@class='tit']", "document title")
-        board_name = self.__required_text(parsed, "//a[@class='gall-tit-lnk']", "board name")
-        con_key = await self.__access("com_submit", url, require_conkey=False, csrf_token=csrf_token)
-        header = XML_HTTP_REQ_HEADERS.copy()
-        header["Referer"] = url
-        header["Host"] = "m.dcinside.com"
-        header["Origin"] = "https://m.dcinside.com"
-        header["X-CSRF-TOKEN"] = csrf_token
-        cookies = {
-            "m_dcinside_" + (board_id or ""): (board_id or ""),
-            "m_dcinside_lately": quote((board_id or "") + "|" + (board_name or "") + ","),
-            "_ga": "GA1.2.693521455.1588839880",
-            }
-        url = "https://m.dcinside.com/ajax/comment-write"
-        payload = {
-                "comment_memo": contents,
-                "comment_nick": name,
-                "comment_pw": password,
-                "mode": "com_write",
-                "comment_no": parent_comment_id,
-                "id": board_id,
-                "no": document_id,
-                "best_chk": "",
-                "subject": title,
-                "board_id": "0",
-                "reple_id":"",
-                "cpage": "1",
-                "con_key": con_key,
-                hide_robot: "1",
-                }
-        if dccon_id: payload["detail_idx"] = dccon_id
-        if dccon_src: payload["comment_memo"] = "<img src='{}' class='written_dccon' alt='1'>".format(dccon_src)
-        #async with self.session.post(url, headers=header, data=payload, cookies=cookies) as res:
-        async with self.session.post(url, headers=header, data=payload, cookies=cookies) as res:
-            parsed = await res.text()
-        try:
-            parsed = json.loads(parsed)
-        except Exception as e:
-            raise Exception("Error while writing comment: " + unquote(str(parsed)))
-        if "data" not in parsed:
-            raise Exception("Error while writing comment: " + unquote(str(parsed)))
-        return str(parsed["data"])
-    async def modify_document(self, board_id, document_id, title="", contents="", name="", password="", is_minor=False):
-        if not password:
-            url = "https://m.dcinside.com/write/{}/modify/{}".format(board_id, document_id)
-            async with self.session.get(url) as res:
-                return await self.__write_or_modify_document(board_id, title, contents, name, password, intermediate=await res.text(), intermediate_referer=url, document_id=document_id, is_minor=is_minor)
-        url = "https://m.dcinside.com/confirmpw/{}/{}?mode=modify".format(board_id, document_id)
-        referer = url
-        async with self.session.get(url) as res:
-            parsed = lxml.html.fromstring(await res.text())
-        token = self.__required_attr(parsed, "//input[@name='_token']", "value", "password token")
-        csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
-        con_key = await self.__access("Modifypw", url, require_conkey=False, csrf_token=csrf_token)
-        payload = {
-                "_token": token,
-                "board_pw": password,
-                "id": board_id,
-                "no": document_id,
-                "mode": "modify",
-                "con_key": con_key,
-                }
-        header = XML_HTTP_REQ_HEADERS.copy()
-        header["Referer"] = referer
-        header["Host"] = "m.dcinside.com"
-        header["Origin"] = "https://m.dcinside.com"
-        header["X-CSRF-TOKEN"] = csrf_token
-        url = "https://m.dcinside.com/ajax/pwcheck-board"
-        async with self.session.post(url, headers=header, data=payload) as res:
-            response_text = await res.text()
-            self.__validate_password_check_response(response_text)
-        payload = {
-                "board_pw": password,
-                "id": board_id,
-                "no": document_id,
-                "_token": csrf_token
-                }
-        header = POST_HEADERS.copy()
-        header["Referer"] = referer
-        url = "https://m.dcinside.com/write/{}/modify/{}".format(board_id, document_id)
-        async with self.session.post(url, headers=header, data=payload) as res:
-            return await self.__write_or_modify_document(board_id, title, contents, name, password, intermediate=await res.text(), intermediate_referer=url, document_id=document_id)
-    async def remove_document(self, board_id, document_id, password="", is_minor=False):
-        if not password:
-            url = "https://m.dcinside.com/board/{}/{}".format(board_id, document_id)
-            async with self.session.get(url) as res:
-                parsed = lxml.html.fromstring(await res.text())
-            csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
-            header = XML_HTTP_REQ_HEADERS.copy()
-            header["Referer"] = url
-            header["X-CSRF-TOKEN"] = csrf_token
-            con_key = await self.__access("board_Del", url, require_conkey=False, csrf_token=csrf_token)
-            url = "https://m.dcinside.com/del/board"
-            payload = { "id": board_id, "no": document_id, "con_key": con_key }
-            async with self.session.post(url, headers=header, data=payload) as res:
-                res = await res.text()
-            if res.find("true") < 0:
-                raise Exception("Error while removing: " + unquote(str(res)))
-            return True
-        url = "https://m.dcinside.com/confirmpw/{}/{}?mode=del".format(board_id, document_id)
-        referer = url
-        async with self.session.get(url) as res:
-            parsed = lxml.html.fromstring(await res.text())
-        token = self.__required_attr(parsed, "//input[@name='_token']", "value", "password token")
-        csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
-        board_name = self.__required_text(parsed, "//a[@class='gall-tit-lnk']", "board name")
-        con_key = await self.__access("board_Del", url, require_conkey=False, csrf_token=csrf_token)
-        payload = {
-                "_token": token,
-                "board_pw": password,
-                "id": board_id,
-                "no": document_id,
-                "mode": "del",
-                "con_key": con_key,
-                }
-        header = XML_HTTP_REQ_HEADERS.copy()
-        header["Referer"] = url
-        header["X-CSRF-TOKEN"] = csrf_token
-        cookies = {
-            "m_dcinside_" + (board_id or ""): (board_id or ""),
-            "m_dcinside_lately": quote((board_id or "") + "|" + (board_name or "") + ","),
-            "_ga": "GA1.2.693521455.1588839880",
-            }
-        url = "https://m.dcinside.com/del/board"
-        async with self.session.post(url, headers=header, data=payload, cookies=cookies) as res:
-            res = await res.text()
-        if res.find("true") < 0:
-            raise Exception("Error while removing: " + unquote(str(res)))
-        return True
-    async def write_document(self, board_id, title="", contents="", name="", password="", is_minor=False):
-        return await self.__write_or_modify_document(board_id, title, contents, name, password, is_minor=is_minor)
-    async def __write_or_modify_document(self, board_id, title="", contents="", name="", password="", intermediate=None, intermediate_referer=None, document_id=None, is_minor=False):
-        if not intermediate:
-            url = "https://m.dcinside.com/write/{}".format(board_id)
-            async with self.session.get(url) as res:
-                parsed = lxml.html.fromstring(await res.text())
-        else:
-            parsed = lxml.html.fromstring(intermediate)
-            url = intermediate_referer
-        first_url = url
-        rand_code = self.__optional_attr(parsed, "//input[@name='code']", "value")
-        user_id = self.__required_attr(parsed, "//input[@name='user_id']", "value", "user id") if not name else None
-        mobile_key = self.__required_attr(parsed, "//input[@id='mobile_key']", "value", "mobile key")
-        hide_robot = self.__required_attr(parsed, "//input[@class='hide-robot']", "name", "hide robot input")
-        csrf_token = self.__required_attr(parsed, "//meta[@name='csrf-token']", "content", "csrf token")
-        con_key = await self.__access("dc_check2", url, require_conkey=False, csrf_token=csrf_token)
-        board_name = self.__required_text(parsed, "//a[@class='gall-tit-lnk']", "board name")
-        header = XML_HTTP_REQ_HEADERS.copy()
-        header["Referer"] = url
-        header["X-CSRF-TOKEN"] = csrf_token
-        url = "https://m.dcinside.com/ajax/w_filter"
-        payload = {
-                "subject": title,
-                "memo": contents,
-                "mode": "write",
-                "id": board_id,
-                }
-        if rand_code:
-            payload["code"] = rand_code
-        async with self.session.post(url, headers=header, data=payload) as res:
-            res = await res.text()
-            res = json.loads(res)
-        if not res["result"]:
-            raise Exception("Erorr while write document: " + str(res))
-        header = POST_HEADERS.copy()
-        url = "https://mupload.dcinside.com/write_new.php"
-        header["Host"] = "mupload.dcinside.com"
-        header["Referer"] = first_url
-        payload = {
-                "subject": title,
-                "memo": contents,
-                hide_robot: "1",
-                "GEY3JWF": hide_robot,
-                "id": board_id,
-                "contentOrder": "order_memo",
-                "mode": "write",
-                "Block_key": con_key,
-                "bgm":"",
-                "iData":"",
-                "yData":"",
-                "tmp":"",
-                "imgSize": "850",
-                "is_minor": "1" if is_minor else "",
-                "mobile_key": mobile_key,
-                "GEY3JWF": hide_robot,
-            }
-        if rand_code:
-            payload["code"] = rand_code
-        if name:
-            payload["name"] = name
-            payload["password"] = password
-        else:
-            payload["user_id"] = user_id
-        if intermediate:
-            payload["mode"] = "modify"
-            payload["delcheck"] = ""
-            payload["t_ch2"] = ""
-            payload["no"] = document_id
-        cookies = {
-            "m_dcinside_" + (board_id or ""): (board_id or ""),
-            "m_dcinside_lately": quote((board_id or "") + "|" + (board_name or "") + ","),
-            "_ga": "GA1.2.693521455.1588839880",
-            }
-        async with self.session.post(url, headers=header, data=payload, cookies=cookies) as res:
-            response_text = await res.text()
-            if res.status >= 400:
-                raise Exception("Error while writing document: " + unquote(str(response_text)))
-            response_headers = dict(getattr(res, "headers", {}) or {})
-            response_url = str(getattr(res, "url", "") or "")
-        if document_id:
-            self.__raise_if_write_response_failed(response_text, "modifying")
-            modified_id = self.__extract_document_id_from_write_response(
-                response_text,
-                response_url=response_url,
-                response_headers=response_headers,
-            )
-            if modified_id and str(modified_id) != str(document_id):
-                raise Exception("Error while modifying document: upstream returned different document id")
-            if modified_id or self.__is_successful_modify_response(response_text):
-                return str(document_id)
-            raise Exception("Error while modifying document: could not verify upstream response")
-        self.__raise_if_write_response_failed(response_text, "writing")
-        created_id = self.__extract_document_id_from_write_response(
-            response_text,
-            response_url=response_url,
-            response_headers=response_headers,
-        )
-        if created_id:
-            return created_id
-        raise Exception("Error while writing document: could not parse upstream response")
-
-    def __validate_password_check_response(self, response_text):
-        text = response_text or ""
-        if not text.strip():
-            raise Exception("Error while modifying: maybe the password is incorrect")
-
-        parsed_json = self.__loads_json_or_none(text)
-        if parsed_json is not None:
-            failure_message = self.__json_failure_message(parsed_json)
-            if failure_message:
-                raise Exception("Error while modifying: " + failure_message)
-            if self.__json_success_value(parsed_json) is False:
-                raise Exception("Error while modifying: maybe the password is incorrect")
-            return
-
-        if self.__contains_failure_signal(text, include_alert=True):
-            raise Exception("Error while modifying: " + self.__clean_failure_text(text))
-
-    def __loads_json_or_none(self, text):
-        try:
-            return json.loads(text)
-        except Exception:
-            return None
-
-    def __json_success_value(self, value):
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value != 0
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"true", "ok", "success", "1", "y", "yes"}:
-                return True
-            if normalized in {"false", "fail", "failed", "error", "0", "n", "no"}:
-                return False
-            return None
-        if isinstance(value, dict):
-            for key in ("result", "success", "status", "code", "ok"):
-                if key in value:
-                    result = self.__json_success_value(value[key])
-                    if result is not None:
-                        return result
-            data = value.get("data")
-            if isinstance(data, (bool, int, float, str)):
-                return self.__json_success_value(data)
-        return None
-
-    def __json_failure_message(self, value):
-        if isinstance(value, dict):
-            result = self.__json_success_value(value)
-            message = " ".join(
-                str(value.get(key) or "")
-                for key in ("message", "msg", "error", "reason", "alert")
-                if value.get(key)
-            ).strip()
-            if result is False:
-                return message or "maybe the password is incorrect"
-            if message and self.__contains_failure_signal(message, include_alert=False):
-                return message
-        elif isinstance(value, str):
-            if self.__contains_failure_signal(value, include_alert=True):
-                return value
-        return None
-
-    def __clean_failure_text(self, text):
-        text = unquote(str(text or ""))
-        try:
-            parsed = lxml.html.fromstring(text)
-            text = parsed.text_content()
-        except Exception:
-            pass
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        return text[:200] or "upstream rejected the request"
-
-    def __contains_failure_signal(self, text, include_alert=False):
-        raw = unquote(str(text or ""))
-        lowered = raw.lower()
-        alert_messages = self.__extract_alert_messages(raw)
-        success_phrases = [
-            "성공",
-            "완료",
-            "등록되었습니다",
-            "등록 되었습니다",
-            "수정되었습니다",
-            "수정 되었습니다",
-            "작성되었습니다",
-            "작성 되었습니다",
-        ]
-        failure_phrases = [
-            "비밀번호가 틀",
-            "비밀번호를 확인",
-            "비밀번호 확인",
-            "비밀번호가 일치",
-            "잘못된 비밀번호",
-            "패스워드가 틀",
-            "password is incorrect",
-            "incorrect password",
-            "wrong password",
-            "invalid password",
-            "오류",
-            "에러",
-            "실패",
-            "fail",
-            "failed",
-            "error",
-            "invalid",
-            "forbidden",
-            "denied",
-            "권한",
-            "차단",
-            "자동등록방지",
-            "캡차",
-            "captcha",
-            "금지어",
-            "도배",
-        ]
-
-        for alert in alert_messages:
-            normalized_alert = alert.strip().lower()
-            if not normalized_alert:
-                continue
-            if any(phrase in normalized_alert for phrase in success_phrases):
-                continue
-            if include_alert:
-                return True
-            if any(phrase in normalized_alert for phrase in failure_phrases):
-                return True
-
-        return any(phrase in lowered for phrase in failure_phrases)
-
-    def __extract_alert_messages(self, text):
-        messages = []
-        for quote_char, message in re.findall(r"alert\s*\(\s*(['\"])(.*?)\1\s*\)", text or "", flags=re.I | re.S):
-            messages.append(message)
-        return messages
-
-    def __raise_if_write_response_failed(self, response_text, action):
-        if self.__contains_failure_signal(response_text, include_alert=False):
-            raise Exception("Error while {} document: {}".format(action, self.__clean_failure_text(response_text)))
-
-        for alert in self.__extract_alert_messages(response_text or ""):
-            if any(phrase in alert for phrase in ["성공", "완료", "등록", "수정"]):
-                continue
-            raise Exception("Error while {} document: {}".format(action, self.__clean_failure_text(alert)))
-
-        parsed_json = self.__loads_json_or_none(response_text or "")
-        if parsed_json is not None:
-            failure_message = self.__json_failure_message(parsed_json)
-            if failure_message:
-                raise Exception("Error while {} document: {}".format(action, failure_message))
-
-    def __is_successful_modify_response(self, response_text):
-        parsed_json = self.__loads_json_or_none(response_text or "")
-        if parsed_json is not None:
-            success = self.__json_success_value(parsed_json)
-            if success is True:
-                return True
-
-        text = unquote(str(response_text or ""))
-        return any(
-            phrase in text
-            for phrase in [
-                "수정되었습니다",
-                "수정 되었습니다",
-                "수정이 완료",
-                "수정 완료",
-                "modify_success",
-            ]
-        )
-
-    def __extract_document_id_from_write_response(self, response_text, response_url=None, response_headers=None):
-        response_headers = response_headers or {}
-        for url in [
-            response_url,
-            response_headers.get("Location"),
-            response_headers.get("location"),
-        ]:
-            document_id = self.__extract_document_id_from_url(url)
-            if document_id:
-                return document_id
-
-        parsed_json = self.__loads_json_or_none(response_text or "")
-        document_id = self.__extract_document_id_from_json(parsed_json)
-        if document_id:
-            return document_id
-
-        redirect_url = self.__extract_top_level_redirect_url(response_text or "")
-        document_id = self.__extract_document_id_from_url(redirect_url)
-        if document_id:
-            return document_id
-
-        stripped = (response_text or "").strip()
-        if re.match(r"^https?://", stripped):
-            document_id = self.__extract_document_id_from_url(stripped)
-            if document_id:
-                return document_id
-        return None
-
-    def __extract_document_id_from_json(self, value):
-        if isinstance(value, dict):
-            for key in ("no", "document_id", "doc_id", "article_no", "article_id"):
-                document_id = value.get(key)
-                if re.fullmatch(r"\d+", str(document_id or "")):
-                    return str(document_id)
-            data = value.get("data")
-            if isinstance(data, (dict, list)):
-                return self.__extract_document_id_from_json(data)
-            if re.fullmatch(r"\d+", str(data or "")):
-                return str(data)
-        if isinstance(value, list):
-            for item in value:
-                document_id = self.__extract_document_id_from_json(item)
-                if document_id:
-                    return document_id
-        return None
-
-    def __extract_document_id_from_url(self, url):
-        if not url:
-            return None
-        parsed = urlparse(str(url))
-        query = parse_qs(parsed.query)
-        for key in ("no", "document_id", "doc_id"):
-            values = query.get(key)
-            if values and re.fullmatch(r"\d+", str(values[0])):
-                return str(values[0])
-        parts = [part for part in (parsed.path or "").split("/") if part]
-        if len(parts) >= 3 and parts[-1].isdigit() and parts[-3] in {"board", "mini"}:
-            return parts[-1]
-        return None
-
-    async def __access(self, token_verify, target_url, require_conkey=True, csrf_token=None):
-        if require_conkey:
-            async with self.session.get(target_url) as res:
-                parsed = lxml.html.fromstring(await res.text())
-            con_key = self.__required_attr(parsed, "//input[@id='con_key']", "value", "con key")
-            payload = { "token_verify": token_verify, "con_key": con_key }
-        else:
-            payload = { "token_verify": token_verify, }
-        url = "https://m.dcinside.com/ajax/access"
-        headers = XML_HTTP_REQ_HEADERS.copy()
-        headers["Referer"] = target_url
-        headers["X-CSRF-TOKEN"] = csrf_token
-        async with self.session.post(url, headers=headers, data=payload) as res:
-            return (await res.json())["Block_key"]

@@ -5,7 +5,6 @@
 - Flask 앱, Jinja 템플릿, 순수 CSS/JavaScript.
 - 기본 읽기 화면은 `app/templates/read.html`와 `app/static/css/main.css`가 렌더링한다.
 - 본문 HTML은 `app/services/html_sanitizer.py`의 `prepare_read_html()`을 거쳐 `<article class="article-body">` 안에 들어간다.
-- 레거시 화면은 `app/templates/legacy/`와 `app/static/legacy/`가 담당하며 이번 작업 범위가 아니다. 단, `app/static/legacy/css/main.css`의 임베드 규칙은 참고해도 된다.
 
 ## User Report
 
@@ -16,10 +15,10 @@
 
 - 새 CSS의 `.article-body iframe`은 `width: 100%`와 `height: auto`만 받는다.
 - iframe에 원본 `height`가 없거나 작으면 브라우저 기본 높이 또는 작은 속성값에 묶여 영상 영역이 납작해질 수 있다.
-- sanitizer 통과 후 DCInside 동영상 iframe의 실제 `src`는 `app/services/html_sanitizer.py`에서 로컬 `/movie?no=...` 형태로 바뀐다. 레거시의 `gall.dcinside.com/board/movie/movie_view`나 `m.dcinside.com/movie/player` 셀렉터만 복사하면 새 UI의 DC 동영상에는 적용되지 않는다.
+- sanitizer 통과 후 DCInside 동영상 iframe의 실제 `src`는 `app/services/html_sanitizer.py`에서 로컬 `/movie?no=...` 형태로 바뀐다. 외부 원본 주소 셀렉터만 사용하면 현재 화면의 DC 동영상에는 적용되지 않는다.
 - sanitizer 통과 후 투표 iframe은 상대 `/poll?...` 또는 `https://m.dcinside.com/poll?...` 형태가 될 수 있다.
 - sanitizer 통과 후 YouTube iframe은 `https://www.youtube.com/embed/...` 또는 `https://www.youtube-nocookie.com/embed/...` 형태다.
-- 레거시 CSS에는 아래와 같은 목적별 규칙이 이미 있다.
+- 구현 시 참고한 목적별 규칙은 아래와 같다.
   - poll iframe: `min-height: 400px`
   - DCInside movie iframe: `aspect-ratio: 9 / 16`, `width: min(100%, 360px)`, `max-height`
   - YouTube iframe: `aspect-ratio: 16 / 9`
@@ -37,7 +36,6 @@
 
 - Primary: `app/static/css/main.css`
 - Optional only if truly needed: `app/services/html_sanitizer.py`, `tests/test_routes_media_and_images.py`
-- Do not edit legacy files except for reading them as reference.
 
 ## Implementation Tasks
 
@@ -57,7 +55,6 @@
 - Do not change Flask routes or scraping behavior unless CSS alone cannot fix the issue.
 - Do not broaden the sanitizer allowlist unnecessarily.
 - Avoid JavaScript for sizing unless CSS cannot represent the layout safely.
-- Keep legacy UI unchanged.
 - Do not use raw hex in new non-token CSS. Prefer an existing dark surface token such as `--fg`/`--surface-strong`, or add a token only if needed.
 - Make the purpose-specific iframe selectors appear after the general article iframe rule so the aspect-ratio declarations win.
 - Preserve the actual 9:16 movie iframe box ratio even on short landscape viewports. Avoid clamping height in a way that leaves `width: 360px` but caps height below the ratio-derived value. Prefer reducing width based on viewport height if a height cap is needed.

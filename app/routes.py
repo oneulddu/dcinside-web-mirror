@@ -1,12 +1,11 @@
 #-*- coding:utf-8 -*-
 import html
 import ipaddress
-import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlparse
-from flask import Blueprint, abort, current_app, jsonify, make_response, render_template, request, url_for
+from flask import Blueprint, abort, current_app, jsonify, make_response, redirect, render_template, request, url_for
 
 from .services.async_bridge import run_async
 from .services.core import (
@@ -26,8 +25,6 @@ from .services.recent import (
     touch_recent_gallery,
 )
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-
 bp = Blueprint("main", __name__)
 
 BOARD_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,80}$")
@@ -38,6 +35,13 @@ SITE_NAME = "숨터"
 SOCIAL_DESCRIPTION_MAX_LENGTH = 180
 SOCIAL_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 SOCIAL_VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".m4v", ".m3u8")
+GALLERY_KIND_LABELS = {
+    None: "일반",
+    "normal": "일반",
+    "minor": "마이너",
+    "mini": "미니",
+    "person": "인물",
+}
 
 
 def _safe_int(value, default):
@@ -58,6 +62,27 @@ def _safe_author_role(value):
     if role in {"manager", "submanager"}:
         return role
     return None
+
+
+def _clean_gallery_name(value):
+    name = " ".join(str(value or "").split())
+    return name[:80] or None
+
+
+def _stored_gallery_name(row):
+    board = (row.get("board") or "").strip()
+    name = _clean_gallery_name(row.get("name"))
+    if not name or name == board:
+        return None
+    return name
+
+
+def _gallery_display_name(board, gallery_name=None):
+    name = _clean_gallery_name(gallery_name)
+    board_id = (board or "").strip()
+    if name and name != board_id:
+        return name
+    return board_id
 
 
 def _positive_int_arg(name, default=1):
@@ -142,8 +167,21 @@ def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_t
     return params
 
 
-def board_url(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None):
+def board_url(
+    board,
+    recommend=0,
+    page=1,
+    kind=None,
+    nav=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+    gallery_name=None,
+):
     params = _board_link_params(board, recommend, page, kind, nav, search_type, search_keyword, head_id)
+    clean_name = _clean_gallery_name(gallery_name)
+    if clean_name:
+        params["gallery_name"] = clean_name
     return url_for("main.board", **params)
 
 
@@ -165,8 +203,21 @@ def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, sear
     return params
 
 
-def read_url(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None):
+def read_url(
+    board,
+    pid,
+    recommend=0,
+    source_page=None,
+    kind=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+    gallery_name=None,
+):
     params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id)
+    clean_name = _clean_gallery_name(gallery_name)
+    if clean_name:
+        params["gallery_name"] = clean_name
     return url_for("main.read", **params)
 
 
@@ -284,6 +335,13 @@ def _external_url_for(endpoint, **values):
     if base_url:
         return urljoin(base_url, path.lstrip("/"))
     return url_for(endpoint, _external=True, **values)
+
+
+def _redirect_compat(endpoint):
+    target = url_for(endpoint)
+    if request.query_string:
+        target = f"{target}?{request.query_string.decode('latin-1')}"
+    return redirect(target, code=308)
 
 
 def _collapse_preview_text(value):
@@ -428,27 +486,107 @@ def _heung_index_context(page, heung_q, get_heung_func=None, search_func=None, n
     }
 
 
-@bp.route("/legacy/")
+def _recent_gallery_name_lookup(rows):
+    need_lookup = {
+        ((row.get("board") or "").strip(), row.get("kind"))
+        for row in rows or []
+        if (row.get("board") or "").strip() and not _stored_gallery_name(row)
+    }
+    if not need_lookup:
+        return {}
+
+    try:
+        heung_items, _updated_at = get_heung_galleries()
+    except Exception:
+        current_app.logger.exception("Failed to look up recent gallery names")
+        return {}
+
+    names = {}
+    for item in heung_items or []:
+        board = (item.get("board_id") or "").strip()
+        name = _clean_gallery_name(item.get("name"))
+        if not board or not name:
+            continue
+        kind = _normalize_gallery_kind(item.get("board_kind"), abort_on_invalid=False)
+        names.setdefault((board, kind), name)
+        names.setdefault((board, None), name)
+
+    return {
+        key: value
+        for key, value in names.items()
+        if key in need_lookup or (key[0], None) in need_lookup
+    }
+
+
+@bp.route("/")
 def index():
     page = _safe_int(request.args.get("heung_page", 1), 1)
     heung_q = (request.args.get("heung_q") or "").strip()
-    return render_template("legacy/index.html", **_heung_index_context(page, heung_q))
+    context = _heung_index_context(page, heung_q)
+
+    return render_template(
+        "index.html",
+        title=("%s 갤러리 검색 - 숨터" % heung_q) if heung_q else "숨터 - 가볍게 읽는 공간",
+        **context,
+    )
 
 
-@bp.route("/legacy/recent")
+@bp.route("/v2/")
+@bp.route("/legacy/")
+def index_compat_redirect():
+    return _redirect_compat("main.index")
+
+
+@bp.route("/recent")
 def recent():
     rows = load_recent_entries()
     recent_items = []
-    for row in rows[:RECENT_MAX_ITEMS]:
+    recent_rows = rows[:RECENT_MAX_ITEMS]
+    stored_names = {}
+    for row in recent_rows:
+        board = (row.get("board") or "").strip()
+        if not board:
+            continue
+        kind = row.get("kind")
+        name = _stored_gallery_name(row)
+        if name:
+            stored_names.setdefault((board, kind), name)
+            stored_names.setdefault((board, None), name)
+
+    gallery_names = _recent_gallery_name_lookup(recent_rows)
+    for row in recent_rows:
+        board = row["board"]
+        kind = row.get("kind")
+        saved_name = _stored_gallery_name(row)
+        looked_up_name = (
+            stored_names.get((board, kind))
+            or stored_names.get((board, None))
+            or gallery_names.get((board, kind))
+            or gallery_names.get((board, None))
+        )
         recent_items.append(
             {
-                "board": row["board"],
-                "kind": row.get("kind"),
+                "board": board,
+                "display_name": saved_name or looked_up_name or board,
+                "gallery_name": saved_name or looked_up_name,
+                "kind": kind,
+                "kind_label": GALLERY_KIND_LABELS.get(kind, kind or "일반"),
                 "recommend": 1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
                 "visited_at_str": format_recent_time(row.get("visited_at")),
             }
         )
-    return render_template("legacy/recent.html", nav_tab="recent", recent_items=recent_items)
+    return render_template(
+        "recent.html",
+        title="최근 방문 갤러리 - 숨터",
+        nav_tab="recent",
+        recent_items=recent_items,
+    )
+
+
+@bp.route("/v2/recent")
+@bp.route("/legacy/recent")
+def recent_compat_redirect():
+    return _redirect_compat("main.recent")
 
 
 @bp.route("/healthz")
@@ -476,12 +614,14 @@ def favicon():
 # 야갤 baseball_new10
 # 싱벙갤 singlebungle1472
 # 그림갤 drawing
-@bp.route("/legacy/board")
+@bp.route("/board")
 def board():
     page = _positive_int_arg("page", 1)
     board = _normalize_board_id(request.args.get("board", "airforce"))
     recommend = _normalize_recommend()
     kind = _normalize_gallery_kind(request.args.get("kind"))
+    gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
+    gallery_display_name = _gallery_display_name(board, gallery_name)
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
@@ -499,12 +639,15 @@ def board():
 
     response = make_response(
         render_template(
-            "legacy/board.html",
+            "board.html",
+            title="%s 게시판 - 숨터" % gallery_display_name,
             datas=ret,
             page=page,
             board=board,
             recommend=recommend,
             kind=kind,
+            gallery_name=gallery_name,
+            gallery_display_name=gallery_display_name,
             nav_tab=_nav_tab_for_gallery(board, recommend, nav_mode),
             nav_mode=nav_mode,
             search_type=search_type,
@@ -513,8 +656,14 @@ def board():
             head_categories=head_categories,
         )
     )
-    touch_recent_gallery(response, board, kind, recommend=recommend)
+    touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
     return response
+
+
+@bp.route("/v2/board")
+@bp.route("/legacy/board")
+def board_compat_redirect():
+    return _redirect_compat("main.board")
 
 
 @bp.route("/board/times")
@@ -573,13 +722,15 @@ def movie():
     return build_movie_response(movie_no, board, pid, kind=kind)
 
 
-@bp.route("/legacy/read")
+@bp.route("/read")
 def read():
     pid = _safe_int(request.args.get("pid", 0), 0)
     if pid <= 0:
         abort(404)
     board = _normalize_board_id(request.args.get("board", "airforce"))
     kind = _normalize_gallery_kind(request.args.get("kind"))
+    gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
+    gallery_display_name = _gallery_display_name(board, gallery_name)
     recommend = _normalize_recommend()
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
@@ -604,13 +755,16 @@ def read():
     data["html"] = prepare_read_html(data.get("html"), images, board, pid, kind, search_keyword=search_keyword)
     response = make_response(
         render_template(
-            "legacy/read.html",
+            "read.html",
+            title="%s - 숨터" % (data.get("title") or board),
             data=data,
             comments=comments,
             images=images,
             board=board,
             pid=pid,
             kind=kind,
+            gallery_name=gallery_name,
+            gallery_display_name=gallery_display_name,
             recommend=recommend,
             source_page=source_page,
             head_id=head_id,
@@ -632,8 +786,14 @@ def read():
             nav_tab=_nav_tab_for_gallery(board, recommend),
         )
     )
-    touch_recent_gallery(response, board, kind, recommend=recommend)
+    touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
     return response
+
+
+@bp.route("/v2/read")
+@bp.route("/legacy/read")
+def read_compat_redirect():
+    return _redirect_compat("main.read")
 
 
 @bp.route("/read/related")
@@ -678,10 +838,8 @@ def read_related():
         }
     )
 
-def register_routes(app):
-    from .routes_v2 import bp_v2
 
+def register_routes(app):
     app.add_template_global(board_url, "board_url")
     app.add_template_global(read_url, "read_url")
     app.register_blueprint(bp)
-    app.register_blueprint(bp_v2)

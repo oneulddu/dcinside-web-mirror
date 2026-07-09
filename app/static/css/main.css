@@ -315,20 +315,6 @@ html:not([data-theme="dark"]) .theme-icon-moon {
     border-top: var(--rule) solid var(--line);
     font: var(--type-meta);
     color: var(--muted);
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-4);
-}
-
-.site-foot a {
-    color: var(--muted);
-    text-decoration: underline;
-    text-underline-offset: 3px;
-    transition: color var(--dur) ease-out;
-}
-
-.site-foot a:hover {
-    color: var(--fg);
 }
 
 /* ===== 섹션 헤드 ===== */

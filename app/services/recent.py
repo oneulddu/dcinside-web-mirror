@@ -220,8 +220,8 @@ def prune_recent_server_cache_locked(now=None):
         key
         for key, entry in RECENT_SERVER_CACHE.items()
         if (
-            (not isinstance(entry, dict) and not isinstance(entry, list))
-            or (isinstance(entry, dict) and float(entry.get("expires_at", 0.0) or 0.0) <= now)
+            not isinstance(entry, dict)
+            or float(entry.get("expires_at", 0.0) or 0.0) <= now
         )
     ]
     for key in expired_keys:
@@ -255,12 +255,9 @@ def get_recent_server_cache(key):
         entry = RECENT_SERVER_CACHE.get(key)
         if not entry:
             return []
-
-        # Older in-memory shape was a bare list. Accept it once so tests/dev
-        # reloads do not break, then rewrite it with TTL metadata.
-        if isinstance(entry, list):
-            entry = make_recent_server_cache_entry(entry, now, max(_safe_int(RECENT_SERVER_CACHE_TTL, 0), 0))
-            RECENT_SERVER_CACHE[key] = entry
+        if not isinstance(entry, dict):
+            RECENT_SERVER_CACHE.pop(key, None)
+            return []
 
         expires_at = float(entry.get("expires_at", 0.0) or 0.0)
         if expires_at <= now:
@@ -284,9 +281,7 @@ def set_recent_server_cache(key, entries):
     with RECENT_SERVER_CACHE_LOCK:
         current = RECENT_SERVER_CACHE.get(key)
         current_rows = []
-        if isinstance(current, list):
-            current_rows = current
-        elif isinstance(current, dict) and float(current.get("expires_at", 0.0) or 0.0) > now:
+        if isinstance(current, dict) and float(current.get("expires_at", 0.0) or 0.0) > now:
             current_rows = current.get("entries", [])
 
         merged = merge_recent_generations(entries, current_rows)
