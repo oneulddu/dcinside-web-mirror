@@ -1,57 +1,71 @@
-# Fable Handoff - 숨터 기본 페이지 리디자인
+# Fable Handoff - 읽기 본문 임베드 높이 개선
 
 ## Repo and Framework
 
 - Flask 앱, Jinja 템플릿, 순수 CSS/JavaScript.
-- 기본 화면은 `app/templates/`와 `app/static/`가 담당한다.
-- 루트 경로(`/`, `/board`, `/read`, `/recent`)가 기본 화면을 렌더링한다.
+- 기본 읽기 화면은 `app/templates/read.html`와 `app/static/css/main.css`가 렌더링한다.
+- 본문 HTML은 `app/services/html_sanitizer.py`의 `prepare_read_html()`을 거쳐 `<article class="article-body">` 안에 들어간다.
+- 레거시 화면은 `app/templates/legacy/`와 `app/static/legacy/`가 담당하며 이번 작업 범위가 아니다. 단, `app/static/legacy/css/main.css`의 임베드 규칙은 참고해도 된다.
 
-## Files to Edit
+## User Report
 
-- `DESIGN.md`
-- `docs/ux-flow.md`
-- `app/templates/base.html`
-- `app/templates/index.html`
-- `app/templates/board.html`
-- `app/templates/read.html`
-- `app/templates/recent.html`
-- `app/static/css/main.css`
-- `app/static/javascript/read_related_loader.js`
-- `app/static/javascript/read_state.js`
+- 사용자가 "유튜브 같은 임베디드 세로축이 너무 작은 것 같다"고 했다.
+- 읽기 화면 본문에서 YouTube, DCInside 동영상, 투표 같은 `iframe` 임베드가 지나치게 낮게 보이지 않도록 개선한다.
+
+## Current Findings
+
+- 새 CSS의 `.article-body iframe`은 `width: 100%`와 `height: auto`만 받는다.
+- iframe에 원본 `height`가 없거나 작으면 브라우저 기본 높이 또는 작은 속성값에 묶여 영상 영역이 납작해질 수 있다.
+- sanitizer 통과 후 DCInside 동영상 iframe의 실제 `src`는 `app/services/html_sanitizer.py`에서 로컬 `/movie?no=...` 형태로 바뀐다. 레거시의 `gall.dcinside.com/board/movie/movie_view`나 `m.dcinside.com/movie/player` 셀렉터만 복사하면 새 UI의 DC 동영상에는 적용되지 않는다.
+- sanitizer 통과 후 투표 iframe은 상대 `/poll?...` 또는 `https://m.dcinside.com/poll?...` 형태가 될 수 있다.
+- sanitizer 통과 후 YouTube iframe은 `https://www.youtube.com/embed/...` 또는 `https://www.youtube-nocookie.com/embed/...` 형태다.
+- 레거시 CSS에는 아래와 같은 목적별 규칙이 이미 있다.
+  - poll iframe: `min-height: 400px`
+  - DCInside movie iframe: `aspect-ratio: 9 / 16`, `width: min(100%, 360px)`, `max-height`
+  - YouTube iframe: `aspect-ratio: 16 / 9`
+- 새 기본 CSS에는 위 목적별 iframe 규칙이 없다.
 
 ## UX Flow Summary
 
-- 사용자는 홈에서 갤러리를 찾고, 목록에서 글을 고르고, 읽기 화면에서 본문과 댓글을 본 뒤 관련 글이나 목록으로 이동한다.
-- 화면은 고밀도 읽기 도구여야 하며, 장식보다 제목, 메타, 검색, 페이저의 가독성이 우선이다.
-- 390px 모바일에서도 검색 폼, 페이저, 긴 제목, 댓글 메타가 겹치지 않아야 한다.
+- 사용자는 `/read` 화면에서 글 본문을 위에서 아래로 읽는다.
+- 본문 중간에 영상이나 투표가 있으면, 사용자는 추가 조작 없이 콘텐츠 전체 비율을 자연스럽게 확인할 수 있어야 한다.
+- 영상은 읽기 컬럼을 넘치지 않아야 하고, 모바일에서도 가로 스크롤이 없어야 한다.
+- 세로형 DCInside 동영상은 본문 전체 폭으로 과하게 커지지 않고 중앙에 놓여야 한다.
+- YouTube 임베드는 일반 16:9 영상으로 충분한 높이를 확보해야 한다.
+
+## Files to Edit
+
+- Primary: `app/static/css/main.css`
+- Optional only if truly needed: `app/services/html_sanitizer.py`, `tests/test_routes_media_and_images.py`
+- Do not edit legacy files except for reading them as reference.
 
 ## Implementation Tasks
 
-1. `DESIGN.md` 토큰 계약을 유지하며 기본 화면 전체를 같은 시각 언어로 정리한다.
-2. `base.html` 마스트헤드를 더 선명한 앱 헤더로 바꾸고 실제 `favicon.svg` 브랜드 표식을 사용한다.
-3. 홈 검색, 갤러리 목록, 게시판 목록, 최근 방문 목록의 행 밀도와 배지를 정리한다.
-4. 읽기 화면의 크럼, 제목, 메타, 본문, 댓글, 관련 글 간격을 안정화한다.
-5. 모바일에서 검색 폼과 페이저가 자연스럽게 줄바꿈되게 한다.
-6. hover, focus-visible, disabled, active, empty 상태를 모두 보이게 한다.
-7. 목록 행 제목은 `h2` 대신 일반 텍스트 요소로 바꿔 헤딩 구조를 정리한다.
-8. 테마 토글 초기 HTML과 JS 갱신 상태가 서로 충돌하지 않게 한다.
-9. 관련 글 더보기 JS가 만드는 행 구조를 서버 템플릿 행과 맞춘다.
+1. Add targeted `.article-body iframe` layout rules in `app/static/css/main.css`.
+2. Preserve the existing article media outline, radius, dark-mode outline behavior, and max-width behavior.
+3. Give YouTube embeds a stable 16:9 frame with `height: auto` and a dark media background.
+4. Give same-origin DCInside movie iframes a portrait-friendly default frame, centered in the article column, without exceeding mobile width. Select the sanitizer output, especially `/movie?no=...`; use a selector that still works if query parameters include board/pid/kind.
+5. Give poll iframes enough minimum height to be usable. Avoid making content unreachable when the source sets restrictive scrolling attributes; if CSS alone cannot fully fix remote poll internals, note the remaining limitation.
+6. Set iframe display and margin so embedded media sits as a block in article flow instead of inline baseline content.
+7. Keep keyboard focus visible on iframes. Browser verification showed Tab focus on cross-origin iframes may match `:focus-within` rather than `:focus-visible`, so include an iframe focus rule that works for actual keyboard Tab entry and is not hidden by the dark-mode decorative outline.
+8. Keep images and native `<video>` behavior unchanged unless a shared selector must be split for correctness.
+9. Keep the design system constraints from `DESIGN.md`: token-based colors, no shadows, no decorative cards.
 
 ## Constraints
 
-- 사용자는 Fable 사용을 명시했다. critique와 implement 모드를 실행해야 한다.
-- Superloopy frontend 규칙을 따라 `DESIGN.md` 토큰이 먼저 있어야 한다.
-- raw hex는 CSS 변수 선언 안에서만 허용한다.
-- 보라 그라디언트, 그림자, 가짜 스크린샷, 장식용 섹션은 쓰지 않는다.
-- em dash 문자는 visible copy에 쓰지 않는다.
-- 기존 Flask 라우트와 데이터 모델을 바꾸지 않는다.
-- 레거시 화면은 건드리지 않는다.
-- 게시판은 전체 페이지 수를 알 수 없으므로 다음 링크는 유지하되, 빈 목록과 비활성 이전 상태가 깨지지 않게 한다.
+- Scope the change to default `/read` styling. Do not redesign the page.
+- Do not change Flask routes or scraping behavior unless CSS alone cannot fix the issue.
+- Do not broaden the sanitizer allowlist unnecessarily.
+- Avoid JavaScript for sizing unless CSS cannot represent the layout safely.
+- Keep legacy UI unchanged.
+- Do not use raw hex in new non-token CSS. Prefer an existing dark surface token such as `--fg`/`--surface-strong`, or add a token only if needed.
+- Make the purpose-specific iframe selectors appear after the general article iframe rule so the aspect-ratio declarations win.
+- Preserve the actual 9:16 movie iframe box ratio even on short landscape viewports. Avoid clamping height in a way that leaves `width: 360px` but caps height below the ratio-derived value. Prefer reducing width based on viewport height if a height cap is needed.
 
-## Browser Checks
+## Lightweight Checks
 
-- `make test`
-- 로컬 서버 실행 후 `/`, `/board?board=airforce&page=1`, `/read?board=airforce&pid=<실제글>`, `/recent` 확인
-- 390px, 768px, 1280px 스크린샷 저장
-- 테마 전환 버튼, 홈 검색 폼 focus 상태, 관련 글 더보기 상태 확인
-- `.superloopy/evidence/frontend/<timestamp>-mirror-redesign/VISUAL_QA.md` 작성
+- Inspect CSS selectors so YouTube, DCInside movie, and poll iframes each receive the intended sizing.
+- Run the relevant test subset if Python dependencies are available.
+- If a local browser check is practical, render a small test page or route containing sample iframes and verify the frames are not vertically collapsed.
+- Verify focus-visible styling is not hidden by the media outline.
+- Verify 390x500 and similar landscape mobile viewports keep movie iframe ratio intact without horizontal overflow.

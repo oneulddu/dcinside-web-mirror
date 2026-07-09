@@ -967,6 +967,44 @@ a.pager-btn:active {
     width: 100%;
 }
 
+.article-body iframe {
+    display: block;
+    margin: var(--space-4) 0;
+    border: 0;
+}
+
+/* 크로스 오리진 iframe은 Tab 진입 시 :focus-visible 대신 :focus-within으로 잡힌다. */
+.article-body iframe:focus-visible,
+.article-body iframe:focus-within {
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: 1px;
+}
+
+.article-body iframe[src*="youtube.com/embed"],
+.article-body iframe[src*="youtube-nocookie.com/embed"] {
+    aspect-ratio: 16 / 9;
+    background: var(--fg);
+}
+
+/* sanitizer가 같은 출처 /movie?no=...(board/pid/kind 쿼리 포함)로 재작성한 DC 동영상.
+   컨텍스트 없이 원본 URL로 남는 폴백도 함께 커버한다. */
+.article-body iframe[src^="/movie"],
+.article-body iframe[src*="/board/movie/movie_view"],
+.article-body iframe[src*="m.dcinside.com/movie/player"] {
+    aspect-ratio: 9 / 16;
+    /* 낮은 뷰포트에서는 max-height로 높이만 자르면 9:16이 깨지므로 폭을 줄여 비율을 지킨다. */
+    width: min(100%, 360px, calc(82vh * 9 / 16));
+    margin-left: auto;
+    margin-right: auto;
+    background: var(--fg);
+}
+
+.article-body iframe[src^="/poll"],
+.article-body iframe[src^="https://m.dcinside.com/poll"] {
+    min-height: 400px;
+    background: var(--surface);
+}
+
 .article-body a {
     color: var(--accent);
     text-decoration: underline;
@@ -1248,6 +1286,20 @@ html[data-theme="dark"] .comment-main img.dccon {
 html[data-theme="dark"] .article-body img,
 html[data-theme="dark"] .comment-main img.dccon {
     filter: brightness(0.85);
+}
+
+html[data-theme="dark"] .article-body iframe[src*="youtube.com/embed"],
+html[data-theme="dark"] .article-body iframe[src*="youtube-nocookie.com/embed"],
+html[data-theme="dark"] .article-body iframe[src^="/movie"],
+html[data-theme="dark"] .article-body iframe[src*="/board/movie/movie_view"],
+html[data-theme="dark"] .article-body iframe[src*="m.dcinside.com/movie/player"] {
+    background: var(--surface-strong);
+}
+
+/* 위 outline-color 재정의보다 특이성이 높아야 포커스 링이 유지된다. */
+html[data-theme="dark"] .article-body iframe:focus-visible,
+html[data-theme="dark"] .article-body iframe:focus-within {
+    outline-color: var(--accent);
 }
 
 .back-to-top {
