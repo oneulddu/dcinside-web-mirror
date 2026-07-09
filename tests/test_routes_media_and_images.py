@@ -660,6 +660,23 @@ def test_resolve_media_target_rejects_mixed_public_and_private_dns(monkeypatch):
     assert media_proxy.resolve_media_target("https://images.dcinside.com/image.jpg") is None
 
 
+def test_resolve_media_target_keeps_ipv4_fallback_when_ipv6_is_listed_first(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2606:4700:4700::1111", 443, 0, 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2606:4700:4700::1001", 443, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443)),
+        ],
+    )
+
+    target = media_proxy.resolve_media_target("https://images.dcinside.com/image.jpg")
+
+    assert target is not None
+    assert target.addresses == ("2606:4700:4700::1111", "93.184.216.34")
+
+
 def test_media_route_rejects_non_dcinside_source_before_fetch(monkeypatch):
     def fail_fetch(*args, **kwargs):
         raise AssertionError("invalid media source must be rejected before fetch")

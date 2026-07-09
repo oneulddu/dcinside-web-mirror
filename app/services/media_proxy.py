@@ -281,6 +281,27 @@ def _parse_media_url(raw_url, base_url=None):
     return url, parsed
 
 
+def _select_pinned_addresses(addresses):
+    selected = []
+    selected_versions = set()
+    for address in addresses:
+        version = ipaddress.ip_address(address).version
+        if version in selected_versions:
+            continue
+        selected.append(address)
+        selected_versions.add(version)
+        if len(selected) >= _PINNED_ADDRESS_ATTEMPT_LIMIT:
+            return tuple(selected)
+
+    for address in addresses:
+        if address in selected:
+            continue
+        selected.append(address)
+        if len(selected) >= _PINNED_ADDRESS_ATTEMPT_LIMIT:
+            break
+    return tuple(selected)
+
+
 def resolve_media_target(raw_url, base_url=None):
     url, parsed = _parse_media_url(raw_url, base_url=base_url)
     if not url:
@@ -322,7 +343,7 @@ def resolve_media_target(raw_url, base_url=None):
         hostname=hostname,
         port=port,
         host_header=host_header,
-        addresses=tuple(addresses[:_PINNED_ADDRESS_ATTEMPT_LIMIT]),
+        addresses=_select_pinned_addresses(addresses),
     )
 
 
