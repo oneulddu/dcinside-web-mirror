@@ -253,6 +253,13 @@ def _recent_cookie_header(rows, cache_key):
     )
 
 
+def _same_origin_headers(cookie=None):
+    headers = {"Origin": "http://localhost"}
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
+
+
 def _recent_response_cookie_header(response, cache_key):
     rows = _cookie_morsel(response, recent.RECENT_COOKIE_NAME).value
     tombstones = _cookie_morsel(response, recent.RECENT_TOMBSTONE_COOKIE_NAME).value
@@ -296,7 +303,7 @@ def test_recent_remove_deletes_gallery_from_cookie_and_server_cache():
     response = app.test_client(use_cookies=False).post(
         "/recent/remove",
         data={"board": "remove_target", "kind": "minor", "recommend": "1"},
-        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+        headers=_same_origin_headers(_recent_cookie_header(rows, cache_key)),
     )
 
     assert response.status_code == 302
@@ -323,7 +330,7 @@ def test_recent_remove_matches_stored_entry_without_kind():
     response = app.test_client(use_cookies=False).post(
         "/recent/remove",
         data={"board": "kindless_target", "kind": "minor", "recommend": "0"},
-        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+        headers=_same_origin_headers(_recent_cookie_header(rows, cache_key)),
     )
 
     assert response.status_code == 302
@@ -347,7 +354,7 @@ def test_recent_clear_empties_cookie_and_server_cache():
 
     response = app.test_client(use_cookies=False).post(
         "/recent/clear",
-        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+        headers=_same_origin_headers(_recent_cookie_header(rows, cache_key)),
     )
 
     assert response.status_code == 302
@@ -378,7 +385,7 @@ def test_recent_remove_tombstone_filters_stale_cache_from_another_worker():
     response = app.test_client(use_cookies=False).post(
         "/recent/remove",
         data={"board": "stale_remove_target", "kind": "minor", "recommend": "0"},
-        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+        headers=_same_origin_headers(_recent_cookie_header(rows, cache_key)),
     )
     _seed_stale_recent_cache(cache_key, rows)
 
@@ -412,7 +419,7 @@ def test_recent_clear_tombstone_filters_all_stale_cache_from_another_worker():
     ]
     response = app.test_client(use_cookies=False).post(
         "/recent/clear",
-        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+        headers=_same_origin_headers(_recent_cookie_header(rows, cache_key)),
     )
     _seed_stale_recent_cache(cache_key, rows)
 
@@ -442,7 +449,7 @@ def test_touch_with_tombstone_does_not_revive_deleted_gallery(monkeypatch):
     delete_response = app.test_client(use_cookies=False).post(
         "/recent/remove",
         data={"board": deleted_row["board"], "kind": "minor", "recommend": "0"},
-        headers={"Cookie": _recent_cookie_header([deleted_row], cache_key)},
+        headers=_same_origin_headers(_recent_cookie_header([deleted_row], cache_key)),
     )
     _seed_stale_recent_cache(cache_key, [deleted_row])
 
@@ -474,7 +481,7 @@ def test_recent_remove_without_kind_preserves_kind_specific_entry():
     response = app.test_client(use_cookies=False).post(
         "/recent/remove",
         data={"board": "shared_board", "kind": "", "recommend": "0"},
-        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+        headers=_same_origin_headers(_recent_cookie_header(rows, cache_key)),
     )
 
     remaining = _decode_recent_rows(_cookie_morsel(response, recent.RECENT_COOKIE_NAME).value)
@@ -499,7 +506,7 @@ def test_recent_gallery_reappears_when_revisited_after_deletion(monkeypatch):
     delete_response = app.test_client(use_cookies=False).post(
         "/recent/remove",
         data={"board": row["board"], "kind": "minor", "recommend": "0"},
-        headers={"Cookie": _recent_cookie_header([row], cache_key)},
+        headers=_same_origin_headers(_recent_cookie_header([row], cache_key)),
     )
     monkeypatch.setattr(recent.time, "time", lambda: FIXED_NOW + 10)
 
@@ -520,7 +527,100 @@ def test_recent_gallery_reappears_when_revisited_after_deletion(monkeypatch):
     assert [item["board"] for item in recent.get_recent_server_cache(cache_key)] == [row["board"]]
 
 
-def test_recent_remove_rejects_cross_origin_and_accepts_same_origin():
+def test_all_recent_items_keep_tombstones_within_cookie_budget():
+    app = create_app()
+    rows = [
+        {
+            "board": f"deleted_board_{index:02d}",
+            "name": f"삭제 대상 {index}",
+            "kind": "minor",
+            "recommend": 0,
+            "visited_at": FIXED_NOW - 10,
+        }
+        for index in range(recent.RECENT_MAX_ITEMS)
+    ]
+    tombstones = {"cleared_at": 0.0, "items": []}
+    for row in rows:
+        tombstones["items"].insert(0, {
+            "board": row["board"],
+            "kind": row["kind"],
+            "recommend": row["recommend"],
+            "deleted_at": FIXED_NOW,
+        })
+        tombstones = recent.normalize_recent_tombstones(tombstones)
+
+    with app.test_request_context("/recent", base_url="http://localhost"):
+        response = app.make_response("")
+        recent.save_recent_tombstone_cookie(response, tombstones)
+
+    encoded = _cookie_morsel(response, recent.RECENT_TOMBSTONE_COOKIE_NAME).value
+    saved = _decode_recent_rows(encoded)
+    assert recent.RECENT_TOMBSTONE_MAX_ITEMS == recent.RECENT_MAX_ITEMS
+    assert len(saved["items"]) == recent.RECENT_MAX_ITEMS
+    assert len(encoded.encode("ascii")) <= recent.RECENT_COOKIE_MAX_BYTES
+    assert recent.filter_tombstoned_rows(rows, saved) == []
+
+
+def test_large_tombstones_fit_cookie_budget_and_keep_newest(monkeypatch):
+    monkeypatch.setattr(recent, "RECENT_COOKIE_MAX_BYTES", 900)
+    app = create_app()
+    items = [
+        {
+            "board": f"{index:02d}" + "x" * 78,
+            "kind": "minor",
+            "recommend": index % 2,
+            "deleted_at": FIXED_NOW - index,
+        }
+        for index in range(recent.RECENT_MAX_ITEMS)
+    ]
+
+    with app.test_request_context("/recent", base_url="http://localhost"):
+        response = app.make_response("")
+        recent.save_recent_tombstone_cookie(
+            response,
+            {"cleared_at": 0.0, "items": items},
+        )
+
+    encoded = _cookie_morsel(response, recent.RECENT_TOMBSTONE_COOKIE_NAME).value
+    saved = _decode_recent_rows(encoded)
+    assert 0 < len(saved["items"]) < len(items)
+    assert len(encoded.encode("ascii")) <= recent.RECENT_COOKIE_MAX_BYTES
+    assert [item["board"] for item in saved["items"]] == [
+        item["board"] for item in items[:len(saved["items"])]
+    ]
+
+
+def test_revisit_at_same_time_as_tombstone_survives():
+    rows = [
+        {
+            "board": "same_time_removed",
+            "kind": "minor",
+            "recommend": 0,
+            "visited_at": FIXED_NOW,
+        },
+        {
+            "board": "same_time_cleared",
+            "kind": "mini",
+            "recommend": 0,
+            "visited_at": FIXED_NOW,
+        },
+    ]
+    tombstones = {
+        "cleared_at": FIXED_NOW,
+        "items": [
+            {
+                "board": "same_time_removed",
+                "kind": "minor",
+                "recommend": 0,
+                "deleted_at": FIXED_NOW,
+            }
+        ],
+    }
+
+    assert recent.filter_tombstoned_rows(rows, tombstones) == rows
+
+
+def test_recent_remove_csrf_origin_contract():
     app = create_app()
     client = app.test_client(use_cookies=False)
 
@@ -534,6 +634,11 @@ def test_recent_remove_rejects_cross_origin_and_accepts_same_origin():
         data={"board": "csrf_target"},
         headers={"Origin": "http://localhost"},
     )
+    missing_headers = client.post(
+        "/recent/remove",
+        data={"board": "csrf_target"},
+    )
 
     assert rejected.status_code == 403
     assert accepted.status_code == 302
+    assert missing_headers.status_code == 403

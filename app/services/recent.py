@@ -38,7 +38,7 @@ RECENT_CACHE_KEY_COOKIE_NAME = "recent_galleries_key"
 RECENT_TOMBSTONE_COOKIE_NAME = "recent_galleries_del"
 RECENT_COOKIE_TTL = _env_int("MIRROR_RECENT_COOKIE_TTL", 60 * 60 * 24 * 30)
 RECENT_MAX_ITEMS = _env_int("MIRROR_RECENT_MAX_ITEMS", 30)
-RECENT_TOMBSTONE_MAX_ITEMS = _env_int("MIRROR_RECENT_TOMBSTONE_MAX_ITEMS", 20)
+RECENT_TOMBSTONE_MAX_ITEMS = _env_int("MIRROR_RECENT_TOMBSTONE_MAX_ITEMS", RECENT_MAX_ITEMS)
 RECENT_SERVER_CACHE_TTL = _env_int("MIRROR_RECENT_SERVER_CACHE_TTL", min(RECENT_COOKIE_TTL, 60 * 60 * 24))
 RECENT_SERVER_CACHE_MAX_KEYS = _env_int("MIRROR_RECENT_SERVER_CACHE_MAX_KEYS", 2048)
 RECENT_COOKIE_MAX_BYTES = _env_int("MIRROR_RECENT_COOKIE_MAX_BYTES", 3600)
@@ -200,10 +200,10 @@ def filter_tombstoned_rows(rows, tombstones):
     filtered = []
     for row in rows:
         visited_at = _safe_float(row.get("visited_at", 0), 0.0)
-        if visited_at <= cleared_at:
+        if visited_at < cleared_at:
             continue
         if any(
-            recent_removal_matches(item, row) and visited_at <= item["deleted_at"]
+            recent_removal_matches(item, row) and visited_at < item["deleted_at"]
             for item in items
         ):
             continue
@@ -505,7 +505,22 @@ def save_recent_tombstone_cookie(response, tombstones):
         )
         return
 
+    max_bytes = max(_safe_int(RECENT_COOKIE_MAX_BYTES, 0), 0)
     encoded = _encode_recent_rows({"cleared_at": cleared_at, "items": items})
+    if len(encoded.encode("ascii")) > max_bytes:
+        low = 0
+        high = len(items)
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate = _encode_recent_rows({
+                "cleared_at": cleared_at,
+                "items": items[:middle],
+            })
+            if len(candidate.encode("ascii")) <= max_bytes:
+                low = middle
+            else:
+                high = middle - 1
+        encoded = _encode_recent_rows({"cleared_at": cleared_at, "items": items[:low]})
     response.set_cookie(
         RECENT_TOMBSTONE_COOKIE_NAME,
         encoded,
@@ -580,6 +595,9 @@ def remove_recent_gallery(response, board, kind, recommend=0):
     })
     tombstones["items"] = tombstone_items
 
+    # 쿠키가 클라이언트의 권위 상태라 서버 잠금만으로 worker 간 last-writer-wins를
+    # 없앨 수 없다. 삭제와 동시 방문이 겹치면 방문 1건이 유실될 수 있지만,
+    # 해당 갤러리를 다시 방문하면 최근 목록에 자연스럽게 복구된다.
     save_recent_tombstone_cookie(response, tombstones)
     remaining = replace_recent_server_cache(recent_cache_key(), remaining)
     save_recent_cookie(response, remaining)

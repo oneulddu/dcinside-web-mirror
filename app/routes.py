@@ -620,7 +620,7 @@ def _reject_cross_origin_post():
         return
 
     referer = request.headers.get("Referer")
-    if referer and urlparse(referer).netloc != request.host:
+    if not referer or urlparse(referer).netloc != request.host:
         abort(403)
 
 
