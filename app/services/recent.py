@@ -194,6 +194,43 @@ def normalize_recent_tombstones(value):
     }
 
 
+def _pack_tombstone_wire(cleared_at, items):
+    # 쿠키 크기를 줄이기 위해 전송 형식은 압축 키(b/k/r/d)를 쓴다.
+    return {
+        "cleared_at": cleared_at,
+        "items": [
+            {
+                "b": item["board_hash"],
+                "k": item["kind"],
+                "r": item["recommend"],
+                "d": item["deleted_at"],
+            }
+            for item in items
+        ],
+    }
+
+
+def _unpack_tombstone_wire(parsed):
+    if not isinstance(parsed, dict):
+        return parsed
+    raw_items = parsed.get("items", [])
+    if not isinstance(raw_items, list):
+        return {"cleared_at": parsed.get("cleared_at", 0.0), "items": []}
+    return {
+        "cleared_at": parsed.get("cleared_at", 0.0),
+        "items": [
+            {
+                "board_hash": item.get("b"),
+                "kind": item.get("k"),
+                "recommend": item.get("r"),
+                "deleted_at": item.get("d"),
+            }
+            for item in raw_items
+            if isinstance(item, dict)
+        ],
+    }
+
+
 def load_recent_tombstones():
     raw = (request.cookies.get(RECENT_TOMBSTONE_COOKIE_NAME) or "").strip().strip('"')
     if not raw:
@@ -204,7 +241,7 @@ def load_recent_tombstones():
         parsed = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
     except Exception:
         return {"cleared_at": 0.0, "items": []}
-    return normalize_recent_tombstones(parsed)
+    return normalize_recent_tombstones(_unpack_tombstone_wire(parsed))
 
 
 def filter_tombstoned_rows(rows, tombstones):
@@ -523,21 +560,18 @@ def save_recent_tombstone_cookie(response, tombstones):
         return
 
     max_bytes = max(_safe_int(RECENT_COOKIE_MAX_BYTES, 0), 0)
-    encoded = _encode_recent_rows({"cleared_at": cleared_at, "items": items})
+    encoded = _encode_recent_rows(_pack_tombstone_wire(cleared_at, items))
     if len(encoded.encode("ascii")) > max_bytes:
         low = 0
         high = len(items)
         while low < high:
             middle = (low + high + 1) // 2
-            candidate = _encode_recent_rows({
-                "cleared_at": cleared_at,
-                "items": items[:middle],
-            })
+            candidate = _encode_recent_rows(_pack_tombstone_wire(cleared_at, items[:middle]))
             if len(candidate.encode("ascii")) <= max_bytes:
                 low = middle
             else:
                 high = middle - 1
-        encoded = _encode_recent_rows({"cleared_at": cleared_at, "items": items[:low]})
+        encoded = _encode_recent_rows(_pack_tombstone_wire(cleared_at, items[:low]))
     response.set_cookie(
         RECENT_TOMBSTONE_COOKIE_NAME,
         encoded,

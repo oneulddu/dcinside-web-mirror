@@ -527,6 +527,12 @@ def test_recent_gallery_reappears_when_revisited_after_deletion(monkeypatch):
     assert [item["board"] for item in recent.get_recent_server_cache(cache_key)] == [row["board"]]
 
 
+def _decode_tombstone_cookie(encoded):
+    return recent.normalize_recent_tombstones(
+        recent._unpack_tombstone_wire(_decode_recent_rows(encoded))
+    )
+
+
 def test_all_recent_items_keep_tombstones_within_cookie_budget():
     app = create_app()
     rows = [
@@ -545,7 +551,8 @@ def test_all_recent_items_keep_tombstones_within_cookie_budget():
             "board_hash": recent._tombstone_board_digest(row["board"]),
             "kind": row["kind"],
             "recommend": row["recommend"],
-            "deleted_at": FIXED_NOW,
+            # 실제 time.time()처럼 소수부가 긴 타임스탬프로 크기를 검증한다.
+            "deleted_at": FIXED_NOW + 0.4992871,
         })
         tombstones = recent.normalize_recent_tombstones(tombstones)
 
@@ -554,7 +561,7 @@ def test_all_recent_items_keep_tombstones_within_cookie_budget():
         recent.save_recent_tombstone_cookie(response, tombstones)
 
     encoded = _cookie_morsel(response, recent.RECENT_TOMBSTONE_COOKIE_NAME).value
-    saved = _decode_recent_rows(encoded)
+    saved = _decode_tombstone_cookie(encoded)
     assert recent.RECENT_TOMBSTONE_MAX_ITEMS == recent.RECENT_MAX_ITEMS
     assert len(saved["items"]) == recent.RECENT_MAX_ITEMS
     assert len(encoded.encode("ascii")) <= recent.RECENT_COOKIE_MAX_BYTES
@@ -577,7 +584,7 @@ def test_large_tombstones_fit_cookie_budget_and_keep_newest(monkeypatch):
             "board_hash": recent._tombstone_board_digest(row["board"]),
             "kind": row["kind"],
             "recommend": row["recommend"],
-            "deleted_at": FIXED_NOW - index,
+            "deleted_at": FIXED_NOW - index + 0.4992871,
         }
         for index, row in enumerate(rows)
     ]
@@ -590,7 +597,7 @@ def test_large_tombstones_fit_cookie_budget_and_keep_newest(monkeypatch):
         )
 
     encoded = _cookie_morsel(response, recent.RECENT_TOMBSTONE_COOKIE_NAME).value
-    saved = _decode_recent_rows(encoded)
+    saved = _decode_tombstone_cookie(encoded)
     assert len(saved["items"]) == recent.RECENT_MAX_ITEMS
     assert len(encoded.encode("ascii")) <= recent.RECENT_COOKIE_MAX_BYTES
     assert recent.filter_tombstoned_rows(rows, saved) == []
@@ -607,7 +614,7 @@ def test_large_tombstones_fit_cookie_budget_and_keep_newest(monkeypatch):
         compact_response,
         recent.RECENT_TOMBSTONE_COOKIE_NAME,
     ).value
-    compact_saved = _decode_recent_rows(compact_encoded)
+    compact_saved = _decode_tombstone_cookie(compact_encoded)
     assert 0 < len(compact_saved["items"]) < len(items)
     assert len(compact_encoded.encode("ascii")) <= recent.RECENT_COOKIE_MAX_BYTES
     assert [item["board_hash"] for item in compact_saved["items"]] == [
