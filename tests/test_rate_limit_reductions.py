@@ -271,6 +271,24 @@ async def test_fetch_board_page_reuses_short_cache():
 
 
 @pytest.mark.asyncio
+async def test_fetch_board_page_cache_distinguishes_search_pos():
+    class FakeAPI:
+        def __init__(self):
+            self.search_positions = []
+
+        async def board(self, **kwargs):
+            self.search_positions.append(kwargs.get("search_pos"))
+            yield _index_item(123, is_mobile_source=True)
+
+    api = FakeAPI()
+
+    await core._fetch_board_page(api, 1, "search-pos-test", 0, search_pos=-10)
+    await core._fetch_board_page(api, 1, "search-pos-test", 0, search_pos=-20)
+
+    assert api.search_positions == [-10, -20]
+
+
+@pytest.mark.asyncio
 async def test_fill_missing_author_codes_disabled_skips_document_fetch(monkeypatch):
     monkeypatch.setattr(core, "BOARD_FILL_AUTHOR_CODES", False)
 

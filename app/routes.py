@@ -888,6 +888,7 @@ def read_related():
     after_pid = max(_safe_int(request.args.get("after_pid", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    search_pos = _search_pos_arg()
 
     posts = []
     has_more = False
@@ -903,6 +904,7 @@ def read_related():
                     source_page=source_page,
                     recommend=recommend,
                     head_id=head_id,
+                    search_pos=search_pos,
                     **_search_call_kwargs(search_type, search_keyword),
                 )
             )

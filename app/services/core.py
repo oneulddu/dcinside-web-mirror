@@ -311,6 +311,7 @@ async def _fetch_board_page(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
 ):
     cache_key = (
         board,
@@ -321,6 +322,7 @@ async def _fetch_board_page(
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
+        _normalize_search_pos(search_pos),
     )
     cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
@@ -337,6 +339,7 @@ async def _fetch_board_page(
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        search_pos=search_pos,
         headtexts_collector=[],
     ):
         row = _index_item_to_dict(item)
@@ -709,6 +712,7 @@ async def _related_after_position_with_api(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
 ):
     current_id = _safe_int(api_id, 0)
     target_id = _safe_int(after_id, 0) or current_id
@@ -720,11 +724,20 @@ async def _related_after_position_with_api(
     search_keyword_value = (search_keyword or "").strip()
     search_type_value = (search_type or "").strip()
     head_id_value = "" if head_id is None else str(head_id).strip()
+    search_pos_value = _normalize_search_pos(search_pos)
 
     if target_id <= 0 or fetch_limit == 0:
         return [], False
 
-    board_key = (board, kind or "", recommend_value, search_type_value, search_keyword_value, head_id_value)
+    board_key = (
+        board,
+        kind or "",
+        recommend_value,
+        search_type_value,
+        search_keyword_value,
+        head_id_value,
+        search_pos_value,
+    )
 
     async def estimate_page_from_latest_id():
         if recommend_value:
@@ -742,6 +755,7 @@ async def _related_after_position_with_api(
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
                 head_id=head_id_value or None,
+                search_pos=search_pos_value,
             )
             if not first_page:
                 return None
@@ -776,6 +790,7 @@ async def _related_after_position_with_api(
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
                 head_id=head_id_value or None,
+                search_pos=search_pos_value,
             )
             if not page_posts:
                 break
@@ -875,6 +890,7 @@ async def _related_after_position_with_api(
             search_type=search_type_value,
             search_keyword=search_keyword_value,
             head_id=head_id_value or None,
+            search_pos=search_pos_value,
         )
         if not page_posts:
             break
@@ -898,6 +914,7 @@ async def async_related_after_position(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
 ):
     async with dc_api_context() as api:
         return await _related_after_position_with_api(
@@ -914,4 +931,5 @@ async def async_related_after_position(
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            search_pos=search_pos,
         )

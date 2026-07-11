@@ -1875,6 +1875,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
         **kwargs,
     ):
         seen["head_id"] = head_id
+        seen["search_pos"] = kwargs.get("search_pos")
         return (
             [
                 {
@@ -1916,11 +1917,14 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     monkeypatch.setattr(routes, "async_related_after_position", fake_async_related_after_position)
     app = create_app()
 
-    response = app.test_client().get("/read/related?board=test&pid=100&headid=10")
+    response = app.test_client().get(
+        "/read/related?board=test&pid=100&headid=10&serval=kw&s_pos=-123"
+    )
     payload = response.get_json()
 
     assert response.status_code == 200
     assert seen["head_id"] == "10"
+    assert seen["search_pos"] == -123
     assert payload["has_more"] is True
     assert payload["items"][0]["subject"] == "일반"
     assert payload["items"][0]["has_image"] is False

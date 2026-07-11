@@ -452,6 +452,9 @@
         if (searchKeyword) {
             params.set("s_type", searchType || "subject_m");
             params.set("serval", searchKeyword);
+            if (searchPos) {
+                params.set("s_pos", searchPos);
+            }
         }
 
         return {
