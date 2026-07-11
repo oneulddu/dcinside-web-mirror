@@ -146,7 +146,7 @@ def _add_kind_param(params, kind):
 
 
 def _search_pos_arg():
-    if not (request.args.get("serval") or "").strip():
+    if not _board_search_keyword():
         return None
     value = _safe_int(request.args.get("s_pos"), 0)
     return value or None
@@ -198,7 +198,7 @@ def board_url(
     return url_for("main.board", **params)
 
 
-def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None):
+def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     params = {
         "board": board,
         "pid": pid,
@@ -212,7 +212,7 @@ def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, sear
     normalized_head_id = _normalize_head_id(head_id)
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
-    _add_search_params(params, search_type, search_keyword)
+    _add_search_params(params, search_type, search_keyword, search_pos)
     return params
 
 
@@ -226,8 +226,9 @@ def read_url(
     search_keyword=None,
     head_id=None,
     gallery_name=None,
+    search_pos=None,
 ):
-    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id)
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, search_pos)
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
         params["gallery_name"] = clean_name
@@ -373,8 +374,8 @@ def _read_social_description(data):
     return SITE_NAME
 
 
-def _read_canonical_url(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id):
-    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id)
+def _read_canonical_url(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, search_pos):
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, search_pos)
     return _external_url_for("main.read", **params)
 
 
@@ -403,7 +404,7 @@ def _first_social_preview_image(images):
     return None
 
 
-def _read_social_meta(data, images, board, pid, kind, recommend, source_page, search_type, search_keyword, head_id):
+def _read_social_meta(data, images, board, pid, kind, recommend, source_page, search_type, search_keyword, head_id, search_pos):
     title = _collapse_preview_text(data.get("title")) or SITE_NAME
     preview_image = _first_social_preview_image(images)
     media_params = {
@@ -428,6 +429,7 @@ def _read_social_meta(data, images, board, pid, kind, recommend, source_page, se
             search_type,
             search_keyword,
             head_id,
+            search_pos,
         ),
         "type": "article",
         "image": image_url,
@@ -682,8 +684,8 @@ def board():
             kind=kind,
             search_type=search_type,
             search_keyword=search_keyword,
-            head_id=head_id,
             search_pos=search_pos,
+            head_id=head_id,
         )
     )
     search_prev_url = None
@@ -810,6 +812,7 @@ def read():
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    search_pos = _search_pos_arg()
     data, comments, images = run_async(
         async_read(
             pid,
@@ -845,6 +848,7 @@ def read():
             head_id=head_id,
             search_type=search_type,
             search_keyword=search_keyword,
+            search_pos=search_pos,
             embedded_related_posts=embedded_related_posts,
             social_meta=_read_social_meta(
                 data,
@@ -857,6 +861,7 @@ def read():
                 search_type,
                 search_keyword,
                 head_id,
+                search_pos,
             ),
             nav_tab=_nav_tab_for_gallery(board, recommend),
         )

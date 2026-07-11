@@ -112,7 +112,7 @@
         return "[" + subject + "]";
     }
 
-    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName) {
+    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, searchPos, headId, galleryName) {
         var pid = getItemPostId(item);
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
@@ -131,6 +131,9 @@
         if (searchKeyword) {
             href += "&s_type=" + encodeURIComponent(searchType || "subject_m");
             href += "&serval=" + encodeURIComponent(searchKeyword);
+            if (searchPos) {
+                href += "&s_pos=" + encodeURIComponent(searchPos);
+            }
         }
         if (galleryName) {
             href += "&gallery_name=" + encodeURIComponent(galleryName);
@@ -191,7 +194,7 @@
         return "";
     }
 
-    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName) {
+    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, searchPos, headId, galleryName) {
         var postId = getItemPostId(item);
         var li = document.createElement("li");
         li.dataset.postId = postId;
@@ -199,7 +202,7 @@
         var link = document.createElement("a");
         link.className = "feed-item";
         link.dataset.postId = postId;
-        link.href = buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName);
+        link.href = buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, searchPos, headId, galleryName);
 
         var titleWrap = document.createElement("div");
         titleWrap.className = "feed-title-wrap";
@@ -283,6 +286,7 @@
                 context.sourcePage,
                 context.searchType,
                 context.searchKeyword,
+                context.searchPos,
                 context.headId,
                 context.galleryName
             ));
@@ -415,6 +419,7 @@
         var headId = section.dataset.headId || "";
         var searchType = section.dataset.searchType || "";
         var searchKeyword = section.dataset.searchKeyword || "";
+        var searchPos = section.dataset.searchPos || "";
         var galleryName = section.dataset.galleryName || "";
         var afterPid = state.lastPostId || "";
 
@@ -459,6 +464,7 @@
             headId: headId,
             searchType: searchType,
             searchKeyword: searchKeyword,
+            searchPos: searchPos,
             afterPid: afterPid,
             galleryName: galleryName,
             list: list,

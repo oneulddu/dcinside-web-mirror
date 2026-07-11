@@ -35,7 +35,7 @@
     <ul>
         {% for index in datas %}
         <li>
-            <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}" data-post-id="{{ index.id }}">
+            <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, search_pos=search_pos) }}" data-post-id="{{ index.id }}">
                 <div class="feed-title-wrap">
                     {{ feed_status_icon(index) }}
                     <span class="feed-title">

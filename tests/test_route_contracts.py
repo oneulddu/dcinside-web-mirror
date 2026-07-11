@@ -174,8 +174,52 @@ def test_search_pager_preserves_search_position(monkeypatch):
 
     assert response.status_code == 200
     assert soup.select_one("#board-list")["data-search-pos"] == "-20816199"
+    assert parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)["s_pos"] == ["-20816199"]
     assert pager_links["이전"]["page"] == ["1"]
     assert pager_links["다음"]["page"] == ["3"]
     assert pager_links["이전"]["s_pos"] == ["-20816199"]
     assert pager_links["다음"]["s_pos"] == ["-20816199"]
     assert soup.select_one(".board-search-form [name='s_pos']") is None
+
+
+def test_search_position_accepts_s_keyword_alias(monkeypatch):
+    async def search_payload(*args, **kwargs):
+        assert kwargs["search_keyword"] == "hello"
+        assert kwargs["search_pos"] == -123
+        return await _board_payload(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "_load_board_payload", search_payload)
+    app = create_app()
+
+    response = app.test_client().get("/board?board=test&s_keyword=hello&s_pos=-123")
+
+    assert response.status_code == 200
+
+
+def test_read_navigation_preserves_search_position(monkeypatch):
+    async def read_payload(*args, **kwargs):
+        data, comments, images = await _read_payload(*args, **kwargs)
+        data["related_posts"] = [{
+            "id": "122",
+            "title": "related",
+            "author": "익명",
+            "time": "-",
+            "voteup_count": 0,
+            "comment_count": 0,
+        }]
+        return data, comments, images
+
+    monkeypatch.setattr(routes, "async_read", read_payload)
+    app = create_app()
+    response = app.test_client().get(
+        "/read?board=test&pid=123&source_page=2&serval=hello&s_pos=-123"
+    )
+    soup = BeautifulSoup(response.data, "html.parser")
+
+    assert response.status_code == 200
+    for selector in (".crumb-link", ".pager-row .pager-btn", "#related-list a.feed-item"):
+        query = parse_qs(urlparse(soup.select_one(selector)["href"]).query)
+        assert query["s_pos"] == ["-123"]
+    assert soup.select_one("#related-section")["data-search-pos"] == "-123"
+    canonical_query = parse_qs(urlparse(soup.select_one('meta[property="og:url"]')["content"]).query)
+    assert canonical_query["s_pos"] == ["-123"]
