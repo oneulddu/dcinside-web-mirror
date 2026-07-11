@@ -290,6 +290,24 @@ def set_recent_server_cache(key, entries):
         return copy_recent_entries(merged)
 
 
+def replace_recent_server_cache(key, entries):
+    rows = dedupe_recent_entries(copy_recent_entries(entries))
+    if not key:
+        return rows
+
+    ttl = max(_safe_int(RECENT_SERVER_CACHE_TTL, 0), 0)
+    max_keys = max(_safe_int(RECENT_SERVER_CACHE_MAX_KEYS, 0), 0)
+    now = time.time()
+    with RECENT_SERVER_CACHE_LOCK:
+        if not rows or ttl <= 0 or max_keys <= 0:
+            RECENT_SERVER_CACHE.pop(key, None)
+            return rows
+
+        RECENT_SERVER_CACHE[key] = make_recent_server_cache_entry(rows, now, ttl)
+        prune_recent_server_cache_locked(now)
+        return rows
+
+
 def load_recent_entries():
     raw = request.cookies.get(RECENT_COOKIE_NAME, "")
     rows = []
@@ -403,3 +421,27 @@ def touch_recent_gallery(response, board, kind, recommend=0, name=None):
 
     save_recent_cache_key_cookie(response, cache_key)
     save_recent_cookie(response, deduped)
+
+
+def remove_recent_gallery(response, board, kind, recommend=0):
+    board_id = (board or "").strip()
+    if not board_id:
+        return False
+
+    target = normalize_recent_entry({
+        "board": board_id,
+        "kind": (kind or "").strip().lower() or None,
+        "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
+    })
+    rows = load_recent_entries()
+    remaining = [row for row in rows if not recent_entries_may_be_same_gallery(target, row)]
+    removed = len(remaining) != len(rows)
+
+    remaining = replace_recent_server_cache(recent_cache_key(), remaining)
+    save_recent_cookie(response, remaining)
+    return removed
+
+
+def clear_recent_galleries(response):
+    replace_recent_server_cache(recent_cache_key(), [])
+    save_recent_cookie(response, [])

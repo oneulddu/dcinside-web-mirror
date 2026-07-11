@@ -567,6 +567,56 @@ html:not([data-theme="dark"]) .theme-icon-moon {
     color: var(--muted);
 }
 
+/* 최근 방문 갤러리 삭제 */
+
+.board-head-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+}
+
+.recent-row {
+    display: flex;
+    align-items: stretch;
+}
+
+.recent-row .feed-item {
+    flex: 1;
+    min-width: 0;
+}
+
+.recent-remove-form {
+    display: flex;
+    align-items: center;
+    padding: 0 var(--space-2);
+}
+
+.recent-remove-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--space-10);
+    padding: var(--space-2) var(--space-3);
+    border: var(--rule) solid var(--line);
+    border-radius: var(--radius-s);
+    background: none;
+    color: var(--muted);
+    font: var(--type-label);
+    cursor: pointer;
+    transition: background-color var(--dur) ease-out, border-color var(--dur) ease-out, color var(--dur) ease-out, transform var(--dur-fast) ease-out;
+}
+
+.recent-remove-btn:hover {
+    background: var(--hover);
+    border-color: var(--fg);
+    color: var(--fg);
+}
+
+.recent-remove-btn:active {
+    background: var(--surface-strong);
+    transform: scale(0.96);
+}
+
 /* 상태 아이콘 (개념글 불꽃 / 사진 / 영상) */
 
 .feed-recommend-icon,
