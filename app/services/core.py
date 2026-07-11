@@ -957,7 +957,13 @@ async def _related_after_position_with_api(
     rows = [row for row, _block_pos in returned]
     # In search mode, continue from the block containing the last returned row.
     next_search_pos = returned[-1][1] if search_keyword_value and returned else None
-    return rows, len(related) > fetch_limit or unvisited_next_block_remains, next_search_pos
+    # `has_more` is also a cursor contract: when no row is returned, the client
+    # cannot advance `after_pid` into another search block safely.  Reporting
+    # more data in that state would make it repeat the same request forever.
+    has_more = len(related) > fetch_limit or (
+        bool(returned) and unvisited_next_block_remains
+    )
+    return rows, has_more, next_search_pos
 
 
 async def async_related_after_position(

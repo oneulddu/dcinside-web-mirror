@@ -276,7 +276,13 @@
         for (var i = 0; i < items.length; i += 1) {
             var item = items[i];
             var postId = getItemPostId(item);
-            if (!postId || renderedIds[postId]) {
+            if (!postId) {
+                continue;
+            }
+            // The response cursor must advance even when this row is already
+            // rendered. Otherwise an overlap-only batch is requested again.
+            context.lastPostId = postId;
+            if (renderedIds[postId]) {
                 continue;
             }
             context.list.appendChild(createItemNode(
@@ -292,7 +298,6 @@
                 context.galleryName
             ));
             renderedIds[postId] = true;
-            context.lastPostId = postId;
             appended += 1;
         }
         return appended;

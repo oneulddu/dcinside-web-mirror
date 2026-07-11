@@ -568,16 +568,28 @@ class API(ParserMixin):
         preserved_head_id = self.__normalize_head_id(
             (current_query.get("headid") or current_query.get("search_head") or [None])[0]
         )
-        if not preserve_recommend and preserved_head_id is None:
+        preserved_search_keyword = str(
+            (current_query.get("serval") or current_query.get("s_keyword") or [""])[0]
+        ).strip()
+        preserved_search_type = self.__normalize_search_type(
+            (current_query.get("s_type") or [None])[0]
+        )
+        preserved_search_pos = to_optional_int(
+            (current_query.get("s_pos") or current_query.get("search_pos") or [None])[0]
+        )
+        if preserved_search_pos == 0:
+            preserved_search_pos = None
+        if not preserve_recommend and preserved_head_id is None and not preserved_search_keyword:
             return normalized_url
 
         parsed = urlparse(normalized_url)
         target_host = (parsed.netloc or "").lower()
         target_path = parsed.path or ""
-        target_head_key = "search_head" if target_host in {"gall.dcinside.com", "search.dcinside.com"} else "headid"
+        target_is_pc = target_host in {"gall.dcinside.com", "search.dcinside.com"}
+        target_head_key = "search_head" if target_is_pc else "headid"
         target_recommend_key = (
             "exception_mode"
-            if target_host in {"gall.dcinside.com", "search.dcinside.com"} and "/lists" in target_path
+            if target_is_pc and "/lists" in target_path
             else "recommend"
         )
         target_recommend_value = "recommend" if target_recommend_key == "exception_mode" else "1"
@@ -600,11 +612,33 @@ class API(ParserMixin):
                 elif preserved_head_id is None:
                     query_items.append((key, value))
                 continue
+            if preserved_search_keyword and key in {
+                "s_type", "serval", "s_keyword", "s_pos", "search_pos"
+            }:
+                continue
             query_items.append((key, value))
         if preserve_recommend and not recommend_added:
             query_items.append((target_recommend_key, target_recommend_value))
         if preserved_head_id is not None and not head_added:
             query_items.append((target_head_key, preserved_head_id))
+        if preserved_search_keyword:
+            if target_is_pc:
+                pc_type_map = {
+                    "subject_m": "search_subject_memo",
+                    "subject": "search_subject",
+                    "memo": "search_memo",
+                    "name": "search_name",
+                    "comment": "search_comment",
+                }
+                query_items.append(("s_type", pc_type_map[preserved_search_type]))
+                query_items.append(("s_keyword", preserved_search_keyword))
+                if preserved_search_pos is not None:
+                    query_items.append(("search_pos", preserved_search_pos))
+            else:
+                query_items.append(("s_type", preserved_search_type))
+                query_items.append(("serval", preserved_search_keyword))
+                if preserved_search_pos is not None:
+                    query_items.append(("s_pos", preserved_search_pos))
         return parsed._replace(query=urlencode(query_items)).geturl()
     async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, search_pos=None, search_nav_collector=None):
         page = start_page

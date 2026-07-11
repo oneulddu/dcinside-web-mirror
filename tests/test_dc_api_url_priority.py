@@ -1,4 +1,5 @@
 import threading
+from urllib.parse import parse_qs, urlparse
 
 from aiohttp import CookieJar
 import lxml.html
@@ -205,6 +206,38 @@ def test_redirect_url_preserves_pc_exception_mode_recommend():
     )
 
     assert redirect == "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2&exception_mode=recommend"
+
+
+def test_redirect_url_maps_mobile_search_context_to_pc_target():
+    api = API.__new__(API)
+
+    redirect = api._API__normalize_redirect_url(
+        "https://m.dcinside.com/board/test?page=2&s_type=subject&serval=hello&s_pos=-20",
+        "https://gall.dcinside.com/mgallery/board/lists/?id=test&page=2",
+    )
+
+    query = parse_qs(urlparse(redirect).query)
+    assert query["s_type"] == ["search_subject"]
+    assert query["s_keyword"] == ["hello"]
+    assert query["search_pos"] == ["-20"]
+    assert "serval" not in query
+    assert "s_pos" not in query
+
+
+def test_redirect_url_maps_pc_search_context_to_mobile_target():
+    api = API.__new__(API)
+
+    redirect = api._API__normalize_redirect_url(
+        "https://gall.dcinside.com/mgallery/board/lists/?id=test&page=2&s_type=search_memo&s_keyword=hello&search_pos=-20",
+        "https://m.dcinside.com/board/test?page=2",
+    )
+
+    query = parse_qs(urlparse(redirect).query)
+    assert query["s_type"] == ["memo"]
+    assert query["serval"] == ["hello"]
+    assert query["s_pos"] == ["-20"]
+    assert "s_keyword" not in query
+    assert "search_pos" not in query
 
 
 def test_parse_mobile_headtext_tabs():

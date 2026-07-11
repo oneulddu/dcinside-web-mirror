@@ -1060,3 +1060,33 @@ async def test_related_after_position_keeps_search_cursor_in_original_block():
     assert [row["id"] for row in related] == ["99"]
     assert has_more is False
     assert next_search_pos == current_pos
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_does_not_claim_more_without_advancing_cursor():
+    current_pos = -20816199
+    next_pos = -20806199
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"next_pos": next_pos})
+            if kwargs["start_page"] == 1:
+                yield _index_item(100)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "test",
+        limit=1,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=current_pos,
+        tail_pages=0,
+    )
+
+    assert related == []
+    assert has_more is False
+    assert next_search_pos is None

@@ -2010,6 +2010,8 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "payload.ok === false" in script
     assert "payload.next_s_pos" in script
     assert "state.section.dataset.searchPos = context.searchPos" in script
+    assert "context.lastPostId = postId;" in script
+    assert script.index("context.lastPostId = postId;") < script.index("if (renderedIds[postId])")
     assert 'setButtonState(button, "idle");' in script
     assert 'setButtonState(button, "refresh");' in script
     assert 'setButtonState(button, "retry");' in script
