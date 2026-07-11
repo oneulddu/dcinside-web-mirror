@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import math
 import os
@@ -45,7 +46,12 @@ RECENT_COOKIE_MAX_BYTES = _env_int("MIRROR_RECENT_COOKIE_MAX_BYTES", 3600)
 RECENT_SERVER_CACHE = {}
 RECENT_SERVER_CACHE_LOCK = threading.Lock()
 RECENT_CACHE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+RECENT_TOMBSTONE_BOARD_HASH_RE = re.compile(r"^[0-9a-f]{12,40}$")
 RECENT_GALLERY_KINDS = {"minor", "mini", "person"}
+
+
+def _tombstone_board_digest(board):
+    return hashlib.sha1((board or "").encode("utf-8")).hexdigest()[:12]
 
 
 def format_recent_time(ts):
@@ -139,6 +145,17 @@ def recent_removal_matches(target, row):
     return normalize_recent_kind(target.get("kind")) == row_kind
 
 
+def tombstone_matches_row(item, row):
+    if item["board_hash"] != _tombstone_board_digest(row.get("board")):
+        return False
+    if item["recommend"] != (1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0):
+        return False
+    row_kind = normalize_recent_kind(row.get("kind"))
+    if not row_kind:
+        return True
+    return normalize_recent_kind(item.get("kind")) == row_kind
+
+
 def normalize_recent_tombstones(value):
     empty = {"cleared_at": 0.0, "items": []}
     if not isinstance(value, dict):
@@ -156,16 +173,16 @@ def normalize_recent_tombstones(value):
     for item in raw_items:
         if not isinstance(item, dict):
             continue
-        raw_board = item.get("board")
+        raw_board_hash = item.get("board_hash")
         raw_kind = item.get("kind")
-        if not isinstance(raw_board, str) or not isinstance(raw_kind, (str, type(None))):
+        if not isinstance(raw_board_hash, str) or not isinstance(raw_kind, (str, type(None))):
             continue
-        board = raw_board.strip()
+        board_hash = raw_board_hash
         deleted_at = _safe_float(item.get("deleted_at", 0), 0.0)
-        if not board or deleted_at <= 0:
+        if not RECENT_TOMBSTONE_BOARD_HASH_RE.fullmatch(board_hash) or deleted_at <= 0:
             continue
         items.append({
-            "board": board,
+            "board_hash": board_hash,
             "kind": normalize_recent_kind(raw_kind),
             "recommend": 1 if _safe_int(item.get("recommend", 0), 0) == 1 else 0,
             "deleted_at": deleted_at,
@@ -203,7 +220,7 @@ def filter_tombstoned_rows(rows, tombstones):
         if visited_at < cleared_at:
             continue
         if any(
-            recent_removal_matches(item, row) and visited_at < item["deleted_at"]
+            tombstone_matches_row(item, row) and visited_at < item["deleted_at"]
             for item in items
         ):
             continue
@@ -583,12 +600,21 @@ def remove_recent_gallery(response, board, kind, recommend=0):
 
     deleted_at = time.time()
     tombstones = load_recent_tombstones()
+    target_tombstone_identity = (
+        _tombstone_board_digest(target["board"]),
+        target["kind"],
+        target["recommend"],
+    )
     tombstone_items = [
         item for item in tombstones["items"]
-        if recent_entry_identity(item) != recent_entry_identity(target)
+        if (
+            item["board_hash"],
+            item["kind"],
+            item["recommend"],
+        ) != target_tombstone_identity
     ]
     tombstone_items.insert(0, {
-        "board": target["board"],
+        "board_hash": target_tombstone_identity[0],
         "kind": target["kind"],
         "recommend": target["recommend"],
         "deleted_at": deleted_at,

@@ -542,7 +542,7 @@ def test_all_recent_items_keep_tombstones_within_cookie_budget():
     tombstones = {"cleared_at": 0.0, "items": []}
     for row in rows:
         tombstones["items"].insert(0, {
-            "board": row["board"],
+            "board_hash": recent._tombstone_board_digest(row["board"]),
             "kind": row["kind"],
             "recommend": row["recommend"],
             "deleted_at": FIXED_NOW,
@@ -562,16 +562,24 @@ def test_all_recent_items_keep_tombstones_within_cookie_budget():
 
 
 def test_large_tombstones_fit_cookie_budget_and_keep_newest(monkeypatch):
-    monkeypatch.setattr(recent, "RECENT_COOKIE_MAX_BYTES", 900)
     app = create_app()
-    items = [
+    rows = [
         {
             "board": f"{index:02d}" + "x" * 78,
             "kind": "minor",
             "recommend": index % 2,
-            "deleted_at": FIXED_NOW - index,
+            "visited_at": FIXED_NOW - 100,
         }
         for index in range(recent.RECENT_MAX_ITEMS)
+    ]
+    items = [
+        {
+            "board_hash": recent._tombstone_board_digest(row["board"]),
+            "kind": row["kind"],
+            "recommend": row["recommend"],
+            "deleted_at": FIXED_NOW - index,
+        }
+        for index, row in enumerate(rows)
     ]
 
     with app.test_request_context("/recent", base_url="http://localhost"):
@@ -583,11 +591,54 @@ def test_large_tombstones_fit_cookie_budget_and_keep_newest(monkeypatch):
 
     encoded = _cookie_morsel(response, recent.RECENT_TOMBSTONE_COOKIE_NAME).value
     saved = _decode_recent_rows(encoded)
-    assert 0 < len(saved["items"]) < len(items)
+    assert len(saved["items"]) == recent.RECENT_MAX_ITEMS
     assert len(encoded.encode("ascii")) <= recent.RECENT_COOKIE_MAX_BYTES
-    assert [item["board"] for item in saved["items"]] == [
-        item["board"] for item in items[:len(saved["items"])]
+    assert recent.filter_tombstoned_rows(rows, saved) == []
+
+    monkeypatch.setattr(recent, "RECENT_COOKIE_MAX_BYTES", 500)
+    with app.test_request_context("/recent", base_url="http://localhost"):
+        compact_response = app.make_response("")
+        recent.save_recent_tombstone_cookie(
+            compact_response,
+            {"cleared_at": 0.0, "items": items},
+        )
+
+    compact_encoded = _cookie_morsel(
+        compact_response,
+        recent.RECENT_TOMBSTONE_COOKIE_NAME,
+    ).value
+    compact_saved = _decode_recent_rows(compact_encoded)
+    assert 0 < len(compact_saved["items"]) < len(items)
+    assert len(compact_encoded.encode("ascii")) <= recent.RECENT_COOKIE_MAX_BYTES
+    assert [item["board_hash"] for item in compact_saved["items"]] == [
+        item["board_hash"] for item in items[:len(compact_saved["items"])]
     ]
+
+
+def test_tombstone_digest_matching_preserves_asymmetric_kind_rule():
+    board = "digest_kind_target"
+    kindless_row = {
+        "board": board,
+        "kind": None,
+        "recommend": 0,
+        "visited_at": FIXED_NOW - 10,
+    }
+    kindful_row = {**kindless_row, "kind": "mini"}
+    tombstone = {
+        "board_hash": recent._tombstone_board_digest(board),
+        "kind": "minor",
+        "recommend": 0,
+        "deleted_at": FIXED_NOW,
+    }
+
+    assert recent.filter_tombstoned_rows([kindless_row], {
+        "cleared_at": 0.0,
+        "items": [tombstone],
+    }) == []
+    assert recent.filter_tombstoned_rows([kindful_row], {
+        "cleared_at": 0.0,
+        "items": [{**tombstone, "kind": None}],
+    }) == [kindful_row]
 
 
 def test_revisit_at_same_time_as_tombstone_survives():
@@ -609,7 +660,7 @@ def test_revisit_at_same_time_as_tombstone_survives():
         "cleared_at": FIXED_NOW,
         "items": [
             {
-                "board": "same_time_removed",
+                "board_hash": recent._tombstone_board_digest("same_time_removed"),
                 "kind": "minor",
                 "recommend": 0,
                 "deleted_at": FIXED_NOW,

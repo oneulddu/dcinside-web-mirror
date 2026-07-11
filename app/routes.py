@@ -613,6 +613,7 @@ def recent_clear():
 
 
 def _reject_cross_origin_post():
+    # 프록시 뒤에서는 request.scheme을 신뢰하기 어려워 오탐할 수 있으므로 netloc만 비교한다.
     origin = request.headers.get("Origin")
     if origin:
         if urlparse(origin).netloc != request.host:
