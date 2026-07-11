@@ -116,6 +116,7 @@
         var pid = getItemPostId(item);
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
+        var itemSearchPos = item && item.s_pos !== null && item.s_pos !== undefined && item.s_pos !== "" ? String(item.s_pos) : "";
         if (recommend === "1") {
             href += "&recommend=1";
         }
@@ -131,8 +132,8 @@
         if (searchKeyword) {
             href += "&s_type=" + encodeURIComponent(searchType || "subject_m");
             href += "&serval=" + encodeURIComponent(searchKeyword);
-            if (searchPos) {
-                href += "&s_pos=" + encodeURIComponent(searchPos);
+            if (itemSearchPos || searchPos) {
+                href += "&s_pos=" + encodeURIComponent(itemSearchPos || searchPos);
             }
         }
         if (galleryName) {

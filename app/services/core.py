@@ -951,6 +951,9 @@ async def _related_after_position_with_api(
         )
 
     returned = related[:fetch_limit]
+    if search_keyword_value:
+        for row, block_pos in returned:
+            row["search_pos"] = block_pos
     rows = [row for row, _block_pos in returned]
     # In search mode, continue from the block containing the last returned row.
     next_search_pos = returned[-1][1] if search_keyword_value and returned else None

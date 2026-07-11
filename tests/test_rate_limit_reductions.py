@@ -832,6 +832,7 @@ async def test_related_after_position_uses_source_page_before_latest_lookup_with
     )
 
     assert [row["id"] for row in related] == ["99"]
+    assert "search_pos" not in related[0]
     assert has_more is True
     assert next_search_pos is None
     assert api.calls == [(2, core.RELATED_PAGE_FETCH_SIZE)]
@@ -1008,9 +1009,10 @@ async def test_related_after_position_crosses_search_block_boundary():
                 search_nav.update({"next_pos": next_pos})
             if search_pos == current_pos and page == 1:
                 yield _index_item(100)
-            elif search_pos == next_pos and page == 1:
                 yield _index_item(99)
+            elif search_pos == next_pos and page == 1:
                 yield _index_item(98)
+                yield _index_item(97)
 
     api = FakeAPI()
 
@@ -1019,14 +1021,15 @@ async def test_related_after_position_crosses_search_block_boundary():
         "100",
         "100",
         "test",
-        limit=1,
+        limit=2,
         source_page=1,
         search_keyword="hello",
         search_pos=current_pos,
         tail_pages=1,
     )
 
-    assert [row["id"] for row in related] == ["99"]
+    assert [row["id"] for row in related] == ["99", "98"]
+    assert [row["search_pos"] for row in related] == [current_pos, next_pos]
     assert has_more is True
     assert next_search_pos == next_pos
     assert api.calls == [(1, current_pos), (2, current_pos), (1, next_pos)]

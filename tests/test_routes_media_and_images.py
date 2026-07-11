@@ -1893,6 +1893,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "time": "-",
                     "comment_count": 0,
                     "voteup_count": 0,
+                    "search_pos": -123,
                 },
                 {
                     "id": "302",
@@ -1909,6 +1910,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "time": "-",
                     "comment_count": 2,
                     "voteup_count": 9,
+                    "search_pos": -122,
                 },
             ],
             True,
@@ -1929,12 +1931,14 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     assert payload["has_more"] is True
     assert payload["next_s_pos"] == -122
     assert payload["items"][0]["subject"] == "일반"
+    assert payload["items"][0]["s_pos"] == -123
     assert payload["items"][0]["has_image"] is False
     assert payload["items"][0]["isimage"] is False
     assert payload["items"][0]["has_video"] is False
     assert payload["items"][0]["isrecommend"] is False
     assert payload["items"][0]["author_role"] == "manager"
     assert payload["items"][1]["subject"] == "영상"
+    assert payload["items"][1]["s_pos"] == -122
     assert payload["items"][1]["has_video"] is True
     assert payload["items"][1]["isvideo"] is True
     assert payload["items"][1]["isrecommend"] is True
@@ -1992,6 +1996,7 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "section.dataset.headId" in script
     assert 'params.set("headid", headId)' in script
     assert 'href += "&headid="' in script
+    assert "itemSearchPos || searchPos" in script
     assert "function responseHasMore(" in script
     assert "has_more" in script
     assert "function createFeedStatusIcon(" in script
