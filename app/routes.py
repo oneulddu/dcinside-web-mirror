@@ -593,6 +593,7 @@ def recent_compat_redirect():
 
 @bp.route("/recent/remove", methods=["POST"])
 def recent_remove():
+    _reject_cross_origin_post()
     response = redirect(url_for("main.recent"))
     remove_recent_gallery(
         response,
@@ -605,9 +606,22 @@ def recent_remove():
 
 @bp.route("/recent/clear", methods=["POST"])
 def recent_clear():
+    _reject_cross_origin_post()
     response = redirect(url_for("main.recent"))
     clear_recent_galleries(response)
     return response
+
+
+def _reject_cross_origin_post():
+    origin = request.headers.get("Origin")
+    if origin:
+        if urlparse(origin).netloc != request.host:
+            abort(403)
+        return
+
+    referer = request.headers.get("Referer")
+    if referer and urlparse(referer).netloc != request.host:
+        abort(403)
 
 
 @bp.route("/healthz")

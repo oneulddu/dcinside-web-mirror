@@ -253,6 +253,25 @@ def _recent_cookie_header(rows, cache_key):
     )
 
 
+def _recent_response_cookie_header(response, cache_key):
+    rows = _cookie_morsel(response, recent.RECENT_COOKIE_NAME).value
+    tombstones = _cookie_morsel(response, recent.RECENT_TOMBSTONE_COOKIE_NAME).value
+    return (
+        f"{recent.RECENT_COOKIE_NAME}={rows}; "
+        f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={cache_key}; "
+        f"{recent.RECENT_TOMBSTONE_COOKIE_NAME}={tombstones}"
+    )
+
+
+def _seed_stale_recent_cache(cache_key, rows):
+    with recent.RECENT_SERVER_CACHE_LOCK:
+        recent.RECENT_SERVER_CACHE[cache_key] = recent.make_recent_server_cache_entry(
+            rows,
+            FIXED_NOW,
+            recent.RECENT_SERVER_CACHE_TTL,
+        )
+
+
 def test_recent_remove_deletes_gallery_from_cookie_and_server_cache():
     app = create_app()
     cache_key = "remove-visitor-key-000000"
@@ -335,3 +354,186 @@ def test_recent_clear_empties_cookie_and_server_cache():
     assert response.headers["Location"].endswith("/recent")
     assert _decode_recent_rows(_cookie_morsel(response, recent.RECENT_COOKIE_NAME).value) == []
     assert recent.get_recent_server_cache(cache_key) == []
+
+
+def test_recent_remove_tombstone_filters_stale_cache_from_another_worker():
+    app = create_app()
+    cache_key = "remove-stale-worker-key"
+    rows = [
+        {
+            "board": "stale_remove_target",
+            "name": "다른 worker에 남은 갤러리",
+            "kind": "minor",
+            "recommend": 0,
+            "visited_at": FIXED_NOW - 10,
+        },
+        {
+            "board": "stale_keep_target",
+            "name": "남길 갤러리",
+            "kind": None,
+            "recommend": 0,
+            "visited_at": FIXED_NOW - 20,
+        },
+    ]
+    response = app.test_client(use_cookies=False).post(
+        "/recent/remove",
+        data={"board": "stale_remove_target", "kind": "minor", "recommend": "0"},
+        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+    )
+    _seed_stale_recent_cache(cache_key, rows)
+
+    with app.test_request_context(
+        "/recent",
+        headers={"Cookie": _recent_response_cookie_header(response, cache_key)},
+    ):
+        loaded = recent.load_recent_entries()
+
+    assert [row["board"] for row in loaded] == ["stale_keep_target"]
+
+
+def test_recent_clear_tombstone_filters_all_stale_cache_from_another_worker():
+    app = create_app()
+    cache_key = "clear-stale-worker-key-0"
+    rows = [
+        {
+            "board": "stale_clear_a",
+            "name": "오래된 갤러리 A",
+            "kind": "mini",
+            "recommend": 0,
+            "visited_at": FIXED_NOW - 10,
+        },
+        {
+            "board": "stale_clear_b",
+            "name": "오래된 갤러리 B",
+            "kind": None,
+            "recommend": 1,
+            "visited_at": FIXED_NOW - 20,
+        },
+    ]
+    response = app.test_client(use_cookies=False).post(
+        "/recent/clear",
+        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+    )
+    _seed_stale_recent_cache(cache_key, rows)
+
+    with app.test_request_context(
+        "/recent",
+        headers={"Cookie": _recent_response_cookie_header(response, cache_key)},
+    ):
+        loaded = recent.load_recent_entries()
+
+    assert loaded == []
+
+
+def test_touch_with_tombstone_does_not_revive_deleted_gallery(monkeypatch):
+    async def board_payload(*args, **kwargs):
+        return [], []
+
+    monkeypatch.setattr(routes, "_load_board_payload", board_payload)
+    app = create_app()
+    cache_key = "touch-tombstone-key-000"
+    deleted_row = {
+        "board": "touch_deleted_target",
+        "name": "삭제한 갤러리",
+        "kind": "minor",
+        "recommend": 0,
+        "visited_at": FIXED_NOW - 10,
+    }
+    delete_response = app.test_client(use_cookies=False).post(
+        "/recent/remove",
+        data={"board": deleted_row["board"], "kind": "minor", "recommend": "0"},
+        headers={"Cookie": _recent_cookie_header([deleted_row], cache_key)},
+    )
+    _seed_stale_recent_cache(cache_key, [deleted_row])
+
+    visit_response = app.test_client(use_cookies=False).get(
+        "/board",
+        query_string={"board": "new_visit", "kind": "mini", "gallery_name": "새 방문"},
+        headers={"Cookie": _recent_response_cookie_header(delete_response, cache_key)},
+    )
+
+    cookie_rows = _decode_recent_rows(_cookie_morsel(visit_response, recent.RECENT_COOKIE_NAME).value)
+    assert [row["board"] for row in cookie_rows] == ["new_visit"]
+    assert [row["board"] for row in recent.get_recent_server_cache(cache_key)] == ["new_visit"]
+
+
+def test_recent_remove_without_kind_preserves_kind_specific_entry():
+    app = create_app()
+    cache_key = "asymmetric-remove-key-00"
+    rows = [
+        {
+            "board": "shared_board",
+            "name": "미니 갤러리",
+            "kind": "mini",
+            "recommend": 0,
+            "visited_at": FIXED_NOW - 10,
+        },
+    ]
+    recent.set_recent_server_cache(cache_key, rows)
+
+    response = app.test_client(use_cookies=False).post(
+        "/recent/remove",
+        data={"board": "shared_board", "kind": "", "recommend": "0"},
+        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+    )
+
+    remaining = _decode_recent_rows(_cookie_morsel(response, recent.RECENT_COOKIE_NAME).value)
+    assert [row["kind"] for row in remaining] == ["mini"]
+    assert [row["kind"] for row in recent.get_recent_server_cache(cache_key)] == ["mini"]
+
+
+def test_recent_gallery_reappears_when_revisited_after_deletion(monkeypatch):
+    async def board_payload(*args, **kwargs):
+        return [], []
+
+    monkeypatch.setattr(routes, "_load_board_payload", board_payload)
+    app = create_app()
+    cache_key = "revisit-after-delete-key"
+    row = {
+        "board": "revisited_target",
+        "name": "다시 방문할 갤러리",
+        "kind": "minor",
+        "recommend": 0,
+        "visited_at": FIXED_NOW - 10,
+    }
+    delete_response = app.test_client(use_cookies=False).post(
+        "/recent/remove",
+        data={"board": row["board"], "kind": "minor", "recommend": "0"},
+        headers={"Cookie": _recent_cookie_header([row], cache_key)},
+    )
+    monkeypatch.setattr(recent.time, "time", lambda: FIXED_NOW + 10)
+
+    visit_response = app.test_client(use_cookies=False).get(
+        "/board",
+        query_string={
+            "board": row["board"],
+            "kind": "minor",
+            "gallery_name": row["name"],
+        },
+        headers={"Cookie": _recent_response_cookie_header(delete_response, cache_key)},
+    )
+
+    cookie_rows = _decode_recent_rows(_cookie_morsel(visit_response, recent.RECENT_COOKIE_NAME).value)
+    assert [(item["board"], item["visited_at"]) for item in cookie_rows] == [
+        (row["board"], FIXED_NOW + 10),
+    ]
+    assert [item["board"] for item in recent.get_recent_server_cache(cache_key)] == [row["board"]]
+
+
+def test_recent_remove_rejects_cross_origin_and_accepts_same_origin():
+    app = create_app()
+    client = app.test_client(use_cookies=False)
+
+    rejected = client.post(
+        "/recent/remove",
+        data={"board": "csrf_target"},
+        headers={"Origin": "https://evil.example"},
+    )
+    accepted = client.post(
+        "/recent/remove",
+        data={"board": "csrf_target"},
+        headers={"Origin": "http://localhost"},
+    )
+
+    assert rejected.status_code == 403
+    assert accepted.status_code == 302
