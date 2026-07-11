@@ -243,3 +243,95 @@ def test_concurrent_visits_with_same_cache_key_do_not_drop_either_gallery(monkey
     assert {row["board"] for row in rows} == {"concurrent_a", "concurrent_b"}
     assert {row["name"] for row in rows} == {"CONCURRENT_A", "CONCURRENT_B"}
     assert {row["visited_at"] for row in rows} == {FIXED_NOW}
+
+
+def _recent_cookie_header(rows, cache_key):
+    encoded = recent._encode_recent_rows(rows)
+    return (
+        f"{recent.RECENT_COOKIE_NAME}={encoded}; "
+        f"{recent.RECENT_CACHE_KEY_COOKIE_NAME}={cache_key}"
+    )
+
+
+def test_recent_remove_deletes_gallery_from_cookie_and_server_cache():
+    app = create_app()
+    cache_key = "remove-visitor-key-000000"
+    rows = [
+        {
+            "board": "remove_target",
+            "name": "지울 갤러리",
+            "kind": "minor",
+            "recommend": 1,
+            "visited_at": FIXED_NOW,
+        },
+        {
+            "board": "keep_target",
+            "name": "남길 갤러리",
+            "kind": None,
+            "recommend": 0,
+            "visited_at": FIXED_NOW - 10,
+        },
+    ]
+    recent.set_recent_server_cache(cache_key, rows)
+
+    response = app.test_client(use_cookies=False).post(
+        "/recent/remove",
+        data={"board": "remove_target", "kind": "minor", "recommend": "1"},
+        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/recent")
+    remaining = _decode_recent_rows(_cookie_morsel(response, recent.RECENT_COOKIE_NAME).value)
+    assert [row["board"] for row in remaining] == ["keep_target"]
+    assert [row["board"] for row in recent.get_recent_server_cache(cache_key)] == ["keep_target"]
+
+
+def test_recent_remove_matches_stored_entry_without_kind():
+    app = create_app()
+    cache_key = "kindless-visitor-key-0000"
+    rows = [
+        {
+            "board": "kindless_target",
+            "name": None,
+            "kind": None,
+            "recommend": 0,
+            "visited_at": FIXED_NOW,
+        },
+    ]
+    recent.set_recent_server_cache(cache_key, rows)
+
+    response = app.test_client(use_cookies=False).post(
+        "/recent/remove",
+        data={"board": "kindless_target", "kind": "minor", "recommend": "0"},
+        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+    )
+
+    assert response.status_code == 302
+    assert _decode_recent_rows(_cookie_morsel(response, recent.RECENT_COOKIE_NAME).value) == []
+    assert recent.get_recent_server_cache(cache_key) == []
+
+
+def test_recent_clear_empties_cookie_and_server_cache():
+    app = create_app()
+    cache_key = "clear-visitor-key-000000"
+    rows = [
+        {
+            "board": "clear_target",
+            "name": "비울 갤러리",
+            "kind": "mini",
+            "recommend": 0,
+            "visited_at": FIXED_NOW,
+        },
+    ]
+    recent.set_recent_server_cache(cache_key, rows)
+
+    response = app.test_client(use_cookies=False).post(
+        "/recent/clear",
+        headers={"Cookie": _recent_cookie_header(rows, cache_key)},
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/recent")
+    assert _decode_recent_rows(_cookie_morsel(response, recent.RECENT_COOKIE_NAME).value) == []
+    assert recent.get_recent_server_cache(cache_key) == []

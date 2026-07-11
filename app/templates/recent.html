@@ -4,11 +4,18 @@
 <section class="feed-list">
     <div class="board-head">
         <h1>최근 방문 갤러리</h1>
-        <span class="board-head-note">최대 30개</span>
+        <div class="board-head-actions">
+            <span class="board-head-note">최대 30개</span>
+            {% if recent_items %}
+            <form method="post" action="{{ url_for('main.recent_clear') }}">
+                <button type="submit" class="recent-remove-btn">전체 삭제</button>
+            </form>
+            {% endif %}
+        </div>
     </div>
     <ul>
         {% for item in recent_items %}
-        <li>
+        <li class="recent-row">
             <a class="feed-item" href="{{ board_url(item.board, recommend=item.recommend or 0, page=1, kind=item.kind, gallery_name=item.gallery_name) }}">
                 <div class="feed-title-wrap">
                     <span class="feed-title">{{ item.display_name }}</span>
@@ -28,6 +35,12 @@
                     <div class="feed-meta-right">바로가기</div>
                 </div>
             </a>
+            <form class="recent-remove-form" method="post" action="{{ url_for('main.recent_remove') }}">
+                <input type="hidden" name="board" value="{{ item.board }}">
+                {% if item.kind %}<input type="hidden" name="kind" value="{{ item.kind }}">{% endif %}
+                <input type="hidden" name="recommend" value="{{ item.recommend or 0 }}">
+                <button type="submit" class="recent-remove-btn" aria-label="{{ item.display_name }} 삭제">삭제</button>
+            </form>
         </li>
         {% else %}
         <li class="empty-row">최근 방문한 갤러리가 없습니다.</li>

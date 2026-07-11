@@ -20,8 +20,10 @@ from .services.html_sanitizer import prepare_read_html
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
 from .services.recent import (
     RECENT_MAX_ITEMS,
+    clear_recent_galleries,
     format_recent_time,
     load_recent_entries,
+    remove_recent_gallery,
     touch_recent_gallery,
 )
 
@@ -587,6 +589,25 @@ def recent():
 @bp.route("/legacy/recent")
 def recent_compat_redirect():
     return _redirect_compat("main.recent")
+
+
+@bp.route("/recent/remove", methods=["POST"])
+def recent_remove():
+    response = redirect(url_for("main.recent"))
+    remove_recent_gallery(
+        response,
+        request.form.get("board"),
+        request.form.get("kind"),
+        recommend=_safe_int(request.form.get("recommend", 0), 0),
+    )
+    return response
+
+
+@bp.route("/recent/clear", methods=["POST"])
+def recent_clear():
+    response = redirect(url_for("main.recent"))
+    clear_recent_galleries(response)
+    return response
 
 
 @bp.route("/healthz")

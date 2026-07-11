@@ -91,6 +91,8 @@ def test_screen_and_service_route_map_contract():
         "/read": "main.read",
         "/read/related": "main.read_related",
         "/recent": "main.recent",
+        "/recent/clear": "main.recent_clear",
+        "/recent/remove": "main.recent_remove",
         "/v2/": "main.index_compat_redirect",
         "/v2/board": "main.board_compat_redirect",
         "/v2/read": "main.read_compat_redirect",
