@@ -1406,6 +1406,8 @@ def test_board_visit_stores_gallery_name_for_recent(monkeypatch):
     assert recent_response.status_code == 200
     assert row.select_one(".feed-title").get_text(strip=True) == "특이점이 온다"
     assert "thesingularity" in row.select_one(".feed-meta-left").get_text(" ", strip=True)
+    assert "바로가기" not in row.get_text(" ", strip=True)
+    assert soup.select_one("form.recent-remove-form button[aria-label='특이점이 온다 삭제']") is not None
     assert query["gallery_name"] == ["특이점이 온다"]
 
 
