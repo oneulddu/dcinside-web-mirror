@@ -898,9 +898,10 @@ def read_related():
 
     posts = []
     has_more = False
+    next_search_pos = None
     if pid > 0:
         try:
-            posts, has_more = run_async(
+            posts, has_more, next_search_pos = run_async(
                 async_related_after_position(
                     pid,
                     after_pid,
@@ -923,6 +924,7 @@ def read_related():
             "ok": True,
             "items": _serialize_related_posts(posts),
             "has_more": has_more,
+            "next_s_pos": next_search_pos,
         }
     )
 

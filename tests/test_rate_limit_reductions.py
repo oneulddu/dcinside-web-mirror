@@ -783,7 +783,7 @@ async def test_related_after_position_uses_source_page_before_latest_lookup_with
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "100",
         "100",
@@ -794,6 +794,7 @@ async def test_related_after_position_uses_source_page_before_latest_lookup_with
 
     assert [row["id"] for row in related] == ["99"]
     assert has_more is True
+    assert next_search_pos is None
     assert api.calls == [(2, core.RELATED_PAGE_FETCH_SIZE)]
 
 
@@ -820,7 +821,7 @@ async def test_related_after_position_skips_shifted_page_overlap_before_cursor()
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "200",
         "100",
@@ -833,6 +834,7 @@ async def test_related_after_position_skips_shifted_page_overlap_before_cursor()
 
     assert [row["id"] for row in related] == ["99", "98"]
     assert has_more is True
+    assert next_search_pos is None
     assert api.calls == [
         (1, core.RELATED_PAGE_FETCH_SIZE),
         (2, core.RELATED_PAGE_FETCH_SIZE),
@@ -858,7 +860,7 @@ async def test_related_after_position_recommend_keeps_following_higher_ids(monke
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "100",
         "100",
@@ -871,6 +873,7 @@ async def test_related_after_position_recommend_keeps_following_higher_ids(monke
 
     assert [row["id"] for row in related] == ["105", "99"]
     assert has_more is False
+    assert next_search_pos is None
     assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
 
 
@@ -896,7 +899,7 @@ async def test_related_after_position_falls_back_to_estimate_when_source_page_hi
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "100",
         "100",
@@ -907,6 +910,7 @@ async def test_related_after_position_falls_back_to_estimate_when_source_page_hi
 
     assert [row["id"] for row in related] == ["99"]
     assert has_more is True
+    assert next_search_pos is None
     assert api.calls == [
         (9, core.RELATED_PAGE_FETCH_SIZE),
         (1, 1),
@@ -930,7 +934,7 @@ async def test_related_after_position_respects_zero_tail_pages():
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "100",
         "99",
@@ -943,6 +947,7 @@ async def test_related_after_position_respects_zero_tail_pages():
 
     assert related == []
     assert has_more is False
+    assert next_search_pos is None
     assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
 
 
@@ -970,7 +975,7 @@ async def test_related_after_position_crosses_search_block_boundary():
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "100",
         "100",
@@ -979,9 +984,37 @@ async def test_related_after_position_crosses_search_block_boundary():
         source_page=1,
         search_keyword="hello",
         search_pos=current_pos,
-        tail_pages=2,
+        tail_pages=1,
     )
 
     assert [row["id"] for row in related] == ["99"]
     assert has_more is True
+    assert next_search_pos == next_pos
     assert api.calls == [(1, current_pos), (2, current_pos), (1, next_pos)]
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_keeps_search_cursor_in_original_block():
+    current_pos = -20816199
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            if kwargs["start_page"] == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "test",
+        limit=1,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=current_pos,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert has_more is False
+    assert next_search_pos == current_pos

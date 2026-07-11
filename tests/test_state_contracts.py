@@ -75,7 +75,7 @@ async def test_related_cursor_keeps_order_across_overlap_and_internal_duplicates
         }
     )
 
-    rows, has_more = await core._related_after_position_with_api(
+    rows, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         api_id="110",
         after_id="108",
@@ -88,6 +88,7 @@ async def test_related_cursor_keeps_order_across_overlap_and_internal_duplicates
 
     assert [row["id"] for row in rows] == ["107", "106", "105", "104"]
     assert has_more is True
+    assert next_search_pos is None
     assert [(call["start_page"], call["num"]) for call in api.calls] == [
         (1, core.RELATED_PAGE_FETCH_SIZE),
         (2, core.RELATED_PAGE_FETCH_SIZE),
@@ -104,7 +105,7 @@ async def test_related_cursor_reports_end_after_overlap_only_pages_are_exhausted
         }
     )
 
-    rows, has_more = await core._related_after_position_with_api(
+    rows, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         api_id="210",
         after_id="208",
@@ -117,6 +118,7 @@ async def test_related_cursor_reports_end_after_overlap_only_pages_are_exhausted
 
     assert [row["id"] for row in rows] == ["207", "206"]
     assert has_more is False
+    assert next_search_pos is None
     assert [(call["start_page"], call["num"]) for call in api.calls] == [
         (1, core.RELATED_PAGE_FETCH_SIZE),
         (2, core.RELATED_PAGE_FETCH_SIZE),

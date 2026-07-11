@@ -501,6 +501,10 @@
             if (payload && payload.ok === false) {
                 throw new Error(payload.error || "Failed to fetch related posts");
             }
+            if (payload && payload.next_s_pos !== null && payload.next_s_pos !== undefined && payload.next_s_pos !== "") {
+                context.searchPos = String(payload.next_s_pos);
+                state.section.dataset.searchPos = context.searchPos;
+            }
             var items = Array.isArray(payload.items) ? payload.items : [];
             applyLoadedItems(context, button, items, payload);
             state.lastPostId = context.lastPostId || state.lastPostId;

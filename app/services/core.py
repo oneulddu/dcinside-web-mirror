@@ -742,7 +742,7 @@ async def _related_after_position_with_api(
     last_successful_search_nav = None
 
     if target_id <= 0 or fetch_limit == 0:
-        return [], False
+        return [], False, None
 
     board_key = (
         board,
@@ -872,7 +872,7 @@ async def _related_after_position_with_api(
                 break
 
     if found_page is None:
-        return [], False
+        return [], False, None
 
     collect_limit = fetch_limit + 1
     related = []
@@ -882,7 +882,7 @@ async def _related_after_position_with_api(
         if prefix_id > 0:
             seen_ids.add(str(prefix_id))
 
-    def append_rows(rows):
+    def append_rows(rows, block_pos):
         for row in rows:
             rid = _safe_int(row.get("id"), 0)
             if rid <= 0:
@@ -891,12 +891,12 @@ async def _related_after_position_with_api(
             if rid_key in seen_ids:
                 continue
             seen_ids.add(rid_key)
-            related.append(row)
+            related.append((row, block_pos))
             if len(related) >= collect_limit:
                 return True
         return False
 
-    append_rows(found_posts[found_index + 1 :])
+    append_rows(found_posts[found_index + 1 :], search_pos_value)
 
     next_page = found_page + 1
     loaded_tail = 0
@@ -916,24 +916,23 @@ async def _related_after_position_with_api(
             search_pos=search_pos_value,
             search_nav_collector=search_nav,
         )
-        loaded_tail += 1
         if not page_posts:
             next_pos = _normalize_search_pos(
                 (last_successful_search_nav or {}).get("next_pos")
             )
             if search_keyword_value and next_pos is not None and next_pos not in visited_search_positions:
                 unvisited_next_block_remains = True
-                if loaded_tail < max_tail:
-                    visited_search_positions.add(next_pos)
-                    search_pos_value = next_pos
-                    next_page = 1
-                    last_successful_search_nav = None
-                    unvisited_next_block_remains = False
-                    continue
+                visited_search_positions.add(next_pos)
+                search_pos_value = next_pos
+                next_page = 1
+                last_successful_search_nav = None
+                unvisited_next_block_remains = False
+                continue
             break
+        loaded_tail += 1
         if search_nav is not None:
             last_successful_search_nav = dict(search_nav)
-        append_rows(page_posts)
+        append_rows(page_posts, search_pos_value)
         next_page += 1
 
     if (
@@ -947,7 +946,11 @@ async def _related_after_position_with_api(
             next_pos is not None and next_pos not in visited_search_positions
         )
 
-    return related[:fetch_limit], len(related) > fetch_limit or unvisited_next_block_remains
+    returned = related[:fetch_limit]
+    rows = [row for row, _block_pos in returned]
+    # In search mode, continue from the block containing the last returned row.
+    next_search_pos = returned[-1][1] if search_keyword_value and returned else None
+    return rows, len(related) > fetch_limit or unvisited_next_block_remains, next_search_pos
 
 
 async def async_related_after_position(

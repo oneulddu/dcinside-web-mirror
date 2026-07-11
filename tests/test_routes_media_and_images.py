@@ -1912,6 +1912,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                 },
             ],
             True,
+            -122,
         )
 
     monkeypatch.setattr(routes, "async_related_after_position", fake_async_related_after_position)
@@ -1926,6 +1927,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     assert seen["head_id"] == "10"
     assert seen["search_pos"] == -123
     assert payload["has_more"] is True
+    assert payload["next_s_pos"] == -122
     assert payload["items"][0]["subject"] == "일반"
     assert payload["items"][0]["has_image"] is False
     assert payload["items"][0]["isimage"] is False
@@ -2001,6 +2003,8 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "mirror:related:" not in script
     assert "cachedResult.items.length > 0" not in script
     assert "payload.ok === false" in script
+    assert "payload.next_s_pos" in script
+    assert "state.section.dataset.searchPos = context.searchPos" in script
     assert 'setButtonState(button, "idle");' in script
     assert 'setButtonState(button, "refresh");' in script
     assert 'setButtonState(button, "retry");' in script
