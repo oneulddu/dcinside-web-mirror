@@ -196,6 +196,22 @@ def test_search_position_accepts_s_keyword_alias(monkeypatch):
     assert response.status_code == 200
 
 
+def test_search_position_accepts_pc_search_pos_alias(monkeypatch):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        assert kwargs["search_keyword"] == "hello"
+        assert kwargs["search_pos"] == -123
+        return [], [], {"prev_pos": None, "next_pos": None, "block_max_page": 1}
+
+    monkeypatch.setattr(routes, "_load_board_payload", fake_board_payload)
+    app = create_app()
+
+    response = app.test_client().get(
+        "/board?board=test&s_keyword=hello&search_pos=-123"
+    )
+
+    assert response.status_code == 200
+
+
 def test_search_first_page_links_to_previous_search_block(monkeypatch):
     async def search_payload(*args, **kwargs):
         rows, categories, _search_nav = await _board_payload(*args, **kwargs)

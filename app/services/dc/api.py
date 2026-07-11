@@ -392,7 +392,9 @@ class API(ParserMixin):
             links = parsed.xpath("//div[contains(@class, 'paging')]//a")
             position_keys = ("s_pos", "search_pos")
         else:
-            links = parsed.xpath("//a[contains(@href, 'search_pos')]")
+            links = parsed.xpath("//div[contains(@class, 'paging')]//a")
+            if not links:
+                links = parsed.xpath("//a[contains(@href, 'search_pos')]")
             position_keys = ("search_pos", "s_pos")
 
         current_pos = to_optional_int(search_pos)

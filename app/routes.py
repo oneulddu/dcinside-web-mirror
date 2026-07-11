@@ -148,7 +148,10 @@ def _add_kind_param(params, kind):
 def _search_pos_arg():
     if not _board_search_keyword():
         return None
-    value = _safe_int(request.args.get("s_pos"), 0)
+    value = _safe_int(
+        request.args.get("s_pos") or request.args.get("search_pos"),
+        0,
+    )
     return value or None
 
 

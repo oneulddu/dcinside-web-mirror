@@ -168,6 +168,31 @@ def test_search_navigation_never_uses_prev_link_as_next_fallback():
     assert nav["next_pos"] is None
 
 
+def test_pc_search_navigation_includes_numeric_links_without_search_pos():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="bottom_paging_box iconpaging">
+          <a href="/mgallery/board/lists/?id=test&amp;page=2&amp;s_keyword=kw">2</a>
+          <a href="/mgallery/board/lists/?id=test&amp;page=10&amp;s_keyword=kw">10</a>
+          <a class="search_next" href="/mgallery/board/lists/?id=test&amp;page=1&amp;s_keyword=kw&amp;search_pos=-20">다음</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed,
+        "https://gall.dcinside.com/mgallery/board/lists/?id=test&page=1&s_keyword=kw",
+        None,
+    )
+
+    assert nav == {
+        "prev_pos": None,
+        "next_pos": -20,
+        "block_max_page": 10,
+    }
+
+
 def test_document_str_does_not_require_comment_count():
     doc = Document(
         id="123",
