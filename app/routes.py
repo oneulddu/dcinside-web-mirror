@@ -593,6 +593,7 @@ def recent_compat_redirect():
 
 @bp.route("/recent/remove", methods=["POST"])
 def recent_remove():
+    _reject_cross_origin_post()
     response = redirect(url_for("main.recent"))
     remove_recent_gallery(
         response,
@@ -605,9 +606,23 @@ def recent_remove():
 
 @bp.route("/recent/clear", methods=["POST"])
 def recent_clear():
+    _reject_cross_origin_post()
     response = redirect(url_for("main.recent"))
     clear_recent_galleries(response)
     return response
+
+
+def _reject_cross_origin_post():
+    # 프록시 뒤에서는 request.scheme을 신뢰하기 어려워 오탐할 수 있으므로 netloc만 비교한다.
+    origin = request.headers.get("Origin")
+    if origin:
+        if urlparse(origin).netloc != request.host:
+            abort(403)
+        return
+
+    referer = request.headers.get("Referer")
+    if not referer or urlparse(referer).netloc != request.host:
+        abort(403)
 
 
 @bp.route("/healthz")

@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import math
 import os
@@ -35,15 +36,22 @@ def _safe_float(value, default):
 
 RECENT_COOKIE_NAME = "recent_galleries"
 RECENT_CACHE_KEY_COOKIE_NAME = "recent_galleries_key"
+RECENT_TOMBSTONE_COOKIE_NAME = "recent_galleries_del"
 RECENT_COOKIE_TTL = _env_int("MIRROR_RECENT_COOKIE_TTL", 60 * 60 * 24 * 30)
 RECENT_MAX_ITEMS = _env_int("MIRROR_RECENT_MAX_ITEMS", 30)
+RECENT_TOMBSTONE_MAX_ITEMS = _env_int("MIRROR_RECENT_TOMBSTONE_MAX_ITEMS", RECENT_MAX_ITEMS)
 RECENT_SERVER_CACHE_TTL = _env_int("MIRROR_RECENT_SERVER_CACHE_TTL", min(RECENT_COOKIE_TTL, 60 * 60 * 24))
 RECENT_SERVER_CACHE_MAX_KEYS = _env_int("MIRROR_RECENT_SERVER_CACHE_MAX_KEYS", 2048)
 RECENT_COOKIE_MAX_BYTES = _env_int("MIRROR_RECENT_COOKIE_MAX_BYTES", 3600)
 RECENT_SERVER_CACHE = {}
 RECENT_SERVER_CACHE_LOCK = threading.Lock()
 RECENT_CACHE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+RECENT_TOMBSTONE_BOARD_HASH_RE = re.compile(r"^[0-9a-f]{12,40}$")
 RECENT_GALLERY_KINDS = {"minor", "mini", "person"}
+
+
+def _tombstone_board_digest(board):
+    return hashlib.sha1((board or "").encode("utf-8")).hexdigest()[:12]
 
 
 def format_recent_time(ts):
@@ -120,6 +128,141 @@ def recent_entries_may_be_same_gallery(left, right):
     if recent_entry_visit_identity(left) != recent_entry_visit_identity(right):
         return False
     return not left.get("kind") or not right.get("kind")
+
+
+def recent_removal_matches(target, row):
+    """비대칭 삭제 매칭.
+
+    저장된 행의 kind가 비어 있으면(레거시 쿠키·압축 항목) 같은 board/recommend를
+    같은 갤러리로 보고 지우지만, 삭제 대상의 kind가 비어 있다고 해서 kind가 있는
+    다른 종류의 갤러리 항목까지 지우지는 않는다.
+    """
+    if recent_entry_visit_identity(target) != recent_entry_visit_identity(row):
+        return False
+    row_kind = normalize_recent_kind(row.get("kind"))
+    if not row_kind:
+        return True
+    return normalize_recent_kind(target.get("kind")) == row_kind
+
+
+def tombstone_matches_row(item, row):
+    if item["board_hash"] != _tombstone_board_digest(row.get("board")):
+        return False
+    if item["recommend"] != (1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0):
+        return False
+    row_kind = normalize_recent_kind(row.get("kind"))
+    if not row_kind:
+        return True
+    return normalize_recent_kind(item.get("kind")) == row_kind
+
+
+def normalize_recent_tombstones(value):
+    empty = {"cleared_at": 0.0, "items": []}
+    if not isinstance(value, dict):
+        return empty
+
+    raw_items = value.get("items", [])
+    if not isinstance(raw_items, list):
+        return empty
+
+    cleared_at = _safe_float(value.get("cleared_at", 0), 0.0)
+    if cleared_at <= 0:
+        cleared_at = 0.0
+
+    items = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        raw_board_hash = item.get("board_hash")
+        raw_kind = item.get("kind")
+        if not isinstance(raw_board_hash, str) or not isinstance(raw_kind, (str, type(None))):
+            continue
+        board_hash = raw_board_hash
+        deleted_at = _safe_float(item.get("deleted_at", 0), 0.0)
+        if not RECENT_TOMBSTONE_BOARD_HASH_RE.fullmatch(board_hash) or deleted_at <= 0:
+            continue
+        items.append({
+            "board_hash": board_hash,
+            "kind": normalize_recent_kind(raw_kind),
+            "recommend": 1 if _safe_int(item.get("recommend", 0), 0) == 1 else 0,
+            "deleted_at": deleted_at,
+        })
+
+    return {
+        "cleared_at": cleared_at,
+        "items": items[:max(_safe_int(RECENT_TOMBSTONE_MAX_ITEMS, 0), 0)],
+    }
+
+
+def _pack_tombstone_wire(cleared_at, items):
+    # 쿠키 크기를 줄이기 위해 전송 형식은 압축 키(b/k/r/d)를 쓴다.
+    return {
+        "cleared_at": cleared_at,
+        "items": [
+            {
+                "b": item["board_hash"],
+                "k": item["kind"],
+                "r": item["recommend"],
+                "d": item["deleted_at"],
+            }
+            for item in items
+        ],
+    }
+
+
+def _unpack_tombstone_wire(parsed):
+    if not isinstance(parsed, dict):
+        return parsed
+    raw_items = parsed.get("items", [])
+    if not isinstance(raw_items, list):
+        return {"cleared_at": parsed.get("cleared_at", 0.0), "items": []}
+    return {
+        "cleared_at": parsed.get("cleared_at", 0.0),
+        "items": [
+            {
+                "board_hash": item.get("b"),
+                "kind": item.get("k"),
+                "recommend": item.get("r"),
+                "deleted_at": item.get("d"),
+            }
+            for item in raw_items
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def load_recent_tombstones():
+    raw = (request.cookies.get(RECENT_TOMBSTONE_COOKIE_NAME) or "").strip().strip('"')
+    if not raw:
+        return {"cleared_at": 0.0, "items": []}
+
+    try:
+        padded = raw + "=" * (-len(raw) % 4)
+        parsed = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return {"cleared_at": 0.0, "items": []}
+    return normalize_recent_tombstones(_unpack_tombstone_wire(parsed))
+
+
+def filter_tombstoned_rows(rows, tombstones):
+    normalized = normalize_recent_tombstones(tombstones)
+    cleared_at = normalized["cleared_at"]
+    items = normalized["items"]
+    if cleared_at <= 0 and not items:
+        return rows
+
+    filtered = []
+    for row in rows:
+        visited_at = _safe_float(row.get("visited_at", 0), 0.0)
+        if visited_at < cleared_at:
+            continue
+        if any(
+            tombstone_matches_row(item, row) and visited_at < item["deleted_at"]
+            for item in items
+        ):
+            continue
+        filtered.append(row)
+    return filtered
 
 
 def merge_recent_entry_detail(primary, secondary):
@@ -268,7 +411,7 @@ def get_recent_server_cache(key):
         return copy_recent_entries(entry.get("entries", []))
 
 
-def set_recent_server_cache(key, entries):
+def set_recent_server_cache(key, entries, tombstones=None):
     if not key:
         return copy_recent_entries(entries)
 
@@ -283,6 +426,10 @@ def set_recent_server_cache(key, entries):
         current_rows = []
         if isinstance(current, dict) and float(current.get("expires_at", 0.0) or 0.0) > now:
             current_rows = current.get("entries", [])
+        if tombstones is not None:
+            # 삭제 시각 이전 행만 막아 다른 worker의 오래된 캐시 병합은 차단하고,
+            # 삭제와 동시에 들어온 더 최신 방문은 다시 표시되도록 둔다.
+            current_rows = filter_tombstoned_rows(current_rows, tombstones)
 
         merged = merge_recent_generations(entries, current_rows)
         RECENT_SERVER_CACHE[key] = make_recent_server_cache_entry(merged, now, ttl)
@@ -309,6 +456,7 @@ def replace_recent_server_cache(key, entries):
 
 
 def load_recent_entries():
+    tombstones = load_recent_tombstones()
     raw = request.cookies.get(RECENT_COOKIE_NAME, "")
     rows = []
     if raw:
@@ -333,9 +481,10 @@ def load_recent_entries():
     server_rows = get_recent_server_cache(recent_cache_key())
     if rows:
         cookie_rows = merge_recent_entry_names(rows, server_rows)
-        return merge_recent_generations(cookie_rows, server_rows)
+        merged = merge_recent_generations(cookie_rows, server_rows)
+        return filter_tombstoned_rows(merged, tombstones)
 
-    return dedupe_recent_entries(server_rows)
+    return filter_tombstoned_rows(dedupe_recent_entries(server_rows), tombstones)
 
 
 def _encode_recent_rows(rows):
@@ -388,6 +537,51 @@ def save_recent_cookie(response, entries):
     )
 
 
+def save_recent_tombstone_cookie(response, tombstones):
+    normalized = normalize_recent_tombstones(tombstones)
+    cutoff = time.time() - max(_safe_int(RECENT_SERVER_CACHE_TTL, 0), 0)
+    cleared_at = normalized["cleared_at"]
+    if cleared_at < cutoff:
+        cleared_at = 0.0
+    items = [
+        item for item in normalized["items"]
+        if item["deleted_at"] >= cutoff
+    ][:max(_safe_int(RECENT_TOMBSTONE_MAX_ITEMS, 0), 0)]
+
+    if cleared_at <= 0 and not items:
+        response.set_cookie(
+            RECENT_TOMBSTONE_COOKIE_NAME,
+            "",
+            max_age=0,
+            path="/",
+            samesite="Lax",
+            secure=request.is_secure,
+        )
+        return
+
+    max_bytes = max(_safe_int(RECENT_COOKIE_MAX_BYTES, 0), 0)
+    encoded = _encode_recent_rows(_pack_tombstone_wire(cleared_at, items))
+    if len(encoded.encode("ascii")) > max_bytes:
+        low = 0
+        high = len(items)
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate = _encode_recent_rows(_pack_tombstone_wire(cleared_at, items[:middle]))
+            if len(candidate.encode("ascii")) <= max_bytes:
+                low = middle
+            else:
+                high = middle - 1
+        encoded = _encode_recent_rows(_pack_tombstone_wire(cleared_at, items[:low]))
+    response.set_cookie(
+        RECENT_TOMBSTONE_COOKIE_NAME,
+        encoded,
+        max_age=RECENT_COOKIE_TTL,
+        path="/",
+        samesite="Lax",
+        secure=request.is_secure,
+    )
+
+
 def save_recent_cache_key_cookie(response, key):
     if not key:
         return
@@ -409,6 +603,7 @@ def touch_recent_gallery(response, board, kind, recommend=0, name=None):
 
     cache_key = recent_cache_key(create=True)
     rows = load_recent_entries()
+    tombstones = load_recent_tombstones()
     new_row = normalize_recent_entry({
         "board": board_id,
         "name": name,
@@ -417,7 +612,7 @@ def touch_recent_gallery(response, board, kind, recommend=0, name=None):
         "visited_at": time.time(),
     })
     deduped = merge_recent_entries(new_row, rows)
-    deduped = set_recent_server_cache(cache_key, deduped)
+    deduped = set_recent_server_cache(cache_key, deduped, tombstones=tombstones)
 
     save_recent_cache_key_cookie(response, cache_key)
     save_recent_cookie(response, deduped)
@@ -434,14 +629,42 @@ def remove_recent_gallery(response, board, kind, recommend=0):
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
     })
     rows = load_recent_entries()
-    remaining = [row for row in rows if not recent_entries_may_be_same_gallery(target, row)]
+    remaining = [row for row in rows if not recent_removal_matches(target, row)]
     removed = len(remaining) != len(rows)
 
+    deleted_at = time.time()
+    tombstones = load_recent_tombstones()
+    target_tombstone_identity = (
+        _tombstone_board_digest(target["board"]),
+        target["kind"],
+        target["recommend"],
+    )
+    tombstone_items = [
+        item for item in tombstones["items"]
+        if (
+            item["board_hash"],
+            item["kind"],
+            item["recommend"],
+        ) != target_tombstone_identity
+    ]
+    tombstone_items.insert(0, {
+        "board_hash": target_tombstone_identity[0],
+        "kind": target["kind"],
+        "recommend": target["recommend"],
+        "deleted_at": deleted_at,
+    })
+    tombstones["items"] = tombstone_items
+
+    # 쿠키가 클라이언트의 권위 상태라 서버 잠금만으로 worker 간 last-writer-wins를
+    # 없앨 수 없다. 삭제와 동시 방문이 겹치면 방문 1건이 유실될 수 있지만,
+    # 해당 갤러리를 다시 방문하면 최근 목록에 자연스럽게 복구된다.
+    save_recent_tombstone_cookie(response, tombstones)
     remaining = replace_recent_server_cache(recent_cache_key(), remaining)
     save_recent_cookie(response, remaining)
     return removed
 
 
 def clear_recent_galleries(response):
+    save_recent_tombstone_cookie(response, {"cleared_at": time.time(), "items": []})
     replace_recent_server_cache(recent_cache_key(), [])
     save_recent_cookie(response, [])
