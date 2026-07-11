@@ -289,6 +289,35 @@ async def test_fetch_board_page_cache_distinguishes_search_pos():
 
 
 @pytest.mark.asyncio
+async def test_fetch_board_page_cache_restores_search_navigation():
+    class FakeAPI:
+        def __init__(self):
+            self.calls = 0
+
+        async def board(self, **kwargs):
+            self.calls += 1
+            kwargs["search_nav_collector"].update({"next_pos": -20})
+            yield _index_item(123, is_mobile_source=True)
+
+    api = FakeAPI()
+    second_nav = {}
+
+    await core._fetch_board_page(api, 1, "test", 0, search_keyword="hello", search_pos=-10)
+    await core._fetch_board_page(
+        api,
+        1,
+        "test",
+        0,
+        search_keyword="hello",
+        search_pos=-10,
+        search_nav_collector=second_nav,
+    )
+
+    assert api.calls == 1
+    assert second_nav == {"next_pos": -20}
+
+
+@pytest.mark.asyncio
 async def test_fill_missing_author_codes_disabled_skips_document_fetch(monkeypatch):
     monkeypatch.setattr(core, "BOARD_FILL_AUTHOR_CODES", False)
 
@@ -915,3 +944,44 @@ async def test_related_after_position_respects_zero_tail_pages():
     assert related == []
     assert has_more is False
     assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_crosses_search_block_boundary():
+    current_pos = -20816199
+    next_pos = -20806199
+
+    class FakeAPI:
+        def __init__(self):
+            self.calls = []
+
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            self.calls.append((page, search_pos))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"next_pos": next_pos})
+            if search_pos == current_pos and page == 1:
+                yield _index_item(100)
+            elif search_pos == next_pos and page == 1:
+                yield _index_item(99)
+                yield _index_item(98)
+
+    api = FakeAPI()
+
+    related, has_more = await core._related_after_position_with_api(
+        api,
+        "100",
+        "100",
+        "test",
+        limit=1,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=current_pos,
+        tail_pages=2,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert has_more is True
+    assert api.calls == [(1, current_pos), (2, current_pos), (1, next_pos)]

@@ -399,6 +399,7 @@ class API(ParserMixin):
         if current_pos == 0:
             current_pos = None
         block_pages = []
+        prev_pos = None
         next_positions = []
         fallback_positions = []
         for link in links:
@@ -416,19 +417,28 @@ class API(ParserMixin):
             page_values = query.get("page")
             page_value = to_optional_int(page_values[0]) if page_values else None
             link_text = "".join(link.itertext()).strip()
+            class_names = set((link.get("class") or "").lower().split())
+            is_prev = "prev" in class_names or "search_prev" in class_names or "이전" in link_text
             effective_link_pos = current_pos if link_pos is None and link_text.isdigit() else link_pos
             if effective_link_pos == current_pos and page_value and link_text.isdigit():
                 block_pages.append(page_value)
 
+            if is_prev:
+                if link_pos is None:
+                    if current_pos is not None:
+                        prev_pos = 0
+                elif link_pos != current_pos:
+                    prev_pos = link_pos
+                continue
             if link_pos is None or link_pos == current_pos:
                 continue
-            class_names = set((link.get("class") or "").lower().split())
             if "next" in class_names or "search_next" in class_names or "다음" in link_text:
                 next_positions.append(link_pos)
             else:
                 fallback_positions.append(link_pos)
 
         return {
+            "prev_pos": prev_pos,
             "next_pos": (next_positions or fallback_positions or [None])[0],
             "block_max_page": max(block_pages) if block_pages else None,
         }

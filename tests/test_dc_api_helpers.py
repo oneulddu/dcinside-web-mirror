@@ -83,7 +83,68 @@ async def test_board_collects_mobile_search_block_navigation(monkeypatch):
     ]
 
     assert [row.id for row in rows] == ["123"]
-    assert search_nav == {"next_pos": -20816199, "block_max_page": 10}
+    assert search_nav == {"prev_pos": None, "next_pos": -20816199, "block_max_page": 10}
+
+
+def test_search_navigation_parses_prev_without_using_it_as_next_fallback():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="paging">
+          <a class="prev" href="/board/test?serval=kw&amp;s_pos=-20826199&amp;page=1">이전</a>
+          <a href="/board/test?serval=kw&amp;s_pos=-20816199&amp;page=1">1</a>
+          <a class="next" href="/board/test?serval=kw&amp;s_pos=-20806199&amp;page=1">다음</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed, "https://m.dcinside.com/board/test", -20816199
+    )
+
+    assert nav == {
+        "prev_pos": -20826199,
+        "next_pos": -20806199,
+        "block_max_page": 1,
+    }
+
+
+def test_search_navigation_ignores_first_block_prev_self_link():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="paging">
+          <a class="prev" href="/board/test?serval=kw&amp;page=1">이전</a>
+          <a href="/board/test?serval=kw&amp;page=1">1</a>
+          <a class="next" href="/board/test?serval=kw&amp;s_pos=-20816199&amp;page=1">다음</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed, "https://m.dcinside.com/board/test", None
+    )
+
+    assert nav["prev_pos"] is None
+    assert nav["next_pos"] == -20816199
+
+
+def test_search_navigation_never_uses_prev_link_as_next_fallback():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="paging">
+          <a class="prev" href="/board/test?serval=kw&amp;s_pos=-20826199&amp;page=1">이전</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed, "https://m.dcinside.com/board/test", -20816199
+    )
+
+    assert nav["prev_pos"] == -20826199
+    assert nav["next_pos"] is None
 
 
 def test_document_str_does_not_require_comment_count():

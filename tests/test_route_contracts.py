@@ -196,6 +196,46 @@ def test_search_position_accepts_s_keyword_alias(monkeypatch):
     assert response.status_code == 200
 
 
+def test_search_first_page_links_to_previous_search_block(monkeypatch):
+    async def search_payload(*args, **kwargs):
+        rows, categories, _search_nav = await _board_payload(*args, **kwargs)
+        return rows, categories, {"prev_pos": -20826199, "next_pos": -20806199}
+
+    monkeypatch.setattr(routes, "_load_board_payload", search_payload)
+    app = create_app()
+    response = app.test_client().get(
+        "/board?board=test&page=1&serval=hello&s_pos=-20816199"
+    )
+    soup = BeautifulSoup(response.data, "html.parser")
+    previous_query = parse_qs(
+        urlparse(soup.select_one(".board-pager .pager-center a.pager-btn")["href"]).query
+    )
+
+    assert response.status_code == 200
+    assert previous_query["page"] == ["1"]
+    assert previous_query["s_pos"] == ["-20826199"]
+
+
+def test_search_first_page_previous_link_omits_position_for_first_block(monkeypatch):
+    async def search_payload(*args, **kwargs):
+        rows, categories, _search_nav = await _board_payload(*args, **kwargs)
+        return rows, categories, {"prev_pos": 0, "next_pos": -20806199}
+
+    monkeypatch.setattr(routes, "_load_board_payload", search_payload)
+    app = create_app()
+    response = app.test_client().get(
+        "/board?board=test&page=1&serval=hello&s_pos=-20816199"
+    )
+    soup = BeautifulSoup(response.data, "html.parser")
+    previous_query = parse_qs(
+        urlparse(soup.select_one(".board-pager .pager-center a.pager-btn")["href"]).query
+    )
+
+    assert response.status_code == 200
+    assert previous_query["page"] == ["1"]
+    assert "s_pos" not in previous_query
+
+
 def test_read_navigation_preserves_search_position(monkeypatch):
     async def read_payload(*args, **kwargs):
         data, comments, images = await _read_payload(*args, **kwargs)

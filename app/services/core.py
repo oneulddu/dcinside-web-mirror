@@ -312,6 +312,7 @@ async def _fetch_board_page(
     search_keyword=None,
     head_id=None,
     search_pos=None,
+    search_nav_collector=None,
 ):
     cache_key = (
         board,
@@ -326,9 +327,18 @@ async def _fetch_board_page(
     )
     cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
-        return _copy_rows(cached)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            cached_rows, cached_search_nav = cached
+        else:
+            cached_rows, cached_search_nav = cached, None
+        if search_nav_collector is not None:
+            search_nav_collector.clear()
+            if cached_search_nav is not None:
+                search_nav_collector.update(cached_search_nav)
+        return _copy_rows(cached_rows)
 
     posts = []
+    search_nav = {} if search_nav_collector is not None or (search_keyword or "").strip() else None
     async for item in api.board(
         board_id=board,
         num=page_size,
@@ -341,16 +351,20 @@ async def _fetch_board_page(
         head_id=head_id,
         search_pos=search_pos,
         headtexts_collector=[],
+        search_nav_collector=search_nav,
     ):
         row = _index_item_to_dict(item)
         row["source_page"] = _safe_int(page, 1)
         posts.append(row)
+    if search_nav_collector is not None:
+        search_nav_collector.clear()
+        search_nav_collector.update(search_nav)
     if posts:
         _cache_set(
             _BOARD_PAGE_CACHE,
             _BOARD_PAGE_CACHE_LOCK,
             cache_key,
-            _copy_rows(posts),
+            (_copy_rows(posts), dict(search_nav) if search_nav is not None else None),
             BOARD_PAGE_CACHE_TTL,
             BOARD_PAGE_CACHE_MAX_ITEMS,
         )
@@ -725,6 +739,7 @@ async def _related_after_position_with_api(
     search_type_value = (search_type or "").strip()
     head_id_value = "" if head_id is None else str(head_id).strip()
     search_pos_value = _normalize_search_pos(search_pos)
+    last_successful_search_nav = None
 
     if target_id <= 0 or fetch_limit == 0:
         return [], False
@@ -771,6 +786,7 @@ async def _related_after_position_with_api(
         return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
 
     async def find_target_from_page(start_page):
+        nonlocal last_successful_search_nav
         page = max(_safe_int(start_page, 1), 1)
         checked = set()
         steps = 0
@@ -781,6 +797,7 @@ async def _related_after_position_with_api(
             checked.add(page)
             steps += 1
 
+            search_nav = {} if search_keyword_value else None
             page_posts = await _fetch_board_page(
                 api,
                 page,
@@ -791,9 +808,12 @@ async def _related_after_position_with_api(
                 search_keyword=search_keyword_value,
                 head_id=head_id_value or None,
                 search_pos=search_pos_value,
+                search_nav_collector=search_nav,
             )
             if not page_posts:
                 break
+            if search_nav is not None:
+                last_successful_search_nav = dict(search_nav)
 
             page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
             if target_id in page_ids:
@@ -880,7 +900,10 @@ async def _related_after_position_with_api(
 
     next_page = found_page + 1
     loaded_tail = 0
+    visited_search_positions = {search_pos_value}
+    unvisited_next_block_remains = False
     while len(related) < collect_limit and loaded_tail < max_tail:
+        search_nav = {} if search_keyword_value else None
         page_posts = await _fetch_board_page(
             api,
             next_page,
@@ -891,14 +914,40 @@ async def _related_after_position_with_api(
             search_keyword=search_keyword_value,
             head_id=head_id_value or None,
             search_pos=search_pos_value,
+            search_nav_collector=search_nav,
         )
+        loaded_tail += 1
         if not page_posts:
+            next_pos = _normalize_search_pos(
+                (last_successful_search_nav or {}).get("next_pos")
+            )
+            if search_keyword_value and next_pos is not None and next_pos not in visited_search_positions:
+                unvisited_next_block_remains = True
+                if loaded_tail < max_tail:
+                    visited_search_positions.add(next_pos)
+                    search_pos_value = next_pos
+                    next_page = 1
+                    last_successful_search_nav = None
+                    unvisited_next_block_remains = False
+                    continue
             break
+        if search_nav is not None:
+            last_successful_search_nav = dict(search_nav)
         append_rows(page_posts)
         next_page += 1
-        loaded_tail += 1
 
-    return related[:fetch_limit], len(related) > fetch_limit
+    if (
+        search_keyword_value
+        and len(related) < collect_limit
+        and loaded_tail >= max_tail
+        and last_successful_search_nav is not None
+    ):
+        next_pos = _normalize_search_pos(last_successful_search_nav.get("next_pos"))
+        unvisited_next_block_remains = (
+            next_pos is not None and next_pos not in visited_search_positions
+        )
+
+    return related[:fetch_limit], len(related) > fetch_limit or unvisited_next_block_remains
 
 
 async def async_related_after_position(
