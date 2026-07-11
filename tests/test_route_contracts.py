@@ -237,7 +237,10 @@ def test_search_first_page_previous_link_omits_position_for_first_block(monkeypa
 
 
 def test_read_navigation_preserves_search_position(monkeypatch):
+    seen = {}
+
     async def read_payload(*args, **kwargs):
+        seen["search_pos"] = kwargs.get("search_pos")
         data, comments, images = await _read_payload(*args, **kwargs)
         data["related_posts"] = [{
             "id": "122",
@@ -257,6 +260,7 @@ def test_read_navigation_preserves_search_position(monkeypatch):
     soup = BeautifulSoup(response.data, "html.parser")
 
     assert response.status_code == 200
+    assert seen["search_pos"] == -123
     for selector in (".crumb-link", ".pager-row .pager-btn", "#related-list a.feed-item"):
         query = parse_qs(urlparse(soup.select_one(selector)["href"]).query)
         assert query["s_pos"] == ["-123"]

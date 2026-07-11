@@ -826,6 +826,7 @@ def read():
             kind=kind,
             recommend=recommend,
             head_id=head_id,
+            search_pos=search_pos,
             **_search_call_kwargs(search_type, search_keyword),
         )
     )

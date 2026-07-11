@@ -268,7 +268,7 @@ def _board_index_cache_key(
     )
 
 
-def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     return (
         board,
         kind or "",
@@ -277,6 +277,7 @@ def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, sea
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
+        _normalize_search_pos(search_pos),
     )
 
 
@@ -526,7 +527,7 @@ async def _fill_missing_author_codes(api, board, kind, rows, recommend=0):
     return rows
 
 
-async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     data = {}
     comments = []
     images = []
@@ -538,6 +539,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        search_pos=search_pos,
     )
     if doc is None:
         return {
@@ -589,7 +591,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
     return data, comments, images
 
 
-async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     cache_key = _read_cache_key(
         api_id,
         board,
@@ -598,6 +600,7 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        search_pos=search_pos,
     )
     if READ_CACHE_TTL > 0:
         cached = _cache_get(_READ_CACHE, _READ_CACHE_LOCK, cache_key)
@@ -614,6 +617,7 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            search_pos=search_pos,
         )
     if READ_CACHE_TTL > 0 and _is_read_payload_cacheable(payload):
         _cache_set(

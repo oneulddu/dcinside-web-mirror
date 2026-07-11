@@ -520,6 +520,45 @@ async def test_read_document_passes_head_id_to_document_fetch():
 
 
 @pytest.mark.asyncio
+async def test_read_document_passes_search_pos_to_document_fetch():
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>body</p>"
+        images = []
+        related_posts = []
+
+        async def comments(self):
+            if False:
+                yield None
+
+    class FakeAPI:
+        def __init__(self):
+            self.kwargs = None
+
+        async def document(self, **kwargs):
+            self.kwargs = kwargs
+            return FakeDocument()
+
+    api = FakeAPI()
+    await core._read_document_with_api(api, "123", "test", search_pos="-10")
+
+    assert api.kwargs["search_pos"] == "-10"
+
+
+def test_read_cache_key_distinguishes_normalized_search_pos():
+    first = core._read_cache_key("123", "test", search_pos="-10")
+    same = core._read_cache_key("123", "test", search_pos=-10)
+    second = core._read_cache_key("123", "test", search_pos=-20)
+
+    assert first == same
+    assert first != second
+
+
+@pytest.mark.asyncio
 async def test_async_read_cache_is_disabled_by_default(monkeypatch):
     monkeypatch.setattr(core, "READ_CACHE_TTL", 0)
 

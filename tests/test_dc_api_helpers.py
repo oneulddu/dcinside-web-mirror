@@ -43,6 +43,27 @@ def test_search_list_urls_include_platform_specific_search_position():
     assert all("search_pos" not in parse_qs(urlparse(url).query) for url in unpositioned_urls)
 
 
+def test_search_view_urls_include_platform_specific_search_position():
+    api = API.__new__(API)
+    positioned_urls = api._API__build_view_urls(
+        "test", "123", search_type="subject", search_keyword="검색어", search_pos=-20816199
+    )
+    mobile_query = parse_qs(urlparse(positioned_urls[0]).query)
+    pc_url = next(url for url in positioned_urls if url.startswith("https://gall.dcinside.com/"))
+    pc_query = parse_qs(urlparse(pc_url).query)
+
+    assert mobile_query["s_pos"] == ["-20816199"]
+    assert "search_pos" not in mobile_query
+    assert pc_query["search_pos"] == ["-20816199"]
+    assert "s_pos" not in pc_query
+
+    unpositioned_urls = api._API__build_view_urls(
+        "test", "123", search_type="subject", search_keyword="검색어"
+    )
+    assert all("s_pos" not in parse_qs(urlparse(url).query) for url in unpositioned_urls)
+    assert all("search_pos" not in parse_qs(urlparse(url).query) for url in unpositioned_urls)
+
+
 @pytest.mark.asyncio
 async def test_board_collects_mobile_search_block_navigation(monkeypatch):
     api = API.__new__(API)

@@ -248,10 +248,11 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
             "board": "test",
             "kind": expected_kind,
             "recommend": 1,
-            "head_id": "17",
-            "search_type": "comment",
-            "search_keyword": "검색어",
-        }
+                "head_id": "17",
+                "search_type": "comment",
+                "search_keyword": "검색어",
+                "search_pos": None,
+            }
     ]
     assert related["data-kind"] == (expected_kind or "")
     assert related["data-recommend"] == "1"
