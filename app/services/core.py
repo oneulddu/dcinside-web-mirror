@@ -217,6 +217,14 @@ def _copy_categories(categories):
     return [dict(row) for row in (categories or [])]
 
 
+def _normalize_search_pos(value):
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized or None
+
+
 def _copy_read_payload(payload):
     data, comments, images = payload
     copied_data = dict(data or {})
@@ -242,6 +250,7 @@ def _board_index_cache_key(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
 ):
     return (
         board,
@@ -255,6 +264,7 @@ def _board_index_cache_key(
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
+        _normalize_search_pos(search_pos),
     )
 
 
@@ -348,7 +358,7 @@ def _normalize_target_ids(target_ids):
     return tuple(str(value).strip() for value in (target_ids or []) if str(value).strip())
 
 
-def _board_time_cache_key(board, kind, recommend, page, search_type=None, search_keyword=None, head_id=None, target_ids=None):
+def _board_time_cache_key(board, kind, recommend, page, search_type=None, search_keyword=None, head_id=None, target_ids=None, search_pos=None):
     return (
         board,
         kind or "",
@@ -357,6 +367,7 @@ def _board_time_cache_key(board, kind, recommend, page, search_type=None, search
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
+        _normalize_search_pos(search_pos),
         _normalize_target_ids(target_ids),
     )
 
@@ -370,6 +381,7 @@ async def async_board_precise_times(
     search_keyword=None,
     head_id=None,
     target_ids=None,
+    search_pos=None,
 ):
     normalized_target_ids = _normalize_target_ids(target_ids)
     cache_key = _board_time_cache_key(
@@ -381,6 +393,7 @@ async def async_board_precise_times(
         search_keyword=search_keyword,
         head_id=head_id,
         target_ids=normalized_target_ids,
+        search_pos=search_pos,
     )
     cached = _cache_get(_BOARD_TIME_CACHE, _BOARD_TIME_CACHE_LOCK, cache_key)
     if cached is not None:
@@ -396,6 +409,7 @@ async def async_board_precise_times(
             search_keyword=search_keyword,
             head_id=head_id,
             target_ids=normalized_target_ids,
+            search_pos=search_pos,
         )
 
     result = {str(doc_id): format_display_time(value) for doc_id, value in (precise_times or {}).items()}
@@ -608,6 +622,7 @@ async def async_index_with_head_categories(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
 ):
     if limit is None:
         fetch_num = MAX_PAGE
@@ -617,7 +632,7 @@ async def async_index_with_head_categories(
         except (TypeError, ValueError):
             fetch_num = MAX_PAGE
     if fetch_num == 0:
-        return [], []
+        return [], [], {} if (search_keyword or "").strip() else None
     if max_scan_pages is None:
         scan_limit = None
     else:
@@ -638,14 +653,16 @@ async def async_index_with_head_categories(
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        search_pos=search_pos,
     )
     cached = _cache_get(_BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK, cache_key)
     if cached is not None:
-        rows, categories = cached
-        return _copy_rows(rows), _copy_categories(categories)
+        rows, categories, search_nav = cached
+        return _copy_rows(rows), _copy_categories(categories), dict(search_nav) if search_nav is not None else None
 
     data = []
     headtexts = []
+    search_nav = {} if (search_keyword or "").strip() else None
     async with dc_api_context() as api:
         async for item in api.board(
             board_id=board,
@@ -660,6 +677,8 @@ async def async_index_with_head_categories(
             search_keyword=search_keyword,
             head_id=head_id,
             headtexts_collector=headtexts,
+            search_pos=search_pos,
+            search_nav_collector=search_nav,
         ):
             data.append(_index_item_to_dict(item))
         await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
@@ -669,11 +688,11 @@ async def async_index_with_head_categories(
             _BOARD_INDEX_CACHE,
             _BOARD_INDEX_CACHE_LOCK,
             cache_key,
-            (_copy_rows(data), _copy_categories(categories)),
+            (_copy_rows(data), _copy_categories(categories), dict(search_nav) if search_nav is not None else None),
             BOARD_PAGE_CACHE_TTL,
             BOARD_INDEX_CACHE_MAX_ITEMS,
         )
-    return data, categories
+    return data, categories, search_nav
 
 
 async def _related_after_position_with_api(

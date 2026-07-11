@@ -305,15 +305,15 @@ class API(ParserMixin):
         separator = "&" if "?" in url else "?"
         return url + separator + urlencode({"list_num": BOARD_LIST_PAGE_SIZE})
 
-    def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None):
+    def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None):
         kind = (kind or "").lower()
         urls = []
         mobile_recommend_suffix = "&recommend=1" if recommend else ""
         pc_recommend_suffix = "&exception_mode=recommend" if recommend else ""
         head_id_suffix = self.__build_head_id_suffix(head_id)
         pc_head_id_suffix = self.__build_pc_head_id_suffix(head_id)
-        mobile_search_suffix = self.__build_mobile_search_suffix(search_type, search_keyword)
-        pc_search_suffix = self.__build_pc_search_suffix(search_type, search_keyword)
+        mobile_search_suffix = self.__build_mobile_search_suffix(search_type, search_keyword, search_pos)
+        pc_search_suffix = self.__build_pc_search_suffix(search_type, search_keyword, search_pos)
 
         if kind == "mini":
             urls.append("https://m.dcinside.com/mini/{}?page={}{}{}{}".format(board_id, page, mobile_recommend_suffix, head_id_suffix, mobile_search_suffix))
@@ -353,18 +353,20 @@ class API(ParserMixin):
             return value
         return "subject_m"
 
-    def __build_mobile_search_suffix(self, search_type=None, search_keyword=None):
+    def __build_mobile_search_suffix(self, search_type=None, search_keyword=None, search_pos=None):
         keyword = (search_keyword or "").strip()
         if not keyword:
             return ""
-        return "&" + urlencode(
-            {
-                "s_type": self.__normalize_search_type(search_type),
-                "serval": keyword,
-            }
-        )
+        params = {
+            "s_type": self.__normalize_search_type(search_type),
+            "serval": keyword,
+        }
+        normalized_search_pos = to_optional_int(search_pos)
+        if normalized_search_pos:
+            params["s_pos"] = normalized_search_pos
+        return "&" + urlencode(params)
 
-    def __build_pc_search_suffix(self, search_type=None, search_keyword=None):
+    def __build_pc_search_suffix(self, search_type=None, search_keyword=None, search_pos=None):
         keyword = (search_keyword or "").strip()
         if not keyword:
             return ""
@@ -375,12 +377,61 @@ class API(ParserMixin):
             "name": "search_name",
             "comment": "search_comment",
         }
-        return "&" + urlencode(
-            {
-                "s_type": pc_type_map.get(self.__normalize_search_type(search_type), "search_subject_memo"),
-                "s_keyword": keyword,
-            }
-        )
+        params = {
+            "s_type": pc_type_map.get(self.__normalize_search_type(search_type), "search_subject_memo"),
+            "s_keyword": keyword,
+        }
+        normalized_search_pos = to_optional_int(search_pos)
+        if normalized_search_pos:
+            params["search_pos"] = normalized_search_pos
+        return "&" + urlencode(params)
+
+    def __parse_search_navigation(self, parsed, used_url, search_pos=None):
+        is_mobile = self.__is_mobile_request(used_url)
+        if is_mobile:
+            links = parsed.xpath("//div[contains(@class, 'paging')]//a")
+            position_keys = ("s_pos", "search_pos")
+        else:
+            links = parsed.xpath("//a[contains(@href, 'search_pos')]")
+            position_keys = ("search_pos", "s_pos")
+
+        current_pos = to_optional_int(search_pos)
+        if current_pos == 0:
+            current_pos = None
+        block_pages = []
+        next_positions = []
+        fallback_positions = []
+        for link in links:
+            href = link.get("href") or ""
+            query = parse_qs(urlparse(href).query)
+            link_pos = None
+            for key in position_keys:
+                values = query.get(key)
+                if values:
+                    link_pos = to_optional_int(values[0])
+                    break
+            if link_pos == 0:
+                link_pos = None
+
+            page_values = query.get("page")
+            page_value = to_optional_int(page_values[0]) if page_values else None
+            link_text = "".join(link.itertext()).strip()
+            effective_link_pos = current_pos if link_pos is None and link_text.isdigit() else link_pos
+            if effective_link_pos == current_pos and page_value and link_text.isdigit():
+                block_pages.append(page_value)
+
+            if link_pos is None or link_pos == current_pos:
+                continue
+            class_names = set((link.get("class") or "").lower().split())
+            if "next" in class_names or "search_next" in class_names or "다음" in link_text:
+                next_positions.append(link_pos)
+            else:
+                fallback_positions.append(link_pos)
+
+        return {
+            "next_pos": (next_positions or fallback_positions or [None])[0],
+            "block_max_page": max(block_pages) if block_pages else None,
+        }
 
     def __build_mobile_view_suffix(self, recommend=False, search_type=None, search_keyword=None, head_id=None):
         params = []
@@ -539,7 +590,7 @@ class API(ParserMixin):
         if preserved_head_id is not None and not head_added:
             query_items.append((target_head_key, preserved_head_id))
         return parsed._replace(query=urlencode(query_items)).geturl()
-    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None):
+    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, search_pos=None, search_nav_collector=None):
         page = start_page
         scanned_pages = 0
         if headtexts_collector is not None:
@@ -547,6 +598,9 @@ class API(ParserMixin):
         else:
             self.last_board_headtexts = []
         headtexts_captured = False
+        search_nav_captured = False
+        if search_nav_collector is not None:
+            search_nav_collector.clear()
         upper_limit = to_optional_int(document_id_upper_limit)
         lower_limit = to_optional_int(document_id_lower_limit)
         while num:
@@ -560,6 +614,7 @@ class API(ParserMixin):
                 search_type=search_type,
                 search_keyword=search_keyword,
                 head_id=head_id,
+                search_pos=search_pos,
             )
             cache_key = self.__board_kind_cache_key(
                 board_id,
@@ -598,6 +653,9 @@ class API(ParserMixin):
                 else:
                     self.last_board_headtexts = headtexts
                 headtexts_captured = True
+            if search_keyword and search_nav_collector is not None and not search_nav_captured:
+                search_nav_collector.update(self.__parse_search_navigation(parsed, used_url, search_pos))
+                search_nav_captured = True
             if "등록된 게시물이 없습니다." in text:
                 break
             yielded_in_page = 0
@@ -662,7 +720,7 @@ class API(ParserMixin):
                 break
             page += 1
 
-    async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None):
+    async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None, search_pos=None):
         precise_times = {}
         requested_ids = {str(value).strip() for value in (target_ids or []) if str(value).strip()}
         remaining_ids = set(requested_ids)
@@ -680,6 +738,7 @@ class API(ParserMixin):
                     search_type=search_type,
                     search_keyword=search_keyword,
                     head_id=head_id,
+                    search_pos=search_pos,
                 )
                 if not self.__is_mobile_request(url)
             ]

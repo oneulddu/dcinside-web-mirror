@@ -145,15 +145,25 @@ def _add_kind_param(params, kind):
         params["kind"] = query_kind
 
 
-def _add_search_params(params, search_type=None, search_keyword=None):
+def _search_pos_arg():
+    if not (request.args.get("serval") or "").strip():
+        return None
+    value = _safe_int(request.args.get("s_pos"), 0)
+    return value or None
+
+
+def _add_search_params(params, search_type=None, search_keyword=None, search_pos=None):
     keyword = (search_keyword or "").strip()
     if not keyword:
         return
     params["s_type"] = _normalize_board_search_type(search_type)
     params["serval"] = keyword
+    normalized_search_pos = _safe_int(search_pos, 0)
+    if normalized_search_pos:
+        params["s_pos"] = normalized_search_pos
 
 
-def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None):
+def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     params = {
         "board": board,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
@@ -165,7 +175,7 @@ def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_t
     normalized_head_id = _normalize_head_id(head_id)
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
-    _add_search_params(params, search_type, search_keyword)
+    _add_search_params(params, search_type, search_keyword, search_pos)
     return params
 
 
@@ -179,8 +189,9 @@ def board_url(
     search_keyword=None,
     head_id=None,
     gallery_name=None,
+    search_pos=None,
 ):
-    params = _board_link_params(board, recommend, page, kind, nav, search_type, search_keyword, head_id)
+    params = _board_link_params(board, recommend, page, kind, nav, search_type, search_keyword, head_id, search_pos)
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
         params["gallery_name"] = clean_name
@@ -425,7 +436,7 @@ def _read_social_meta(data, images, board, pid, kind, recommend, source_page, se
     }
 
 
-async def _load_board_payload(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None):
+async def _load_board_payload(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     return await async_index_with_head_categories(
         page,
         board,
@@ -435,6 +446,7 @@ async def _load_board_payload(page, board, recommend, kind=None, search_type=Non
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        search_pos=search_pos,
     )
 
 
@@ -661,7 +673,8 @@ def board():
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
-    ret, head_categories = run_async(
+    search_pos = _search_pos_arg()
+    ret, head_categories, search_nav = run_async(
         _load_board_payload(
             page,
             board,
@@ -670,8 +683,29 @@ def board():
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            search_pos=search_pos,
         )
     )
+    search_prev_url = None
+    search_next_url = None
+    if search_keyword and search_nav is not None:
+        if page > 1:
+            search_prev_url = board_url(
+                board, recommend, page - 1, kind, nav_mode, search_type, search_keyword,
+                head_id, gallery_name, search_pos,
+            )
+        block_max_page = _safe_int(search_nav.get("block_max_page"), 0)
+        next_pos = _safe_int(search_nav.get("next_pos"), 0)
+        if block_max_page and page < block_max_page:
+            search_next_url = board_url(
+                board, recommend, page + 1, kind, nav_mode, search_type, search_keyword,
+                head_id, gallery_name, search_pos,
+            )
+        elif next_pos:
+            search_next_url = board_url(
+                board, recommend, 1, kind, nav_mode, search_type, search_keyword,
+                head_id, gallery_name, next_pos,
+            )
 
     response = make_response(
         render_template(
@@ -688,6 +722,9 @@ def board():
             nav_mode=nav_mode,
             search_type=search_type,
             search_keyword=search_keyword,
+            search_pos=search_pos,
+            search_prev_url=search_prev_url,
+            search_next_url=search_next_url,
             head_id=head_id,
             head_categories=head_categories,
         )
@@ -710,6 +747,7 @@ def board_times():
     kind = _normalize_gallery_kind(request.args.get("kind"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    search_pos = _search_pos_arg()
     target_ids = _target_post_ids_arg()
 
     try:
@@ -723,6 +761,7 @@ def board_times():
                 search_keyword=search_keyword,
                 head_id=head_id,
                 target_ids=target_ids,
+                search_pos=search_pos,
             )
         )
     except Exception:

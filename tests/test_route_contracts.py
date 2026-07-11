@@ -1,4 +1,4 @@
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -25,7 +25,7 @@ async def _board_payload(*args, **kwargs):
             "isvideo": False,
             "isrecommend": False,
         }
-    ], []
+    ], [], None
 
 
 async def _read_payload(*args, **kwargs):
@@ -153,3 +153,29 @@ def test_screen_status_redirect_cookie_and_html_contract(monkeypatch):
     assert response.headers["Location"] == f"/read?{exact_query}"
     assert client.get("/legacy/unknown", follow_redirects=False).status_code == 404
     assert client.get("/static/legacy/css/main.css", follow_redirects=False).status_code == 404
+
+
+def test_search_pager_preserves_search_position(monkeypatch):
+    async def search_payload(*args, **kwargs):
+        rows, categories, _search_nav = await _board_payload(*args, **kwargs)
+        assert kwargs["search_pos"] == -20816199
+        return rows, categories, {"next_pos": -20806199, "block_max_page": 3}
+
+    monkeypatch.setattr(routes, "_load_board_payload", search_payload)
+    app = create_app()
+    response = app.test_client().get(
+        "/board?board=test&page=2&s_type=subject_m&serval=hello&s_pos=-20816199"
+    )
+    soup = BeautifulSoup(response.data, "html.parser")
+    pager_links = {
+        link.get_text(strip=True): parse_qs(urlparse(link["href"]).query)
+        for link in soup.select(".board-pager .pager-center a")
+    }
+
+    assert response.status_code == 200
+    assert soup.select_one("#board-list")["data-search-pos"] == "-20816199"
+    assert pager_links["이전"]["page"] == ["1"]
+    assert pager_links["다음"]["page"] == ["3"]
+    assert pager_links["이전"]["s_pos"] == ["-20816199"]
+    assert pager_links["다음"]["s_pos"] == ["-20816199"]
+    assert soup.select_one(".board-search-form [name='s_pos']") is None

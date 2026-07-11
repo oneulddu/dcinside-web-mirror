@@ -147,7 +147,7 @@ def _decode_recent_rows(value):
 @pytest.mark.parametrize("secure", (False, True), ids=("http", "https"))
 def test_board_and_read_recent_cookie_payload_and_attributes(monkeypatch, path, board, secure):
     async def board_payload(*args, **kwargs):
-        return [], []
+        return [], [], None
 
     async def read_payload(*args, **kwargs):
         return (
@@ -210,7 +210,7 @@ def test_board_and_read_recent_cookie_payload_and_attributes(monkeypatch, path, 
 
 def test_concurrent_visits_with_same_cache_key_do_not_drop_either_gallery(monkeypatch):
     async def board_payload(*args, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "_load_board_payload", board_payload)
     app = create_app()
@@ -434,7 +434,7 @@ def test_recent_clear_tombstone_filters_all_stale_cache_from_another_worker():
 
 def test_touch_with_tombstone_does_not_revive_deleted_gallery(monkeypatch):
     async def board_payload(*args, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "_load_board_payload", board_payload)
     app = create_app()
@@ -491,7 +491,7 @@ def test_recent_remove_without_kind_preserves_kind_specific_entry():
 
 def test_recent_gallery_reappears_when_revisited_after_deletion(monkeypatch):
     async def board_payload(*args, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "_load_board_payload", board_payload)
     app = create_app()

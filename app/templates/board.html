@@ -15,7 +15,7 @@
 {% block page_class %} board-page{% endblock %}
 
 {% block content %}
-<section class="feed-list" id="board-list" data-board="{{ board }}" data-page="{{ page }}" data-recommend="{{ recommend }}" data-kind="{{ kind or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
+<section class="feed-list" id="board-list" data-board="{{ board }}" data-page="{{ page }}" data-recommend="{{ recommend }}" data-kind="{{ kind or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}" data-search-pos="{{ search_pos if search_pos is not none else '' }}">
     {% if head_categories %}
     <nav class="board-category-tabs" aria-label="게시글 분류">
         <div class="board-category-scroll">
@@ -90,6 +90,19 @@
     <div class="pager-row board-pager">
         <a class="pager-btn pager-home" href="/">갤러리</a>
         <div class="pager-center">
+            {% if search_keyword %}
+            {% if search_prev_url %}
+            <a class="pager-btn" href="{{ search_prev_url }}">이전</a>
+            {% else %}
+            <span class="pager-btn off">이전</span>
+            {% endif %}
+            <span class="pager-current">{{ page }}</span>
+            {% if search_next_url %}
+            <a class="pager-btn" href="{{ search_next_url }}">다음</a>
+            {% else %}
+            <span class="pager-btn off">다음</span>
+            {% endif %}
+            {% else %}
             {% if page > 1 %}
             <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page - 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">이전</a>
             {% else %}
@@ -97,6 +110,7 @@
             {% endif %}
             <span class="pager-current">{{ page }}</span>
             <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page + 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">다음</a>
+            {% endif %}
         </div>
     </div>
 </section>

@@ -147,7 +147,7 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
-    first_rows, first_categories = await core.async_index_with_head_categories(
+    first_rows, first_categories, first_search_nav = await core.async_index_with_head_categories(
         1,
         "test",
         0,
@@ -157,7 +157,7 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
     )
     first_rows[0]["title"] = "mutated"
     first_categories[0]["label"] = "mutated"
-    second_rows, second_categories = await core.async_index_with_head_categories(
+    second_rows, second_categories, second_search_nav = await core.async_index_with_head_categories(
         1,
         "test",
         0,
@@ -170,6 +170,8 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
     assert FakeAPI.instances[0].board_calls == 1
     assert second_rows[0]["title"] == "title 123"
     assert second_categories[0]["label"] == "전체"
+    assert first_search_nav is None
+    assert second_search_nav is None
 
 
 @pytest.mark.asyncio
@@ -239,11 +241,12 @@ async def test_async_index_with_head_categories_does_not_cache_empty_results(mon
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
-    first_rows, first_categories = await core.async_index_with_head_categories(1, "test", 0, limit=1)
-    second_rows, second_categories = await core.async_index_with_head_categories(1, "test", 0, limit=1)
+    first_rows, first_categories, first_search_nav = await core.async_index_with_head_categories(1, "test", 0, limit=1)
+    second_rows, second_categories, second_search_nav = await core.async_index_with_head_categories(1, "test", 0, limit=1)
 
     assert first_rows == second_rows == []
     assert first_categories == second_categories == []
+    assert first_search_nav is second_search_nav is None
     assert FakeAPI.calls == 2
 
 
@@ -360,10 +363,11 @@ async def test_async_index_does_not_fetch_documents_for_missing_author_codes_by_
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
-    rows, categories = await core.async_index_with_head_categories(1, "test", 0)
+    rows, categories, search_nav = await core.async_index_with_head_categories(1, "test", 0)
 
     assert [row["id"] for row in rows] == ["123"]
     assert categories == []
+    assert search_nav is None
     assert rows[0]["author_code"] is None
     assert FakeAPI.instances[0].board_calls == 1
     assert FakeAPI.instances[0].document_calls == 0

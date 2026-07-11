@@ -1,4 +1,5 @@
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 import lxml.html
 import pytest
@@ -19,6 +20,70 @@ def test_mobile_request_headers_use_ios_user_agent():
     assert "iPhone" in MOBILE_USER_AGENT
     assert GET_HEADERS["User-Agent"] == MOBILE_USER_AGENT
     assert XML_HTTP_REQ_HEADERS["User-Agent"] == MOBILE_USER_AGENT
+
+
+def test_search_list_urls_include_platform_specific_search_position():
+    api = API.__new__(API)
+    positioned_urls = api._API__build_list_urls(
+        "test", 2, search_type="subject", search_keyword="검색어", search_pos=-20816199
+    )
+    mobile_query = parse_qs(urlparse(positioned_urls[0]).query)
+    pc_url = next(url for url in positioned_urls if url.startswith("https://gall.dcinside.com/"))
+    pc_query = parse_qs(urlparse(pc_url).query)
+
+    assert mobile_query["s_pos"] == ["-20816199"]
+    assert "search_pos" not in mobile_query
+    assert pc_query["search_pos"] == ["-20816199"]
+    assert "s_pos" not in pc_query
+
+    unpositioned_urls = api._API__build_list_urls(
+        "test", 2, search_type="subject", search_keyword="검색어"
+    )
+    assert all("s_pos" not in parse_qs(urlparse(url).query) for url in unpositioned_urls)
+    assert all("search_pos" not in parse_qs(urlparse(url).query) for url in unpositioned_urls)
+
+
+@pytest.mark.asyncio
+async def test_board_collects_mobile_search_block_navigation(monkeypatch):
+    api = API.__new__(API)
+    api.last_board_headtexts = []
+    parsed = lxml.html.fromstring(
+        """
+        <html><body>
+          <ul class="gall-detail-lst">
+            <li><a class="lt" href="https://m.dcinside.com/board/test/123">
+              <span class="subjectin">검색 결과</span>
+              <ul class="ginfo"><li>일반</li><li>ㅇㅇ</li><li>00:02</li><li>조회 1</li><li>추천 0</li></ul>
+            </a></li>
+          </ul>
+          <div class="paging" id="pagination_div">
+            <a href="/board/test?s_type=subject_m&amp;serval=검색어&amp;page=2">2</a>
+            <a href="/board/test?s_type=subject_m&amp;serval=검색어&amp;page=10">10</a>
+            <a class="next" href="/board/test?s_type=subject_m&amp;serval=검색어&amp;s_pos=-20816199&amp;page=1">다음</a>
+          </div>
+        </body></html>
+        """
+    )
+
+    async def fake_fetch(urls, validator=None):
+        return parsed, "ok", "https://m.dcinside.com/board/test?page=1"
+
+    monkeypatch.setattr(api, "_API__fetch_parsed_from_urls", fake_fetch)
+    search_nav = {}
+    rows = [
+        row
+        async for row in api.board(
+            "test",
+            num=1,
+            max_scan_pages=1,
+            search_type="subject_m",
+            search_keyword="검색어",
+            search_nav_collector=search_nav,
+        )
+    ]
+
+    assert [row.id for row in rows] == ["123"]
+    assert search_nav == {"next_pos": -20816199, "block_max_page": 10}
 
 
 def test_document_str_does_not_require_comment_count():

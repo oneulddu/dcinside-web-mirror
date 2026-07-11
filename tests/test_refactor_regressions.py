@@ -143,7 +143,7 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
                 **kwargs,
             }
         )
-        return [_board_item()], []
+        return [_board_item()], [], {} if kwargs.get("search_keyword") else None
 
     async def fake_read(pid, board, kind=None, recommend=0, head_id=None, **kwargs):
         read_calls.append(
@@ -199,6 +199,7 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
             "search_type": "comment",
             "search_keyword": "검색어",
             "head_id": "17",
+            "search_pos": None,
         }
     ]
     assert board_section["data-kind"] == (expected_kind or "")
