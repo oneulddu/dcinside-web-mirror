@@ -47,7 +47,7 @@
         </ul>
     </section>
 
-    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}" data-search-pos="{{ search_pos if search_pos is not none else '' }}" data-gallery-name="{{ gallery_name or '' }}">
+    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-source-pattern="{{ source_pattern or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}" data-search-pos="{{ search_pos if search_pos is not none else '' }}" data-gallery-name="{{ gallery_name or '' }}">
         <div class="board-head related-head">
             <h2>{% if search_keyword %}다른 검색 결과{% elif recommend == 1 %}다른 개념글{% else %}다른 게시글{% endif %}</h2>
         </div>

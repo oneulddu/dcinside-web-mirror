@@ -36,6 +36,7 @@ BOARD_TIME_CACHE_MAX_ITEMS = BOARD_PAGE_CACHE_MAX_ITEMS
 READ_CACHE_MAX_ITEMS = 512
 LATEST_ID_CACHE_MAX_ITEMS = 512
 AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
+ALLOWED_LIST_PATTERNS = frozenset({"mobile", "mobile_mini", "normal", "minor", "mini", "person"})
 CACHE_PRUNE_EVERY = max(_env_int("MIRROR_CACHE_PRUNE_EVERY", 64), 1)
 CACHE_PRUNE_MIN_INTERVAL = max(_env_int("MIRROR_CACHE_PRUNE_MIN_INTERVAL", 1), 0)
 
@@ -223,6 +224,11 @@ def _normalize_search_pos(value):
     except (TypeError, ValueError):
         return None
     return normalized or None
+
+
+def _normalize_list_pattern(value):
+    normalized = (value or "").strip().lower()
+    return normalized if normalized in ALLOWED_LIST_PATTERNS else None
 
 
 def _copy_read_payload(payload):
@@ -734,6 +740,7 @@ async def _related_after_position_with_api(
     search_keyword=None,
     head_id=None,
     search_pos=None,
+    list_pattern=None,
 ):
     current_id = _safe_int(api_id, 0)
     target_id = _safe_int(after_id, 0) or current_id
@@ -747,7 +754,9 @@ async def _related_after_position_with_api(
     head_id_value = "" if head_id is None else str(head_id).strip()
     search_pos_value = _normalize_search_pos(search_pos)
     last_successful_search_nav = None
-    search_list_pattern = None
+    search_list_pattern = (
+        _normalize_list_pattern(list_pattern) if search_keyword_value else None
+    )
 
     if target_id <= 0 or fetch_limit == 0:
         return [], False, None
@@ -918,6 +927,7 @@ async def _related_after_position_with_api(
     max_tail_scans = max_tail + (max_probe * 2)
     visited_search_positions = {search_pos_value}
     unvisited_next_block_remains = False
+    unvisited_next_page_remains = False
     while (
         len(related) < collect_limit
         and loaded_tail < max_tail
@@ -939,9 +949,12 @@ async def _related_after_position_with_api(
         )
         scanned_tail_pages += 1
         if not page_posts:
-            next_pos = _normalize_search_pos(
-                (search_nav or last_successful_search_nav or {}).get("next_pos")
-            )
+            active_nav = search_nav or last_successful_search_nav or {}
+            forward_page = _safe_int(active_nav.get("next_page"), 0)
+            if search_keyword_value and forward_page > next_page:
+                next_page = forward_page
+                continue
+            next_pos = _normalize_search_pos(active_nav.get("next_pos"))
             if search_keyword_value and next_pos is not None and next_pos not in visited_search_positions:
                 unvisited_next_block_remains = True
                 visited_search_positions.add(next_pos)
@@ -983,6 +996,9 @@ async def _related_after_position_with_api(
         and loaded_tail >= max_tail
         and last_successful_search_nav is not None
     ):
+        unvisited_next_page_remains = bool(
+            _safe_int(last_successful_search_nav.get("next_page"), 0)
+        )
         next_pos = _normalize_search_pos(last_successful_search_nav.get("next_pos"))
         unvisited_next_block_remains = (
             next_pos is not None and next_pos not in visited_search_positions
@@ -999,7 +1015,9 @@ async def _related_after_position_with_api(
     # cannot advance `after_pid` into another search block safely.  Reporting
     # more data in that state would make it repeat the same request forever.
     has_more = len(related) > fetch_limit or (
-        bool(returned) and unvisited_next_block_remains
+        bool(returned) and (
+            unvisited_next_page_remains or unvisited_next_block_remains
+        )
     )
     return rows, has_more, next_search_pos
 
@@ -1018,6 +1036,7 @@ async def async_related_after_position(
     search_keyword=None,
     head_id=None,
     search_pos=None,
+    list_pattern=None,
 ):
     async with dc_api_context() as api:
         return await _related_after_position_with_api(
@@ -1035,4 +1054,5 @@ async def async_related_after_position(
             search_keyword=search_keyword,
             head_id=head_id,
             search_pos=search_pos,
+            list_pattern=list_pattern,
         )

@@ -1231,3 +1231,62 @@ async def test_related_after_position_crosses_after_repeated_last_search_page():
     assert has_more is True
     assert next_search_pos == next_pos
     assert calls == [(1, first_pos), (2, first_pos), (1, next_pos)]
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_reports_more_for_remaining_search_page():
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"next_page": page + 1, "source_pattern": "mobile"})
+            if page == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+            elif page == 2:
+                for doc_id in range(98, 69, -1):
+                    yield _index_item(doc_id)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "remaining-search-page",
+        limit=30,
+        source_page=1,
+        search_keyword="hello",
+        tail_pages=1,
+        list_pattern="mobile",
+    )
+
+    assert len(related) == 30
+    assert related[-1]["id"] == "70"
+    assert has_more is True
+    assert next_search_pos is None
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_uses_supplied_source_pattern_first():
+    patterns = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            patterns.append(kwargs.get("list_pattern"))
+            yield _index_item(100)
+            yield _index_item(99)
+
+    related, _has_more, _next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "initial-source-pattern",
+        limit=1,
+        source_page=15,
+        search_keyword="hello",
+        list_pattern="normal",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert patterns == ["normal"]

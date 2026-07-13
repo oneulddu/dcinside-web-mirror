@@ -1876,6 +1876,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     ):
         seen["head_id"] = head_id
         seen["search_pos"] = kwargs.get("search_pos")
+        seen["list_pattern"] = kwargs.get("list_pattern")
         return (
             [
                 {
@@ -1931,13 +1932,14 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     app = create_app()
 
     response = app.test_client().get(
-        "/read/related?board=test&pid=100&headid=10&serval=kw&s_pos=-123"
+        "/read/related?board=test&pid=100&headid=10&serval=kw&s_pos=-123&source_pattern=mobile"
     )
     payload = response.get_json()
 
     assert response.status_code == 200
     assert seen["head_id"] == "10"
     assert seen["search_pos"] == -123
+    assert seen["list_pattern"] == "mobile"
     assert payload["has_more"] is True
     assert payload["next_s_pos"] == -122
     assert payload["items"][0]["subject"] == "일반"
@@ -2023,6 +2025,8 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "payload.next_s_pos" in script
     assert "state.section.dataset.searchPos = context.searchPos" in script
     assert "state.section.dataset.sourcePage = context.sourcePage" in script
+    assert 'params.set("source_pattern", sourcePattern)' in script
+    assert 'href += "&source_pattern="' in script
     assert "context.lastPostId = postId;" in script
     assert script.index("context.lastPostId = postId;") < script.index("if (renderedIds[postId])")
     assert script.index("applyLoadedItems(context, button, items, payload);") < script.index("context.searchPos = String(payload.next_s_pos);")

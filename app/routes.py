@@ -31,6 +31,7 @@ bp = Blueprint("main", __name__)
 
 BOARD_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,80}$")
 ALLOWED_GALLERY_KINDS = {"normal", "minor", "mini", "person"}
+ALLOWED_SOURCE_PATTERNS = {"mobile", "mobile_mini", "normal", "minor", "mini", "person"}
 ALLOWED_NAV_MODES = {"ai"}
 DEFAULT_SEARCH_TYPE = "subject_m"
 SITE_NAME = "숨터"
@@ -135,6 +136,11 @@ def _normalize_head_id(value):
     return raw
 
 
+def _normalize_source_pattern(value):
+    raw = (value or "").strip().lower()
+    return raw if raw in ALLOWED_SOURCE_PATTERNS else None
+
+
 def _query_kind_for_url(kind):
     return _normalize_gallery_kind(kind, abort_on_invalid=False)
 
@@ -201,7 +207,7 @@ def board_url(
     return url_for("main.board", **params)
 
 
-def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None):
+def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None, source_pattern=None):
     params = {
         "board": board,
         "pid": pid,
@@ -216,6 +222,9 @@ def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, sear
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword, search_pos)
+    normalized_source_pattern = _normalize_source_pattern(source_pattern)
+    if (search_keyword or "").strip() and normalized_source_pattern:
+        params["source_pattern"] = normalized_source_pattern
     return params
 
 
@@ -230,8 +239,12 @@ def read_url(
     head_id=None,
     gallery_name=None,
     search_pos=None,
+    source_pattern=None,
 ):
-    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, search_pos)
+    params = _read_link_params(
+        board, pid, recommend, source_page, kind, search_type, search_keyword,
+        head_id, search_pos, source_pattern,
+    )
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
         params["gallery_name"] = clean_name
@@ -744,6 +757,7 @@ def board():
             search_pos=search_pos,
             search_prev_url=search_prev_url,
             search_next_url=search_next_url,
+            source_pattern=_normalize_source_pattern((search_nav or {}).get("source_pattern")),
             head_id=head_id,
             head_categories=head_categories,
         )
@@ -830,6 +844,7 @@ def read():
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
     search_pos = _search_pos_arg()
+    source_pattern = _normalize_source_pattern(request.args.get("source_pattern"))
     data, comments, images = run_async(
         async_read(
             pid,
@@ -874,6 +889,7 @@ def read():
             search_type=search_type,
             search_keyword=search_keyword,
             search_pos=search_pos,
+            source_pattern=source_pattern,
             embedded_related_posts=embedded_related_posts,
             social_meta=_read_social_meta(
                 data,
@@ -914,6 +930,7 @@ def read_related():
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
     search_pos = _search_pos_arg()
+    source_pattern = _normalize_source_pattern(request.args.get("source_pattern"))
 
     posts = []
     has_more = False
@@ -931,6 +948,7 @@ def read_related():
                     recommend=recommend,
                     head_id=head_id,
                     search_pos=search_pos,
+                    list_pattern=source_pattern,
                     **_search_call_kwargs(search_type, search_keyword),
                 )
             )

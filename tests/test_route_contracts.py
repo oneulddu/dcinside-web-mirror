@@ -159,7 +159,11 @@ def test_search_pager_preserves_search_position(monkeypatch):
     async def search_payload(*args, **kwargs):
         rows, categories, _search_nav = await _board_payload(*args, **kwargs)
         assert kwargs["search_pos"] == -20816199
-        return rows, categories, {"next_pos": -20806199, "block_max_page": 3}
+        return rows, categories, {
+            "next_pos": -20806199,
+            "block_max_page": 3,
+            "source_pattern": "mobile",
+        }
 
     monkeypatch.setattr(routes, "_load_board_payload", search_payload)
     app = create_app()
@@ -175,6 +179,7 @@ def test_search_pager_preserves_search_position(monkeypatch):
     assert response.status_code == 200
     assert soup.select_one("#board-list")["data-search-pos"] == "-20816199"
     assert parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)["s_pos"] == ["-20816199"]
+    assert parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)["source_pattern"] == ["mobile"]
     assert pager_links["이전"]["page"] == ["1"]
     assert pager_links["다음"]["page"] == ["3"]
     assert pager_links["이전"]["s_pos"] == ["-20816199"]
@@ -297,7 +302,7 @@ def test_read_navigation_preserves_search_position(monkeypatch):
     monkeypatch.setattr(routes, "async_read", read_payload)
     app = create_app()
     response = app.test_client().get(
-        "/read?board=test&pid=123&source_page=2&serval=hello&s_pos=-123"
+        "/read?board=test&pid=123&source_page=2&serval=hello&s_pos=-123&source_pattern=mobile"
     )
     soup = BeautifulSoup(response.data, "html.parser")
 
@@ -309,5 +314,6 @@ def test_read_navigation_preserves_search_position(monkeypatch):
     assert soup.select_one("#related-list a.feed-item") is None
     assert "더보기를 누르면 불러옵니다" in soup.select_one("#related-list").get_text(" ", strip=True)
     assert soup.select_one("#related-section")["data-search-pos"] == "-123"
+    assert soup.select_one("#related-section")["data-source-pattern"] == "mobile"
     canonical_query = parse_qs(urlparse(soup.select_one('meta[property="og:url"]')["content"]).query)
     assert canonical_query["s_pos"] == ["-123"]
