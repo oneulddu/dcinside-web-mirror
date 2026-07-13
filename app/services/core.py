@@ -21,6 +21,13 @@ def _env_bool(name, default=False):
 MAX_PAGE = 31
 RELATED_LIMIT = 12
 DOCS_PER_PAGE_ESTIMATE = max(int(getattr(dc_api, "DOCS_PER_PAGE", 200)), 1)
+SEARCH_DOCS_PER_PAGE_ESTIMATE = max(
+    min(
+        int(getattr(dc_api, "SEARCH_MOBILE_PAGE_SIZE", 30)),
+        int(getattr(dc_api, "SEARCH_PC_PAGE_SIZE", 20)),
+    ),
+    1,
+)
 RELATED_PAGE_FETCH_SIZE = DOCS_PER_PAGE_ESTIMATE
 RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1)
 RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
@@ -807,7 +814,12 @@ async def _related_after_position_with_api(
                 LATEST_ID_CACHE_TTL,
                 LATEST_ID_CACHE_MAX_ITEMS,
             )
-        return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
+        page_size_estimate = (
+            SEARCH_DOCS_PER_PAGE_ESTIMATE
+            if search_keyword_value
+            else DOCS_PER_PAGE_ESTIMATE
+        )
+        return max(1, ((latest_id - target_id) // page_size_estimate) + 1)
 
     async def find_target_from_page(start_page):
         nonlocal last_successful_search_nav, search_list_pattern

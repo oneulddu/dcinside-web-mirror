@@ -198,6 +198,13 @@ class API(ParserMixin):
             return "normal"
         return None
 
+    def __search_page_size_for_pattern(self, pattern):
+        if pattern in {"mobile", "mobile_mini"}:
+            return SEARCH_MOBILE_PAGE_SIZE
+        if pattern in {"normal", "minor", "mini", "person"}:
+            return SEARCH_PC_PAGE_SIZE
+        return None
+
     def __get_cached_list_url(self, urls, cache_key):
         pattern = cache_get(_BOARD_KIND_CACHE, _BOARD_KIND_CACHE_LOCK, cache_key)
         if not pattern:
@@ -704,6 +711,32 @@ class API(ParserMixin):
                 if list_pattern
                 else self.__get_cached_list_url(list_urls, cache_key)
             )
+            fallback_list_urls = all_list_urls
+            expected_search_page_size = None
+            if search_keyword and page > 1:
+                intended_pattern = (
+                    list_pattern
+                    or cached_pattern
+                    or self.__list_url_pattern(list_urls[0])
+                )
+                expected_search_page_size = self.__search_page_size_for_pattern(
+                    intended_pattern
+                )
+                if expected_search_page_size:
+                    fallback_list_urls = [
+                        url
+                        for url in all_list_urls
+                        if self.__search_page_size_for_pattern(
+                            self.__list_url_pattern(url)
+                        ) == expected_search_page_size
+                    ]
+                    list_urls = [
+                        url
+                        for url in list_urls
+                        if self.__search_page_size_for_pattern(
+                            self.__list_url_pattern(url)
+                        ) == expected_search_page_size
+                    ] or fallback_list_urls
             if cached_url and cached_url != list_urls[0]:
                 parsed, text, used_url = await self.__fetch_parsed_from_urls(
                     [cached_url],
@@ -720,11 +753,23 @@ class API(ParserMixin):
                     list_urls,
                     validator=self.__is_usable_board_page,
                 )
-                if parsed is None and list_pattern and list_urls != all_list_urls:
+                if (
+                    parsed is None
+                    and list_pattern
+                    and list_urls != fallback_list_urls
+                ):
                     parsed, text, used_url = await self.__fetch_parsed_from_urls(
-                        all_list_urls,
+                        fallback_list_urls,
                         validator=self.__is_usable_board_page,
                     )
+            if (
+                parsed is not None
+                and expected_search_page_size
+                and self.__search_page_size_for_pattern(
+                    self.__list_url_pattern(used_url)
+                ) != expected_search_page_size
+            ):
+                parsed, text, used_url = None, "", None
             if cached_pattern and used_url and self.__list_url_pattern(used_url) != cached_pattern:
                 self.__invalidate_list_url_pattern(cache_key)
             if used_url and not list_pattern:

@@ -2032,8 +2032,8 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert 'params.set("source_pattern", sourcePattern)' in script
     assert 'href += "&source_pattern="' in script
     assert 'href += "&prev_page="' in script
-    assert "appendPreviousBlockPage(" in script
-    assert "pages.slice(-64).join" in script
+    assert "appendPreviousBlockCursor(" in script
+    assert "cursors.slice(-64).join" in script
     assert "state.section.dataset.prevPage = context.previousBlockPage" in script
     assert "state.section.dataset.sourcePattern = context.sourcePattern" in script
     assert "context.lastPostId = postId;" in script

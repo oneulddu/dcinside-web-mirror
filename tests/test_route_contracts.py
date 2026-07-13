@@ -295,7 +295,7 @@ def test_search_block_roundtrip_restores_previous_block_last_page(monkeypatch):
             }
         return rows, categories, {
             "prev_pos": 0,
-            "source_pattern": "mobile",
+            "source_pattern": "normal",
         }
 
     monkeypatch.setattr(routes, "_load_board_payload", search_payload)
@@ -318,9 +318,10 @@ def test_search_block_roundtrip_restores_previous_block_last_page(monkeypatch):
     previous_query = parse_qs(urlparse(previous_link["href"]).query)
 
     assert next_query["page"] == ["1"]
-    assert next_query["prev_page"] == ["7"]
+    assert next_query["prev_page"] == ["7~0~mobile"]
     assert previous_query["page"] == ["7"]
     assert "s_pos" not in previous_query
+    assert previous_query["source_pattern"] == ["mobile"]
 
 
 def test_search_three_block_roundtrip_preserves_full_previous_page_stack(monkeypatch):
@@ -377,10 +378,10 @@ def test_search_three_block_roundtrip_preserves_full_previous_page_stack(monkeyp
     )
     first_query = parse_qs(urlparse(back_to_first["href"]).query)
 
-    assert third_query["prev_page"] == ["18,16"]
+    assert third_query["prev_page"] == ["18~0~mobile,16~-20~mobile"]
     assert second_query["page"] == ["16"]
     assert second_query["s_pos"] == ["-20"]
-    assert second_query["prev_page"] == ["18"]
+    assert second_query["prev_page"] == ["18~0~mobile"]
     assert first_query["page"] == ["18"]
     assert "s_pos" not in first_query
     assert "prev_page" not in first_query

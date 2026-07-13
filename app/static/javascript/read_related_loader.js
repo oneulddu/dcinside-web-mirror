@@ -71,15 +71,28 @@
         };
     }
 
-    function appendPreviousBlockPage(value, page) {
-        var pages = String(value || "").split(",").filter(function (item) {
-            return /^\d+$/.test(item) && Number(item) > 0;
+    function appendPreviousBlockCursor(value, page, searchPos, sourcePattern) {
+        var cursors = [];
+        String(value || "").split(",").forEach(function (item) {
+            if (/^\d+~-?\d+~[a-z_]*$/.test(item)) {
+                cursors.push(item);
+            } else if (/^\d+$/.test(item) && Number(item) > 0) {
+                cursors.push(item + "~0~");
+            }
         });
         var normalizedPage = String(page || "");
         if (/^\d+$/.test(normalizedPage) && Number(normalizedPage) > 0) {
-            pages.push(normalizedPage);
+            var normalizedSearchPos = /^-?\d+$/.test(String(searchPos || ""))
+                ? String(searchPos)
+                : "0";
+            var normalizedPattern = /^[a-z_]+$/.test(String(sourcePattern || ""))
+                ? String(sourcePattern)
+                : "";
+            cursors.push(
+                normalizedPage + "~" + normalizedSearchPos + "~" + normalizedPattern
+            );
         }
-        return pages.slice(-64).join(",");
+        return cursors.slice(-64).join(",");
     }
 
     function escapeHtml(value) {
@@ -308,9 +321,11 @@
             if (hasOwn(item, "s_pos")) {
                 var itemSearchPos = item.s_pos === null || item.s_pos === undefined ? "" : String(item.s_pos);
                 if (itemSearchPos !== context.searchPos) {
-                    context.previousBlockPage = appendPreviousBlockPage(
+                    context.previousBlockPage = appendPreviousBlockCursor(
                         context.previousBlockPage,
-                        context.sourcePage
+                        context.sourcePage,
+                        context.searchPos,
+                        context.sourcePattern
                     );
                     context.searchPos = itemSearchPos;
                 }

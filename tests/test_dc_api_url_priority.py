@@ -1095,6 +1095,95 @@ async def test_board_recovers_when_explicit_list_pattern_fails():
 
 
 @pytest.mark.asyncio
+async def test_search_page_fallback_keeps_same_platform_page_size():
+    api = API.__new__(API)
+    seen_batches = []
+
+    async def fake_fetch(urls, validator=None):
+        seen_batches.append(list(urls))
+        if len(seen_batches) == 1:
+            return None, "", None
+        assert all(not url.startswith("https://m.dcinside.com/") for url in urls)
+        normal_url = next(
+            url for url in urls
+            if "/board/lists/" in url and "/mgallery/" not in url
+        )
+        return (
+            lxml.html.fromstring(
+                """
+                <html><body><table><tbody>
+                  <tr class="ub-content us-post" data-no="123">
+                    <td class="gall_tit"><a href="/board/view/?id=test&no=123">recovered</a></td>
+                    <td class="gall_writer" data-nick="익명"></td>
+                    <td class="gall_date" title="2026.07.13 12:00:00"></td>
+                    <td class="gall_count">1</td><td class="gall_recommend">0</td>
+                  </tr>
+                </tbody></table></body></html>
+                """
+            ),
+            "ok",
+            normal_url,
+        )
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+    nav = {}
+    rows = [
+        item async for item in api.board(
+            "test",
+            num=1,
+            start_page=2,
+            search_keyword="공군",
+            list_pattern="person",
+            search_nav_collector=nav,
+        )
+    ]
+
+    assert [row.id for row in rows] == ["123"]
+    assert len(seen_batches[0]) == 1
+    assert nav["source_pattern"] == "normal"
+
+
+@pytest.mark.asyncio
+async def test_search_page_rejects_cross_platform_redirect_after_first_page():
+    api = API.__new__(API)
+
+    async def fake_fetch(urls, validator=None):
+        assert all(url.startswith("https://m.dcinside.com/") for url in urls)
+        redirected_pc_url = (
+            "https://gall.dcinside.com/board/lists/?id=test&page=2"
+            "&s_type=search_subject_memo&s_keyword=공군"
+        )
+        return (
+            lxml.html.fromstring(
+                """
+                <html><body><table><tbody>
+                  <tr class="ub-content us-post" data-no="123">
+                    <td class="gall_tit"><a href="/board/view/?id=test&no=123">wrong offset</a></td>
+                    <td class="gall_writer" data-nick="익명"></td>
+                    <td class="gall_date" title="2026.07.13 12:00:00"></td>
+                    <td class="gall_count">1</td><td class="gall_recommend">0</td>
+                  </tr>
+                </tbody></table></body></html>
+                """
+            ),
+            "ok",
+            redirected_pc_url,
+        )
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+    rows = [
+        item async for item in api.board(
+            "test",
+            num=1,
+            start_page=2,
+            search_keyword="공군",
+        )
+    ]
+
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_board_precise_times_fetches_pc_list_only():
     api = API.__new__(API)
     seen_urls = []

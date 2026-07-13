@@ -67,6 +67,21 @@ def test_dcinside_search_link_preserves_search_position():
 
     assert "serval=%EA%B3%B5%EA%B5%B0" in rewritten
     assert "s_pos=-1597760" in rewritten
+    assert "source_pattern=normal" in rewritten
+
+
+def test_dcinside_mobile_search_link_preserves_source_pattern():
+    app = create_app()
+    source = (
+        "https://m.dcinside.com/board/airforce?page=2"
+        "&s_type=subject_m&serval=공군&s_pos=-1597760"
+    )
+
+    with app.test_request_context("/read?board=test&pid=123"):
+        rewritten = dcinside_internal_href(source)
+
+    assert "page=2" in rewritten
+    assert "source_pattern=mobile" in rewritten
 
 
 def test_body_highlight_limits_total_matches_per_document():

@@ -1374,7 +1374,7 @@ async def test_related_latest_id_cache_isolated_by_source_pattern():
                 latest_patterns.append(pattern)
                 yield _index_item(1000 if pattern == "normal" else 500)
                 return
-            expected_page = 5 if pattern == "normal" else 3
+            expected_page = 46 if pattern == "normal" else 21
             if page == expected_page:
                 yield _index_item(100)
                 yield _index_item(99)
@@ -1407,7 +1407,7 @@ async def test_related_target_search_uses_empty_page_block_max_hint():
             if kwargs["num"] == 1:
                 yield _index_item(10200)
                 return
-            if page == 51:
+            if page == 506:
                 if search_nav is not None:
                     search_nav.update({
                         "block_max_page": 18,
@@ -1433,7 +1433,7 @@ async def test_related_target_search_uses_empty_page_block_max_hint():
     assert [row["id"] for row in related] == ["99"]
     assert has_more is False
     assert next_search_pos == -1597774
-    assert calls == [(1, 1), (51, core.RELATED_PAGE_FETCH_SIZE), (18, core.RELATED_PAGE_FETCH_SIZE)]
+    assert calls == [(1, 1), (506, core.RELATED_PAGE_FETCH_SIZE), (18, core.RELATED_PAGE_FETCH_SIZE)]
 
 
 @pytest.mark.asyncio
@@ -1511,3 +1511,40 @@ async def test_related_target_search_binary_search_covers_large_estimate():
     assert has_more is False
     assert next_search_pos == -1597774
     assert any(page == 18 for page, _num in calls)
+
+
+@pytest.mark.asyncio
+async def test_related_target_search_estimate_covers_dense_search_pages():
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            calls.append((page, kwargs["num"]))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"source_pattern": "mobile"})
+            if kwargs["num"] == 1:
+                yield _index_item(1000)
+                return
+            if page > 7:
+                return
+            newest = 1000 - ((page - 1) * 30)
+            for doc_id in range(newest, newest - 30, -1):
+                yield _index_item(doc_id)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "800",
+        "800",
+        "dense-search-page-estimate",
+        limit=1,
+        search_keyword="공군",
+        list_pattern="mobile",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["799"]
+    assert has_more is True
+    assert next_search_pos is None
+    assert any(page == 7 for page, _num in calls)

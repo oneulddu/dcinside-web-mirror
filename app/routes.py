@@ -179,21 +179,37 @@ def _add_search_params(params, search_type=None, search_keyword=None, search_pos
         params["s_pos"] = normalized_search_pos
 
 
-def _normalize_previous_block_pages(value, limit=64):
+def _normalize_previous_block_cursors(value, kind=None, limit=64):
     if isinstance(value, (list, tuple)):
-        raw_pages = value
+        raw_cursors = value
     else:
-        raw_pages = str(value or "").split(",")
-    pages = []
-    for raw_page in raw_pages:
-        page = _safe_int(raw_page, 0)
+        raw_cursors = str(value or "").split(",")
+    cursors = []
+    for raw_cursor in raw_cursors:
+        if isinstance(raw_cursor, (list, tuple)):
+            values = list(raw_cursor[:3])
+        else:
+            values = str(raw_cursor or "").split("~", 2)
+        page = _safe_int(values[0] if values else None, 0)
         if page > 0:
-            pages.append(page)
-    return tuple(pages[-limit:])
+            search_pos = _safe_int(values[1], 0) if len(values) > 1 else 0
+            source_pattern = (
+                _normalize_source_pattern(values[2], kind)
+                if len(values) > 2
+                else None
+            )
+            cursors.append((page, search_pos or None, source_pattern))
+    return tuple(cursors[-limit:])
 
 
-def _encode_previous_block_pages(value):
-    return ",".join(str(page) for page in _normalize_previous_block_pages(value))
+def _encode_previous_block_cursors(value, kind=None):
+    return ",".join(
+        "{}~{}~{}".format(page, search_pos or 0, source_pattern or "")
+        for page, search_pos, source_pattern in _normalize_previous_block_cursors(
+            value,
+            kind=kind,
+        )
+    )
 
 
 def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None, search_pos=None, source_pattern=None, previous_block_page=None):
@@ -212,9 +228,9 @@ def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_t
     normalized_source_pattern = _normalize_source_pattern(source_pattern, kind)
     if (search_keyword or "").strip() and normalized_source_pattern:
         params["source_pattern"] = normalized_source_pattern
-    previous_pages = _encode_previous_block_pages(previous_block_page)
-    if (search_keyword or "").strip() and previous_pages:
-        params["prev_page"] = previous_pages
+    previous_cursors = _encode_previous_block_cursors(previous_block_page, kind=kind)
+    if (search_keyword or "").strip() and previous_cursors:
+        params["prev_page"] = previous_cursors
     return params
 
 
@@ -260,9 +276,9 @@ def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, sear
     normalized_source_pattern = _normalize_source_pattern(source_pattern, kind)
     if (search_keyword or "").strip() and normalized_source_pattern:
         params["source_pattern"] = normalized_source_pattern
-    previous_pages = _encode_previous_block_pages(previous_block_page)
-    if (search_keyword or "").strip() and previous_pages:
-        params["prev_page"] = previous_pages
+    previous_cursors = _encode_previous_block_cursors(previous_block_page, kind=kind)
+    if (search_keyword or "").strip() and previous_cursors:
+        params["prev_page"] = previous_cursors
     return params
 
 
@@ -738,8 +754,14 @@ def board():
     search_type, search_keyword = _current_search_context()
     search_pos = _search_pos_arg()
     source_pattern = _normalize_source_pattern(request.args.get("source_pattern"), kind)
-    previous_block_pages = _normalize_previous_block_pages(request.args.get("prev_page"))
-    previous_block_page = _encode_previous_block_pages(previous_block_pages)
+    previous_block_cursors = _normalize_previous_block_cursors(
+        request.args.get("prev_page"),
+        kind=kind,
+    )
+    previous_block_page = _encode_previous_block_cursors(
+        previous_block_cursors,
+        kind=kind,
+    )
     ret, head_categories, search_nav = run_async(
         _load_board_payload(
             page,
@@ -767,13 +789,25 @@ def board():
                 source_pattern,
                 previous_block_page,
             )
-        elif search_pos is not None and search_nav.get("prev_pos") is not None:
-            prev_pos = _safe_int(search_nav.get("prev_pos"), 0) or None
+        elif search_pos is not None and (
+            previous_block_cursors or search_nav.get("prev_pos") is not None
+        ):
+            previous_cursor = (
+                previous_block_cursors[-1] if previous_block_cursors else None
+            )
+            prev_pos = (
+                previous_cursor[1]
+                if previous_cursor
+                else (_safe_int(search_nav.get("prev_pos"), 0) or None)
+            )
+            prev_pattern = (
+                previous_cursor[2] if previous_cursor else source_pattern
+            ) or source_pattern
             search_prev_url = board_url(
-                board, recommend, (previous_block_pages[-1] if previous_block_pages else 1), kind, nav_mode, search_type, search_keyword,
+                board, recommend, (previous_cursor[0] if previous_cursor else 1), kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, prev_pos,
-                source_pattern,
-                previous_block_pages[:-1],
+                prev_pattern,
+                previous_block_cursors[:-1],
             )
         block_max_page = _safe_int(search_nav.get("block_max_page"), 0)
         next_page = _safe_int(search_nav.get("next_page"), 0)
@@ -797,7 +831,7 @@ def board():
                 board, recommend, 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, next_pos,
                 source_pattern,
-                previous_block_pages + (page,),
+                previous_block_cursors + ((page, search_pos, source_pattern),),
             )
 
     response = make_response(
@@ -907,8 +941,9 @@ def read():
     search_type, search_keyword = _current_search_context()
     search_pos = _search_pos_arg()
     source_pattern = _normalize_source_pattern(request.args.get("source_pattern"), kind)
-    previous_block_page = _encode_previous_block_pages(
-        request.args.get("prev_page")
+    previous_block_page = _encode_previous_block_cursors(
+        request.args.get("prev_page"),
+        kind=kind,
     )
     data, comments, images = run_async(
         async_read(
