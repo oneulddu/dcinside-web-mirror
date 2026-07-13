@@ -321,11 +321,14 @@
             if (hasOwn(item, "s_pos")) {
                 var itemSearchPos = item.s_pos === null || item.s_pos === undefined ? "" : String(item.s_pos);
                 if (itemSearchPos !== context.searchPos) {
+                    var previousSearchPos = hasOwn(item, "previous_s_pos")
+                        ? String(item.previous_s_pos || "")
+                        : context.searchPos;
                     context.previousBlockPage = appendPreviousBlockCursor(
                         context.previousBlockPage,
                         context.sourcePage || String(item.previous_source_page || ""),
-                        context.searchPos,
-                        context.sourcePattern
+                        previousSearchPos,
+                        String(item.previous_source_pattern || context.sourcePattern)
                     );
                     context.searchPos = itemSearchPos;
                 }

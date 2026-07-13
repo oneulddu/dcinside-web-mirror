@@ -1016,18 +1016,20 @@ async def test_board_list_pattern_pins_related_fetch_to_mobile_source():
 
     async def fake_fetch(urls, validator=None):
         seen_batches.append(list(urls))
+        page = int(parse_qs(urlparse(urls[0]).query)["page"][0])
+        doc_id = 123 if page == 9 else 124
         return (
             lxml.html.fromstring(
                 """
                 <html><body>
                   <ul class="gall-detail-lst">
-                    <li><a class="lt" href="https://m.dcinside.com/board/test/123">
+                    <li><a class="lt" href="https://m.dcinside.com/board/test/{doc_id}">
                       <span class="subjectin">mobile title</span>
                       <ul class="ginfo"><li>일반</li><li>ㅇㅇ</li><li>00:01</li><li>조회 1</li><li>추천 0</li></ul>
                     </a></li>
                   </ul>
                 </body></html>
-                """
+                """.format(doc_id=doc_id)
             ),
             "ok",
             urls[0],
@@ -1046,9 +1048,9 @@ async def test_board_list_pattern_pins_related_fetch_to_mobile_source():
     ]
 
     assert [row.id for row in rows] == ["123"]
-    assert len(seen_batches) == 1
-    assert len(seen_batches[0]) == 1
-    assert seen_batches[0][0].startswith("https://m.dcinside.com/")
+    assert len(seen_batches) == 2
+    assert all(len(batch) == 1 for batch in seen_batches)
+    assert all(batch[0].startswith("https://m.dcinside.com/") for batch in seen_batches)
 
 
 @pytest.mark.asyncio
@@ -1108,18 +1110,20 @@ async def test_search_page_fallback_keeps_same_platform_page_size():
             url for url in urls
             if "/board/lists/" in url and "/mgallery/" not in url
         )
+        page = int(parse_qs(urlparse(normal_url).query)["page"][0])
+        doc_id = 123 if page == 2 else 124
         return (
             lxml.html.fromstring(
                 """
                 <html><body><table><tbody>
-                  <tr class="ub-content us-post" data-no="123">
-                    <td class="gall_tit"><a href="/board/view/?id=test&no=123">recovered</a></td>
+                  <tr class="ub-content us-post" data-no="{doc_id}">
+                    <td class="gall_tit"><a href="/board/view/?id=test&no={doc_id}">recovered</a></td>
                     <td class="gall_writer" data-nick="익명"></td>
                     <td class="gall_date" title="2026.07.13 12:00:00"></td>
                     <td class="gall_count">1</td><td class="gall_recommend">0</td>
                   </tr>
                 </tbody></table></body></html>
-                """
+                """.format(doc_id=doc_id)
             ),
             "ok",
             normal_url,
@@ -1193,7 +1197,7 @@ async def test_search_page_maps_cross_platform_fallback_by_row_offset():
     ]
 
     assert [row.id for row in rows] == [str(doc_id) for doc_id in range(970, 940, -1)]
-    assert seen_pages == [2, 3]
+    assert seen_pages == [2, 1, 3]
     assert nav["next_page"] == 3
     assert nav["source_pattern"] == "mobile"
 
@@ -1262,6 +1266,11 @@ async def test_cross_platform_fallback_stops_repeated_partial_tail_page():
             return None, "", None
         page = int(parse_qs(urlparse(urls[0]).query)["page"][0])
         seen_pages.append(page)
+        doc_ids = (
+            (800, 799, 798, 797)
+            if page == 15
+            else (700, 699, 698, 697)
+        )
         body_rows = "".join(
             """
               <tr class="ub-content us-post" data-no="{doc_id}">
@@ -1271,7 +1280,7 @@ async def test_cross_platform_fallback_stops_repeated_partial_tail_page():
                 <td class="gall_count">1</td><td class="gall_recommend">0</td>
               </tr>
             """.format(doc_id=doc_id)
-            for doc_id in (700, 699, 698, 697)
+            for doc_id in doc_ids
         )
         return (
             lxml.html.fromstring(
@@ -1298,7 +1307,7 @@ async def test_cross_platform_fallback_stops_repeated_partial_tail_page():
     ]
 
     assert [row.id for row in rows] == ["700", "699", "698", "697"]
-    assert seen_pages == [16, 17]
+    assert seen_pages == [16, 15, 17]
     assert nav["next_page"] is None
     assert nav["source_pattern"] == "mobile"
 
@@ -1342,6 +1351,99 @@ async def test_cross_platform_fallback_rejects_first_out_of_range_page():
     ]
 
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_search_page_rejects_navless_repeat_of_previous_page():
+    api = API.__new__(API)
+
+    async def fake_fetch(urls, validator=None):
+        return (
+            lxml.html.fromstring(
+                """
+                <html><body><ul class="gall-detail-lst">
+                  <li><a class="lt" href="https://m.dcinside.com/board/test/123">
+                    <span class="subjectin">repeated</span>
+                    <ul class="ginfo"><li>일반</li><li>익명</li><li>00:01</li><li>조회 1</li><li>추천 0</li></ul>
+                  </a></li>
+                </ul></body></html>
+                """
+            ),
+            "ok",
+            urls[0],
+        )
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+    rows = [
+        item async for item in api.board(
+            "test",
+            num=30,
+            start_page=2,
+            search_keyword="ㅇㅇ",
+            list_pattern="mobile",
+            max_scan_pages=1,
+        )
+    ]
+
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_cross_platform_partial_window_preserves_empty_page_next_pos():
+    api = API.__new__(API)
+    current_pos = -300
+    next_pos = -200
+
+    async def fake_fetch(urls, validator=None):
+        if all(url.startswith("https://m.dcinside.com/") for url in urls):
+            return None, "", None
+        page = int(parse_qs(urlparse(urls[0]).query)["page"][0])
+        newest = 1020 - ((page - 1) * 20)
+        body_rows = ""
+        if page < 3:
+            body_rows = "".join(
+                """
+                  <tr class="ub-content us-post" data-no="{doc_id}">
+                    <td class="gall_tit"><a href="/board/view/?id=test&amp;no={doc_id}">row</a></td>
+                    <td class="gall_writer" data-nick="익명"></td>
+                    <td class="gall_date" title="2026.07.13 12:00:00"></td>
+                    <td class="gall_count">1</td><td class="gall_recommend">0</td>
+                  </tr>
+                """.format(doc_id=doc_id)
+                for doc_id in range(newest, newest - 20, -1)
+            )
+        next_url = urls[0].replace(
+            "search_pos={}".format(current_pos),
+            "search_pos={}".format(next_pos),
+        )
+        return (
+            lxml.html.fromstring(
+                "<html><body><table><tbody>{}</tbody></table>"
+                "<div class='paging'><a class='next' href='{}'>다음</a></div>"
+                "</body></html>".format(body_rows, next_url)
+            ),
+            "ok",
+            urls[0],
+        )
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+    nav = {}
+    rows = [
+        item async for item in api.board(
+            "test",
+            num=30,
+            start_page=2,
+            search_keyword="ㅇㅇ",
+            search_pos=current_pos,
+            list_pattern="mobile",
+            search_nav_collector=nav,
+            max_scan_pages=1,
+        )
+    ]
+
+    assert len(rows) == 10
+    assert nav["next_page"] is None
+    assert nav["next_pos"] == next_pos
 
 
 @pytest.mark.asyncio

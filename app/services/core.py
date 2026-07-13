@@ -991,6 +991,9 @@ async def _related_after_position_with_api(
     if found_page is None:
         return [], False, None
 
+    found_search_pos = search_pos_value
+    found_source_pattern = search_list_pattern
+
     collect_limit = fetch_limit + 1
     related = []
     seen_ids = {str(current_id)}
@@ -1054,7 +1057,7 @@ async def _related_after_position_with_api(
             list_pattern=search_list_pattern,
         )
         scanned_tail_pages += 1
-        if search_nav is not None:
+        if search_nav:
             last_successful_search_nav = dict(search_nav)
             search_list_pattern = (
                 search_nav.get("source_pattern") or search_list_pattern
@@ -1067,6 +1070,9 @@ async def _related_after_position_with_api(
                 continue
             next_pos = _normalize_search_pos(active_nav.get("next_pos"))
             if search_keyword_value and next_pos is not None and next_pos not in visited_search_positions:
+                if scanned_tail_pages >= max_tail_scans:
+                    unvisited_next_block_remains = True
+                    break
                 unvisited_next_block_remains = True
                 visited_search_positions.add(next_pos)
                 search_pos_value = next_pos
@@ -1091,6 +1097,9 @@ async def _related_after_position_with_api(
                 and next_pos is not None
                 and next_pos not in visited_search_positions
             ):
+                if scanned_tail_pages >= max_tail_scans:
+                    unvisited_next_block_remains = True
+                    break
                 visited_search_positions.add(next_pos)
                 search_pos_value = next_pos
                 next_page = 1
@@ -1123,8 +1132,10 @@ async def _related_after_position_with_api(
             row["search_pos"] = block_pos
             if block_pattern:
                 row["source_pattern"] = block_pattern
-        if returned and source_page_value <= 0:
+        if returned:
             returned[0][0]["previous_source_page"] = found_page
+            returned[0][0]["previous_search_pos"] = found_search_pos
+            returned[0][0]["previous_source_pattern"] = found_source_pattern
     rows = [row for row, _block_pos, _block_pattern in returned]
     # In search mode, continue from the block containing the last returned row.
     next_search_pos = returned[-1][1] if search_keyword_value and returned else None

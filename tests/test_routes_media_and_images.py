@@ -1897,6 +1897,8 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "search_pos": -123,
                     "source_pattern": "normal",
                     "previous_source_page": 5,
+                    "previous_search_pos": -124,
+                    "previous_source_pattern": "mobile",
                     "source_page": 9,
                 },
                 {
@@ -1949,6 +1951,8 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     assert payload["items"][0]["s_pos"] == -123
     assert payload["items"][0]["source_pattern"] == "normal"
     assert payload["items"][0]["previous_source_page"] == 5
+    assert payload["items"][0]["previous_s_pos"] == -124
+    assert payload["items"][0]["previous_source_pattern"] == "mobile"
     assert payload["items"][0]["source_page"] == 9
     assert payload["items"][0]["has_image"] is False
     assert payload["items"][0]["isimage"] is False
@@ -2036,6 +2040,8 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert 'href += "&prev_page="' in script
     assert "appendPreviousBlockCursor(" in script
     assert "item.previous_source_page" in script
+    assert "item.previous_s_pos" in script
+    assert "item.previous_source_pattern" in script
     assert "cursors.slice(-64).join" in script
     assert "state.section.dataset.prevPage = context.previousBlockPage" in script
     assert "state.section.dataset.sourcePattern = context.sourcePattern" in script

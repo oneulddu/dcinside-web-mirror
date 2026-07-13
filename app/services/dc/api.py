@@ -48,6 +48,7 @@ DOCS_PER_PAGE = 200
 BOARD_LIST_PAGE_SIZE = 30
 SEARCH_MOBILE_PAGE_SIZE = 30
 SEARCH_PC_PAGE_SIZE = 20
+SEARCH_SCAN_PAGE_LIMIT = max(env_int("MIRROR_SEARCH_SCAN_PAGE_LIMIT", 512), 1)
 BOARD_TIME_LOOKAHEAD_PAGES = 1
 HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 BOARD_KIND_CACHE_TTL = max(env_int("MIRROR_BOARD_KIND_CACHE_TTL", 21600), 0)
@@ -330,19 +331,35 @@ class API(ParserMixin):
                 used_url,
                 search_pos,
             )
+            if (
+                target_page == first_target_page
+                and target_page > 1
+                and await self.__search_page_repeats_previous(
+                parsed,
+                used_url,
+                target_page,
+                )
+            ):
+                break
             block_max_page = to_optional_int(current_nav.get("block_max_page"))
             if block_max_page and target_page > block_max_page:
-                if await self.__search_page_repeats_previous(
-                    parsed,
-                    used_url,
-                    target_page,
-                ):
-                    break
                 current_nav["block_max_page"] = target_page
             current_kind, current_rows = self.__search_list_rows(parsed)
             if row_kind is not None and current_kind != row_kind:
                 return None, "", None, None
             row_kind = current_kind
+            if first_nav is None:
+                first_nav = current_nav
+            if not current_rows:
+                if current_nav.get("next_pos") is not None:
+                    merged_nav = dict(last_nav or {})
+                    merged_nav.update({
+                        "next_page": None,
+                        "next_pos": current_nav.get("next_pos"),
+                    })
+                    last_nav = merged_nav
+                    last_used_url = used_url
+                break
             unique_rows = []
             for row in current_rows:
                 row_key = self.__search_list_row_key(row, current_kind)
@@ -356,13 +373,11 @@ class API(ParserMixin):
             if current_rows and not unique_rows:
                 break
             collected_rows.extend(unique_rows)
-            if first_nav is None:
-                first_nav = current_nav
             last_nav = current_nav
             last_used_url = used_url
 
         selected_rows = collected_rows[skip_rows : skip_rows + source_size]
-        if not selected_rows:
+        if not selected_rows and not (last_nav or {}).get("next_pos"):
             return None, "", None, None
         if row_kind == "mobile":
             synthetic = lxml.html.fromstring(
@@ -859,6 +874,9 @@ class API(ParserMixin):
     async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, search_pos=None, search_nav_collector=None, list_pattern=None):
         page = start_page
         scanned_pages = 0
+        effective_max_scan_pages = max_scan_pages
+        if search_keyword and effective_max_scan_pages is None:
+            effective_max_scan_pages = SEARCH_SCAN_PAGE_LIMIT
         if headtexts_collector is not None:
             headtexts_collector[:] = []
         else:
@@ -870,7 +888,10 @@ class API(ParserMixin):
         upper_limit = to_optional_int(document_id_upper_limit)
         lower_limit = to_optional_int(document_id_lower_limit)
         while num:
-            if max_scan_pages is not None and scanned_pages >= max_scan_pages:
+            if (
+                effective_max_scan_pages is not None
+                and scanned_pages >= effective_max_scan_pages
+            ):
                 break
             all_list_urls = self.__build_list_urls(
                 board_id,
@@ -990,6 +1011,16 @@ class API(ParserMixin):
                     cross_platform_nav
                     or self.__parse_search_navigation(parsed, used_url, search_pos)
                 )
+                if (
+                    cross_platform_nav is None
+                    and page > 1
+                    and await self.__search_page_repeats_previous(
+                        parsed,
+                        used_url,
+                        page,
+                    )
+                ):
+                    break
                 if search_nav_collector is not None and not search_nav_captured:
                     search_nav_collector.update(current_search_nav)
                     search_nav_captured = True
@@ -997,12 +1028,6 @@ class API(ParserMixin):
                     current_search_nav.get("block_max_page")
                 )
                 if block_max_page and page > block_max_page:
-                    if await self.__search_page_repeats_previous(
-                        parsed,
-                        used_url,
-                        page,
-                    ):
-                        break
                     current_search_nav["block_max_page"] = page
                     if search_nav_collector is not None:
                         search_nav_collector["block_max_page"] = page
