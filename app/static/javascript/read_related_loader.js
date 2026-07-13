@@ -116,7 +116,8 @@
         var pid = getItemPostId(item);
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
-        var itemSearchPos = item && item.s_pos !== null && item.s_pos !== undefined && item.s_pos !== "" ? String(item.s_pos) : "";
+        var hasItemSearchPos = hasOwn(item, "s_pos");
+        var itemSearchPos = hasItemSearchPos && item.s_pos !== null && item.s_pos !== undefined && item.s_pos !== "" ? String(item.s_pos) : "";
         if (recommend === "1") {
             href += "&recommend=1";
         }
@@ -132,7 +133,7 @@
         if (searchKeyword) {
             href += "&s_type=" + encodeURIComponent(searchType || "subject_m");
             href += "&serval=" + encodeURIComponent(searchKeyword);
-            if (itemSearchPos || searchPos) {
+            if (itemSearchPos || (!hasItemSearchPos && searchPos)) {
                 href += "&s_pos=" + encodeURIComponent(itemSearchPos || searchPos);
             }
         }
@@ -282,6 +283,9 @@
             // The response cursor must advance even when this row is already
             // rendered. Otherwise an overlap-only batch is requested again.
             context.lastPostId = postId;
+            if (item && item.source_page) {
+                context.sourcePage = String(item.source_page);
+            }
             if (renderedIds[postId]) {
                 continue;
             }
@@ -507,12 +511,15 @@
             if (payload && payload.ok === false) {
                 throw new Error(payload.error || "Failed to fetch related posts");
             }
+            var items = Array.isArray(payload.items) ? payload.items : [];
+            applyLoadedItems(context, button, items, payload);
             if (payload && payload.next_s_pos !== null && payload.next_s_pos !== undefined && payload.next_s_pos !== "") {
                 context.searchPos = String(payload.next_s_pos);
                 state.section.dataset.searchPos = context.searchPos;
             }
-            var items = Array.isArray(payload.items) ? payload.items : [];
-            applyLoadedItems(context, button, items, payload);
+            if (context.sourcePage) {
+                state.section.dataset.sourcePage = context.sourcePage;
+            }
             state.lastPostId = context.lastPostId || state.lastPostId;
         } catch (err) {
             appendStatusRow(context.list, "다른 게시글을 불러오지 못했습니다. 다시 시도할 수 있어요.");

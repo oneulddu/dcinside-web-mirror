@@ -1090,3 +1090,86 @@ async def test_related_after_position_does_not_claim_more_without_advancing_curs
     assert related == []
     assert has_more is False
     assert next_search_pos is None
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_skips_duplicate_only_search_block():
+    first_pos = -300
+    duplicate_pos = -200
+    final_pos = -100
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                if search_pos == first_pos:
+                    search_nav.update({"next_pos": duplicate_pos})
+                elif search_pos == duplicate_pos:
+                    search_nav.update({"next_pos": final_pos})
+            if search_pos == first_pos and page == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+            elif search_pos == duplicate_pos and page == 1:
+                yield _index_item(99)
+            elif search_pos == final_pos and page == 1:
+                yield _index_item(98)
+                yield _index_item(97)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "duplicate-search-block",
+        limit=2,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=first_pos,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99", "98"]
+    assert [row["search_pos"] for row in related] == [first_pos, final_pos]
+    assert has_more is True
+    assert next_search_pos == final_pos
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_uses_empty_search_block_navigation():
+    first_pos = -300
+    empty_pos = -200
+    final_pos = -100
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                if search_pos == first_pos:
+                    search_nav.update({"next_pos": empty_pos})
+                elif search_pos == empty_pos:
+                    search_nav.update({"next_pos": final_pos})
+            if search_pos == first_pos and page == 1:
+                yield _index_item(100)
+            elif search_pos == final_pos and page == 1:
+                yield _index_item(98)
+                yield _index_item(97)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "empty-search-block",
+        limit=1,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=first_pos,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["98"]
+    assert related[0]["search_pos"] == final_pos
+    assert has_more is True
+    assert next_search_pos == final_pos

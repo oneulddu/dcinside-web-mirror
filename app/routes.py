@@ -262,8 +262,9 @@ def _serialize_related_posts(posts):
             "isvideo": isvideo,
             "isrecommend": _safe_bool(item.get("isrecommend")),
         }
-        if item.get("search_pos") is not None:
-            row["s_pos"] = _safe_int(item.get("search_pos"), 0)
+        if "search_pos" in item:
+            search_pos = item.get("search_pos")
+            row["s_pos"] = (_safe_int(search_pos, 0) or None) if search_pos is not None else None
         rows.append(row)
     return rows
 

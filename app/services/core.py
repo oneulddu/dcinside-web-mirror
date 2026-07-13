@@ -887,6 +887,7 @@ async def _related_after_position_with_api(
             seen_ids.add(str(prefix_id))
 
     def append_rows(rows, block_pos):
+        appended = 0
         for row in rows:
             rid = _safe_int(row.get("id"), 0)
             if rid <= 0:
@@ -896,17 +897,24 @@ async def _related_after_position_with_api(
                 continue
             seen_ids.add(rid_key)
             related.append((row, block_pos))
+            appended += 1
             if len(related) >= collect_limit:
-                return True
-        return False
+                break
+        return appended
 
     append_rows(found_posts[found_index + 1 :], search_pos_value)
 
     next_page = found_page + 1
     loaded_tail = 0
+    scanned_tail_pages = 0
+    max_tail_scans = max_tail + (max_probe * 2)
     visited_search_positions = {search_pos_value}
     unvisited_next_block_remains = False
-    while len(related) < collect_limit and loaded_tail < max_tail:
+    while (
+        len(related) < collect_limit
+        and loaded_tail < max_tail
+        and scanned_tail_pages < max_tail_scans
+    ):
         search_nav = {} if search_keyword_value else None
         page_posts = await _fetch_board_page(
             api,
@@ -920,9 +928,10 @@ async def _related_after_position_with_api(
             search_pos=search_pos_value,
             search_nav_collector=search_nav,
         )
+        scanned_tail_pages += 1
         if not page_posts:
             next_pos = _normalize_search_pos(
-                (last_successful_search_nav or {}).get("next_pos")
+                (search_nav or last_successful_search_nav or {}).get("next_pos")
             )
             if search_keyword_value and next_pos is not None and next_pos not in visited_search_positions:
                 unvisited_next_block_remains = True
@@ -933,10 +942,14 @@ async def _related_after_position_with_api(
                 unvisited_next_block_remains = False
                 continue
             break
-        loaded_tail += 1
         if search_nav is not None:
             last_successful_search_nav = dict(search_nav)
-        append_rows(page_posts, search_pos_value)
+        appended = append_rows(page_posts, search_pos_value)
+        # Search blocks can overlap. A page containing only IDs already seen
+        # must not consume the useful-row budget or strand the cursor before a
+        # later block. The separate scan cap above still bounds network work.
+        if not search_keyword_value or appended > 0:
+            loaded_tail += 1
         next_page += 1
 
     if (

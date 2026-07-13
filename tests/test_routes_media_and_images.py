@@ -1894,6 +1894,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "comment_count": 0,
                     "voteup_count": 0,
                     "search_pos": -123,
+                    "source_page": 9,
                 },
                 {
                     "id": "302",
@@ -1911,6 +1912,15 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "comment_count": 2,
                     "voteup_count": 9,
                     "search_pos": -122,
+                    "source_page": 1,
+                },
+                {
+                    "id": "303",
+                    "title": "첫 블록 글",
+                    "author": "익명",
+                    "time": "-",
+                    "search_pos": None,
+                    "source_page": 1,
                 },
             ],
             True,
@@ -1932,6 +1942,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     assert payload["next_s_pos"] == -122
     assert payload["items"][0]["subject"] == "일반"
     assert payload["items"][0]["s_pos"] == -123
+    assert payload["items"][0]["source_page"] == 9
     assert payload["items"][0]["has_image"] is False
     assert payload["items"][0]["isimage"] is False
     assert payload["items"][0]["has_video"] is False
@@ -1943,6 +1954,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     assert payload["items"][1]["isvideo"] is True
     assert payload["items"][1]["isrecommend"] is True
     assert payload["items"][1]["author_role"] == "submanager"
+    assert payload["items"][2]["s_pos"] is None
 
 
 def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
@@ -2010,8 +2022,12 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "payload.ok === false" in script
     assert "payload.next_s_pos" in script
     assert "state.section.dataset.searchPos = context.searchPos" in script
+    assert "state.section.dataset.sourcePage = context.sourcePage" in script
     assert "context.lastPostId = postId;" in script
     assert script.index("context.lastPostId = postId;") < script.index("if (renderedIds[postId])")
+    assert script.index("applyLoadedItems(context, button, items, payload);") < script.index("context.searchPos = String(payload.next_s_pos);")
+    assert 'var hasItemSearchPos = hasOwn(item, "s_pos");' in script
+    assert "!hasItemSearchPos && searchPos" in script
     assert 'setButtonState(button, "idle");' in script
     assert 'setButtonState(button, "refresh");' in script
     assert 'setButtonState(button, "retry");' in script
