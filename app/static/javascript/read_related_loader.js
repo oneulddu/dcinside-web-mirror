@@ -293,6 +293,13 @@
             // The response cursor must advance even when this row is already
             // rendered. Otherwise an overlap-only batch is requested again.
             context.lastPostId = postId;
+            if (hasOwn(item, "s_pos")) {
+                var itemSearchPos = item.s_pos === null || item.s_pos === undefined ? "" : String(item.s_pos);
+                if (itemSearchPos !== context.searchPos) {
+                    context.previousBlockPage = context.sourcePage;
+                    context.searchPos = itemSearchPos;
+                }
+            }
             if (item && item.source_page) {
                 context.sourcePage = String(item.source_page);
             }
@@ -538,6 +545,9 @@
             }
             if (context.sourcePage) {
                 state.section.dataset.sourcePage = context.sourcePage;
+            }
+            if (context.previousBlockPage) {
+                state.section.dataset.prevPage = context.previousBlockPage;
             }
             state.lastPostId = context.lastPostId || state.lastPostId;
         } catch (err) {

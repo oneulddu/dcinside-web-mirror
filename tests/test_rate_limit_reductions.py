@@ -1356,3 +1356,38 @@ async def test_related_after_position_rejects_cyclic_newer_search_rows():
 
     assert [row["id"] for row in related] == ["295"]
     assert has_more is False
+
+
+@pytest.mark.asyncio
+async def test_related_latest_id_cache_isolated_by_source_pattern():
+    with core._LATEST_ID_CACHE_LOCK:
+        core._LATEST_ID_CACHE.clear()
+    latest_patterns = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            pattern = kwargs.get("list_pattern")
+            page = kwargs["start_page"]
+            if kwargs["num"] == 1:
+                latest_patterns.append(pattern)
+                yield _index_item(1000 if pattern == "normal" else 500)
+                return
+            expected_page = 5 if pattern == "normal" else 3
+            if page == expected_page:
+                yield _index_item(100)
+                yield _index_item(99)
+
+    for pattern in ("normal", "mobile"):
+        related, _has_more, _next_pos = await core._related_after_position_with_api(
+            FakeAPI(),
+            "100",
+            "100",
+            "latest-source-pattern",
+            limit=1,
+            search_keyword="hello",
+            list_pattern=pattern,
+            tail_pages=0,
+        )
+        assert [row["id"] for row in related] == ["99"]
+
+    assert latest_patterns == ["normal", "mobile"]

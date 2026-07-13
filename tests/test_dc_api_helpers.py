@@ -176,6 +176,25 @@ def test_search_navigation_never_uses_prev_link_as_next_fallback():
     assert nav["next_pos"] is None
 
 
+def test_empty_search_page_with_position_navigation_is_usable():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <html><body>
+          <div class="paging">
+            <a class="next" href="/board/test?serval=kw&amp;s_pos=-20&amp;page=1">다음</a>
+          </div>
+        </body></html>
+        """
+    )
+
+    assert api._API__is_usable_board_page(
+        parsed,
+        "empty search block",
+        "https://m.dcinside.com/board/test?page=19&serval=kw",
+    ) is True
+
+
 def test_pc_search_navigation_includes_numeric_links_without_search_pos():
     api = API.__new__(API)
     parsed = lxml.html.fromstring(

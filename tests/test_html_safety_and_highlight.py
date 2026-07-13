@@ -55,6 +55,20 @@ def test_prepare_read_html_discards_malformed_iframe_without_raising():
     assert soup.get_text(" ", strip=True) == "before after"
 
 
+def test_dcinside_search_link_preserves_search_position():
+    app = create_app()
+    source = (
+        "https://gall.dcinside.com/board/view/?id=airforce&no=1615774"
+        "&s_type=search_subject_memo&s_keyword=공군&search_pos=-1597760"
+    )
+
+    with app.test_request_context("/read?board=test&pid=123"):
+        rewritten = dcinside_internal_href(source)
+
+    assert "serval=%EA%B3%B5%EA%B5%B0" in rewritten
+    assert "s_pos=-1597760" in rewritten
+
+
 def test_body_highlight_limits_total_matches_per_document():
     original_text = "a" * 2500
     soup = BeautifulSoup(f"<p>{original_text}</p><div>a</div>", "html.parser")

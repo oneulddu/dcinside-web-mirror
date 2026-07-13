@@ -774,6 +774,7 @@ async def _related_after_position_with_api(
         search_keyword_value,
         head_id_value,
         search_pos_value,
+        search_list_pattern,
     )
 
     async def estimate_page_from_latest_id():
@@ -793,6 +794,7 @@ async def _related_after_position_with_api(
                 search_keyword=search_keyword_value,
                 head_id=head_id_value or None,
                 search_pos=search_pos_value,
+                list_pattern=search_list_pattern,
             )
             if not first_page:
                 return None

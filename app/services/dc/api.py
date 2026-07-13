@@ -179,7 +179,7 @@ class API(ParserMixin):
     def __list_url_pattern(self, url):
         parsed = urlparse(url or "")
         host = (parsed.netloc or "").lower()
-        path = parsed.path or ""
+        path = (parsed.path or "").rstrip("/")
         if host == "m.dcinside.com":
             if path.startswith("/mini/"):
                 return "mobile_mini"
@@ -188,13 +188,13 @@ class API(ParserMixin):
             return None
         if host != "gall.dcinside.com":
             return None
-        if path.startswith("/mgallery/board/lists/"):
+        if path.startswith("/mgallery/board/lists"):
             return "minor"
-        if path.startswith("/mini/board/lists/"):
+        if path.startswith("/mini/board/lists"):
             return "mini"
-        if path.startswith("/person/board/lists/"):
+        if path.startswith("/person/board/lists"):
             return "person"
-        if path.startswith("/board/lists/"):
+        if path.startswith("/board/lists"):
             return "normal"
         return None
 
@@ -590,6 +590,7 @@ class API(ParserMixin):
         )
         if preserved_search_pos == 0:
             preserved_search_pos = None
+        preserved_page = to_optional_int((current_query.get("page") or [None])[0])
         if not preserve_recommend and preserved_head_id is None and not preserved_search_keyword:
             return normalized_url
 
@@ -607,7 +608,12 @@ class API(ParserMixin):
         query_items = []
         recommend_added = False
         head_added = False
+        page_added = False
         for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key == "page":
+                query_items.append((key, value))
+                page_added = True
+                continue
             if key in {"recommend", "exception_mode"}:
                 if preserve_recommend:
                     if not recommend_added:
@@ -632,6 +638,8 @@ class API(ParserMixin):
             query_items.append((target_recommend_key, target_recommend_value))
         if preserved_head_id is not None and not head_added:
             query_items.append((target_head_key, preserved_head_id))
+        if preserved_page and not page_added and "/lists" in target_path:
+            query_items.append(("page", preserved_page))
         if preserved_search_keyword:
             if target_is_pc:
                 pc_type_map = {
@@ -667,7 +675,7 @@ class API(ParserMixin):
         while num:
             if max_scan_pages is not None and scanned_pages >= max_scan_pages:
                 break
-            list_urls = self.__build_list_urls(
+            all_list_urls = self.__build_list_urls(
                 board_id,
                 page,
                 recommend=recommend,
@@ -677,14 +685,14 @@ class API(ParserMixin):
                 head_id=head_id,
                 search_pos=search_pos,
             )
+            list_urls = all_list_urls
             if list_pattern:
                 matching_urls = [
                     url for url in list_urls
                     if self.__list_url_pattern(url) == list_pattern
                 ]
-                if not matching_urls:
-                    break
-                list_urls = matching_urls
+                if matching_urls:
+                    list_urls = matching_urls
             cache_key = self.__board_kind_cache_key(
                 board_id,
                 kind=kind,
@@ -712,6 +720,11 @@ class API(ParserMixin):
                     list_urls,
                     validator=self.__is_usable_board_page,
                 )
+                if parsed is None and list_pattern and list_urls != all_list_urls:
+                    parsed, text, used_url = await self.__fetch_parsed_from_urls(
+                        all_list_urls,
+                        validator=self.__is_usable_board_page,
+                    )
             if cached_pattern and used_url and self.__list_url_pattern(used_url) != cached_pattern:
                 self.__invalidate_list_url_pattern(cache_key)
             if used_url and not list_pattern:

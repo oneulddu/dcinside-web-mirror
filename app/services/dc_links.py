@@ -59,6 +59,13 @@ def _add_search_params(params, query):
         if search_type:
             params["s_type"] = search_type
         params["serval"] = search_keyword
+        search_pos = _first_query_value(query, "s_pos", "search_pos")
+        try:
+            normalized_search_pos = int(search_pos) if search_pos is not None else 0
+        except ValueError:
+            normalized_search_pos = 0
+        if normalized_search_pos:
+            params["s_pos"] = normalized_search_pos
 
 
 def _add_board_context(params, query):

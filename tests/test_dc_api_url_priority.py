@@ -208,6 +208,18 @@ def test_redirect_url_preserves_pc_exception_mode_recommend():
     assert redirect == "https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&page=2&exception_mode=recommend"
 
 
+def test_search_list_redirect_preserves_page_and_recognizes_path_without_slash():
+    api = API.__new__(API)
+
+    redirect = api._API__normalize_redirect_url(
+        "https://gall.dcinside.com/mgallery/board/lists/?id=airforce&page=3&s_keyword=공군",
+        "https://gall.dcinside.com/board/lists?id=airforce",
+    )
+
+    assert parse_qs(urlparse(redirect).query)["page"] == ["3"]
+    assert api._API__list_url_pattern(redirect) == "normal"
+
+
 def test_redirect_url_maps_mobile_search_context_to_pc_target():
     api = API.__new__(API)
 
@@ -1037,6 +1049,49 @@ async def test_board_list_pattern_pins_related_fetch_to_mobile_source():
     assert len(seen_batches) == 1
     assert len(seen_batches[0]) == 1
     assert seen_batches[0][0].startswith("https://m.dcinside.com/")
+
+
+@pytest.mark.asyncio
+async def test_board_recovers_when_explicit_list_pattern_fails():
+    api = API.__new__(API)
+    seen_batches = []
+
+    async def fake_fetch(urls, validator=None):
+        seen_batches.append(list(urls))
+        if len(seen_batches) == 1:
+            return None, "", None
+        mobile_url = next(url for url in urls if url.startswith("https://m.dcinside.com/"))
+        return (
+            lxml.html.fromstring(
+                """
+                <html><body><ul class="gall-detail-lst">
+                  <li><a class="lt" href="https://m.dcinside.com/board/test/123">
+                    <span class="subjectin">recovered</span>
+                    <ul class="ginfo"><li>일반</li><li>ㅇㅇ</li><li>00:01</li><li>조회 1</li><li>추천 0</li></ul>
+                  </a></li>
+                </ul></body></html>
+                """
+            ),
+            "ok",
+            mobile_url,
+        )
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+    nav = {}
+    rows = [
+        item async for item in api.board(
+            "test",
+            num=1,
+            search_keyword="공군",
+            list_pattern="person",
+            search_nav_collector=nav,
+        )
+    ]
+
+    assert [row.id for row in rows] == ["123"]
+    assert len(seen_batches[0]) == 1
+    assert len(seen_batches[1]) > 1
+    assert nav["source_pattern"] == "mobile"
 
 
 @pytest.mark.asyncio
