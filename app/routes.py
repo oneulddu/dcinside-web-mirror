@@ -797,7 +797,7 @@ def board():
             )
             prev_pos = (
                 previous_cursor[1]
-                if previous_cursor
+                if previous_cursor and previous_cursor[1] is not None
                 else (_safe_int(search_nav.get("prev_pos"), 0) or None)
             )
             prev_pattern = (

@@ -294,7 +294,7 @@ def test_search_block_roundtrip_restores_previous_block_last_page(monkeypatch):
                 "source_pattern": "mobile",
             }
         return rows, categories, {
-            "prev_pos": 0,
+            "prev_pos": -30,
             "source_pattern": "normal",
         }
 
@@ -320,7 +320,7 @@ def test_search_block_roundtrip_restores_previous_block_last_page(monkeypatch):
     assert next_query["page"] == ["1"]
     assert next_query["prev_page"] == ["7~0~mobile"]
     assert previous_query["page"] == ["7"]
-    assert "s_pos" not in previous_query
+    assert previous_query["s_pos"] == ["-30"]
     assert previous_query["source_pattern"] == ["mobile"]
 
 

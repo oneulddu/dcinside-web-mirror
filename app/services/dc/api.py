@@ -205,6 +205,130 @@ class API(ParserMixin):
             return SEARCH_PC_PAGE_SIZE
         return None
 
+    def __replace_list_page(self, url, page):
+        parsed = urlparse(url)
+        query_items = []
+        page_replaced = False
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key == "page":
+                if not page_replaced:
+                    query_items.append(("page", str(page)))
+                    page_replaced = True
+                continue
+            query_items.append((key, value))
+        if not page_replaced:
+            query_items.append(("page", str(page)))
+        return parsed._replace(query=urlencode(query_items)).geturl()
+
+    def __search_list_rows(self, parsed):
+        mobile_rows = [
+            row
+            for row in parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")
+            if not row.get("class", "").startswith("ad")
+        ]
+        if mobile_rows:
+            return "mobile", mobile_rows
+        return "pc", parsed.xpath(
+            "//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]"
+        )
+
+    async def __fetch_cross_platform_search_window(
+        self,
+        all_list_urls,
+        logical_page,
+        intended_pattern,
+        search_pos,
+    ):
+        source_size = self.__search_page_size_for_pattern(intended_pattern)
+        if not source_size:
+            return None, "", None, None
+        target_urls = [
+            url
+            for url in all_list_urls
+            if self.__search_page_size_for_pattern(self.__list_url_pattern(url))
+            not in {None, source_size}
+        ]
+        if not target_urls:
+            return None, "", None, None
+
+        target_size = self.__search_page_size_for_pattern(
+            self.__list_url_pattern(target_urls[0])
+        )
+        start_offset = (logical_page - 1) * source_size
+        end_offset = start_offset + source_size
+        first_target_page = (start_offset // target_size) + 1
+        last_target_page = ((end_offset - 1) // target_size) + 1
+        skip_rows = start_offset % target_size
+        collected_rows = []
+        row_kind = None
+        first_nav = None
+        last_nav = None
+        last_used_url = None
+
+        for target_page in range(first_target_page, last_target_page + 1):
+            page_urls = [
+                self.__replace_list_page(url, target_page)
+                for url in target_urls
+            ]
+            parsed, _text, used_url = await self.__fetch_parsed_from_urls(
+                page_urls,
+                validator=self.__is_usable_board_page,
+            )
+            used_pattern = self.__list_url_pattern(used_url)
+            if (
+                parsed is None
+                or self.__search_page_size_for_pattern(used_pattern) != target_size
+            ):
+                return None, "", None, None
+            current_kind, current_rows = self.__search_list_rows(parsed)
+            if row_kind is not None and current_kind != row_kind:
+                return None, "", None, None
+            row_kind = current_kind
+            collected_rows.extend(current_rows)
+            current_nav = self.__parse_search_navigation(
+                parsed,
+                used_url,
+                search_pos,
+            )
+            if first_nav is None:
+                first_nav = current_nav
+            last_nav = current_nav
+            last_used_url = used_url
+
+        selected_rows = collected_rows[skip_rows : skip_rows + source_size]
+        if not selected_rows:
+            return None, "", None, None
+        if row_kind == "mobile":
+            synthetic = lxml.html.fromstring(
+                "<html><body><ul class='gall-detail-lst'></ul></body></html>"
+            )
+            container = synthetic.xpath("//ul")[0]
+        else:
+            synthetic = lxml.html.fromstring(
+                "<html><body><table><tbody></tbody></table></body></html>"
+            )
+            container = synthetic.xpath("//tbody")[0]
+        for row in selected_rows:
+            container.append(row)
+
+        last_nav = last_nav or {}
+        has_same_block_next = bool(last_nav.get("next_page")) or (
+            len(selected_rows) == source_size and last_nav.get("next_pos") is None
+        )
+        next_page = (
+            logical_page + 1
+            if len(selected_rows) == source_size and has_same_block_next
+            else None
+        )
+        nav = {
+            "prev_pos": (first_nav or {}).get("prev_pos"),
+            "next_page": next_page,
+            "next_pos": None if next_page else last_nav.get("next_pos"),
+            "block_max_page": None if next_page else logical_page,
+            "source_pattern": intended_pattern,
+        }
+        return synthetic, "ok", last_used_url, nav
+
     def __get_cached_list_url(self, urls, cache_key):
         pattern = cache_get(_BOARD_KIND_CACHE, _BOARD_KIND_CACHE_LOCK, cache_key)
         if not pattern:
@@ -713,6 +837,8 @@ class API(ParserMixin):
             )
             fallback_list_urls = all_list_urls
             expected_search_page_size = None
+            intended_pattern = None
+            cross_platform_nav = None
             if search_keyword and page > 1:
                 intended_pattern = (
                     list_pattern
@@ -770,9 +896,18 @@ class API(ParserMixin):
                 ) != expected_search_page_size
             ):
                 parsed, text, used_url = None, "", None
+            if parsed is None and expected_search_page_size and intended_pattern:
+                parsed, text, used_url, cross_platform_nav = (
+                    await self.__fetch_cross_platform_search_window(
+                        all_list_urls,
+                        page,
+                        intended_pattern,
+                        search_pos,
+                    )
+                )
             if cached_pattern and used_url and self.__list_url_pattern(used_url) != cached_pattern:
                 self.__invalidate_list_url_pattern(cache_key)
-            if used_url and not list_pattern:
+            if used_url and not list_pattern and cross_platform_nav is None:
                 self.__cache_list_url_pattern(cache_key, used_url)
             scanned_pages += 1
             if parsed is None:
@@ -785,7 +920,10 @@ class API(ParserMixin):
                     self.last_board_headtexts = headtexts
                 headtexts_captured = True
             if search_keyword and search_nav_collector is not None and not search_nav_captured:
-                search_nav_collector.update(self.__parse_search_navigation(parsed, used_url, search_pos))
+                search_nav_collector.update(
+                    cross_platform_nav
+                    or self.__parse_search_navigation(parsed, used_url, search_pos)
+                )
                 search_nav_captured = True
             if "등록된 게시물이 없습니다." in text:
                 break
