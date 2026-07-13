@@ -52,22 +52,31 @@ def _add_head_id(params, query):
         params["headid"] = head_id
 
 
-def _add_search_params(params, query):
+def _add_search_params(params, query, source_pattern=None):
     search_type = _first_query_value(query, "s_type", "search_type")
     search_keyword = _first_query_value(query, "serval", "s_keyword", "search_keyword", "keyword")
     if search_keyword:
         if search_type:
             params["s_type"] = search_type
         params["serval"] = search_keyword
+        search_pos = _first_query_value(query, "s_pos", "search_pos")
+        try:
+            normalized_search_pos = int(search_pos) if search_pos is not None else 0
+        except ValueError:
+            normalized_search_pos = 0
+        if normalized_search_pos:
+            params["s_pos"] = normalized_search_pos
+        if source_pattern:
+            params["source_pattern"] = source_pattern
 
 
-def _add_board_context(params, query):
+def _add_board_context(params, query, source_pattern=None):
     _add_recommend(params, query)
     _add_head_id(params, query)
-    _add_search_params(params, query)
+    _add_search_params(params, query, source_pattern=source_pattern)
 
 
-def _board_href(board_id, query, kind, fragment):
+def _board_href(board_id, query, kind, fragment, source_pattern=None):
     if not _is_safe_board_id(board_id):
         return None
     params = {"board": board_id}
@@ -75,11 +84,11 @@ def _board_href(board_id, query, kind, fragment):
     if _is_positive_int(page):
         params["page"] = int(page)
     _add_kind(params, kind)
-    _add_board_context(params, query)
+    _add_board_context(params, query, source_pattern=source_pattern)
     return _append_fragment(url_for("main.board", **params), fragment)
 
 
-def _read_href(board_id, document_id, query, kind, fragment):
+def _read_href(board_id, document_id, query, kind, fragment, source_pattern=None):
     if not _is_safe_board_id(board_id) or not _is_positive_int(document_id):
         return None
     params = {"board": board_id, "pid": int(document_id)}
@@ -87,7 +96,7 @@ def _read_href(board_id, document_id, query, kind, fragment):
     if _is_positive_int(source_page):
         params["source_page"] = int(source_page)
     _add_kind(params, kind)
-    _add_board_context(params, query)
+    _add_board_context(params, query, source_pattern=source_pattern)
     return _append_fragment(url_for("main.read", **params), fragment)
 
 
@@ -101,10 +110,24 @@ def _mobile_gallery_href(parsed, query):
         return None
 
     kind = "mini" if segments[0] == "mini" else None
+    source_pattern = "mobile_mini" if kind == "mini" else "mobile"
     board_id = segments[1]
     if len(segments) == 2:
-        return _board_href(board_id, query, kind, parsed.fragment)
-    return _read_href(board_id, segments[2], query, kind, parsed.fragment)
+        return _board_href(
+            board_id,
+            query,
+            kind,
+            parsed.fragment,
+            source_pattern=source_pattern,
+        )
+    return _read_href(
+        board_id,
+        segments[2],
+        query,
+        kind,
+        parsed.fragment,
+        source_pattern=source_pattern,
+    )
 
 
 def _pc_gallery_kind_and_action(path):
@@ -131,8 +154,15 @@ def _pc_gallery_href(parsed, query):
         return None
 
     kind, action = _pc_gallery_kind_and_action(parsed.path)
+    source_pattern = kind or "normal"
     if action == "lists":
-        return _board_href(_first_query_value(query, "id"), query, kind, parsed.fragment)
+        return _board_href(
+            _first_query_value(query, "id"),
+            query,
+            kind,
+            parsed.fragment,
+            source_pattern=source_pattern,
+        )
     if action == "view":
         return _read_href(
             _first_query_value(query, "id"),
@@ -140,6 +170,7 @@ def _pc_gallery_href(parsed, query):
             query,
             kind,
             parsed.fragment,
+            source_pattern=source_pattern,
         )
     return None
 
@@ -151,9 +182,22 @@ def _pc_pretty_gallery_href(parsed, query):
 
     segments = [segment for segment in (parsed.path or "").split("/") if segment]
     if len(segments) == 2 and segments[0] == "board":
-        return _board_href(segments[1], query, None, parsed.fragment)
+        return _board_href(
+            segments[1],
+            query,
+            None,
+            parsed.fragment,
+            source_pattern="normal",
+        )
     if len(segments) == 3 and segments[0] == "board":
-        return _read_href(segments[1], segments[2], query, None, parsed.fragment)
+        return _read_href(
+            segments[1],
+            segments[2],
+            query,
+            None,
+            parsed.fragment,
+            source_pattern="normal",
+        )
     return None
 
 

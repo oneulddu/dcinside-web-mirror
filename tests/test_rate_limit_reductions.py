@@ -147,7 +147,7 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
-    first_rows, first_categories = await core.async_index_with_head_categories(
+    first_rows, first_categories, first_search_nav = await core.async_index_with_head_categories(
         1,
         "test",
         0,
@@ -157,7 +157,7 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
     )
     first_rows[0]["title"] = "mutated"
     first_categories[0]["label"] = "mutated"
-    second_rows, second_categories = await core.async_index_with_head_categories(
+    second_rows, second_categories, second_search_nav = await core.async_index_with_head_categories(
         1,
         "test",
         0,
@@ -170,6 +170,8 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
     assert FakeAPI.instances[0].board_calls == 1
     assert second_rows[0]["title"] == "title 123"
     assert second_categories[0]["label"] == "전체"
+    assert first_search_nav is None
+    assert second_search_nav is None
 
 
 @pytest.mark.asyncio
@@ -222,6 +224,37 @@ async def test_async_index_cache_key_includes_limit_and_scan_bounds(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_async_index_cache_distinguishes_source_pattern(monkeypatch):
+    class FakeAPI:
+        instances = []
+
+        def __init__(self):
+            self.patterns = []
+            self.__class__.instances.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def board(self, **kwargs):
+            self.patterns.append(kwargs.get("list_pattern"))
+            yield _index_item(123, is_mobile_source=True)
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    await core.async_index_with_head_categories(
+        1, "index-source-pattern", 0, search_keyword="hello", list_pattern="mobile"
+    )
+    await core.async_index_with_head_categories(
+        1, "index-source-pattern", 0, search_keyword="hello", list_pattern="normal"
+    )
+
+    assert [instance.patterns for instance in FakeAPI.instances] == [["mobile"], ["normal"]]
+
+
+@pytest.mark.asyncio
 async def test_async_index_with_head_categories_does_not_cache_empty_results(monkeypatch):
     class FakeAPI:
         calls = 0
@@ -239,11 +272,12 @@ async def test_async_index_with_head_categories_does_not_cache_empty_results(mon
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
-    first_rows, first_categories = await core.async_index_with_head_categories(1, "test", 0, limit=1)
-    second_rows, second_categories = await core.async_index_with_head_categories(1, "test", 0, limit=1)
+    first_rows, first_categories, first_search_nav = await core.async_index_with_head_categories(1, "test", 0, limit=1)
+    second_rows, second_categories, second_search_nav = await core.async_index_with_head_categories(1, "test", 0, limit=1)
 
     assert first_rows == second_rows == []
     assert first_categories == second_categories == []
+    assert first_search_nav is second_search_nav is None
     assert FakeAPI.calls == 2
 
 
@@ -265,6 +299,71 @@ async def test_fetch_board_page_reuses_short_cache():
     assert api.calls == 1
     assert first == second
     assert first is not second
+
+
+@pytest.mark.asyncio
+async def test_fetch_board_page_cache_distinguishes_search_pos():
+    class FakeAPI:
+        def __init__(self):
+            self.search_positions = []
+
+        async def board(self, **kwargs):
+            self.search_positions.append(kwargs.get("search_pos"))
+            yield _index_item(123, is_mobile_source=True)
+
+    api = FakeAPI()
+
+    await core._fetch_board_page(api, 1, "search-pos-test", 0, search_pos=-10)
+    await core._fetch_board_page(api, 1, "search-pos-test", 0, search_pos=-20)
+
+    assert api.search_positions == [-10, -20]
+
+
+@pytest.mark.asyncio
+async def test_fetch_board_page_cache_distinguishes_source_pattern():
+    class FakeAPI:
+        def __init__(self):
+            self.patterns = []
+
+        async def board(self, **kwargs):
+            self.patterns.append(kwargs.get("list_pattern"))
+            yield _index_item(123, is_mobile_source=True)
+
+    api = FakeAPI()
+
+    await core._fetch_board_page(api, 1, "source-pattern-test", 0, list_pattern="mobile")
+    await core._fetch_board_page(api, 1, "source-pattern-test", 0, list_pattern="normal")
+
+    assert api.patterns == ["mobile", "normal"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_board_page_cache_restores_search_navigation():
+    class FakeAPI:
+        def __init__(self):
+            self.calls = 0
+
+        async def board(self, **kwargs):
+            self.calls += 1
+            kwargs["search_nav_collector"].update({"next_pos": -20})
+            yield _index_item(123, is_mobile_source=True)
+
+    api = FakeAPI()
+    second_nav = {}
+
+    await core._fetch_board_page(api, 1, "test", 0, search_keyword="hello", search_pos=-10)
+    await core._fetch_board_page(
+        api,
+        1,
+        "test",
+        0,
+        search_keyword="hello",
+        search_pos=-10,
+        search_nav_collector=second_nav,
+    )
+
+    assert api.calls == 1
+    assert second_nav == {"next_pos": -20}
 
 
 @pytest.mark.asyncio
@@ -360,10 +459,11 @@ async def test_async_index_does_not_fetch_documents_for_missing_author_codes_by_
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
-    rows, categories = await core.async_index_with_head_categories(1, "test", 0)
+    rows, categories, search_nav = await core.async_index_with_head_categories(1, "test", 0)
 
     assert [row["id"] for row in rows] == ["123"]
     assert categories == []
+    assert search_nav is None
     assert rows[0]["author_code"] is None
     assert FakeAPI.instances[0].board_calls == 1
     assert FakeAPI.instances[0].document_calls == 0
@@ -466,6 +566,45 @@ async def test_read_document_passes_head_id_to_document_fetch():
     )
 
     assert api.kwargs["head_id"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_read_document_passes_search_pos_to_document_fetch():
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>body</p>"
+        images = []
+        related_posts = []
+
+        async def comments(self):
+            if False:
+                yield None
+
+    class FakeAPI:
+        def __init__(self):
+            self.kwargs = None
+
+        async def document(self, **kwargs):
+            self.kwargs = kwargs
+            return FakeDocument()
+
+    api = FakeAPI()
+    await core._read_document_with_api(api, "123", "test", search_pos="-10")
+
+    assert api.kwargs["search_pos"] == "-10"
+
+
+def test_read_cache_key_distinguishes_normalized_search_pos():
+    first = core._read_cache_key("123", "test", search_pos="-10")
+    same = core._read_cache_key("123", "test", search_pos=-10)
+    second = core._read_cache_key("123", "test", search_pos=-20)
+
+    assert first == same
+    assert first != second
 
 
 @pytest.mark.asyncio
@@ -732,7 +871,7 @@ async def test_related_after_position_uses_source_page_before_latest_lookup_with
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "100",
         "100",
@@ -742,7 +881,9 @@ async def test_related_after_position_uses_source_page_before_latest_lookup_with
     )
 
     assert [row["id"] for row in related] == ["99"]
+    assert "search_pos" not in related[0]
     assert has_more is True
+    assert next_search_pos is None
     assert api.calls == [(2, core.RELATED_PAGE_FETCH_SIZE)]
 
 
@@ -769,7 +910,7 @@ async def test_related_after_position_skips_shifted_page_overlap_before_cursor()
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "200",
         "100",
@@ -782,6 +923,7 @@ async def test_related_after_position_skips_shifted_page_overlap_before_cursor()
 
     assert [row["id"] for row in related] == ["99", "98"]
     assert has_more is True
+    assert next_search_pos is None
     assert api.calls == [
         (1, core.RELATED_PAGE_FETCH_SIZE),
         (2, core.RELATED_PAGE_FETCH_SIZE),
@@ -807,7 +949,7 @@ async def test_related_after_position_recommend_keeps_following_higher_ids(monke
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "100",
         "100",
@@ -820,6 +962,7 @@ async def test_related_after_position_recommend_keeps_following_higher_ids(monke
 
     assert [row["id"] for row in related] == ["105", "99"]
     assert has_more is False
+    assert next_search_pos is None
     assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
 
 
@@ -845,7 +988,7 @@ async def test_related_after_position_falls_back_to_estimate_when_source_page_hi
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "100",
         "100",
@@ -856,6 +999,7 @@ async def test_related_after_position_falls_back_to_estimate_when_source_page_hi
 
     assert [row["id"] for row in related] == ["99"]
     assert has_more is True
+    assert next_search_pos is None
     assert api.calls == [
         (9, core.RELATED_PAGE_FETCH_SIZE),
         (1, 1),
@@ -879,7 +1023,7 @@ async def test_related_after_position_respects_zero_tail_pages():
 
     api = FakeAPI()
 
-    related, has_more = await core._related_after_position_with_api(
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         "100",
         "99",
@@ -892,4 +1036,675 @@ async def test_related_after_position_respects_zero_tail_pages():
 
     assert related == []
     assert has_more is False
+    assert next_search_pos is None
     assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_crosses_search_block_boundary():
+    current_pos = -20816199
+    next_pos = -20806199
+
+    class FakeAPI:
+        def __init__(self):
+            self.calls = []
+
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            self.calls.append((page, search_pos))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"next_pos": next_pos})
+            if search_pos == current_pos and page == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+            elif search_pos == next_pos and page == 1:
+                yield _index_item(98)
+                yield _index_item(97)
+
+    api = FakeAPI()
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        api,
+        "100",
+        "100",
+        "test",
+        limit=2,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=current_pos,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99", "98"]
+    assert [row["search_pos"] for row in related] == [current_pos, next_pos]
+    assert has_more is True
+    assert next_search_pos == next_pos
+    assert api.calls == [(1, current_pos), (2, current_pos), (1, next_pos)]
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_keeps_search_cursor_in_original_block():
+    current_pos = -20816199
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            if kwargs["start_page"] == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "test",
+        limit=1,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=current_pos,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert has_more is False
+    assert next_search_pos == current_pos
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_does_not_claim_more_without_advancing_cursor():
+    current_pos = -20816199
+    next_pos = -20806199
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"next_pos": next_pos})
+            if kwargs["start_page"] == 1:
+                yield _index_item(100)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "test",
+        limit=1,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=current_pos,
+        tail_pages=0,
+    )
+
+    assert related == []
+    assert has_more is False
+    assert next_search_pos is None
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_skips_duplicate_only_search_block():
+    first_pos = -300
+    duplicate_pos = -200
+    final_pos = -100
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                if search_pos == first_pos:
+                    search_nav.update({"next_pos": duplicate_pos})
+                elif search_pos == duplicate_pos:
+                    search_nav.update({"next_pos": final_pos})
+            if search_pos == first_pos and page == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+            elif search_pos == duplicate_pos and page == 1:
+                yield _index_item(99)
+            elif search_pos == final_pos and page == 1:
+                yield _index_item(98)
+                yield _index_item(97)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "duplicate-search-block",
+        limit=2,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=first_pos,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99", "98"]
+    assert [row["search_pos"] for row in related] == [first_pos, final_pos]
+    assert has_more is True
+    assert next_search_pos == final_pos
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_uses_empty_search_block_navigation():
+    first_pos = -300
+    empty_pos = -200
+    final_pos = -100
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                if search_pos == first_pos:
+                    search_nav.update({"next_pos": empty_pos})
+                elif search_pos == empty_pos:
+                    search_nav.update({"next_pos": final_pos})
+            if search_pos == first_pos and page == 1:
+                yield _index_item(100)
+            elif search_pos == final_pos and page == 1:
+                yield _index_item(98)
+                yield _index_item(97)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "empty-search-block",
+        limit=1,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=first_pos,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["98"]
+    assert related[0]["search_pos"] == final_pos
+    assert has_more is True
+    assert next_search_pos == final_pos
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_crosses_after_repeated_last_search_page():
+    first_pos = -300
+    next_pos = -200
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            calls.append((page, search_pos))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None and search_pos == first_pos:
+                search_nav.update({"next_pos": next_pos})
+            if search_pos == first_pos:
+                # PC redirects every out-of-range page back to the same last page.
+                yield _index_item(100)
+                yield _index_item(99)
+            elif search_pos == next_pos and page == 1:
+                yield _index_item(98)
+                yield _index_item(97)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "repeated-last-search-page",
+        limit=2,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=first_pos,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99", "98"]
+    assert has_more is True
+    assert next_search_pos == next_pos
+    assert calls == [(1, first_pos), (2, first_pos), (1, next_pos)]
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_reports_more_for_remaining_search_page():
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"next_page": page + 1, "source_pattern": "mobile"})
+            if page == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+            elif page == 2:
+                for doc_id in range(98, 69, -1):
+                    yield _index_item(doc_id)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "remaining-search-page",
+        limit=30,
+        source_page=1,
+        search_keyword="hello",
+        tail_pages=1,
+        list_pattern="mobile",
+    )
+
+    assert len(related) == 30
+    assert related[-1]["id"] == "70"
+    assert has_more is True
+    assert next_search_pos is None
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_uses_supplied_source_pattern_first():
+    patterns = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            patterns.append(kwargs.get("list_pattern"))
+            kwargs["search_nav_collector"].update({"source_pattern": "normal"})
+            yield _index_item(100)
+            yield _index_item(99)
+
+    related, _has_more, _next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "initial-source-pattern",
+        limit=1,
+        source_page=15,
+        search_keyword="hello",
+        list_pattern="normal",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert related[0]["source_pattern"] == "normal"
+    assert patterns == ["normal"]
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_rejects_cyclic_newer_search_rows():
+    first_pos = -100
+    cyclic_pos = -200
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None and search_pos == first_pos:
+                search_nav.update({"next_pos": cyclic_pos, "source_pattern": "mobile"})
+            if search_pos == first_pos and page == 1:
+                yield _index_item(296)
+                yield _index_item(295)
+            elif search_pos == cyclic_pos and page == 1:
+                yield _index_item(300)
+
+    related, has_more, _next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "296",
+        "296",
+        "cyclic-search-order",
+        limit=2,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=first_pos,
+        list_pattern="mobile",
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["295"]
+    assert has_more is False
+
+
+@pytest.mark.asyncio
+async def test_related_latest_id_cache_isolated_by_source_pattern():
+    with core._LATEST_ID_CACHE_LOCK:
+        core._LATEST_ID_CACHE.clear()
+    latest_patterns = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            pattern = kwargs.get("list_pattern")
+            page = kwargs["start_page"]
+            if kwargs["num"] == 1:
+                latest_patterns.append(pattern)
+                yield _index_item(1000 if pattern == "normal" else 500)
+                return
+            expected_page = 46 if pattern == "normal" else 21
+            if page == expected_page:
+                yield _index_item(100)
+                yield _index_item(99)
+
+    for pattern in ("normal", "mobile"):
+        related, _has_more, _next_pos = await core._related_after_position_with_api(
+            FakeAPI(),
+            "100",
+            "100",
+            "latest-source-pattern",
+            limit=1,
+            search_keyword="hello",
+            list_pattern=pattern,
+            tail_pages=0,
+        )
+        assert [row["id"] for row in related] == ["99"]
+
+    assert latest_patterns == ["normal", "mobile"]
+
+
+@pytest.mark.asyncio
+async def test_related_target_search_uses_empty_page_block_max_hint():
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            calls.append((page, kwargs["num"]))
+            search_nav = kwargs.get("search_nav_collector")
+            if kwargs["num"] == 1:
+                yield _index_item(10200)
+                return
+            if page == 506:
+                if search_nav is not None:
+                    search_nav.update({
+                        "block_max_page": 18,
+                        "source_pattern": "mobile",
+                    })
+                return
+            if page == 18:
+                yield _index_item(100)
+                yield _index_item(99)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "empty-estimated-search-page",
+        limit=1,
+        search_keyword="공군",
+        search_pos=-1597774,
+        list_pattern="mobile",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert has_more is False
+    assert next_search_pos == -1597774
+    assert calls == [(1, 1), (506, core.RELATED_PAGE_FETCH_SIZE), (18, core.RELATED_PAGE_FETCH_SIZE)]
+
+
+@pytest.mark.asyncio
+async def test_related_target_search_binary_searches_after_empty_estimate():
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            calls.append((page, kwargs["num"]))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"source_pattern": "mobile"})
+            if kwargs["num"] == 1:
+                yield _index_item(10200)
+                return
+            if page > 18:
+                return
+            newest = 1000 - ((page - 1) * 50)
+            yield _index_item(newest)
+            yield _index_item(newest - 1)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "150",
+        "150",
+        "binary-estimated-search-page",
+        limit=1,
+        search_keyword="공군",
+        search_pos=-1597774,
+        list_pattern="mobile",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["149"]
+    assert has_more is False
+    assert next_search_pos == -1597774
+    assert any(page == 18 for page, _num in calls)
+
+
+@pytest.mark.asyncio
+async def test_related_target_search_binary_search_covers_large_estimate():
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            calls.append((page, kwargs["num"]))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"source_pattern": "mobile"})
+            if kwargs["num"] == 1:
+                yield _index_item(1000200)
+                return
+            if page > 18:
+                return
+            newest = 1000 - ((page - 1) * 50)
+            yield _index_item(newest)
+            yield _index_item(newest - 1)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "150",
+        "150",
+        "large-binary-estimated-search-page",
+        limit=1,
+        probe_steps=1,
+        search_keyword="공군",
+        search_pos=-1597774,
+        list_pattern="mobile",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["149"]
+    assert has_more is False
+    assert next_search_pos == -1597774
+    assert any(page == 18 for page, _num in calls)
+
+
+@pytest.mark.asyncio
+async def test_related_target_search_estimate_covers_dense_search_pages():
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            calls.append((page, kwargs["num"]))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"source_pattern": "mobile"})
+            if kwargs["num"] == 1:
+                yield _index_item(1000)
+                return
+            if page > 7:
+                return
+            newest = 1000 - ((page - 1) * 30)
+            for doc_id in range(newest, newest - 30, -1):
+                yield _index_item(doc_id)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "800",
+        "800",
+        "dense-search-page-estimate",
+        limit=1,
+        search_keyword="공군",
+        list_pattern="mobile",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["799"]
+    assert has_more is True
+    assert next_search_pos is None
+    assert any(page == 7 for page, _num in calls)
+
+
+@pytest.mark.asyncio
+async def test_related_without_source_page_reports_found_page_before_block_change():
+    first_pos = -300
+    next_pos = -200
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            search_nav = kwargs.get("search_nav_collector")
+            if kwargs["num"] == 1:
+                yield _index_item(100)
+                return
+            if search_nav is not None:
+                search_nav.update({"source_pattern": "mobile"})
+            if search_pos == first_pos and page == 5:
+                if search_nav is not None:
+                    search_nav.update({"next_pos": next_pos})
+                yield _index_item(20)
+                return
+            if search_pos == first_pos and page == 6:
+                if search_nav is not None:
+                    search_nav.update({"next_pos": next_pos})
+                return
+            if search_pos == next_pos and page == 1:
+                yield _index_item(19)
+
+    related, has_more, returned_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "20",
+        "20",
+        "missing-source-page-block-change",
+        limit=1,
+        search_keyword="공군",
+        search_pos=first_pos,
+        list_pattern="mobile",
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["19"]
+    assert related[0]["source_page"] == 1
+    assert related[0]["previous_source_page"] == 5
+    assert related[0]["previous_search_pos"] == first_pos
+    assert related[0]["previous_source_pattern"] == "mobile"
+    assert has_more is False
+    assert returned_pos == next_pos
+
+
+@pytest.mark.asyncio
+async def test_related_empty_page_keeps_previous_navigation_for_block_change():
+    first_pos = -300
+    next_pos = -200
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None and page == 1:
+                search_nav.update({"source_pattern": "mobile"})
+            if search_pos == first_pos and page == 1:
+                if search_nav is not None:
+                    search_nav.update({"next_pos": next_pos})
+                yield _index_item(100)
+                return
+            if search_pos == next_pos and page == 1:
+                yield _index_item(99)
+
+    related, has_more, returned_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "empty-page-keeps-navigation",
+        limit=1,
+        source_page=1,
+        search_keyword="공군",
+        search_pos=first_pos,
+        list_pattern="mobile",
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert has_more is False
+    assert returned_pos == next_pos
+
+
+@pytest.mark.asyncio
+async def test_related_scan_cap_keeps_unvisited_next_block_as_more():
+    current_pos = -300
+    next_pos = -200
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"source_pattern": "mobile"})
+                if page == 4:
+                    search_nav.update({"next_pos": next_pos})
+            if page == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+                return
+            yield _index_item(99)
+
+    related, has_more, returned_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "scan-cap-next-block",
+        limit=1,
+        probe_steps=1,
+        source_page=1,
+        search_keyword="공군",
+        search_pos=current_pos,
+        list_pattern="mobile",
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert has_more is True
+    assert returned_pos == current_pos
+
+
+@pytest.mark.asyncio
+async def test_related_scan_cap_keeps_unvisited_next_page_as_more():
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({
+                    "source_pattern": "mobile",
+                    "next_page": page + 1,
+                })
+            if page == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+                return
+            yield _index_item(99)
+
+    related, has_more, returned_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "scan-cap-next-page",
+        limit=1,
+        probe_steps=1,
+        source_page=1,
+        search_keyword="공군",
+        search_pos=-300,
+        list_pattern="mobile",
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert has_more is True
+    assert returned_pos == -300

@@ -143,7 +143,7 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
                 **kwargs,
             }
         )
-        return [_board_item()], []
+        return [_board_item()], [], {} if kwargs.get("search_keyword") else None
 
     async def fake_read(pid, board, kind=None, recommend=0, head_id=None, **kwargs):
         read_calls.append(
@@ -198,8 +198,10 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
             "kind": expected_kind,
             "search_type": "comment",
             "search_keyword": "검색어",
-            "head_id": "17",
-        }
+                "head_id": "17",
+                "search_pos": None,
+                "list_pattern": None,
+            }
     ]
     assert board_section["data-kind"] == (expected_kind or "")
     assert board_section["data-recommend"] == "1"
@@ -247,10 +249,11 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
             "board": "test",
             "kind": expected_kind,
             "recommend": 1,
-            "head_id": "17",
-            "search_type": "comment",
-            "search_keyword": "검색어",
-        }
+                "head_id": "17",
+                "search_type": "comment",
+                "search_keyword": "검색어",
+                "search_pos": None,
+            }
     ]
     assert related["data-kind"] == (expected_kind or "")
     assert related["data-recommend"] == "1"
@@ -342,8 +345,8 @@ def test_read_related_keeps_cursor_order_uniqueness_limit_and_end_state(monkeypa
             }
         )
         if after_pid == 100:
-            return [_related_item(99), _related_item(98)], True
-        return [_related_item(97)], False
+            return [_related_item(99), _related_item(98)], True, None
+        return [_related_item(97)], False, None
 
     monkeypatch.setattr(routes, "async_related_after_position", fake_related)
     app = create_app()
@@ -381,9 +384,11 @@ def test_read_related_keeps_cursor_order_uniqueness_limit_and_end_state(monkeypa
             "kind": "mini",
             "limit": 2,
             "source_page": 6,
-            "recommend": 1,
-            "head_id": "9",
-            "search_type": "subject",
+                "recommend": 1,
+                "head_id": "9",
+                "search_pos": None,
+                "list_pattern": None,
+                "search_type": "subject",
             "search_keyword": "검색어",
         },
         {
@@ -393,9 +398,11 @@ def test_read_related_keeps_cursor_order_uniqueness_limit_and_end_state(monkeypa
             "kind": "mini",
             "limit": 30,
             "source_page": 6,
-            "recommend": 1,
-            "head_id": "9",
-            "search_type": "subject",
+                "recommend": 1,
+                "head_id": "9",
+                "search_pos": None,
+                "list_pattern": None,
+                "search_type": "subject",
             "search_keyword": "검색어",
         },
     ]
@@ -409,7 +416,13 @@ def test_read_related_empty_pid_skips_upstream(monkeypatch):
     response = create_app().test_client().get("/read/related?board=test&pid=")
 
     assert response.status_code == 200
-    assert response.get_json() == {"ok": True, "items": [], "has_more": False}
+    assert response.get_json() == {
+        "ok": True,
+        "items": [],
+        "has_more": False,
+        "next_s_pos": None,
+        "next_source_pattern": None,
+    }
 
 
 def test_read_related_upstream_error_is_502_once(monkeypatch):

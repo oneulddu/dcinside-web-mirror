@@ -18,6 +18,7 @@
         var headId = trim(section.dataset.headId);
         var searchType = trim(section.dataset.searchType);
         var searchKeyword = trim(section.dataset.searchKeyword);
+        var searchPos = trim(section.dataset.searchPos);
 
         if (kind) {
             params.set("kind", kind);
@@ -28,6 +29,9 @@
         if (searchKeyword) {
             params.set("s_type", searchType || "subject_m");
             params.set("serval", searchKeyword);
+            if (searchPos) {
+                params.set("s_pos", searchPos);
+            }
         }
         return params;
     }

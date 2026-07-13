@@ -46,6 +46,9 @@ def cache_delete(cache, lock, key):
 
 DOCS_PER_PAGE = 200
 BOARD_LIST_PAGE_SIZE = 30
+SEARCH_MOBILE_PAGE_SIZE = 30
+SEARCH_PC_PAGE_SIZE = 20
+SEARCH_SCAN_PAGE_LIMIT = max(env_int("MIRROR_SEARCH_SCAN_PAGE_LIMIT", 512), 1)
 BOARD_TIME_LOOKAHEAD_PAGES = 1
 HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 BOARD_KIND_CACHE_TTL = max(env_int("MIRROR_BOARD_KIND_CACHE_TTL", 21600), 0)
@@ -177,7 +180,7 @@ class API(ParserMixin):
     def __list_url_pattern(self, url):
         parsed = urlparse(url or "")
         host = (parsed.netloc or "").lower()
-        path = parsed.path or ""
+        path = (parsed.path or "").rstrip("/")
         if host == "m.dcinside.com":
             if path.startswith("/mini/"):
                 return "mobile_mini"
@@ -186,15 +189,242 @@ class API(ParserMixin):
             return None
         if host != "gall.dcinside.com":
             return None
-        if path.startswith("/mgallery/board/lists/"):
+        if path.startswith("/mgallery/board/lists"):
             return "minor"
-        if path.startswith("/mini/board/lists/"):
+        if path.startswith("/mini/board/lists"):
             return "mini"
-        if path.startswith("/person/board/lists/"):
+        if path.startswith("/person/board/lists"):
             return "person"
-        if path.startswith("/board/lists/"):
+        if path.startswith("/board/lists"):
             return "normal"
         return None
+
+    def __search_page_size_for_pattern(self, pattern):
+        if pattern in {"mobile", "mobile_mini"}:
+            return SEARCH_MOBILE_PAGE_SIZE
+        if pattern in {"normal", "minor", "mini", "person"}:
+            return SEARCH_PC_PAGE_SIZE
+        return None
+
+    def __replace_list_page(self, url, page):
+        parsed = urlparse(url)
+        query_items = []
+        page_replaced = False
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key == "page":
+                if not page_replaced:
+                    query_items.append(("page", str(page)))
+                    page_replaced = True
+                continue
+            query_items.append((key, value))
+        if not page_replaced:
+            query_items.append(("page", str(page)))
+        return parsed._replace(query=urlencode(query_items)).geturl()
+
+    def __search_list_rows(self, parsed):
+        mobile_rows = [
+            row
+            for row in parsed.xpath("//ul[contains(@class, 'gall-detail-lst')]/li")
+            if not row.get("class", "").startswith("ad")
+        ]
+        if mobile_rows:
+            return "mobile", mobile_rows
+        return "pc", parsed.xpath(
+            "//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]"
+        )
+
+    def __search_list_row_key(self, row, row_kind):
+        if row_kind == "pc":
+            document_id = (row.get("data-no") or "").strip()
+            if document_id:
+                return "id:" + document_id
+        hrefs = row.xpath(".//a[contains(@class, 'lt')]/@href")
+        if hrefs:
+            parsed = urlparse(hrefs[0])
+            document_id = (parsed.path or "").rstrip("/").rsplit("/", 1)[-1]
+            if document_id.isdigit():
+                return "id:" + document_id
+        return "html:" + lxml.html.tostring(row, encoding="unicode")
+
+    async def __search_page_repeats_previous(self, parsed, used_url, page):
+        if page <= 1:
+            return False
+        current_kind, current_rows = self.__search_list_rows(parsed)
+        if not current_rows:
+            return False
+        previous_url = self.__replace_list_page(used_url, page - 1)
+        previous_parsed, _text, previous_used_url = await self.__fetch_parsed_from_urls(
+            [previous_url],
+            validator=self.__is_usable_board_page,
+        )
+        if (
+            previous_parsed is None
+            or self.__list_url_pattern(previous_used_url)
+            != self.__list_url_pattern(used_url)
+        ):
+            return False
+        previous_kind, previous_rows = self.__search_list_rows(previous_parsed)
+        if previous_kind != current_kind:
+            return False
+        current_keys = [
+            self.__search_list_row_key(row, current_kind) for row in current_rows
+        ]
+        previous_keys = [
+            self.__search_list_row_key(row, previous_kind) for row in previous_rows
+        ]
+        return bool(current_keys) and current_keys == previous_keys
+
+    async def __fetch_cross_platform_search_window(
+        self,
+        all_list_urls,
+        logical_page,
+        intended_pattern,
+        search_pos,
+    ):
+        source_size = self.__search_page_size_for_pattern(intended_pattern)
+        if not source_size:
+            return None, "", None, None
+        target_urls = [
+            url
+            for url in all_list_urls
+            if self.__search_page_size_for_pattern(self.__list_url_pattern(url))
+            not in {None, source_size}
+        ]
+        if not target_urls:
+            return None, "", None, None
+
+        target_size = self.__search_page_size_for_pattern(
+            self.__list_url_pattern(target_urls[0])
+        )
+        start_offset = (logical_page - 1) * source_size
+        end_offset = start_offset + source_size
+        first_target_page = (start_offset // target_size) + 1
+        last_target_page = ((end_offset - 1) // target_size) + 1
+        skip_rows = start_offset % target_size
+        collected_rows = []
+        row_kind = None
+        first_nav = None
+        last_nav = None
+        last_used_url = None
+        seen_row_keys = set()
+        target_used_pattern = None
+
+        for target_page in range(first_target_page, last_target_page + 1):
+            page_urls = [
+                self.__replace_list_page(url, target_page)
+                for url in target_urls
+            ]
+            if target_used_pattern:
+                page_urls = [
+                    url
+                    for url in page_urls
+                    if self.__list_url_pattern(url) == target_used_pattern
+                ]
+            parsed, _text, used_url = await self.__fetch_parsed_from_urls(
+                page_urls,
+                validator=self.__is_usable_board_page,
+            )
+            used_pattern = self.__list_url_pattern(used_url)
+            if (
+                parsed is None
+                or self.__search_page_size_for_pattern(used_pattern) != target_size
+            ):
+                return None, "", None, None
+            if target_used_pattern is None:
+                target_used_pattern = used_pattern
+            elif used_pattern != target_used_pattern:
+                return None, "", None, None
+            current_nav = self.__parse_search_navigation(
+                parsed,
+                used_url,
+                search_pos,
+            )
+            block_max_page = to_optional_int(current_nav.get("block_max_page"))
+            has_navigation = any(
+                current_nav.get(key) is not None
+                for key in ("prev_pos", "next_page", "next_pos", "block_max_page")
+            )
+            needs_repeat_check = (
+                target_page == first_target_page
+                and target_page > 1
+                and (
+                    not has_navigation
+                    or (block_max_page and target_page > block_max_page)
+                )
+            )
+            if needs_repeat_check and await self.__search_page_repeats_previous(
+                parsed,
+                used_url,
+                target_page,
+            ):
+                break
+            if block_max_page and target_page > block_max_page:
+                current_nav["block_max_page"] = target_page
+            current_kind, current_rows = self.__search_list_rows(parsed)
+            if row_kind is not None and current_kind != row_kind:
+                return None, "", None, None
+            row_kind = current_kind
+            if first_nav is None:
+                first_nav = current_nav
+            if not current_rows:
+                if current_nav.get("next_pos") is not None:
+                    merged_nav = dict(last_nav or {})
+                    merged_nav.update({
+                        "next_page": None,
+                        "next_pos": current_nav.get("next_pos"),
+                    })
+                    last_nav = merged_nav
+                    last_used_url = used_url
+                break
+            unique_rows = []
+            for row in current_rows:
+                row_key = self.__search_list_row_key(row, current_kind)
+                if row_key in seen_row_keys:
+                    continue
+                seen_row_keys.add(row_key)
+                unique_rows.append(row)
+            # DC can repeat its last partial search page for an out-of-range
+            # page number. Stop before that duplicate page affects slicing or
+            # navigation state.
+            if current_rows and not unique_rows:
+                break
+            collected_rows.extend(unique_rows)
+            last_nav = current_nav
+            last_used_url = used_url
+
+        selected_rows = collected_rows[skip_rows : skip_rows + source_size]
+        if not selected_rows and not (last_nav or {}).get("next_pos"):
+            return None, "", None, None
+        if row_kind == "mobile":
+            synthetic = lxml.html.fromstring(
+                "<html><body><ul class='gall-detail-lst'></ul></body></html>"
+            )
+            container = synthetic.xpath("//ul")[0]
+        else:
+            synthetic = lxml.html.fromstring(
+                "<html><body><table><tbody></tbody></table></body></html>"
+            )
+            container = synthetic.xpath("//tbody")[0]
+        for row in selected_rows:
+            container.append(row)
+
+        last_nav = last_nav or {}
+        has_same_block_next = bool(last_nav.get("next_page")) or (
+            len(selected_rows) == source_size and last_nav.get("next_pos") is None
+        )
+        next_page = (
+            logical_page + 1
+            if len(selected_rows) == source_size and has_same_block_next
+            else None
+        )
+        nav = {
+            "prev_pos": (first_nav or {}).get("prev_pos"),
+            "next_page": next_page,
+            "next_pos": None if next_page else last_nav.get("next_pos"),
+            "block_max_page": None if next_page else logical_page,
+            "source_pattern": intended_pattern,
+        }
+        return synthetic, "ok", last_used_url, nav
 
     def __get_cached_list_url(self, urls, cache_key):
         pattern = cache_get(_BOARD_KIND_CACHE, _BOARD_KIND_CACHE_LOCK, cache_key)
@@ -305,15 +535,15 @@ class API(ParserMixin):
         separator = "&" if "?" in url else "?"
         return url + separator + urlencode({"list_num": BOARD_LIST_PAGE_SIZE})
 
-    def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None):
+    def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None):
         kind = (kind or "").lower()
         urls = []
         mobile_recommend_suffix = "&recommend=1" if recommend else ""
         pc_recommend_suffix = "&exception_mode=recommend" if recommend else ""
         head_id_suffix = self.__build_head_id_suffix(head_id)
         pc_head_id_suffix = self.__build_pc_head_id_suffix(head_id)
-        mobile_search_suffix = self.__build_mobile_search_suffix(search_type, search_keyword)
-        pc_search_suffix = self.__build_pc_search_suffix(search_type, search_keyword)
+        mobile_search_suffix = self.__build_mobile_search_suffix(search_type, search_keyword, search_pos)
+        pc_search_suffix = self.__build_pc_search_suffix(search_type, search_keyword, search_pos)
 
         if kind == "mini":
             urls.append("https://m.dcinside.com/mini/{}?page={}{}{}{}".format(board_id, page, mobile_recommend_suffix, head_id_suffix, mobile_search_suffix))
@@ -353,18 +583,20 @@ class API(ParserMixin):
             return value
         return "subject_m"
 
-    def __build_mobile_search_suffix(self, search_type=None, search_keyword=None):
+    def __build_mobile_search_suffix(self, search_type=None, search_keyword=None, search_pos=None):
         keyword = (search_keyword or "").strip()
         if not keyword:
             return ""
-        return "&" + urlencode(
-            {
-                "s_type": self.__normalize_search_type(search_type),
-                "serval": keyword,
-            }
-        )
+        params = {
+            "s_type": self.__normalize_search_type(search_type),
+            "serval": keyword,
+        }
+        normalized_search_pos = to_optional_int(search_pos)
+        if normalized_search_pos:
+            params["s_pos"] = normalized_search_pos
+        return "&" + urlencode(params)
 
-    def __build_pc_search_suffix(self, search_type=None, search_keyword=None):
+    def __build_pc_search_suffix(self, search_type=None, search_keyword=None, search_pos=None):
         keyword = (search_keyword or "").strip()
         if not keyword:
             return ""
@@ -375,14 +607,82 @@ class API(ParserMixin):
             "name": "search_name",
             "comment": "search_comment",
         }
-        return "&" + urlencode(
-            {
-                "s_type": pc_type_map.get(self.__normalize_search_type(search_type), "search_subject_memo"),
-                "s_keyword": keyword,
-            }
-        )
+        params = {
+            "s_type": pc_type_map.get(self.__normalize_search_type(search_type), "search_subject_memo"),
+            "s_keyword": keyword,
+        }
+        normalized_search_pos = to_optional_int(search_pos)
+        if normalized_search_pos:
+            params["search_pos"] = normalized_search_pos
+        return "&" + urlencode(params)
 
-    def __build_mobile_view_suffix(self, recommend=False, search_type=None, search_keyword=None, head_id=None):
+    def __parse_search_navigation(self, parsed, used_url, search_pos=None):
+        is_mobile = self.__is_mobile_request(used_url)
+        if is_mobile:
+            links = parsed.xpath("//div[contains(@class, 'paging')]//a")
+            position_keys = ("s_pos", "search_pos")
+        else:
+            links = parsed.xpath("//div[contains(@class, 'paging')]//a")
+            if not links:
+                links = parsed.xpath("//a[contains(@href, 'search_pos')]")
+            position_keys = ("search_pos", "s_pos")
+
+        current_pos = to_optional_int(search_pos)
+        if current_pos == 0:
+            current_pos = None
+        used_query = parse_qs(urlparse(used_url or "").query)
+        current_page = to_optional_int((used_query.get("page") or [1])[0]) or 1
+        block_pages = []
+        forward_pages = []
+        prev_pos = None
+        next_positions = []
+        fallback_positions = []
+        for link in links:
+            href = link.get("href") or ""
+            query = parse_qs(urlparse(href).query)
+            link_pos = None
+            for key in position_keys:
+                values = query.get(key)
+                if values:
+                    link_pos = to_optional_int(values[0])
+                    break
+            if link_pos == 0:
+                link_pos = None
+
+            page_values = query.get("page")
+            page_value = to_optional_int(page_values[0]) if page_values else None
+            link_text = "".join(link.itertext()).strip()
+            class_names = set((link.get("class") or "").lower().split())
+            is_prev = "prev" in class_names or "search_prev" in class_names or "이전" in link_text
+            effective_link_pos = current_pos if link_pos is None else link_pos
+            if effective_link_pos == current_pos and page_value and link_text.isdigit():
+                block_pages.append(page_value)
+            if effective_link_pos == current_pos and page_value and page_value > current_page:
+                forward_pages.append(page_value)
+
+            if is_prev:
+                if link_pos is None:
+                    if current_pos is not None:
+                        prev_pos = 0
+                elif link_pos != current_pos:
+                    prev_pos = link_pos
+                continue
+            if link_pos is None or link_pos == current_pos:
+                continue
+            if "next" in class_names or "search_next" in class_names or "다음" in link_text:
+                next_positions.append(link_pos)
+            else:
+                fallback_positions.append(link_pos)
+
+        return {
+            "prev_pos": prev_pos,
+            "next_page": min(forward_pages) if forward_pages else None,
+            "next_pos": (next_positions or fallback_positions or [None])[0],
+            "block_max_page": max(block_pages) if block_pages else None,
+            "source_pattern": self.__list_url_pattern(used_url),
+        }
+
+    def __build_mobile_view_suffix(self, recommend=False, search_type=None, search_keyword=None, head_id=None, search_pos=None):
         params = []
         if recommend:
             params.append(("recommend", "1"))
@@ -393,9 +693,12 @@ class API(ParserMixin):
         if keyword:
             params.append(("s_type", self.__normalize_search_type(search_type)))
             params.append(("serval", keyword))
+            normalized_search_pos = to_optional_int(search_pos)
+            if normalized_search_pos:
+                params.append(("s_pos", normalized_search_pos))
         return ("?" + urlencode(params)) if params else ""
 
-    def __build_pc_view_suffix(self, recommend=False, search_type=None, search_keyword=None, head_id=None):
+    def __build_pc_view_suffix(self, recommend=False, search_type=None, search_keyword=None, head_id=None, search_pos=None):
         params = []
         if recommend:
             params.append(("recommend", "1"))
@@ -413,13 +716,16 @@ class API(ParserMixin):
             }
             params.append(("s_type", pc_type_map.get(self.__normalize_search_type(search_type), "search_subject_memo")))
             params.append(("s_keyword", keyword))
+            normalized_search_pos = to_optional_int(search_pos)
+            if normalized_search_pos:
+                params.append(("search_pos", normalized_search_pos))
         return ("&" + urlencode(params)) if params else ""
 
-    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None):
+    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None, search_pos=None):
         kind = (kind or "").lower()
         urls = []
-        mobile_suffix = self.__build_mobile_view_suffix(recommend, search_type, search_keyword, head_id=head_id)
-        pc_suffix = self.__build_pc_view_suffix(recommend, search_type, search_keyword, head_id=head_id)
+        mobile_suffix = self.__build_mobile_view_suffix(recommend, search_type, search_keyword, head_id=head_id, search_pos=search_pos)
+        pc_suffix = self.__build_pc_view_suffix(recommend, search_type, search_keyword, head_id=head_id, search_pos=search_pos)
 
         if kind == "mini":
             urls.append("https://m.dcinside.com/mini/{}/{}{}".format(board_id, document_id, mobile_suffix))
@@ -501,23 +807,41 @@ class API(ParserMixin):
         preserved_head_id = self.__normalize_head_id(
             (current_query.get("headid") or current_query.get("search_head") or [None])[0]
         )
-        if not preserve_recommend and preserved_head_id is None:
+        preserved_search_keyword = str(
+            (current_query.get("serval") or current_query.get("s_keyword") or [""])[0]
+        ).strip()
+        preserved_search_type = self.__normalize_search_type(
+            (current_query.get("s_type") or [None])[0]
+        )
+        preserved_search_pos = to_optional_int(
+            (current_query.get("s_pos") or current_query.get("search_pos") or [None])[0]
+        )
+        if preserved_search_pos == 0:
+            preserved_search_pos = None
+        preserved_page = to_optional_int((current_query.get("page") or [None])[0])
+        if not preserve_recommend and preserved_head_id is None and not preserved_search_keyword:
             return normalized_url
 
         parsed = urlparse(normalized_url)
         target_host = (parsed.netloc or "").lower()
         target_path = parsed.path or ""
-        target_head_key = "search_head" if target_host in {"gall.dcinside.com", "search.dcinside.com"} else "headid"
+        target_is_pc = target_host in {"gall.dcinside.com", "search.dcinside.com"}
+        target_head_key = "search_head" if target_is_pc else "headid"
         target_recommend_key = (
             "exception_mode"
-            if target_host in {"gall.dcinside.com", "search.dcinside.com"} and "/lists" in target_path
+            if target_is_pc and "/lists" in target_path
             else "recommend"
         )
         target_recommend_value = "recommend" if target_recommend_key == "exception_mode" else "1"
         query_items = []
         recommend_added = False
         head_added = False
+        page_added = False
         for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key == "page":
+                query_items.append((key, value))
+                page_added = True
+                continue
             if key in {"recommend", "exception_mode"}:
                 if preserve_recommend:
                     if not recommend_added:
@@ -533,26 +857,59 @@ class API(ParserMixin):
                 elif preserved_head_id is None:
                     query_items.append((key, value))
                 continue
+            if preserved_search_keyword and key in {
+                "s_type", "serval", "s_keyword", "s_pos", "search_pos"
+            }:
+                continue
             query_items.append((key, value))
         if preserve_recommend and not recommend_added:
             query_items.append((target_recommend_key, target_recommend_value))
         if preserved_head_id is not None and not head_added:
             query_items.append((target_head_key, preserved_head_id))
+        if preserved_page and not page_added and "/lists" in target_path:
+            query_items.append(("page", preserved_page))
+        if preserved_search_keyword:
+            if target_is_pc:
+                pc_type_map = {
+                    "subject_m": "search_subject_memo",
+                    "subject": "search_subject",
+                    "memo": "search_memo",
+                    "name": "search_name",
+                    "comment": "search_comment",
+                }
+                query_items.append(("s_type", pc_type_map[preserved_search_type]))
+                query_items.append(("s_keyword", preserved_search_keyword))
+                if preserved_search_pos is not None:
+                    query_items.append(("search_pos", preserved_search_pos))
+            else:
+                query_items.append(("s_type", preserved_search_type))
+                query_items.append(("serval", preserved_search_keyword))
+                if preserved_search_pos is not None:
+                    query_items.append(("s_pos", preserved_search_pos))
         return parsed._replace(query=urlencode(query_items)).geturl()
-    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None):
+    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, search_pos=None, search_nav_collector=None, list_pattern=None):
         page = start_page
         scanned_pages = 0
+        effective_max_scan_pages = max_scan_pages
+        if search_keyword and effective_max_scan_pages is None:
+            effective_max_scan_pages = SEARCH_SCAN_PAGE_LIMIT
         if headtexts_collector is not None:
             headtexts_collector[:] = []
         else:
             self.last_board_headtexts = []
         headtexts_captured = False
+        search_nav_captured = False
+        if search_nav_collector is not None:
+            search_nav_collector.clear()
         upper_limit = to_optional_int(document_id_upper_limit)
         lower_limit = to_optional_int(document_id_lower_limit)
         while num:
-            if max_scan_pages is not None and scanned_pages >= max_scan_pages:
+            if (
+                effective_max_scan_pages is not None
+                and scanned_pages >= effective_max_scan_pages
+            ):
                 break
-            list_urls = self.__build_list_urls(
+            all_list_urls = self.__build_list_urls(
                 board_id,
                 page,
                 recommend=recommend,
@@ -560,14 +917,55 @@ class API(ParserMixin):
                 search_type=search_type,
                 search_keyword=search_keyword,
                 head_id=head_id,
+                search_pos=search_pos,
             )
+            list_urls = all_list_urls
+            if list_pattern:
+                matching_urls = [
+                    url for url in list_urls
+                    if self.__list_url_pattern(url) == list_pattern
+                ]
+                if matching_urls:
+                    list_urls = matching_urls
             cache_key = self.__board_kind_cache_key(
                 board_id,
                 kind=kind,
                 recommend=recommend,
                 search_keyword=search_keyword,
             )
-            cached_url, cached_pattern = self.__get_cached_list_url(list_urls, cache_key)
+            cached_url, cached_pattern = (
+                (None, None)
+                if list_pattern
+                else self.__get_cached_list_url(list_urls, cache_key)
+            )
+            fallback_list_urls = all_list_urls
+            expected_search_page_size = None
+            intended_pattern = None
+            cross_platform_nav = None
+            if search_keyword and page > 1:
+                intended_pattern = (
+                    list_pattern
+                    or cached_pattern
+                    or self.__list_url_pattern(list_urls[0])
+                )
+                expected_search_page_size = self.__search_page_size_for_pattern(
+                    intended_pattern
+                )
+                if expected_search_page_size:
+                    fallback_list_urls = [
+                        url
+                        for url in all_list_urls
+                        if self.__search_page_size_for_pattern(
+                            self.__list_url_pattern(url)
+                        ) == expected_search_page_size
+                    ]
+                    list_urls = [
+                        url
+                        for url in list_urls
+                        if self.__search_page_size_for_pattern(
+                            self.__list_url_pattern(url)
+                        ) == expected_search_page_size
+                    ] or fallback_list_urls
             if cached_url and cached_url != list_urls[0]:
                 parsed, text, used_url = await self.__fetch_parsed_from_urls(
                     [cached_url],
@@ -584,9 +982,35 @@ class API(ParserMixin):
                     list_urls,
                     validator=self.__is_usable_board_page,
                 )
+                if (
+                    parsed is None
+                    and list_pattern
+                    and list_urls != fallback_list_urls
+                ):
+                    parsed, text, used_url = await self.__fetch_parsed_from_urls(
+                        fallback_list_urls,
+                        validator=self.__is_usable_board_page,
+                    )
+            if (
+                parsed is not None
+                and expected_search_page_size
+                and self.__search_page_size_for_pattern(
+                    self.__list_url_pattern(used_url)
+                ) != expected_search_page_size
+            ):
+                parsed, text, used_url = None, "", None
+            if parsed is None and expected_search_page_size and intended_pattern:
+                parsed, text, used_url, cross_platform_nav = (
+                    await self.__fetch_cross_platform_search_window(
+                        all_list_urls,
+                        page,
+                        intended_pattern,
+                        search_pos,
+                    )
+                )
             if cached_pattern and used_url and self.__list_url_pattern(used_url) != cached_pattern:
                 self.__invalidate_list_url_pattern(cache_key)
-            if used_url:
+            if used_url and not list_pattern and cross_platform_nav is None:
                 self.__cache_list_url_pattern(cache_key, used_url)
             scanned_pages += 1
             if parsed is None:
@@ -598,6 +1022,42 @@ class API(ParserMixin):
                 else:
                     self.last_board_headtexts = headtexts
                 headtexts_captured = True
+            if search_keyword:
+                current_search_nav = (
+                    cross_platform_nav
+                    or self.__parse_search_navigation(parsed, used_url, search_pos)
+                )
+                block_max_page = to_optional_int(
+                    current_search_nav.get("block_max_page")
+                )
+                has_navigation = any(
+                    current_search_nav.get(key) is not None
+                    for key in ("prev_pos", "next_page", "next_pos", "block_max_page")
+                )
+                needs_repeat_check = (
+                    cross_platform_nav is None
+                    and page > 1
+                    and (
+                        not has_navigation
+                        or (block_max_page and page > block_max_page)
+                    )
+                )
+                if (
+                    needs_repeat_check
+                    and await self.__search_page_repeats_previous(
+                        parsed,
+                        used_url,
+                        page,
+                    )
+                ):
+                    break
+                if search_nav_collector is not None and not search_nav_captured:
+                    search_nav_collector.update(current_search_nav)
+                    search_nav_captured = True
+                if block_max_page and page > block_max_page:
+                    current_search_nav["block_max_page"] = page
+                    if search_nav_collector is not None:
+                        search_nav_collector["block_max_page"] = page
             if "등록된 게시물이 없습니다." in text:
                 break
             yielded_in_page = 0
@@ -662,14 +1122,25 @@ class API(ParserMixin):
                 break
             page += 1
 
-    async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None):
+    async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None, search_pos=None):
         precise_times = {}
         requested_ids = {str(value).strip() for value in (target_ids or []) if str(value).strip()}
         remaining_ids = set(requested_ids)
-        page_count = 1 + (BOARD_TIME_LOOKAHEAD_PAGES if requested_ids else 0)
         start_page = max(to_int(page, 1), 1)
+        candidate_pages = list(
+            range(
+                start_page,
+                start_page + 1 + (BOARD_TIME_LOOKAHEAD_PAGES if requested_ids else 0),
+            )
+        )
+        if requested_ids and (search_keyword or "").strip():
+            mapped_page = (
+                ((start_page - 1) * SEARCH_MOBILE_PAGE_SIZE) // SEARCH_PC_PAGE_SIZE
+            ) + 1
+            candidate_pages.extend([mapped_page, mapped_page + 1])
+        candidate_pages = list(dict.fromkeys(candidate_pages))
 
-        for current_page in range(start_page, start_page + page_count):
+        for current_page in candidate_pages:
             list_urls = [
                 self.__with_pc_list_page_size(url)
                 for url in self.__build_list_urls(
@@ -680,6 +1151,7 @@ class API(ParserMixin):
                     search_type=search_type,
                     search_keyword=search_keyword,
                     head_id=head_id,
+                    search_pos=search_pos,
                 )
                 if not self.__is_mobile_request(url)
             ]
@@ -799,7 +1271,7 @@ class API(ParserMixin):
             iframe.getparent().replace(iframe, self.__poll_card_element(poll_src, poll=poll))
         return doc_content
 
-    async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None):
+    async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None, search_pos=None):
         parsed, text, used_url = await self.__fetch_parsed_from_urls(
             self.__build_view_urls(
                 board_id,
@@ -809,6 +1281,7 @@ class API(ParserMixin):
                 search_type=search_type,
                 search_keyword=search_keyword,
                 head_id=head_id,
+                search_pos=search_pos,
             ),
             validator=self.__is_usable_document_page,
         )

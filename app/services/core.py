@@ -21,6 +21,13 @@ def _env_bool(name, default=False):
 MAX_PAGE = 31
 RELATED_LIMIT = 12
 DOCS_PER_PAGE_ESTIMATE = max(int(getattr(dc_api, "DOCS_PER_PAGE", 200)), 1)
+SEARCH_DOCS_PER_PAGE_ESTIMATE = max(
+    min(
+        int(getattr(dc_api, "SEARCH_MOBILE_PAGE_SIZE", 30)),
+        int(getattr(dc_api, "SEARCH_PC_PAGE_SIZE", 20)),
+    ),
+    1,
+)
 RELATED_PAGE_FETCH_SIZE = DOCS_PER_PAGE_ESTIMATE
 RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1)
 RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
@@ -36,6 +43,7 @@ BOARD_TIME_CACHE_MAX_ITEMS = BOARD_PAGE_CACHE_MAX_ITEMS
 READ_CACHE_MAX_ITEMS = 512
 LATEST_ID_CACHE_MAX_ITEMS = 512
 AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
+ALLOWED_LIST_PATTERNS = frozenset({"mobile", "mobile_mini", "normal", "minor", "mini", "person"})
 CACHE_PRUNE_EVERY = max(_env_int("MIRROR_CACHE_PRUNE_EVERY", 64), 1)
 CACHE_PRUNE_MIN_INTERVAL = max(_env_int("MIRROR_CACHE_PRUNE_MIN_INTERVAL", 1), 0)
 
@@ -217,6 +225,19 @@ def _copy_categories(categories):
     return [dict(row) for row in (categories or [])]
 
 
+def _normalize_search_pos(value):
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized or None
+
+
+def _normalize_list_pattern(value):
+    normalized = (value or "").strip().lower()
+    return normalized if normalized in ALLOWED_LIST_PATTERNS else None
+
+
 def _copy_read_payload(payload):
     data, comments, images = payload
     copied_data = dict(data or {})
@@ -242,6 +263,8 @@ def _board_index_cache_key(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
+    list_pattern=None,
 ):
     return (
         board,
@@ -255,10 +278,12 @@ def _board_index_cache_key(
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
+        _normalize_search_pos(search_pos),
+        _normalize_list_pattern(list_pattern),
     )
 
 
-def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     return (
         board,
         kind or "",
@@ -267,6 +292,7 @@ def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, sea
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
+        _normalize_search_pos(search_pos),
     )
 
 
@@ -301,6 +327,9 @@ async def _fetch_board_page(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
+    search_nav_collector=None,
+    list_pattern=None,
 ):
     cache_key = (
         board,
@@ -311,12 +340,23 @@ async def _fetch_board_page(
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
+        _normalize_search_pos(search_pos),
+        (list_pattern or "").strip(),
     )
     cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
-        return _copy_rows(cached)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            cached_rows, cached_search_nav = cached
+        else:
+            cached_rows, cached_search_nav = cached, None
+        if search_nav_collector is not None:
+            search_nav_collector.clear()
+            if cached_search_nav is not None:
+                search_nav_collector.update(cached_search_nav)
+        return _copy_rows(cached_rows)
 
     posts = []
+    search_nav = {} if search_nav_collector is not None or (search_keyword or "").strip() else None
     async for item in api.board(
         board_id=board,
         num=page_size,
@@ -327,17 +367,23 @@ async def _fetch_board_page(
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        search_pos=search_pos,
         headtexts_collector=[],
+        search_nav_collector=search_nav,
+        list_pattern=list_pattern,
     ):
         row = _index_item_to_dict(item)
         row["source_page"] = _safe_int(page, 1)
         posts.append(row)
+    if search_nav_collector is not None:
+        search_nav_collector.clear()
+        search_nav_collector.update(search_nav)
     if posts:
         _cache_set(
             _BOARD_PAGE_CACHE,
             _BOARD_PAGE_CACHE_LOCK,
             cache_key,
-            _copy_rows(posts),
+            (_copy_rows(posts), dict(search_nav) if search_nav is not None else None),
             BOARD_PAGE_CACHE_TTL,
             BOARD_PAGE_CACHE_MAX_ITEMS,
         )
@@ -348,7 +394,7 @@ def _normalize_target_ids(target_ids):
     return tuple(str(value).strip() for value in (target_ids or []) if str(value).strip())
 
 
-def _board_time_cache_key(board, kind, recommend, page, search_type=None, search_keyword=None, head_id=None, target_ids=None):
+def _board_time_cache_key(board, kind, recommend, page, search_type=None, search_keyword=None, head_id=None, target_ids=None, search_pos=None):
     return (
         board,
         kind or "",
@@ -357,6 +403,7 @@ def _board_time_cache_key(board, kind, recommend, page, search_type=None, search
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
+        _normalize_search_pos(search_pos),
         _normalize_target_ids(target_ids),
     )
 
@@ -370,6 +417,7 @@ async def async_board_precise_times(
     search_keyword=None,
     head_id=None,
     target_ids=None,
+    search_pos=None,
 ):
     normalized_target_ids = _normalize_target_ids(target_ids)
     cache_key = _board_time_cache_key(
@@ -381,6 +429,7 @@ async def async_board_precise_times(
         search_keyword=search_keyword,
         head_id=head_id,
         target_ids=normalized_target_ids,
+        search_pos=search_pos,
     )
     cached = _cache_get(_BOARD_TIME_CACHE, _BOARD_TIME_CACHE_LOCK, cache_key)
     if cached is not None:
@@ -396,6 +445,7 @@ async def async_board_precise_times(
             search_keyword=search_keyword,
             head_id=head_id,
             target_ids=normalized_target_ids,
+            search_pos=search_pos,
         )
 
     result = {str(doc_id): format_display_time(value) for doc_id, value in (precise_times or {}).items()}
@@ -495,7 +545,7 @@ async def _fill_missing_author_codes(api, board, kind, rows, recommend=0):
     return rows
 
 
-async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     data = {}
     comments = []
     images = []
@@ -507,6 +557,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        search_pos=search_pos,
     )
     if doc is None:
         return {
@@ -558,7 +609,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
     return data, comments, images
 
 
-async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     cache_key = _read_cache_key(
         api_id,
         board,
@@ -567,6 +618,7 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        search_pos=search_pos,
     )
     if READ_CACHE_TTL > 0:
         cached = _cache_get(_READ_CACHE, _READ_CACHE_LOCK, cache_key)
@@ -583,6 +635,7 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            search_pos=search_pos,
         )
     if READ_CACHE_TTL > 0 and _is_read_payload_cacheable(payload):
         _cache_set(
@@ -608,6 +661,8 @@ async def async_index_with_head_categories(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
+    list_pattern=None,
 ):
     if limit is None:
         fetch_num = MAX_PAGE
@@ -617,7 +672,7 @@ async def async_index_with_head_categories(
         except (TypeError, ValueError):
             fetch_num = MAX_PAGE
     if fetch_num == 0:
-        return [], []
+        return [], [], {} if (search_keyword or "").strip() else None
     if max_scan_pages is None:
         scan_limit = None
     else:
@@ -638,14 +693,17 @@ async def async_index_with_head_categories(
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        search_pos=search_pos,
+        list_pattern=list_pattern,
     )
     cached = _cache_get(_BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK, cache_key)
     if cached is not None:
-        rows, categories = cached
-        return _copy_rows(rows), _copy_categories(categories)
+        rows, categories, search_nav = cached
+        return _copy_rows(rows), _copy_categories(categories), dict(search_nav) if search_nav is not None else None
 
     data = []
     headtexts = []
+    search_nav = {} if (search_keyword or "").strip() else None
     async with dc_api_context() as api:
         async for item in api.board(
             board_id=board,
@@ -660,6 +718,9 @@ async def async_index_with_head_categories(
             search_keyword=search_keyword,
             head_id=head_id,
             headtexts_collector=headtexts,
+            search_pos=search_pos,
+            search_nav_collector=search_nav,
+            list_pattern=_normalize_list_pattern(list_pattern),
         ):
             data.append(_index_item_to_dict(item))
         await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
@@ -669,11 +730,11 @@ async def async_index_with_head_categories(
             _BOARD_INDEX_CACHE,
             _BOARD_INDEX_CACHE_LOCK,
             cache_key,
-            (_copy_rows(data), _copy_categories(categories)),
+            (_copy_rows(data), _copy_categories(categories), dict(search_nav) if search_nav is not None else None),
             BOARD_PAGE_CACHE_TTL,
             BOARD_INDEX_CACHE_MAX_ITEMS,
         )
-    return data, categories
+    return data, categories, search_nav
 
 
 async def _related_after_position_with_api(
@@ -690,6 +751,8 @@ async def _related_after_position_with_api(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
+    list_pattern=None,
 ):
     current_id = _safe_int(api_id, 0)
     target_id = _safe_int(after_id, 0) or current_id
@@ -701,11 +764,25 @@ async def _related_after_position_with_api(
     search_keyword_value = (search_keyword or "").strip()
     search_type_value = (search_type or "").strip()
     head_id_value = "" if head_id is None else str(head_id).strip()
+    search_pos_value = _normalize_search_pos(search_pos)
+    last_successful_search_nav = None
+    search_list_pattern = (
+        _normalize_list_pattern(list_pattern) if search_keyword_value else None
+    )
 
     if target_id <= 0 or fetch_limit == 0:
-        return [], False
+        return [], False, None
 
-    board_key = (board, kind or "", recommend_value, search_type_value, search_keyword_value, head_id_value)
+    board_key = (
+        board,
+        kind or "",
+        recommend_value,
+        search_type_value,
+        search_keyword_value,
+        head_id_value,
+        search_pos_value,
+        search_list_pattern,
+    )
 
     async def estimate_page_from_latest_id():
         if recommend_value:
@@ -723,6 +800,8 @@ async def _related_after_position_with_api(
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
                 head_id=head_id_value or None,
+                search_pos=search_pos_value,
+                list_pattern=search_list_pattern,
             )
             if not first_page:
                 return None
@@ -735,9 +814,15 @@ async def _related_after_position_with_api(
                 LATEST_ID_CACHE_TTL,
                 LATEST_ID_CACHE_MAX_ITEMS,
             )
-        return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
+        page_size_estimate = (
+            SEARCH_DOCS_PER_PAGE_ESTIMATE
+            if search_keyword_value
+            else DOCS_PER_PAGE_ESTIMATE
+        )
+        return max(1, ((latest_id - target_id) // page_size_estimate) + 1)
 
     async def find_target_from_page(start_page):
+        nonlocal last_successful_search_nav, search_list_pattern
         page = max(_safe_int(start_page, 1), 1)
         checked = set()
         steps = 0
@@ -748,6 +833,7 @@ async def _related_after_position_with_api(
             checked.add(page)
             steps += 1
 
+            search_nav = {} if search_keyword_value else None
             page_posts = await _fetch_board_page(
                 api,
                 page,
@@ -757,8 +843,33 @@ async def _related_after_position_with_api(
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
                 head_id=head_id_value or None,
+                search_pos=search_pos_value,
+                search_nav_collector=search_nav,
+                list_pattern=search_list_pattern,
             )
+            if search_nav is not None:
+                last_successful_search_nav = dict(search_nav)
+                search_list_pattern = (
+                    search_nav.get("source_pattern") or search_list_pattern
+                )
             if not page_posts:
+                block_max_page = _safe_int((search_nav or {}).get("block_max_page"), 0)
+                if (
+                    search_keyword_value
+                    and block_max_page > 0
+                    and block_max_page < page
+                    and block_max_page not in checked
+                ):
+                    page = block_max_page
+                    continue
+                forward_page = _safe_int((search_nav or {}).get("next_page"), 0)
+                if (
+                    search_keyword_value
+                    and forward_page > page
+                    and forward_page not in checked
+                ):
+                    page = forward_page
+                    continue
                 break
 
             page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
@@ -783,6 +894,57 @@ async def _related_after_position_with_api(
                 page += 1
             else:
                 page += 1
+
+        return None, -1, []
+
+    async def find_target_in_search_range(max_page):
+        nonlocal last_successful_search_nav, search_list_pattern
+        low = 1
+        high = max(_safe_int(max_page, 1), 1)
+        steps = 0
+        # Cover the full estimated range while keeping the fallback logarithmic.
+        max_binary_steps = max(max_probe * 2, high.bit_length() + 1, 8)
+
+        while low <= high and steps < max_binary_steps:
+            page = (low + high) // 2
+            steps += 1
+            search_nav = {}
+            page_posts = await _fetch_board_page(
+                api,
+                page,
+                board,
+                recommend_value,
+                kind=kind,
+                search_type=search_type_value,
+                search_keyword=search_keyword_value,
+                head_id=head_id_value or None,
+                search_pos=search_pos_value,
+                search_nav_collector=search_nav,
+                list_pattern=search_list_pattern,
+            )
+            last_successful_search_nav = dict(search_nav)
+            search_list_pattern = (
+                search_nav.get("source_pattern") or search_list_pattern
+            )
+            if not page_posts:
+                high = page - 1
+                continue
+
+            page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
+            if target_id in page_ids:
+                return page, page_ids.index(target_id), page_posts
+            valid_ids = [pid for pid in page_ids if pid > 0]
+            if not valid_ids:
+                high = page - 1
+                continue
+            if target_id < min(valid_ids):
+                low = page + 1
+            elif target_id > max(valid_ids):
+                high = page - 1
+            else:
+                # IDs can be sparse inside a search page. Probe the next older
+                # page rather than treating an in-range miss as terminal.
+                low = page + 1
 
         return None, -1, []
 
@@ -814,21 +976,36 @@ async def _related_after_position_with_api(
                 continue
             attempted_candidate_pages.add(candidate_page)
             found_page, found_index, found_posts = await find_target_from_page(candidate_page)
+            if (
+                found_page is None
+                and search_keyword_value
+                and source_page_value <= 0
+                and candidate_page > 1
+            ):
+                found_page, found_index, found_posts = await find_target_in_search_range(
+                    candidate_page - 1
+                )
             if found_page is not None:
                 break
 
     if found_page is None:
-        return [], False
+        return [], False, None
+
+    found_search_pos = search_pos_value
+    found_source_pattern = search_list_pattern
 
     collect_limit = fetch_limit + 1
     related = []
     seen_ids = {str(current_id)}
+    last_ordered_id = target_id
     for row in found_posts[: found_index + 1]:
         prefix_id = _safe_int(row.get("id"), 0)
         if prefix_id > 0:
             seen_ids.add(str(prefix_id))
 
-    def append_rows(rows):
+    def append_rows(rows, block_pos, block_pattern):
+        nonlocal last_ordered_id
+        appended = 0
         for row in rows:
             rid = _safe_int(row.get("id"), 0)
             if rid <= 0:
@@ -836,17 +1013,36 @@ async def _related_after_position_with_api(
             rid_key = str(rid)
             if rid_key in seen_ids:
                 continue
+            if search_keyword_value and not recommend_value and rid >= last_ordered_id:
+                continue
             seen_ids.add(rid_key)
-            related.append(row)
+            related.append((row, block_pos, block_pattern))
+            if search_keyword_value and not recommend_value:
+                last_ordered_id = rid
+            appended += 1
             if len(related) >= collect_limit:
-                return True
-        return False
+                break
+        return appended
 
-    append_rows(found_posts[found_index + 1 :])
+    append_rows(
+        found_posts[found_index + 1 :],
+        search_pos_value,
+        search_list_pattern,
+    )
 
     next_page = found_page + 1
     loaded_tail = 0
-    while len(related) < collect_limit and loaded_tail < max_tail:
+    scanned_tail_pages = 0
+    max_tail_scans = max_tail + (max_probe * 2)
+    visited_search_positions = {search_pos_value}
+    unvisited_next_block_remains = False
+    unvisited_next_page_remains = False
+    while (
+        len(related) < collect_limit
+        and loaded_tail < max_tail
+        and scanned_tail_pages < max_tail_scans
+    ):
+        search_nav = {} if search_keyword_value else None
         page_posts = await _fetch_board_page(
             api,
             next_page,
@@ -856,14 +1052,105 @@ async def _related_after_position_with_api(
             search_type=search_type_value,
             search_keyword=search_keyword_value,
             head_id=head_id_value or None,
+            search_pos=search_pos_value,
+            search_nav_collector=search_nav,
+            list_pattern=search_list_pattern,
         )
+        scanned_tail_pages += 1
+        if search_nav:
+            last_successful_search_nav = dict(search_nav)
+            search_list_pattern = (
+                search_nav.get("source_pattern") or search_list_pattern
+            )
         if not page_posts:
+            active_nav = search_nav or last_successful_search_nav or {}
+            forward_page = _safe_int(active_nav.get("next_page"), 0)
+            if search_keyword_value and forward_page > next_page:
+                next_page = forward_page
+                continue
+            next_pos = _normalize_search_pos(active_nav.get("next_pos"))
+            if search_keyword_value and next_pos is not None and next_pos not in visited_search_positions:
+                if scanned_tail_pages >= max_tail_scans:
+                    unvisited_next_block_remains = True
+                    break
+                unvisited_next_block_remains = True
+                visited_search_positions.add(next_pos)
+                search_pos_value = next_pos
+                next_page = 1
+                last_successful_search_nav = None
+                unvisited_next_block_remains = False
+                continue
             break
-        append_rows(page_posts)
-        next_page += 1
-        loaded_tail += 1
+        appended = append_rows(
+            page_posts,
+            search_pos_value,
+            search_list_pattern,
+        )
+        forward_page = _safe_int((search_nav or {}).get("next_page"), 0)
+        if search_keyword_value and forward_page > next_page:
+            next_page = forward_page
+        else:
+            next_pos = _normalize_search_pos((search_nav or {}).get("next_pos"))
+            if (
+                search_keyword_value
+                and appended == 0
+                and next_pos is not None
+                and next_pos not in visited_search_positions
+            ):
+                if scanned_tail_pages >= max_tail_scans:
+                    unvisited_next_block_remains = True
+                    break
+                visited_search_positions.add(next_pos)
+                search_pos_value = next_pos
+                next_page = 1
+                last_successful_search_nav = None
+                continue
+            next_page += 1
+        # Search blocks can overlap. A page containing only IDs already seen
+        # must not consume the useful-row budget or strand the cursor before a
+        # later block. The separate scan cap above still bounds network work.
+        if not search_keyword_value or appended > 0:
+            loaded_tail += 1
 
-    return related[:fetch_limit], len(related) > fetch_limit
+    if (
+        search_keyword_value
+        and len(related) < collect_limit
+        and (
+            loaded_tail >= max_tail
+            or scanned_tail_pages >= max_tail_scans
+        )
+        and last_successful_search_nav is not None
+    ):
+        unvisited_next_page_remains = bool(
+            _safe_int(last_successful_search_nav.get("next_page"), 0)
+        )
+        next_pos = _normalize_search_pos(last_successful_search_nav.get("next_pos"))
+        unvisited_next_block_remains = (
+            next_pos is not None and next_pos not in visited_search_positions
+        )
+
+    returned = related[:fetch_limit]
+    if search_keyword_value:
+        for row, block_pos, block_pattern in returned:
+            row["search_pos"] = block_pos
+            if block_pattern:
+                row["source_pattern"] = block_pattern
+        if returned:
+            returned[0][0]["previous_source_page"] = found_page
+            returned[0][0]["previous_search_pos"] = found_search_pos
+            returned[0][0]["previous_source_pattern"] = found_source_pattern
+    rows = [row for row, _block_pos, _block_pattern in returned]
+    # In search mode, continue from the block containing the last returned row.
+    next_search_pos = returned[-1][1] if search_keyword_value and returned else None
+    # `has_more` is also a cursor contract: when no row is returned, the client
+    # cannot advance `after_pid` into another search block safely.  Reporting
+    # more data in that state would make it repeat the same request forever.
+    has_more = len(related) > fetch_limit or (
+        bool(returned) and (
+            unvisited_next_page_remains or unvisited_next_block_remains
+        )
+    )
+    return rows, has_more, next_search_pos
 
 
 async def async_related_after_position(
@@ -879,6 +1166,8 @@ async def async_related_after_position(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
+    list_pattern=None,
 ):
     async with dc_api_context() as api:
         return await _related_after_position_with_api(
@@ -895,4 +1184,6 @@ async def async_related_after_position(
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            search_pos=search_pos,
+            list_pattern=list_pattern,
         )

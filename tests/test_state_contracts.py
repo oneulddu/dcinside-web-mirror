@@ -75,7 +75,7 @@ async def test_related_cursor_keeps_order_across_overlap_and_internal_duplicates
         }
     )
 
-    rows, has_more = await core._related_after_position_with_api(
+    rows, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         api_id="110",
         after_id="108",
@@ -88,6 +88,7 @@ async def test_related_cursor_keeps_order_across_overlap_and_internal_duplicates
 
     assert [row["id"] for row in rows] == ["107", "106", "105", "104"]
     assert has_more is True
+    assert next_search_pos is None
     assert [(call["start_page"], call["num"]) for call in api.calls] == [
         (1, core.RELATED_PAGE_FETCH_SIZE),
         (2, core.RELATED_PAGE_FETCH_SIZE),
@@ -104,7 +105,7 @@ async def test_related_cursor_reports_end_after_overlap_only_pages_are_exhausted
         }
     )
 
-    rows, has_more = await core._related_after_position_with_api(
+    rows, has_more, next_search_pos = await core._related_after_position_with_api(
         api,
         api_id="210",
         after_id="208",
@@ -117,6 +118,7 @@ async def test_related_cursor_reports_end_after_overlap_only_pages_are_exhausted
 
     assert [row["id"] for row in rows] == ["207", "206"]
     assert has_more is False
+    assert next_search_pos is None
     assert [(call["start_page"], call["num"]) for call in api.calls] == [
         (1, core.RELATED_PAGE_FETCH_SIZE),
         (2, core.RELATED_PAGE_FETCH_SIZE),
@@ -147,7 +149,7 @@ def _decode_recent_rows(value):
 @pytest.mark.parametrize("secure", (False, True), ids=("http", "https"))
 def test_board_and_read_recent_cookie_payload_and_attributes(monkeypatch, path, board, secure):
     async def board_payload(*args, **kwargs):
-        return [], []
+        return [], [], None
 
     async def read_payload(*args, **kwargs):
         return (
@@ -210,7 +212,7 @@ def test_board_and_read_recent_cookie_payload_and_attributes(monkeypatch, path, 
 
 def test_concurrent_visits_with_same_cache_key_do_not_drop_either_gallery(monkeypatch):
     async def board_payload(*args, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "_load_board_payload", board_payload)
     app = create_app()
@@ -434,7 +436,7 @@ def test_recent_clear_tombstone_filters_all_stale_cache_from_another_worker():
 
 def test_touch_with_tombstone_does_not_revive_deleted_gallery(monkeypatch):
     async def board_payload(*args, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "_load_board_payload", board_payload)
     app = create_app()
@@ -491,7 +493,7 @@ def test_recent_remove_without_kind_preserves_kind_specific_entry():
 
 def test_recent_gallery_reappears_when_revisited_after_deletion(monkeypatch):
     async def board_payload(*args, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "_load_board_payload", board_payload)
     app = create_app()

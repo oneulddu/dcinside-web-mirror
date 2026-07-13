@@ -1277,7 +1277,7 @@ def test_board_read_links_preserve_source_page_and_recommend_mode(monkeypatch):
                 "time": "-",
                 "voteup_count": 0,
             }
-        ], []
+        ], [], None
 
     monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
@@ -1324,7 +1324,7 @@ def test_board_renders_current_assets_and_links(monkeypatch):
                 "isvideo": False,
                 "isrecommend": True,
             }
-        ], [{"head_id": "10", "label": "말머리", "active": True}]
+        ], [{"head_id": "10", "label": "말머리", "active": True}], None
 
     monkeypatch.setattr(routes, "_load_board_payload", fake_board_payload)
     app = create_app()
@@ -1386,7 +1386,7 @@ def test_index_board_links_include_gallery_name(monkeypatch):
 
 def test_board_visit_stores_gallery_name_for_recent(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "_load_board_payload", fake_board_payload)
     monkeypatch.setattr(routes, "get_heung_galleries", lambda: ([], 1))
@@ -1426,7 +1426,7 @@ def test_board_renders_date_only_time_for_async_hydration(monkeypatch):
                 "needs_time_hydrate": True,
                 "voteup_count": 0,
             }
-        ], []
+        ], [], None
 
     monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
@@ -1487,7 +1487,7 @@ def test_read_social_meta_uses_canonical_url(monkeypatch):
 def test_board_times_endpoint_returns_precise_times(monkeypatch):
     seen = {}
 
-    async def fake_precise_times(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None):
+    async def fake_precise_times(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None, search_pos=None):
         seen.update(
             {
                 "page": page,
@@ -1498,6 +1498,7 @@ def test_board_times_endpoint_returns_precise_times(monkeypatch):
                 "search_keyword": search_keyword,
                 "head_id": head_id,
                 "target_ids": target_ids,
+                "search_pos": search_pos,
             }
         )
         return {"123": "2026-04-16 12:00:00"}
@@ -1520,6 +1521,7 @@ def test_board_times_endpoint_returns_precise_times(monkeypatch):
         "search_keyword": "hello",
         "head_id": "10",
         "target_ids": ["123", "124"],
+        "search_pos": None,
     }
 
 
@@ -1543,7 +1545,7 @@ def test_board_head_category_tabs_filter_and_preserve_links(monkeypatch):
             {"head_id": None, "label": "전체", "active": head_id is None},
             {"head_id": "0", "label": "일반", "active": head_id == "0"},
             {"head_id": "10", "label": "📪정보", "active": head_id == "10"},
-        ]
+        ], None
 
     monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
@@ -1643,7 +1645,7 @@ def test_board_renders_image_icon_before_image_post_title(monkeypatch):
                 "time": "-",
                 "voteup_count": 0,
             },
-        ], []
+        ], [], None
 
     monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
@@ -1873,6 +1875,8 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
         **kwargs,
     ):
         seen["head_id"] = head_id
+        seen["search_pos"] = kwargs.get("search_pos")
+        seen["list_pattern"] = kwargs.get("list_pattern")
         return (
             [
                 {
@@ -1890,6 +1894,12 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "time": "-",
                     "comment_count": 0,
                     "voteup_count": 0,
+                    "search_pos": -123,
+                    "source_pattern": "normal",
+                    "previous_source_page": 5,
+                    "previous_search_pos": -124,
+                    "previous_source_pattern": "mobile",
+                    "source_page": 9,
                 },
                 {
                     "id": "302",
@@ -1906,31 +1916,56 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "time": "-",
                     "comment_count": 2,
                     "voteup_count": 9,
+                    "search_pos": -122,
+                    "source_page": 1,
+                },
+                {
+                    "id": "303",
+                    "title": "첫 블록 글",
+                    "author": "익명",
+                    "time": "-",
+                    "search_pos": None,
+                    "source_page": 1,
                 },
             ],
             True,
+            -122,
         )
 
     monkeypatch.setattr(routes, "async_related_after_position", fake_async_related_after_position)
     app = create_app()
 
-    response = app.test_client().get("/read/related?board=test&pid=100&headid=10")
+    response = app.test_client().get(
+        "/read/related?board=test&pid=100&headid=10&serval=kw&s_pos=-123&source_pattern=mobile"
+    )
     payload = response.get_json()
 
     assert response.status_code == 200
     assert seen["head_id"] == "10"
+    assert seen["search_pos"] == -123
+    assert seen["list_pattern"] == "mobile"
     assert payload["has_more"] is True
+    assert payload["next_s_pos"] == -122
+    assert payload["next_source_pattern"] == "normal"
     assert payload["items"][0]["subject"] == "일반"
+    assert payload["items"][0]["s_pos"] == -123
+    assert payload["items"][0]["source_pattern"] == "normal"
+    assert payload["items"][0]["previous_source_page"] == 5
+    assert payload["items"][0]["previous_s_pos"] == -124
+    assert payload["items"][0]["previous_source_pattern"] == "mobile"
+    assert payload["items"][0]["source_page"] == 9
     assert payload["items"][0]["has_image"] is False
     assert payload["items"][0]["isimage"] is False
     assert payload["items"][0]["has_video"] is False
     assert payload["items"][0]["isrecommend"] is False
     assert payload["items"][0]["author_role"] == "manager"
     assert payload["items"][1]["subject"] == "영상"
+    assert payload["items"][1]["s_pos"] == -122
     assert payload["items"][1]["has_video"] is True
     assert payload["items"][1]["isvideo"] is True
     assert payload["items"][1]["isrecommend"] is True
     assert payload["items"][1]["author_role"] == "submanager"
+    assert payload["items"][2]["s_pos"] is None
 
 
 def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
@@ -1938,7 +1973,7 @@ def test_board_normalizes_page_and_recommend_inputs(monkeypatch):
         assert page == 1
         assert board == "test"
         assert recommend == 0
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
@@ -1984,6 +2019,7 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "section.dataset.headId" in script
     assert 'params.set("headid", headId)' in script
     assert 'href += "&headid="' in script
+    assert "itemSearchPos || searchPos" in script
     assert "function responseHasMore(" in script
     assert "has_more" in script
     assert "function createFeedStatusIcon(" in script
@@ -1995,6 +2031,25 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "mirror:related:" not in script
     assert "cachedResult.items.length > 0" not in script
     assert "payload.ok === false" in script
+    assert "payload.next_s_pos" in script
+    assert "payload.next_source_pattern" in script
+    assert "state.section.dataset.searchPos = context.searchPos" in script
+    assert "state.section.dataset.sourcePage = context.sourcePage" in script
+    assert 'params.set("source_pattern", sourcePattern)' in script
+    assert 'href += "&source_pattern="' in script
+    assert 'href += "&prev_page="' in script
+    assert "appendPreviousBlockCursor(" in script
+    assert "item.previous_source_page" in script
+    assert "item.previous_s_pos" in script
+    assert "item.previous_source_pattern" in script
+    assert "cursors.slice(-64).join" in script
+    assert "state.section.dataset.prevPage = context.previousBlockPage" in script
+    assert "state.section.dataset.sourcePattern = context.sourcePattern" in script
+    assert "context.lastPostId = postId;" in script
+    assert script.index("context.lastPostId = postId;") < script.index("if (renderedIds[postId])")
+    assert script.index("applyLoadedItems(context, button, items, payload);") < script.index("context.searchPos = String(payload.next_s_pos);")
+    assert 'var hasItemSearchPos = hasOwn(item, "s_pos");' in script
+    assert "!hasItemSearchPos && searchPos" in script
     assert 'setButtonState(button, "idle");' in script
     assert 'setButtonState(button, "refresh");' in script
     assert 'setButtonState(button, "retry");' in script
@@ -2238,7 +2293,7 @@ def _encode_recent_cookie(rows):
 
 def test_recent_gallery_preserves_recommend_context_from_board(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
@@ -2258,7 +2313,7 @@ def test_recent_gallery_preserves_recommend_context_from_board(monkeypatch):
 
 def test_recent_gallery_dedupes_by_recommend_context(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()
@@ -2300,7 +2355,7 @@ def test_recent_gallery_dedupes_missing_kind_against_specific_kind(monkeypatch):
 
 def test_recent_gallery_keeps_specific_kind_when_followup_visit_omits_kind(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "_load_board_payload", fake_board_payload)
     app = create_app()
@@ -2744,7 +2799,7 @@ def test_recent_cookie_compact_normal_row_merges_specific_name_from_server_cache
 
 def test_touch_recent_gallery_keeps_existing_name_when_new_visit_has_no_name(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "_load_board_payload", fake_board_payload)
     app = create_app()
@@ -2840,7 +2895,7 @@ def test_recent_server_cache_does_not_share_by_ip_and_user_agent():
 
 def test_touch_recent_gallery_sets_private_fallback_key_cookie(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
-        return [], []
+        return [], [], None
 
     monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
     app = create_app()

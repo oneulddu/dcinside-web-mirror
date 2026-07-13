@@ -89,7 +89,10 @@ class ParserMixin:
             "]"
         )
         pc_rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")
-        return bool(mobile_rows or pc_rows)
+        search_navigation = parsed.xpath(
+            "//a[contains(@href, 's_pos') or contains(@href, 'search_pos')]"
+        )
+        return bool(mobile_rows or pc_rows or search_navigation)
 
     def __is_usable_document_page(self, parsed, text, url):
         doc_head_containers = parsed.xpath("//div[contains(@class, 'gallview-tit-box')]")

@@ -71,6 +71,30 @@
         };
     }
 
+    function appendPreviousBlockCursor(value, page, searchPos, sourcePattern) {
+        var cursors = [];
+        String(value || "").split(",").forEach(function (item) {
+            if (/^\d+~-?\d+~[a-z_]*$/.test(item)) {
+                cursors.push(item);
+            } else if (/^\d+$/.test(item) && Number(item) > 0) {
+                cursors.push(item + "~0~");
+            }
+        });
+        var normalizedPage = String(page || "");
+        if (/^\d+$/.test(normalizedPage) && Number(normalizedPage) > 0) {
+            var normalizedSearchPos = /^-?\d+$/.test(String(searchPos || ""))
+                ? String(searchPos)
+                : "0";
+            var normalizedPattern = /^[a-z_]+$/.test(String(sourcePattern || ""))
+                ? String(sourcePattern)
+                : "";
+            cursors.push(
+                normalizedPage + "~" + normalizedSearchPos + "~" + normalizedPattern
+            );
+        }
+        return cursors.slice(-64).join(",");
+    }
+
     function escapeHtml(value) {
         return String(value || "").replace(/[&<>"']/g, function (char) {
             return {
@@ -112,10 +136,13 @@
         return "[" + subject + "]";
     }
 
-    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName) {
+    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, searchPos, sourcePattern, previousBlockPage, headId, galleryName) {
         var pid = getItemPostId(item);
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
+        var hasItemSearchPos = hasOwn(item, "s_pos");
+        var itemSearchPos = hasItemSearchPos && item.s_pos !== null && item.s_pos !== undefined && item.s_pos !== "" ? String(item.s_pos) : "";
+        var itemSourcePattern = item && item.source_pattern ? String(item.source_pattern) : "";
         if (recommend === "1") {
             href += "&recommend=1";
         }
@@ -131,6 +158,15 @@
         if (searchKeyword) {
             href += "&s_type=" + encodeURIComponent(searchType || "subject_m");
             href += "&serval=" + encodeURIComponent(searchKeyword);
+            if (itemSearchPos || (!hasItemSearchPos && searchPos)) {
+                href += "&s_pos=" + encodeURIComponent(itemSearchPos || searchPos);
+            }
+            if (itemSourcePattern || sourcePattern) {
+                href += "&source_pattern=" + encodeURIComponent(itemSourcePattern || sourcePattern);
+            }
+            if (previousBlockPage) {
+                href += "&prev_page=" + encodeURIComponent(previousBlockPage);
+            }
         }
         if (galleryName) {
             href += "&gallery_name=" + encodeURIComponent(galleryName);
@@ -191,7 +227,7 @@
         return "";
     }
 
-    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName) {
+    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, searchPos, sourcePattern, previousBlockPage, headId, galleryName) {
         var postId = getItemPostId(item);
         var li = document.createElement("li");
         li.dataset.postId = postId;
@@ -199,7 +235,11 @@
         var link = document.createElement("a");
         link.className = "feed-item";
         link.dataset.postId = postId;
-        link.href = buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName);
+        link.href = buildReadHref(
+            board, item, kind, recommend, sourcePage, searchType,
+            searchKeyword, searchPos, sourcePattern, previousBlockPage,
+            headId, galleryName
+        );
 
         var titleWrap = document.createElement("div");
         titleWrap.className = "feed-title-wrap";
@@ -272,7 +312,34 @@
         for (var i = 0; i < items.length; i += 1) {
             var item = items[i];
             var postId = getItemPostId(item);
-            if (!postId || renderedIds[postId]) {
+            if (!postId) {
+                continue;
+            }
+            // The response cursor must advance even when this row is already
+            // rendered. Otherwise an overlap-only batch is requested again.
+            context.lastPostId = postId;
+            if (hasOwn(item, "s_pos")) {
+                var itemSearchPos = item.s_pos === null || item.s_pos === undefined ? "" : String(item.s_pos);
+                if (itemSearchPos !== context.searchPos) {
+                    var previousSearchPos = hasOwn(item, "previous_s_pos")
+                        ? String(item.previous_s_pos || "")
+                        : context.searchPos;
+                    context.previousBlockPage = appendPreviousBlockCursor(
+                        context.previousBlockPage,
+                        String(item.previous_source_page || context.sourcePage || ""),
+                        previousSearchPos,
+                        String(item.previous_source_pattern || context.sourcePattern)
+                    );
+                    context.searchPos = itemSearchPos;
+                }
+            }
+            if (item && item.source_pattern) {
+                context.sourcePattern = String(item.source_pattern);
+            }
+            if (item && item.source_page) {
+                context.sourcePage = String(item.source_page);
+            }
+            if (renderedIds[postId]) {
                 continue;
             }
             context.list.appendChild(createItemNode(
@@ -283,11 +350,13 @@
                 context.sourcePage,
                 context.searchType,
                 context.searchKeyword,
+                context.searchPos,
+                context.sourcePattern,
+                context.previousBlockPage,
                 context.headId,
                 context.galleryName
             ));
             renderedIds[postId] = true;
-            context.lastPostId = postId;
             appended += 1;
         }
         return appended;
@@ -415,6 +484,9 @@
         var headId = section.dataset.headId || "";
         var searchType = section.dataset.searchType || "";
         var searchKeyword = section.dataset.searchKeyword || "";
+        var searchPos = section.dataset.searchPos || "";
+        var sourcePattern = section.dataset.sourcePattern || "";
+        var previousBlockPage = section.dataset.prevPage || "";
         var galleryName = section.dataset.galleryName || "";
         var afterPid = state.lastPostId || "";
 
@@ -447,6 +519,12 @@
         if (searchKeyword) {
             params.set("s_type", searchType || "subject_m");
             params.set("serval", searchKeyword);
+            if (searchPos) {
+                params.set("s_pos", searchPos);
+            }
+            if (sourcePattern) {
+                params.set("source_pattern", sourcePattern);
+            }
         }
 
         return {
@@ -459,6 +537,9 @@
             headId: headId,
             searchType: searchType,
             searchKeyword: searchKeyword,
+            searchPos: searchPos,
+            sourcePattern: sourcePattern,
+            previousBlockPage: previousBlockPage,
             afterPid: afterPid,
             galleryName: galleryName,
             list: list,
@@ -494,6 +575,22 @@
             }
             var items = Array.isArray(payload.items) ? payload.items : [];
             applyLoadedItems(context, button, items, payload);
+            if (payload && payload.next_s_pos !== null && payload.next_s_pos !== undefined && payload.next_s_pos !== "") {
+                context.searchPos = String(payload.next_s_pos);
+                state.section.dataset.searchPos = context.searchPos;
+            }
+            if (payload && payload.next_source_pattern) {
+                context.sourcePattern = String(payload.next_source_pattern);
+            }
+            if (context.sourcePattern) {
+                state.section.dataset.sourcePattern = context.sourcePattern;
+            }
+            if (context.sourcePage) {
+                state.section.dataset.sourcePage = context.sourcePage;
+            }
+            if (context.previousBlockPage) {
+                state.section.dataset.prevPage = context.previousBlockPage;
+            }
             state.lastPostId = context.lastPostId || state.lastPostId;
         } catch (err) {
             appendStatusRow(context.list, "다른 게시글을 불러오지 못했습니다. 다시 시도할 수 있어요.");

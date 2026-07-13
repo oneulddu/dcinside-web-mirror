@@ -1,4 +1,5 @@
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 import lxml.html
 import pytest
@@ -19,6 +20,252 @@ def test_mobile_request_headers_use_ios_user_agent():
     assert "iPhone" in MOBILE_USER_AGENT
     assert GET_HEADERS["User-Agent"] == MOBILE_USER_AGENT
     assert XML_HTTP_REQ_HEADERS["User-Agent"] == MOBILE_USER_AGENT
+
+
+def test_search_list_urls_include_platform_specific_search_position():
+    api = API.__new__(API)
+    positioned_urls = api._API__build_list_urls(
+        "test", 2, search_type="subject", search_keyword="검색어", search_pos=-20816199
+    )
+    mobile_query = parse_qs(urlparse(positioned_urls[0]).query)
+    pc_url = next(url for url in positioned_urls if url.startswith("https://gall.dcinside.com/"))
+    pc_query = parse_qs(urlparse(pc_url).query)
+
+    assert mobile_query["s_pos"] == ["-20816199"]
+    assert "search_pos" not in mobile_query
+    assert pc_query["search_pos"] == ["-20816199"]
+    assert "s_pos" not in pc_query
+
+    unpositioned_urls = api._API__build_list_urls(
+        "test", 2, search_type="subject", search_keyword="검색어"
+    )
+    assert all("s_pos" not in parse_qs(urlparse(url).query) for url in unpositioned_urls)
+    assert all("search_pos" not in parse_qs(urlparse(url).query) for url in unpositioned_urls)
+
+
+def test_search_view_urls_include_platform_specific_search_position():
+    api = API.__new__(API)
+    positioned_urls = api._API__build_view_urls(
+        "test", "123", search_type="subject", search_keyword="검색어", search_pos=-20816199
+    )
+    mobile_query = parse_qs(urlparse(positioned_urls[0]).query)
+    pc_url = next(url for url in positioned_urls if url.startswith("https://gall.dcinside.com/"))
+    pc_query = parse_qs(urlparse(pc_url).query)
+
+    assert mobile_query["s_pos"] == ["-20816199"]
+    assert "search_pos" not in mobile_query
+    assert pc_query["search_pos"] == ["-20816199"]
+    assert "s_pos" not in pc_query
+
+    unpositioned_urls = api._API__build_view_urls(
+        "test", "123", search_type="subject", search_keyword="검색어"
+    )
+    assert all("s_pos" not in parse_qs(urlparse(url).query) for url in unpositioned_urls)
+    assert all("search_pos" not in parse_qs(urlparse(url).query) for url in unpositioned_urls)
+
+
+@pytest.mark.asyncio
+async def test_board_collects_mobile_search_block_navigation(monkeypatch):
+    api = API.__new__(API)
+    api.last_board_headtexts = []
+    parsed = lxml.html.fromstring(
+        """
+        <html><body>
+          <ul class="gall-detail-lst">
+            <li><a class="lt" href="https://m.dcinside.com/board/test/123">
+              <span class="subjectin">검색 결과</span>
+              <ul class="ginfo"><li>일반</li><li>ㅇㅇ</li><li>00:02</li><li>조회 1</li><li>추천 0</li></ul>
+            </a></li>
+          </ul>
+          <div class="paging" id="pagination_div">
+            <a href="/board/test?s_type=subject_m&amp;serval=검색어&amp;page=2">2</a>
+            <a href="/board/test?s_type=subject_m&amp;serval=검색어&amp;page=10">10</a>
+            <a class="next" href="/board/test?s_type=subject_m&amp;serval=검색어&amp;s_pos=-20816199&amp;page=1">다음</a>
+          </div>
+        </body></html>
+        """
+    )
+
+    async def fake_fetch(urls, validator=None):
+        return parsed, "ok", "https://m.dcinside.com/board/test?page=1"
+
+    monkeypatch.setattr(api, "_API__fetch_parsed_from_urls", fake_fetch)
+    search_nav = {}
+    rows = [
+        row
+        async for row in api.board(
+            "test",
+            num=1,
+            max_scan_pages=1,
+            search_type="subject_m",
+            search_keyword="검색어",
+            search_nav_collector=search_nav,
+        )
+    ]
+
+    assert [row.id for row in rows] == ["123"]
+    assert search_nav == {
+        "prev_pos": None,
+        "next_page": 2,
+        "next_pos": -20816199,
+        "block_max_page": 10,
+        "source_pattern": "mobile",
+    }
+
+
+def test_search_navigation_parses_prev_without_using_it_as_next_fallback():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="paging">
+          <a class="prev" href="/board/test?serval=kw&amp;s_pos=-20826199&amp;page=1">이전</a>
+          <a href="/board/test?serval=kw&amp;s_pos=-20816199&amp;page=1">1</a>
+          <a class="next" href="/board/test?serval=kw&amp;s_pos=-20806199&amp;page=1">다음</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed, "https://m.dcinside.com/board/test", -20816199
+    )
+
+    assert nav == {
+        "prev_pos": -20826199,
+        "next_page": None,
+        "next_pos": -20806199,
+        "block_max_page": 1,
+        "source_pattern": "mobile",
+    }
+
+
+def test_search_navigation_ignores_first_block_prev_self_link():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="paging">
+          <a class="prev" href="/board/test?serval=kw&amp;page=1">이전</a>
+          <a href="/board/test?serval=kw&amp;page=1">1</a>
+          <a class="next" href="/board/test?serval=kw&amp;s_pos=-20816199&amp;page=1">다음</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed, "https://m.dcinside.com/board/test", None
+    )
+
+    assert nav["prev_pos"] is None
+    assert nav["next_pos"] == -20816199
+
+
+def test_search_navigation_never_uses_prev_link_as_next_fallback():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="paging">
+          <a class="prev" href="/board/test?serval=kw&amp;s_pos=-20826199&amp;page=1">이전</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed, "https://m.dcinside.com/board/test", -20816199
+    )
+
+    assert nav["prev_pos"] == -20826199
+    assert nav["next_pos"] is None
+
+
+def test_empty_search_page_with_position_navigation_is_usable():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <html><body>
+          <div class="paging">
+            <a class="next" href="/board/test?serval=kw&amp;s_pos=-20&amp;page=1">다음</a>
+          </div>
+        </body></html>
+        """
+    )
+
+    assert api._API__is_usable_board_page(
+        parsed,
+        "empty search block",
+        "https://m.dcinside.com/board/test?page=19&serval=kw",
+    ) is True
+
+
+def test_pc_search_navigation_includes_numeric_links_without_search_pos():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="bottom_paging_box iconpaging">
+          <a href="/mgallery/board/lists/?id=test&amp;page=2&amp;s_keyword=kw">2</a>
+          <a href="/mgallery/board/lists/?id=test&amp;page=10&amp;s_keyword=kw">10</a>
+          <a class="search_next" href="/mgallery/board/lists/?id=test&amp;page=1&amp;s_keyword=kw&amp;search_pos=-20">다음</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed,
+        "https://gall.dcinside.com/mgallery/board/lists/?id=test&page=1&s_keyword=kw",
+        None,
+    )
+
+    assert nav == {
+        "prev_pos": None,
+        "next_page": 2,
+        "next_pos": -20,
+        "block_max_page": 10,
+        "source_pattern": "minor",
+    }
+
+
+def test_mobile_search_navigation_uses_regular_next_page_beyond_visible_numbers():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="paging">
+          <a href="/board/test?page=4&amp;serval=kw">4</a>
+          <a href="/board/test?page=5&amp;serval=kw">5</a>
+          <a class="next" href="/board/test?page=6&amp;serval=kw">다음</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed,
+        "https://m.dcinside.com/board/test?page=5&serval=kw",
+        None,
+    )
+
+    assert nav["block_max_page"] == 5
+    assert nav["next_page"] == 6
+    assert nav["next_pos"] is None
+
+
+def test_pc_search_navigation_prefers_regular_next_page_before_next_block():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="bottom_paging_box iconpaging">
+          <a href="/mgallery/board/lists/?id=test&amp;page=14&amp;s_keyword=kw">14</a>
+          <a class="next" href="/mgallery/board/lists/?id=test&amp;page=16&amp;s_keyword=kw">다음</a>
+          <a class="search_next" href="/mgallery/board/lists/?id=test&amp;page=1&amp;s_keyword=kw&amp;search_pos=-20">다음 검색</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed,
+        "https://gall.dcinside.com/mgallery/board/lists/?id=test&page=15&s_keyword=kw",
+        None,
+    )
+
+    assert nav["block_max_page"] == 14
+    assert nav["next_page"] == 16
+    assert nav["next_pos"] == -20
 
 
 def test_document_str_does_not_require_comment_count():
