@@ -250,6 +250,20 @@ mirror/
 </details>
 
 <details>
+<summary><b>링크 미리보기</b></summary>
+
+<br/>
+
+| 변수 | 기본값 | 설명 |
+|---|---:|---|
+| `MIRROR_LINK_PREVIEW_RATE_WINDOW` | `10` | 워커 프로세스별 outbound 예산 집계 구간(초) |
+| `MIRROR_LINK_PREVIEW_RATE_MAX` | `20` | 집계 구간 내 워커 프로세스별 최대 outbound 요청 수 |
+| `MIRROR_LINK_PREVIEW_MAX_CONCURRENCY` | `4` | 워커 프로세스별 동시 실행 상한 |
+| `MIRROR_LINK_PREVIEW_DEADLINE` | `8` | 리다이렉트·본문 스트리밍을 포함한 전체 제한 시간(초) |
+
+</details>
+
+<details>
 <summary><b>미디어 프록시</b></summary>
 
 <br/>

@@ -18,7 +18,7 @@ from .services.core import (
 from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
-from .services import youtube_meta
+from .services import link_preview, youtube_meta
 from .services.recent import (
     RECENT_MAX_ITEMS,
     clear_recent_galleries,
@@ -790,6 +790,27 @@ def youtube_size():
     # 실패(null)가 섞인 응답이 브라우저에 하루 동안 남으면 짧은 unknown TTL이 무의미해진다.
     max_age = 86400 if all(sizes.values()) else 300
     response.headers["Cache-Control"] = f"public, max-age={max_age}"
+    return response
+
+
+@bp.route("/embed/link-preview")
+def embed_link_preview():
+    url = (request.args.get("url") or "").strip()
+    if not link_preview.is_valid_preview_url(url):
+        abort(400)
+    preview = link_preview.fetch_preview(url)
+    if preview is link_preview.RATE_LIMITED:
+        response = jsonify({"ok": False})
+        response.status_code = 503
+        response.headers["Retry-After"] = "10"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    if preview is None:
+        response = jsonify({"ok": False})
+        response.headers["Cache-Control"] = "public, max-age=300"
+        return response
+    response = jsonify({"ok": True, **preview})
+    response.headers["Cache-Control"] = "public, max-age=86400"
     return response
 
 

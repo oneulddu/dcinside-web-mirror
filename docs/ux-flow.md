@@ -114,3 +114,34 @@
 - 모든 임베드는 모바일(390px)에서 본문 컬럼 밖으로 넘치거나 가로 스크롤을 만들면 안 된다.
 - 키보드로 임베드에 초점이 들어갔을 때 초점 표시가 장식용 외곽선에 묻히면 안 된다.
 - 크기 전환은 즉시 적용하고 높이 애니메이션을 쓰지 않는다.
+
+## Current Task Addendum 2 - 임베드 카드 폴리시와 링크 미리보기
+
+Sol UX 플랜(ux-first-fable 워크플로) 기반. 원칙: 본문 흐름을 유지하면서 내용을
+파악하고, 필요할 때만 원문으로 이동한다. 쓰기 동작(투표 참여 등)은 미러가
+대행하지 않는다.
+
+- X 게시물: sanitizer가 `figure.embed-card.embed-card-twitter`(헤더: "X 게시물"
+  라벨 + "X에서 열기" 원본 링크)로 감싼다. embed_resizer.js가 현재 테마와 일치하는
+  `theme` 파라미터를 적용(일치하면 재로드 금지, 테마 전환은 MutationObserver)하고,
+  platform.twitter.com의 `twttr.private.resize` 메시지(origin/source 검증,
+  100~3000px 클램프)로 실제 높이를 적용한다. 8초 무응답이면 iframe을 접고
+  (`visibility: hidden`으로 탭 진입도 차단) "X 게시물을 불러오지 못했습니다"
+  상태 문구(aria-live=polite)를 보인다. 늦은 신호가 오면 복구한다.
+- 링크 미리보기: DC 원문의 `a.og-wrap`은 서버(sanitizer)가 `a.link-preview`
+  텍스트 카드(제목 1줄, 설명 2줄, 도메인)로 정규화한다. 썸네일은 제3자 이미지
+  직접 요청(프라이버시)과 전용 프록시 비용을 피해 지원하지 않는다(제품 결정).
+  맨몸 링크(앵커 텍스트==href, dcinside·유튜브·X 제외)는 `link-preview-target`으로
+  마킹되고 link_preview.js가 뷰포트 근처에서 `/embed/link-preview`로 조회한다
+  (문서당 6개, https만, 문서 내 기존 카드와 URL 중복 제거, textContent만 주입).
+  실패 시 원래 링크는 그대로 두고 작은 실패 문구만 남긴다. JS 비활성이면
+  서버 정규화 카드만 보인다.
+- `/embed/link-preview`는 사용자 제어 URL을 fetch하므로: https·공인 IP를
+  리다이렉트 hop마다 검증하고 검증된 IP로 연결을 고정(DNS 재바인딩 방어),
+  text/html·128KB·전체 deadline 제한, 전역 예산+동시 실행 상한(초과 503),
+  성공 24h/실패 300s 캐시.
+- 투표: 스크래퍼가 만드는 읽기 전용 `dc-poll-card` DOM(제목·메타·항목/결과·
+  "원본에서 투표하기")에 토큰 기반 카드 스타일만 입힌다. 미러에 투표 컨트롤을
+  만들지 않는다.
+- 공통: 토큰 색만, 그림자 금지, 괘선·surface 패널만. 다크모드에서 외부 라이트
+  콘텐츠에 반전 필터를 적용하지 않고 카드 경계로 구분한다.

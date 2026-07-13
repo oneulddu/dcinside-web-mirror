@@ -1040,13 +1040,14 @@ a.pager-btn:active {
     background: var(--surface);
 }
 
-/* X(트위터) 게시물 임베드. 공식 카드 최대 폭 550px, 넘치는 내용은 iframe 스크롤로 본다. */
+/* X(트위터) 게시물 임베드. sanitizer가 .embed-card로 감싸고, 실제 높이는
+   embed_resizer.js가 platform.twitter.com의 resize 메시지로 적용한다.
+   420px는 메시지 수신 전/JS 미동작 폴백 높이다. */
 .article-body iframe[src^="https://platform.twitter.com/embed/"] {
     aspect-ratio: auto;
-    width: min(100%, 550px);
+    width: 100%;
     height: 420px;
-    margin-left: auto;
-    margin-right: auto;
+    margin: 0;
     background: var(--surface);
 }
 
@@ -1055,6 +1056,193 @@ a.pager-btn:active {
     height: 144px;
     aspect-ratio: auto;
     background: var(--surface);
+}
+
+/* --- 임베드 카드 크롬 (X 게시물 래퍼) --- */
+
+.embed-card {
+    max-width: 550px;
+    margin: var(--space-4) auto;
+    border: var(--rule) solid var(--line);
+    border-radius: var(--radius-s);
+    overflow: hidden;
+    background: var(--bg);
+}
+
+.embed-card-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: var(--rule) solid var(--line);
+    background: var(--surface);
+    font: var(--type-meta);
+    color: var(--muted);
+}
+
+.article-body .embed-card-source {
+    color: var(--accent);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.article-body .embed-card-source:hover {
+    color: var(--accent-strong);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+/* X 로드 실패(리사이즈 신호 미수신) 시 iframe을 접고 상태 문구만 남긴다.
+   늦게 신호가 오면 JS가 상태를 되돌린다. visibility로 탭 포커스 진입도 막는다. */
+.embed-card.is-embed-timeout iframe {
+    height: 0;
+    min-height: 0;
+    visibility: hidden;
+}
+
+.embed-card-status {
+    margin: 0;
+    padding: var(--space-3);
+    font: var(--type-meta);
+    color: var(--muted);
+}
+
+/* --- DCInside 투표 요약 카드 (서버가 dc-poll-card DOM을 생성) --- */
+
+.dc-poll-card {
+    display: grid;
+    gap: var(--space-3);
+    margin: var(--space-4) 0;
+    padding: var(--space-4);
+    border: var(--rule) solid var(--line);
+    border-radius: var(--radius-s);
+    background: var(--surface);
+}
+
+.dc-poll-card .dc-poll-title {
+    margin: 0;
+    font: var(--type-title);
+    overflow-wrap: break-word;
+}
+
+.dc-poll-card .dc-poll-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font: var(--type-meta);
+    color: var(--muted);
+}
+
+.dc-poll-card .dc-poll-results-title {
+    margin-bottom: var(--space-2);
+    font: var(--type-meta);
+    color: var(--muted);
+}
+
+.dc-poll-card .dc-poll-result-list,
+.dc-poll-card .dc-poll-options {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0;
+    padding-left: var(--space-5);
+    font: var(--type-body);
+}
+
+.dc-poll-card .dc-poll-result-list li,
+.dc-poll-card .dc-poll-options li {
+    overflow-wrap: break-word;
+}
+
+.dc-poll-card .dc-poll-result-stats {
+    margin-left: var(--space-2);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.dc-poll-card .dc-poll-actions {
+    margin-top: var(--space-1);
+}
+
+.article-body .dc-poll-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--space-10);
+    padding: var(--space-2) var(--space-4);
+    border: var(--rule) solid var(--line-strong);
+    border-radius: var(--radius-s);
+    background: var(--bg);
+    color: var(--fg);
+    font: var(--type-label);
+    text-decoration: none;
+}
+
+.article-body .dc-poll-link:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+/* --- 링크 미리보기 카드 (og-wrap 정규화 + link_preview.js 조회 결과 공용) --- */
+
+.article-body a.link-preview {
+    display: block;
+    margin: var(--space-3) 0 var(--space-4);
+    padding: var(--space-3) var(--space-4);
+    border: var(--rule) solid var(--line);
+    border-radius: var(--radius-s);
+    background: var(--bg);
+    color: var(--fg);
+    text-decoration: none;
+    overflow: hidden;
+}
+
+.article-body a.link-preview:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.link-preview-title {
+    display: block;
+    font: var(--type-label);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.link-preview-desc {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    margin-top: var(--space-1);
+    overflow: hidden;
+    font: var(--type-meta);
+    color: var(--muted);
+}
+
+.link-preview-host {
+    display: block;
+    margin-top: var(--space-2);
+    font: var(--type-meta);
+    color: var(--muted);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* 조회 중/실패 상태(비링크 플레이스홀더 포함) */
+.article-body .link-preview.is-loading,
+.article-body .link-preview.is-error {
+    display: block;
+    margin: var(--space-3) 0 var(--space-4);
+    padding: var(--space-2) var(--space-4);
+    border: var(--rule) solid var(--line);
+    border-radius: var(--radius-s);
+    font: var(--type-meta);
+    color: var(--muted);
 }
 
 .article-body a {

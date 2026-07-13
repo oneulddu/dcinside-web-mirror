@@ -1,4 +1,35 @@
-# Fable Handoff - 읽기 본문 임베드 리빌드 (실제 비율 기반)
+# Fable Handoff - 임베드 카드 폴리시와 링크 미리보기 (ux-first-fable)
+
+토폴로지: Sol(gpt-5.6-sol/high) UX 플랜 → Fable 주체가 프론트엔드 직접 구현 +
+백엔드는 Sol 워커 위임 → Sol(high) 통합 보안 리뷰 1회 → 수정 반영.
+
+## 계약 요약
+
+- DOM: `figure.embed-card.embed-card-twitter`(`.embed-card-head` > `.embed-card-label`
+  + `.embed-card-source`), `a.link-preview`(`.link-preview-title/desc/host`),
+  맨몸 링크 마킹 `a.link-preview-target`, 투표 `div.dc-poll-card` 계열(기존 DOM).
+- API: `GET /embed/link-preview?url=` → 400(형식/비https) | 503+no-store(예산·동시
+  상한) | 200 `{"ok":false}`+max-age=300 | 200 `{"ok":true,title,description,
+  site_name,host}`+max-age=86400. 썸네일 필드 없음(제품 결정).
+- X resize: `twttr.private.resize` `params[0].height`, origin
+  `https://platform.twitter.com` + `event.source` 검증(실측 확인).
+
+## Sol 보안 리뷰 반영 기록
+
+- 블로커: DNS 재바인딩 TOCTOU → media_proxy의 pinned adapter 재사용으로 hop별
+  IP 고정. / 예산 실효성 → 예산 획득을 DNS보다 선행, 전역 동시 실행 상한(기본 4),
+  전체 deadline(기본 8s)로 슬로우 전송 차단.
+- 중요: http 링크의 조회 슬롯 소진 → link_preview.js가 https만 선정. /
+  X 타임아웃 시 숨은 iframe 포커스 트랩 → `visibility: hidden`으로 탭 진입 차단.
+- 사소: 실패 캐시 TTL 300s 정합, `MIRROR_LINK_PREVIEW_*` 환경변수 README·
+  .env.example 문서화(워커 프로세스별 한도 명시).
+- 수용된 한계: 예산은 워커 프로세스별(기존 /embed/youtube-size와 동일 전례).
+
+상세 UX 계약은 `docs/ux-flow.md`의 "Current Task Addendum 2" 참고.
+
+---
+
+# (이전 작업 기록) Fable Handoff - 읽기 본문 임베드 리빌드 (실제 비율 기반)
 
 ## Repo and Framework
 
