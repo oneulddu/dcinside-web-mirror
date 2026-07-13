@@ -400,7 +400,10 @@ class API(ParserMixin):
         current_pos = to_optional_int(search_pos)
         if current_pos == 0:
             current_pos = None
+        used_query = parse_qs(urlparse(used_url or "").query)
+        current_page = to_optional_int((used_query.get("page") or [1])[0]) or 1
         block_pages = []
+        forward_pages = []
         prev_pos = None
         next_positions = []
         fallback_positions = []
@@ -421,9 +424,11 @@ class API(ParserMixin):
             link_text = "".join(link.itertext()).strip()
             class_names = set((link.get("class") or "").lower().split())
             is_prev = "prev" in class_names or "search_prev" in class_names or "이전" in link_text
-            effective_link_pos = current_pos if link_pos is None and link_text.isdigit() else link_pos
+            effective_link_pos = current_pos if link_pos is None else link_pos
             if effective_link_pos == current_pos and page_value and link_text.isdigit():
                 block_pages.append(page_value)
+            if effective_link_pos == current_pos and page_value and page_value > current_page:
+                forward_pages.append(page_value)
 
             if is_prev:
                 if link_pos is None:
@@ -441,6 +446,7 @@ class API(ParserMixin):
 
         return {
             "prev_pos": prev_pos,
+            "next_page": min(forward_pages) if forward_pages else None,
             "next_pos": (next_positions or fallback_positions or [None])[0],
             "block_max_page": max(block_pages) if block_pages else None,
         }

@@ -945,12 +945,28 @@ async def _related_after_position_with_api(
         if search_nav is not None:
             last_successful_search_nav = dict(search_nav)
         appended = append_rows(page_posts, search_pos_value)
+        forward_page = _safe_int((search_nav or {}).get("next_page"), 0)
+        if search_keyword_value and forward_page > next_page:
+            next_page = forward_page
+        else:
+            next_pos = _normalize_search_pos((search_nav or {}).get("next_pos"))
+            if (
+                search_keyword_value
+                and appended == 0
+                and next_pos is not None
+                and next_pos not in visited_search_positions
+            ):
+                visited_search_positions.add(next_pos)
+                search_pos_value = next_pos
+                next_page = 1
+                last_successful_search_nav = None
+                continue
+            next_page += 1
         # Search blocks can overlap. A page containing only IDs already seen
         # must not consume the useful-row budget or strand the cursor before a
         # later block. The separate scan cap above still bounds network work.
         if not search_keyword_value or appended > 0:
             loaded_tail += 1
-        next_page += 1
 
     if (
         search_keyword_value

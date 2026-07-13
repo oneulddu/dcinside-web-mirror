@@ -708,8 +708,14 @@ def board():
                 head_id, gallery_name, prev_pos,
             )
         block_max_page = _safe_int(search_nav.get("block_max_page"), 0)
+        next_page = _safe_int(search_nav.get("next_page"), 0)
         next_pos = _safe_int(search_nav.get("next_pos"), 0)
-        if block_max_page and page < block_max_page:
+        if next_page > page:
+            search_next_url = board_url(
+                board, recommend, next_page, kind, nav_mode, search_type, search_keyword,
+                head_id, gallery_name, search_pos,
+            )
+        elif block_max_page and page < block_max_page:
             search_next_url = board_url(
                 board, recommend, page + 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, search_pos,

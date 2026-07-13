@@ -1173,3 +1173,43 @@ async def test_related_after_position_uses_empty_search_block_navigation():
     assert related[0]["search_pos"] == final_pos
     assert has_more is True
     assert next_search_pos == final_pos
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_crosses_after_repeated_last_search_page():
+    first_pos = -300
+    next_pos = -200
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            calls.append((page, search_pos))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None and search_pos == first_pos:
+                search_nav.update({"next_pos": next_pos})
+            if search_pos == first_pos:
+                # PC redirects every out-of-range page back to the same last page.
+                yield _index_item(100)
+                yield _index_item(99)
+            elif search_pos == next_pos and page == 1:
+                yield _index_item(98)
+                yield _index_item(97)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "repeated-last-search-page",
+        limit=2,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=first_pos,
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99", "98"]
+    assert has_more is True
+    assert next_search_pos == next_pos
+    assert calls == [(1, first_pos), (2, first_pos), (1, next_pos)]

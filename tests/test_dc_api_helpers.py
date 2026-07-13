@@ -104,7 +104,12 @@ async def test_board_collects_mobile_search_block_navigation(monkeypatch):
     ]
 
     assert [row.id for row in rows] == ["123"]
-    assert search_nav == {"prev_pos": None, "next_pos": -20816199, "block_max_page": 10}
+    assert search_nav == {
+        "prev_pos": None,
+        "next_page": 2,
+        "next_pos": -20816199,
+        "block_max_page": 10,
+    }
 
 
 def test_search_navigation_parses_prev_without_using_it_as_next_fallback():
@@ -125,6 +130,7 @@ def test_search_navigation_parses_prev_without_using_it_as_next_fallback():
 
     assert nav == {
         "prev_pos": -20826199,
+        "next_page": None,
         "next_pos": -20806199,
         "block_max_page": 1,
     }
@@ -188,9 +194,56 @@ def test_pc_search_navigation_includes_numeric_links_without_search_pos():
 
     assert nav == {
         "prev_pos": None,
+        "next_page": 2,
         "next_pos": -20,
         "block_max_page": 10,
     }
+
+
+def test_mobile_search_navigation_uses_regular_next_page_beyond_visible_numbers():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="paging">
+          <a href="/board/test?page=4&amp;serval=kw">4</a>
+          <a href="/board/test?page=5&amp;serval=kw">5</a>
+          <a class="next" href="/board/test?page=6&amp;serval=kw">다음</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed,
+        "https://m.dcinside.com/board/test?page=5&serval=kw",
+        None,
+    )
+
+    assert nav["block_max_page"] == 5
+    assert nav["next_page"] == 6
+    assert nav["next_pos"] is None
+
+
+def test_pc_search_navigation_prefers_regular_next_page_before_next_block():
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(
+        """
+        <div class="bottom_paging_box iconpaging">
+          <a href="/mgallery/board/lists/?id=test&amp;page=14&amp;s_keyword=kw">14</a>
+          <a class="next" href="/mgallery/board/lists/?id=test&amp;page=16&amp;s_keyword=kw">다음</a>
+          <a class="search_next" href="/mgallery/board/lists/?id=test&amp;page=1&amp;s_keyword=kw&amp;search_pos=-20">다음 검색</a>
+        </div>
+        """
+    )
+
+    nav = api._API__parse_search_navigation(
+        parsed,
+        "https://gall.dcinside.com/mgallery/board/lists/?id=test&page=15&s_keyword=kw",
+        None,
+    )
+
+    assert nav["block_max_page"] == 14
+    assert nav["next_page"] == 16
+    assert nav["next_pos"] == -20
 
 
 def test_document_str_does_not_require_comment_count():

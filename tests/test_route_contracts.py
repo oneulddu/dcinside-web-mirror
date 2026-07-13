@@ -232,6 +232,32 @@ def test_search_first_page_links_to_previous_search_block(monkeypatch):
     assert previous_query["s_pos"] == ["-20826199"]
 
 
+def test_search_pager_prefers_regular_next_page_before_next_block(monkeypatch):
+    async def search_payload(*args, **kwargs):
+        rows, categories, _search_nav = await _board_payload(*args, **kwargs)
+        return rows, categories, {
+            "prev_pos": -30,
+            "next_page": 16,
+            "next_pos": -10,
+            "block_max_page": 14,
+        }
+
+    monkeypatch.setattr(routes, "_load_board_payload", search_payload)
+    app = create_app()
+    response = app.test_client().get(
+        "/board?board=test&page=15&serval=hello&s_pos=-20"
+    )
+    soup = BeautifulSoup(response.data, "html.parser")
+    next_link = next(
+        link for link in soup.select(".board-pager .pager-center a")
+        if link.get_text(strip=True) == "다음"
+    )
+    next_query = parse_qs(urlparse(next_link["href"]).query)
+
+    assert next_query["page"] == ["16"]
+    assert next_query["s_pos"] == ["-20"]
+
+
 def test_search_first_page_previous_link_omits_position_for_first_block(monkeypatch):
     async def search_payload(*args, **kwargs):
         rows, categories, _search_nav = await _board_payload(*args, **kwargs)
