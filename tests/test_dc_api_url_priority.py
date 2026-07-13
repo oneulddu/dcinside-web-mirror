@@ -998,6 +998,48 @@ async def test_board_falls_back_to_pc_when_mobile_page_is_not_parseable():
 
 
 @pytest.mark.asyncio
+async def test_board_list_pattern_pins_related_fetch_to_mobile_source():
+    api = API.__new__(API)
+    seen_batches = []
+
+    async def fake_fetch(urls, validator=None):
+        seen_batches.append(list(urls))
+        return (
+            lxml.html.fromstring(
+                """
+                <html><body>
+                  <ul class="gall-detail-lst">
+                    <li><a class="lt" href="https://m.dcinside.com/board/test/123">
+                      <span class="subjectin">mobile title</span>
+                      <ul class="ginfo"><li>일반</li><li>ㅇㅇ</li><li>00:01</li><li>조회 1</li><li>추천 0</li></ul>
+                    </a></li>
+                  </ul>
+                </body></html>
+                """
+            ),
+            "ok",
+            urls[0],
+        )
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+
+    rows = [
+        item async for item in api.board(
+            "test",
+            num=1,
+            start_page=9,
+            search_keyword="질문",
+            list_pattern="mobile",
+        )
+    ]
+
+    assert [row.id for row in rows] == ["123"]
+    assert len(seen_batches) == 1
+    assert len(seen_batches[0]) == 1
+    assert seen_batches[0][0].startswith("https://m.dcinside.com/")
+
+
+@pytest.mark.asyncio
 async def test_board_precise_times_fetches_pc_list_only():
     api = API.__new__(API)
     seen_urls = []
@@ -1028,6 +1070,44 @@ async def test_board_precise_times_fetches_pc_list_only():
     assert seen_urls
     assert all("m.dcinside.com" not in url for url in seen_urls)
     assert all("list_num=30" in url for url in seen_urls)
+
+
+@pytest.mark.asyncio
+async def test_board_precise_times_maps_mobile_search_page_to_pc_pages():
+    api = API.__new__(API)
+    seen_pages = []
+
+    async def fake_fetch(urls, validator=None):
+        page = int(parse_qs(urlparse(urls[0]).query)["page"][0])
+        seen_pages.append(page)
+        row = ""
+        if page == 11:
+            row = """
+              <tr class="ub-content us-post" data-no="1615902">
+                <td class="gall_tit"><a href="/board/view/?id=test&amp;no=1615902">target</a></td>
+                <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+                <td class="gall_date" title="2026.06.06 18:23:16"></td>
+                <td class="gall_count">7</td>
+                <td class="gall_recommend">3</td>
+              </tr>
+            """
+        parsed = lxml.html.fromstring(
+            f"<html><body><table><tbody>{row}</tbody></table></body></html>"
+        )
+        return parsed, "ok", urls[0]
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+
+    times = await api.board_precise_times(
+        "test",
+        page=8,
+        search_type="subject_m",
+        search_keyword="질문",
+        target_ids=["1615902"],
+    )
+
+    assert str(times["1615902"]) == "2026-06-06 18:23:16"
+    assert seen_pages == [8, 9, 11]
 
 
 @pytest.mark.asyncio

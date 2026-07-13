@@ -46,6 +46,8 @@ def cache_delete(cache, lock, key):
 
 DOCS_PER_PAGE = 200
 BOARD_LIST_PAGE_SIZE = 30
+SEARCH_MOBILE_PAGE_SIZE = 30
+SEARCH_PC_PAGE_SIZE = 20
 BOARD_TIME_LOOKAHEAD_PAGES = 1
 HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 BOARD_KIND_CACHE_TTL = max(env_int("MIRROR_BOARD_KIND_CACHE_TTL", 21600), 0)
@@ -449,6 +451,7 @@ class API(ParserMixin):
             "next_page": min(forward_pages) if forward_pages else None,
             "next_pos": (next_positions or fallback_positions or [None])[0],
             "block_max_page": max(block_pages) if block_pages else None,
+            "source_pattern": self.__list_url_pattern(used_url),
         }
 
     def __build_mobile_view_suffix(self, recommend=False, search_type=None, search_keyword=None, head_id=None, search_pos=None):
@@ -648,7 +651,7 @@ class API(ParserMixin):
                 if preserved_search_pos is not None:
                     query_items.append(("s_pos", preserved_search_pos))
         return parsed._replace(query=urlencode(query_items)).geturl()
-    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, search_pos=None, search_nav_collector=None):
+    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, search_pos=None, search_nav_collector=None, list_pattern=None):
         page = start_page
         scanned_pages = 0
         if headtexts_collector is not None:
@@ -674,13 +677,24 @@ class API(ParserMixin):
                 head_id=head_id,
                 search_pos=search_pos,
             )
+            if list_pattern:
+                matching_urls = [
+                    url for url in list_urls
+                    if self.__list_url_pattern(url) == list_pattern
+                ]
+                if matching_urls:
+                    list_urls = matching_urls
             cache_key = self.__board_kind_cache_key(
                 board_id,
                 kind=kind,
                 recommend=recommend,
                 search_keyword=search_keyword,
             )
-            cached_url, cached_pattern = self.__get_cached_list_url(list_urls, cache_key)
+            cached_url, cached_pattern = (
+                (None, None)
+                if list_pattern
+                else self.__get_cached_list_url(list_urls, cache_key)
+            )
             if cached_url and cached_url != list_urls[0]:
                 parsed, text, used_url = await self.__fetch_parsed_from_urls(
                     [cached_url],
@@ -699,7 +713,7 @@ class API(ParserMixin):
                 )
             if cached_pattern and used_url and self.__list_url_pattern(used_url) != cached_pattern:
                 self.__invalidate_list_url_pattern(cache_key)
-            if used_url:
+            if used_url and not list_pattern:
                 self.__cache_list_url_pattern(cache_key, used_url)
             scanned_pages += 1
             if parsed is None:
@@ -782,10 +796,21 @@ class API(ParserMixin):
         precise_times = {}
         requested_ids = {str(value).strip() for value in (target_ids or []) if str(value).strip()}
         remaining_ids = set(requested_ids)
-        page_count = 1 + (BOARD_TIME_LOOKAHEAD_PAGES if requested_ids else 0)
         start_page = max(to_int(page, 1), 1)
+        candidate_pages = list(
+            range(
+                start_page,
+                start_page + 1 + (BOARD_TIME_LOOKAHEAD_PAGES if requested_ids else 0),
+            )
+        )
+        if requested_ids and (search_keyword or "").strip():
+            mapped_page = (
+                ((start_page - 1) * SEARCH_MOBILE_PAGE_SIZE) // SEARCH_PC_PAGE_SIZE
+            ) + 1
+            candidate_pages.extend([mapped_page, mapped_page + 1])
+        candidate_pages = list(dict.fromkeys(candidate_pages))
 
-        for current_page in range(start_page, start_page + page_count):
+        for current_page in candidate_pages:
             list_urls = [
                 self.__with_pc_list_page_size(url)
                 for url in self.__build_list_urls(

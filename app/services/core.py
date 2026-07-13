@@ -314,6 +314,7 @@ async def _fetch_board_page(
     head_id=None,
     search_pos=None,
     search_nav_collector=None,
+    list_pattern=None,
 ):
     cache_key = (
         board,
@@ -325,6 +326,7 @@ async def _fetch_board_page(
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
         _normalize_search_pos(search_pos),
+        (list_pattern or "").strip(),
     )
     cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
@@ -353,6 +355,7 @@ async def _fetch_board_page(
         search_pos=search_pos,
         headtexts_collector=[],
         search_nav_collector=search_nav,
+        list_pattern=list_pattern,
     ):
         row = _index_item_to_dict(item)
         row["source_page"] = _safe_int(page, 1)
@@ -744,6 +747,7 @@ async def _related_after_position_with_api(
     head_id_value = "" if head_id is None else str(head_id).strip()
     search_pos_value = _normalize_search_pos(search_pos)
     last_successful_search_nav = None
+    search_list_pattern = None
 
     if target_id <= 0 or fetch_limit == 0:
         return [], False, None
@@ -790,7 +794,7 @@ async def _related_after_position_with_api(
         return max(1, ((latest_id - target_id) // DOCS_PER_PAGE_ESTIMATE) + 1)
 
     async def find_target_from_page(start_page):
-        nonlocal last_successful_search_nav
+        nonlocal last_successful_search_nav, search_list_pattern
         page = max(_safe_int(start_page, 1), 1)
         checked = set()
         steps = 0
@@ -813,11 +817,15 @@ async def _related_after_position_with_api(
                 head_id=head_id_value or None,
                 search_pos=search_pos_value,
                 search_nav_collector=search_nav,
+                list_pattern=search_list_pattern,
             )
             if not page_posts:
                 break
             if search_nav is not None:
                 last_successful_search_nav = dict(search_nav)
+                search_list_pattern = (
+                    search_nav.get("source_pattern") or search_list_pattern
+                )
 
             page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
             if target_id in page_ids:
@@ -927,6 +935,7 @@ async def _related_after_position_with_api(
             head_id=head_id_value or None,
             search_pos=search_pos_value,
             search_nav_collector=search_nav,
+            list_pattern=search_list_pattern,
         )
         scanned_tail_pages += 1
         if not page_posts:

@@ -289,6 +289,24 @@ async def test_fetch_board_page_cache_distinguishes_search_pos():
 
 
 @pytest.mark.asyncio
+async def test_fetch_board_page_cache_distinguishes_source_pattern():
+    class FakeAPI:
+        def __init__(self):
+            self.patterns = []
+
+        async def board(self, **kwargs):
+            self.patterns.append(kwargs.get("list_pattern"))
+            yield _index_item(123, is_mobile_source=True)
+
+    api = FakeAPI()
+
+    await core._fetch_board_page(api, 1, "source-pattern-test", 0, list_pattern="mobile")
+    await core._fetch_board_page(api, 1, "source-pattern-test", 0, list_pattern="normal")
+
+    assert api.patterns == ["mobile", "normal"]
+
+
+@pytest.mark.asyncio
 async def test_fetch_board_page_cache_restores_search_navigation():
     class FakeAPI:
         def __init__(self):

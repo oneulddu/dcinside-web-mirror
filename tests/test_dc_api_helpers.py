@@ -109,6 +109,7 @@ async def test_board_collects_mobile_search_block_navigation(monkeypatch):
         "next_page": 2,
         "next_pos": -20816199,
         "block_max_page": 10,
+        "source_pattern": "mobile",
     }
 
 
@@ -133,6 +134,7 @@ def test_search_navigation_parses_prev_without_using_it_as_next_fallback():
         "next_page": None,
         "next_pos": -20806199,
         "block_max_page": 1,
+        "source_pattern": "mobile",
     }
 
 
@@ -197,6 +199,7 @@ def test_pc_search_navigation_includes_numeric_links_without_search_pos():
         "next_page": 2,
         "next_pos": -20,
         "block_max_page": 10,
+        "source_pattern": "minor",
     }
 
 
