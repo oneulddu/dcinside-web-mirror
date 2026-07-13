@@ -1672,3 +1672,39 @@ async def test_related_scan_cap_keeps_unvisited_next_block_as_more():
     assert [row["id"] for row in related] == ["99"]
     assert has_more is True
     assert returned_pos == current_pos
+
+
+@pytest.mark.asyncio
+async def test_related_scan_cap_keeps_unvisited_next_page_as_more():
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({
+                    "source_pattern": "mobile",
+                    "next_page": page + 1,
+                })
+            if page == 1:
+                yield _index_item(100)
+                yield _index_item(99)
+                return
+            yield _index_item(99)
+
+    related, has_more, returned_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "scan-cap-next-page",
+        limit=1,
+        probe_steps=1,
+        source_page=1,
+        search_keyword="공군",
+        search_pos=-300,
+        list_pattern="mobile",
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert has_more is True
+    assert returned_pos == -300

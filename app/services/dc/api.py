@@ -259,11 +259,8 @@ class API(ParserMixin):
         )
         if (
             previous_parsed is None
-            or self.__search_page_size_for_pattern(
-                self.__list_url_pattern(previous_used_url)
-            ) != self.__search_page_size_for_pattern(
-                self.__list_url_pattern(used_url)
-            )
+            or self.__list_url_pattern(previous_used_url)
+            != self.__list_url_pattern(used_url)
         ):
             return False
         previous_kind, previous_rows = self.__search_list_rows(previous_parsed)
@@ -310,12 +307,19 @@ class API(ParserMixin):
         last_nav = None
         last_used_url = None
         seen_row_keys = set()
+        target_used_pattern = None
 
         for target_page in range(first_target_page, last_target_page + 1):
             page_urls = [
                 self.__replace_list_page(url, target_page)
                 for url in target_urls
             ]
+            if target_used_pattern:
+                page_urls = [
+                    url
+                    for url in page_urls
+                    if self.__list_url_pattern(url) == target_used_pattern
+                ]
             parsed, _text, used_url = await self.__fetch_parsed_from_urls(
                 page_urls,
                 validator=self.__is_usable_board_page,
@@ -326,22 +330,34 @@ class API(ParserMixin):
                 or self.__search_page_size_for_pattern(used_pattern) != target_size
             ):
                 return None, "", None, None
+            if target_used_pattern is None:
+                target_used_pattern = used_pattern
+            elif used_pattern != target_used_pattern:
+                return None, "", None, None
             current_nav = self.__parse_search_navigation(
                 parsed,
                 used_url,
                 search_pos,
             )
-            if (
+            block_max_page = to_optional_int(current_nav.get("block_max_page"))
+            has_navigation = any(
+                current_nav.get(key) is not None
+                for key in ("prev_pos", "next_page", "next_pos", "block_max_page")
+            )
+            needs_repeat_check = (
                 target_page == first_target_page
                 and target_page > 1
-                and await self.__search_page_repeats_previous(
+                and (
+                    not has_navigation
+                    or (block_max_page and target_page > block_max_page)
+                )
+            )
+            if needs_repeat_check and await self.__search_page_repeats_previous(
                 parsed,
                 used_url,
                 target_page,
-                )
             ):
                 break
-            block_max_page = to_optional_int(current_nav.get("block_max_page"))
             if block_max_page and target_page > block_max_page:
                 current_nav["block_max_page"] = target_page
             current_kind, current_rows = self.__search_list_rows(parsed)
@@ -1011,9 +1027,23 @@ class API(ParserMixin):
                     cross_platform_nav
                     or self.__parse_search_navigation(parsed, used_url, search_pos)
                 )
-                if (
+                block_max_page = to_optional_int(
+                    current_search_nav.get("block_max_page")
+                )
+                has_navigation = any(
+                    current_search_nav.get(key) is not None
+                    for key in ("prev_pos", "next_page", "next_pos", "block_max_page")
+                )
+                needs_repeat_check = (
                     cross_platform_nav is None
                     and page > 1
+                    and (
+                        not has_navigation
+                        or (block_max_page and page > block_max_page)
+                    )
+                )
+                if (
+                    needs_repeat_check
                     and await self.__search_page_repeats_previous(
                         parsed,
                         used_url,
@@ -1024,9 +1054,6 @@ class API(ParserMixin):
                 if search_nav_collector is not None and not search_nav_captured:
                     search_nav_collector.update(current_search_nav)
                     search_nav_captured = True
-                block_max_page = to_optional_int(
-                    current_search_nav.get("block_max_page")
-                )
                 if block_max_page and page > block_max_page:
                     current_search_nav["block_max_page"] = page
                     if search_nav_collector is not None:

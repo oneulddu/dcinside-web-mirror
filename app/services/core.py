@@ -1115,7 +1115,10 @@ async def _related_after_position_with_api(
     if (
         search_keyword_value
         and len(related) < collect_limit
-        and loaded_tail >= max_tail
+        and (
+            loaded_tail >= max_tail
+            or scanned_tail_pages >= max_tail_scans
+        )
         and last_successful_search_nav is not None
     ):
         unvisited_next_page_remains = bool(

@@ -1197,7 +1197,7 @@ async def test_search_page_maps_cross_platform_fallback_by_row_offset():
     ]
 
     assert [row.id for row in rows] == [str(doc_id) for doc_id in range(970, 940, -1)]
-    assert seen_pages == [2, 1, 3]
+    assert seen_pages == [2, 3]
     assert nav["next_page"] == 3
     assert nav["source_pattern"] == "mobile"
 
@@ -1444,6 +1444,58 @@ async def test_cross_platform_partial_window_preserves_empty_page_next_pos():
     assert len(rows) == 10
     assert nav["next_page"] is None
     assert nav["next_pos"] == next_pos
+
+
+@pytest.mark.asyncio
+async def test_cross_platform_fallback_does_not_mix_pc_gallery_patterns():
+    api = API.__new__(API)
+    seen_batches = []
+
+    async def fake_fetch(urls, validator=None):
+        seen_batches.append(list(urls))
+        if all(url.startswith("https://m.dcinside.com/") for url in urls):
+            return None, "", None
+        page = int(parse_qs(urlparse(urls[0]).query)["page"][0])
+        if page == 2:
+            used_url = next(url for url in urls if "/mgallery/" in url)
+        else:
+            assert all("/mgallery/" in url for url in urls)
+            used_url = urls[0].replace("/mgallery/", "/")
+        body_rows = "".join(
+            """
+              <tr class="ub-content us-post" data-no="{doc_id}">
+                <td class="gall_tit"><a href="/board/view/?id=test&amp;no={doc_id}">row</a></td>
+                <td class="gall_writer" data-nick="익명"></td>
+                <td class="gall_date" title="2026.07.13 12:00:00"></td>
+                <td class="gall_count">1</td><td class="gall_recommend">0</td>
+              </tr>
+            """.format(doc_id=doc_id)
+            for doc_id in range(1000 - (page * 20), 980 - (page * 20), -1)
+        )
+        next_url = api._API__replace_list_page(used_url, page + 1)
+        return (
+            lxml.html.fromstring(
+                "<html><body><table><tbody>{}</tbody></table>"
+                "<div class='paging'><a href='{}'>next</a></div>"
+                "</body></html>".format(body_rows, next_url)
+            ),
+            "ok",
+            used_url,
+        )
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+    rows = [
+        item async for item in api.board(
+            "test",
+            num=30,
+            start_page=2,
+            search_keyword="공군",
+            list_pattern="mobile",
+            max_scan_pages=1,
+        )
+    ]
+
+    assert rows == []
 
 
 @pytest.mark.asyncio
