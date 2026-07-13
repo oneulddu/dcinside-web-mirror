@@ -3222,7 +3222,7 @@ def test_youtube_size_route_returns_sizes_and_rejects_garbage(monkeypatch):
     monkeypatch.setattr(
         youtube_meta,
         "video_size",
-        lambda video_id: {"width": 268, "height": 480} if video_id == "oHCWsqUWRcs" else None,
+        lambda video_id, deadline=None: {"width": 268, "height": 480} if video_id == "oHCWsqUWRcs" else None,
     )
     app = create_app()
     client = app.test_client()
@@ -3233,10 +3233,40 @@ def test_youtube_size_route_returns_sizes_and_rejects_garbage(monkeypatch):
         "oHCWsqUWRcs": {"width": 268, "height": 480},
         "dQw4w9WgXcQ": None,
     }
-    assert "max-age=86400" in response.headers.get("Cache-Control", "")
+    # 실패(null)가 섞이면 브라우저 캐시를 짧게 가져가 unknown 재시도를 살린다.
+    assert "max-age=300" in response.headers.get("Cache-Control", "")
+
+    success_response = client.get("/embed/youtube-size?ids=oHCWsqUWRcs")
+    assert "max-age=86400" in success_response.headers.get("Cache-Control", "")
 
     assert client.get("/embed/youtube-size").status_code == 400
     assert client.get("/embed/youtube-size?ids=..%2Fetc,zz").status_code == 400
+
+
+def test_video_size_skips_probe_when_budget_or_deadline_exhausted(monkeypatch):
+    probe_calls = []
+
+    def fake_probe(video_id):
+        probe_calls.append(video_id)
+        return {"width": 480, "height": 268}
+
+    monkeypatch.setattr(youtube_meta, "probe_frame0_size", fake_probe)
+
+    # 전역 프로브 예산 소진 상태에서는 outbound 없이 None을 반환하고 캐시하지 않는다.
+    monkeypatch.setattr(youtube_meta, "PROBE_RATE_MAX_CALLS", 0)
+    monkeypatch.setitem(youtube_meta._probe_rate, "window_start", youtube_meta.time.monotonic())
+    monkeypatch.setitem(youtube_meta._probe_rate, "used", 0)
+    assert youtube_meta.video_size("bbbbbbbbbb1") is None
+    assert probe_calls == []
+
+    # 요청 시간 예산을 넘긴 경우에도 프로브를 건너뛴다.
+    monkeypatch.setattr(youtube_meta, "PROBE_RATE_MAX_CALLS", 100)
+    assert youtube_meta.video_size("bbbbbbbbbb1", deadline=youtube_meta.time.monotonic() - 1) is None
+    assert probe_calls == []
+
+    # 예산이 있으면 정상 프로브하고 캐시한다.
+    assert youtube_meta.video_size("bbbbbbbbbb1") == {"width": 480, "height": 268}
+    assert probe_calls == ["bbbbbbbbbb1"]
 
 
 def test_sanitize_html_fragment_rewrites_youtube_shorts_iframe_to_embed():

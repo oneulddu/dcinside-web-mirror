@@ -1,12 +1,19 @@
 (function () {
     "use strict";
 
+    // 스크립트가 중복 로드돼도 리스너와 조회가 두 번 등록되지 않게 한다.
+    if (window.__mirrorEmbedResizerLoaded) {
+        return;
+    }
+    window.__mirrorEmbedResizerLoaded = true;
+
     var META_TYPE = "mirror:movie-meta";
     var REQUEST_TYPE = "mirror:movie-meta-request";
     var CANDIDATE_SELECTOR = '.article-body iframe[src^="/movie"]';
     var YOUTUBE_SELECTOR = '.article-body iframe[src*="youtube.com/embed/"], .article-body iframe[src*="youtube-nocookie.com/embed/"]';
     var YOUTUBE_SIZE_ENDPOINT = "/embed/youtube-size";
     var YOUTUBE_ID_PATTERN = /\/embed\/([A-Za-z0-9_-]{11})(?:[/?#&]|$)/;
+    var YOUTUBE_SIZE_BATCH = 12;
     var MIN_RATIO = 0.2;
     var MAX_RATIO = 5;
     var ERROR_TITLE = "동영상을 불러오지 못했습니다";
@@ -126,27 +133,7 @@
         return match ? match[1] : null;
     }
 
-    function initYoutubeSizes() {
-        if (typeof window.fetch !== "function") {
-            return;
-        }
-        var frames = document.querySelectorAll(YOUTUBE_SELECTOR);
-        var framesById = {};
-        var ids = [];
-        for (var j = 0; j < frames.length; j += 1) {
-            var videoId = youtubeVideoId(frames[j]);
-            if (!videoId) {
-                continue;
-            }
-            if (!framesById[videoId]) {
-                framesById[videoId] = [];
-                ids.push(videoId);
-            }
-            framesById[videoId].push(frames[j]);
-        }
-        if (!ids.length) {
-            return;
-        }
+    function fetchYoutubeSizes(ids, framesById) {
         fetch(YOUTUBE_SIZE_ENDPOINT + "?ids=" + ids.join(","), { credentials: "same-origin" })
             .then(function (response) {
                 return response.ok ? response.json() : null;
@@ -169,6 +156,30 @@
             .catch(function () {
                 // 조회 실패 시 16:9 기본 프레임을 유지한다.
             });
+    }
+
+    function initYoutubeSizes() {
+        if (typeof window.fetch !== "function") {
+            return;
+        }
+        var frames = document.querySelectorAll(YOUTUBE_SELECTOR);
+        var framesById = {};
+        var ids = [];
+        for (var j = 0; j < frames.length; j += 1) {
+            var videoId = youtubeVideoId(frames[j]);
+            if (!videoId) {
+                continue;
+            }
+            if (!framesById[videoId]) {
+                framesById[videoId] = [];
+                ids.push(videoId);
+            }
+            framesById[videoId].push(frames[j]);
+        }
+        // 서버가 요청당 12개까지만 받으므로 초과분은 배치로 나눠 조회한다.
+        for (var n = 0; n < ids.length; n += YOUTUBE_SIZE_BATCH) {
+            fetchYoutubeSizes(ids.slice(n, n + YOUTUBE_SIZE_BATCH), framesById);
+        }
     }
 
     initYoutubeSizes();

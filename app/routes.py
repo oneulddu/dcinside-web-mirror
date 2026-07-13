@@ -787,7 +787,9 @@ def youtube_size():
     if not sizes:
         abort(400)
     response = jsonify(sizes)
-    response.headers["Cache-Control"] = "public, max-age=86400"
+    # 실패(null)가 섞인 응답이 브라우저에 하루 동안 남으면 짧은 unknown TTL이 무의미해진다.
+    max_age = 86400 if all(sizes.values()) else 300
+    response.headers["Cache-Control"] = f"public, max-age={max_age}"
     return response
 
 
