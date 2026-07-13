@@ -1391,3 +1391,121 @@ async def test_related_latest_id_cache_isolated_by_source_pattern():
         assert [row["id"] for row in related] == ["99"]
 
     assert latest_patterns == ["normal", "mobile"]
+
+
+@pytest.mark.asyncio
+async def test_related_target_search_uses_empty_page_block_max_hint():
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            calls.append((page, kwargs["num"]))
+            search_nav = kwargs.get("search_nav_collector")
+            if kwargs["num"] == 1:
+                yield _index_item(10200)
+                return
+            if page == 51:
+                if search_nav is not None:
+                    search_nav.update({
+                        "block_max_page": 18,
+                        "source_pattern": "mobile",
+                    })
+                return
+            if page == 18:
+                yield _index_item(100)
+                yield _index_item(99)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "100",
+        "100",
+        "empty-estimated-search-page",
+        limit=1,
+        search_keyword="공군",
+        search_pos=-1597774,
+        list_pattern="mobile",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["99"]
+    assert has_more is False
+    assert next_search_pos == -1597774
+    assert calls == [(1, 1), (51, core.RELATED_PAGE_FETCH_SIZE), (18, core.RELATED_PAGE_FETCH_SIZE)]
+
+
+@pytest.mark.asyncio
+async def test_related_target_search_binary_searches_after_empty_estimate():
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            calls.append((page, kwargs["num"]))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"source_pattern": "mobile"})
+            if kwargs["num"] == 1:
+                yield _index_item(10200)
+                return
+            if page > 18:
+                return
+            newest = 1000 - ((page - 1) * 50)
+            yield _index_item(newest)
+            yield _index_item(newest - 1)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "150",
+        "150",
+        "binary-estimated-search-page",
+        limit=1,
+        search_keyword="공군",
+        search_pos=-1597774,
+        list_pattern="mobile",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["149"]
+    assert has_more is False
+    assert next_search_pos == -1597774
+    assert any(page == 18 for page, _num in calls)
+
+
+@pytest.mark.asyncio
+async def test_related_target_search_binary_search_covers_large_estimate():
+    calls = []
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            calls.append((page, kwargs["num"]))
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None:
+                search_nav.update({"source_pattern": "mobile"})
+            if kwargs["num"] == 1:
+                yield _index_item(1000200)
+                return
+            if page > 18:
+                return
+            newest = 1000 - ((page - 1) * 50)
+            yield _index_item(newest)
+            yield _index_item(newest - 1)
+
+    related, has_more, next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "150",
+        "150",
+        "large-binary-estimated-search-page",
+        limit=1,
+        probe_steps=1,
+        search_keyword="공군",
+        search_pos=-1597774,
+        list_pattern="mobile",
+        tail_pages=0,
+    )
+
+    assert [row["id"] for row in related] == ["149"]
+    assert has_more is False
+    assert next_search_pos == -1597774
+    assert any(page == 18 for page, _num in calls)

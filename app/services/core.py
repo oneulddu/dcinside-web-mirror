@@ -835,13 +835,30 @@ async def _related_after_position_with_api(
                 search_nav_collector=search_nav,
                 list_pattern=search_list_pattern,
             )
-            if not page_posts:
-                break
             if search_nav is not None:
                 last_successful_search_nav = dict(search_nav)
                 search_list_pattern = (
                     search_nav.get("source_pattern") or search_list_pattern
                 )
+            if not page_posts:
+                block_max_page = _safe_int((search_nav or {}).get("block_max_page"), 0)
+                if (
+                    search_keyword_value
+                    and block_max_page > 0
+                    and block_max_page < page
+                    and block_max_page not in checked
+                ):
+                    page = block_max_page
+                    continue
+                forward_page = _safe_int((search_nav or {}).get("next_page"), 0)
+                if (
+                    search_keyword_value
+                    and forward_page > page
+                    and forward_page not in checked
+                ):
+                    page = forward_page
+                    continue
+                break
 
             page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
             if target_id in page_ids:
@@ -865,6 +882,57 @@ async def _related_after_position_with_api(
                 page += 1
             else:
                 page += 1
+
+        return None, -1, []
+
+    async def find_target_in_search_range(max_page):
+        nonlocal last_successful_search_nav, search_list_pattern
+        low = 1
+        high = max(_safe_int(max_page, 1), 1)
+        steps = 0
+        # Cover the full estimated range while keeping the fallback logarithmic.
+        max_binary_steps = max(max_probe * 2, high.bit_length() + 1, 8)
+
+        while low <= high and steps < max_binary_steps:
+            page = (low + high) // 2
+            steps += 1
+            search_nav = {}
+            page_posts = await _fetch_board_page(
+                api,
+                page,
+                board,
+                recommend_value,
+                kind=kind,
+                search_type=search_type_value,
+                search_keyword=search_keyword_value,
+                head_id=head_id_value or None,
+                search_pos=search_pos_value,
+                search_nav_collector=search_nav,
+                list_pattern=search_list_pattern,
+            )
+            last_successful_search_nav = dict(search_nav)
+            search_list_pattern = (
+                search_nav.get("source_pattern") or search_list_pattern
+            )
+            if not page_posts:
+                high = page - 1
+                continue
+
+            page_ids = [_safe_int(row.get("id"), 0) for row in page_posts]
+            if target_id in page_ids:
+                return page, page_ids.index(target_id), page_posts
+            valid_ids = [pid for pid in page_ids if pid > 0]
+            if not valid_ids:
+                high = page - 1
+                continue
+            if target_id < min(valid_ids):
+                low = page + 1
+            elif target_id > max(valid_ids):
+                high = page - 1
+            else:
+                # IDs can be sparse inside a search page. Probe the next older
+                # page rather than treating an in-range miss as terminal.
+                low = page + 1
 
         return None, -1, []
 
@@ -896,6 +964,15 @@ async def _related_after_position_with_api(
                 continue
             attempted_candidate_pages.add(candidate_page)
             found_page, found_index, found_posts = await find_target_from_page(candidate_page)
+            if (
+                found_page is None
+                and search_keyword_value
+                and source_page_value <= 0
+                and candidate_page > 1
+            ):
+                found_page, found_index, found_posts = await find_target_in_search_range(
+                    candidate_page - 1
+                )
             if found_page is not None:
                 break
 
