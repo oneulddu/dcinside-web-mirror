@@ -172,7 +172,7 @@ def _add_search_params(params, search_type=None, search_keyword=None, search_pos
         params["s_pos"] = normalized_search_pos
 
 
-def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None, search_pos=None):
+def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None, search_pos=None, source_pattern=None):
     params = {
         "board": board,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
@@ -185,6 +185,9 @@ def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_t
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword, search_pos)
+    normalized_source_pattern = _normalize_source_pattern(source_pattern)
+    if (search_keyword or "").strip() and normalized_source_pattern:
+        params["source_pattern"] = normalized_source_pattern
     return params
 
 
@@ -199,8 +202,12 @@ def board_url(
     head_id=None,
     gallery_name=None,
     search_pos=None,
+    source_pattern=None,
 ):
-    params = _board_link_params(board, recommend, page, kind, nav, search_type, search_keyword, head_id, search_pos)
+    params = _board_link_params(
+        board, recommend, page, kind, nav, search_type, search_keyword,
+        head_id, search_pos, source_pattern,
+    )
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
         params["gallery_name"] = clean_name
@@ -456,7 +463,7 @@ def _read_social_meta(data, images, board, pid, kind, recommend, source_page, se
     }
 
 
-async def _load_board_payload(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None):
+async def _load_board_payload(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None, list_pattern=None):
     return await async_index_with_head_categories(
         page,
         board,
@@ -467,6 +474,7 @@ async def _load_board_payload(page, board, recommend, kind=None, search_type=Non
         search_keyword=search_keyword,
         head_id=head_id,
         search_pos=search_pos,
+        list_pattern=list_pattern,
     )
 
 
@@ -694,6 +702,7 @@ def board():
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
     search_pos = _search_pos_arg()
+    source_pattern = _normalize_source_pattern(request.args.get("source_pattern"))
     ret, head_categories, search_nav = run_async(
         _load_board_payload(
             page,
@@ -703,8 +712,13 @@ def board():
             search_type=search_type,
             search_keyword=search_keyword,
             search_pos=search_pos,
+            list_pattern=source_pattern,
             head_id=head_id,
         )
+    )
+    source_pattern = (
+        source_pattern
+        or _normalize_source_pattern((search_nav or {}).get("source_pattern"))
     )
     search_prev_url = None
     search_next_url = None
@@ -713,12 +727,14 @@ def board():
             search_prev_url = board_url(
                 board, recommend, page - 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, search_pos,
+                source_pattern,
             )
         elif search_pos is not None and search_nav.get("prev_pos") is not None:
             prev_pos = _safe_int(search_nav.get("prev_pos"), 0) or None
             search_prev_url = board_url(
                 board, recommend, 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, prev_pos,
+                source_pattern,
             )
         block_max_page = _safe_int(search_nav.get("block_max_page"), 0)
         next_page = _safe_int(search_nav.get("next_page"), 0)
@@ -727,16 +743,19 @@ def board():
             search_next_url = board_url(
                 board, recommend, next_page, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, search_pos,
+                source_pattern,
             )
         elif block_max_page and page < block_max_page:
             search_next_url = board_url(
                 board, recommend, page + 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, search_pos,
+                source_pattern,
             )
         elif next_pos:
             search_next_url = board_url(
                 board, recommend, 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, next_pos,
+                source_pattern,
             )
 
     response = make_response(
@@ -757,7 +776,7 @@ def board():
             search_pos=search_pos,
             search_prev_url=search_prev_url,
             search_next_url=search_next_url,
-            source_pattern=_normalize_source_pattern((search_nav or {}).get("source_pattern")),
+            source_pattern=source_pattern,
             head_id=head_id,
             head_categories=head_categories,
         )

@@ -198,9 +198,10 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
             "kind": expected_kind,
             "search_type": "comment",
             "search_keyword": "검색어",
-            "head_id": "17",
-            "search_pos": None,
-        }
+                "head_id": "17",
+                "search_pos": None,
+                "list_pattern": None,
+            }
     ]
     assert board_section["data-kind"] == (expected_kind or "")
     assert board_section["data-recommend"] == "1"

@@ -257,6 +257,7 @@ def _board_index_cache_key(
     search_keyword=None,
     head_id=None,
     search_pos=None,
+    list_pattern=None,
 ):
     return (
         board,
@@ -271,6 +272,7 @@ def _board_index_cache_key(
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
         _normalize_search_pos(search_pos),
+        _normalize_list_pattern(list_pattern),
     )
 
 
@@ -653,6 +655,7 @@ async def async_index_with_head_categories(
     search_keyword=None,
     head_id=None,
     search_pos=None,
+    list_pattern=None,
 ):
     if limit is None:
         fetch_num = MAX_PAGE
@@ -684,6 +687,7 @@ async def async_index_with_head_categories(
         search_keyword=search_keyword,
         head_id=head_id,
         search_pos=search_pos,
+        list_pattern=list_pattern,
     )
     cached = _cache_get(_BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK, cache_key)
     if cached is not None:
@@ -709,6 +713,7 @@ async def async_index_with_head_categories(
             headtexts_collector=headtexts,
             search_pos=search_pos,
             search_nav_collector=search_nav,
+            list_pattern=_normalize_list_pattern(list_pattern),
         ):
             data.append(_index_item_to_dict(item))
         await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)

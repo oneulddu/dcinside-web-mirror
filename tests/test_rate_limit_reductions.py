@@ -224,6 +224,37 @@ async def test_async_index_cache_key_includes_limit_and_scan_bounds(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_async_index_cache_distinguishes_source_pattern(monkeypatch):
+    class FakeAPI:
+        instances = []
+
+        def __init__(self):
+            self.patterns = []
+            self.__class__.instances.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def board(self, **kwargs):
+            self.patterns.append(kwargs.get("list_pattern"))
+            yield _index_item(123, is_mobile_source=True)
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    await core.async_index_with_head_categories(
+        1, "index-source-pattern", 0, search_keyword="hello", list_pattern="mobile"
+    )
+    await core.async_index_with_head_categories(
+        1, "index-source-pattern", 0, search_keyword="hello", list_pattern="normal"
+    )
+
+    assert [instance.patterns for instance in FakeAPI.instances] == [["mobile"], ["normal"]]
+
+
+@pytest.mark.asyncio
 async def test_async_index_with_head_categories_does_not_cache_empty_results(monkeypatch):
     class FakeAPI:
         calls = 0

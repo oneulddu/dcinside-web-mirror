@@ -184,6 +184,8 @@ def test_search_pager_preserves_search_position(monkeypatch):
     assert pager_links["다음"]["page"] == ["3"]
     assert pager_links["이전"]["s_pos"] == ["-20816199"]
     assert pager_links["다음"]["s_pos"] == ["-20816199"]
+    assert pager_links["이전"]["source_pattern"] == ["mobile"]
+    assert pager_links["다음"]["source_pattern"] == ["mobile"]
     assert soup.select_one(".board-search-form [name='s_pos']") is None
 
 
@@ -311,6 +313,7 @@ def test_read_navigation_preserves_search_position(monkeypatch):
     for selector in (".crumb-link", ".pager-row .pager-btn"):
         query = parse_qs(urlparse(soup.select_one(selector)["href"]).query)
         assert query["s_pos"] == ["-123"]
+        assert query["source_pattern"] == ["mobile"]
     assert soup.select_one("#related-list a.feed-item") is None
     assert "더보기를 누르면 불러옵니다" in soup.select_one("#related-list").get_text(" ", strip=True)
     assert soup.select_one("#related-section")["data-search-pos"] == "-123"
