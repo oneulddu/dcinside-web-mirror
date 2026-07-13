@@ -1188,8 +1188,9 @@ def test_movie_route_renders_same_origin_video_player(monkeypatch):
 
     assert response.status_code == 200
     soup = BeautifulSoup(response.data.decode("utf-8"), "html.parser")
-    source_query = parse_qs(urlparse(soup.find("source")["src"]).query)
-    poster_query = parse_qs(urlparse(soup.find("video")["poster"]).query)
+    video = soup.find("video")
+    source_query = parse_qs(urlparse(video["src"]).query)
+    poster_query = parse_qs(urlparse(video["poster"]).query)
     assert source_query["src"] == ["https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4&code=movie"]
     assert poster_query["src"] == ["https://dcm6.dcinside.co.kr/viewmovie.php?type=jpg&code=poster"]
     assert requests_seen[0][0] == "https://gall.dcinside.com/board/movie/movie_view?no=6499430"
@@ -3063,3 +3064,47 @@ def test_search_galleries_reuses_short_cache(monkeypatch):
 
     assert len(calls) == 1
     assert second[0]["name"] == "테스트 일반"
+
+
+def test_movie_html_uses_direct_src_with_metadata_handshake_script():
+    app = create_app()
+    media = {
+        "source": "https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4",
+        "poster": "https://images.dcinside.com/poster.jpg",
+    }
+
+    with app.test_request_context("/movie?no=6499430&board=idolism&pid=1193413"):
+        html = media_proxy.movie_html(media, "idolism", "1193413")
+
+    soup = BeautifulSoup(html, "html.parser")
+    video = soup.find("video")
+    assert video is not None
+    # <source> 자식 구조에서는 로드 실패 error 이벤트가 video에 발화하지 않으므로
+    # src 속성을 직접 써야 한다.
+    assert video.find("source") is None
+    assert video.get("src", "").startswith("/media?")
+    assert video.get("preload") == "metadata"
+
+    script = soup.find("script")
+    assert script is not None
+    script_text = script.get_text()
+    assert "window.parent === window" in script_text
+    assert "mirror:movie-meta" in script_text
+    assert "mirror:movie-meta-request" in script_text
+    assert "loadedmetadata" in script_text
+    assert "videoWidth" in script_text
+    assert "window.location.origin" in script_text
+
+
+def test_movie_error_html_reports_error_handshake():
+    html = media_proxy.movie_error_html()
+
+    soup = BeautifulSoup(html, "html.parser")
+    script = soup.find("script")
+    assert script is not None
+    script_text = script.get_text()
+    assert "window.parent === window" in script_text
+    assert "mirror:movie-meta" in script_text
+    assert "error: true" in script_text
+    assert "mirror:movie-meta-request" in script_text
+    assert "window.location.origin" in script_text
