@@ -425,7 +425,7 @@ def _read_social_meta(data, images, board, pid, kind, recommend, source_page, se
     }
 
 
-async def _load_board_payload(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None):
+async def _load_board_payload(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None, pagination_collector=None):
     return await async_index_with_head_categories(
         page,
         board,
@@ -435,6 +435,7 @@ async def _load_board_payload(page, board, recommend, kind=None, search_type=Non
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        pagination_collector=pagination_collector,
     )
 
 
@@ -661,6 +662,7 @@ def board():
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    pagination = {}
     ret, head_categories = run_async(
         _load_board_payload(
             page,
@@ -670,8 +672,26 @@ def board():
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            pagination_collector=pagination,
         )
     )
+
+    current_page = _safe_int(pagination.get("current_page"), 0)
+    if current_page > 0 and current_page < page and pagination.get("has_next") is False:
+        return redirect(
+            board_url(
+                board,
+                recommend=recommend,
+                page=current_page,
+                kind=kind,
+                nav=nav_mode,
+                search_type=search_type,
+                search_keyword=search_keyword,
+                head_id=head_id,
+                gallery_name=gallery_name,
+            ),
+            code=302,
+        )
 
     response = make_response(
         render_template(
@@ -690,6 +710,7 @@ def board():
             search_keyword=search_keyword,
             head_id=head_id,
             head_categories=head_categories,
+            board_has_next=pagination.get("has_next"),
         )
     )
     touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)

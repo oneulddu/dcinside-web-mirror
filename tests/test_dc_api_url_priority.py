@@ -25,6 +25,34 @@ def _pc_board_html(doc_id="123", title="pc title"):
     )
 
 
+def _mobile_board_html(doc_id="123", title="mobile title", pagination=""):
+    return f"""
+    <html><body>
+      <ul class="gall-detail-lst">
+        <li><a class="lt" href="https://m.dcinside.com/board/test/{doc_id}">
+          <span class="subjectin">{title}</span>
+          <ul class="ginfo"><li>일반</li><li>ㅇㅇ</li><li>00:01</li><li>조회 1</li><li>추천 0</li></ul>
+        </a></li>
+      </ul>
+      {pagination}
+    </body></html>
+    """
+
+
+def _pc_board_html_text(doc_id="123", title="pc title", pagination=""):
+    return f"""
+    <html><body><table><tbody>
+      <tr class="ub-content us-post" data-no="{doc_id}">
+        <td class="gall_tit"><a href="/board/view/?id=test&no={doc_id}">{title}</a></td>
+        <td class="gall_writer" data-nick="pc author" data-ip="1.2"></td>
+        <td class="gall_date" title="2026.04.16 12:00:00"></td>
+        <td class="gall_count">7</td>
+        <td class="gall_recommend">3</td>
+      </tr>
+    </tbody></table>{pagination}</body></html>
+    """
+
+
 def _clear_board_kind_cache():
     with dc_api._BOARD_KIND_CACHE_LOCK:
         dc_api._BOARD_KIND_CACHE.clear()
@@ -226,6 +254,203 @@ def test_parse_mobile_headtext_tabs():
         {"head_id": "0", "label": "일반", "active": False},
         {"head_id": "10", "label": "📪정보", "active": True},
     ]
+
+
+@pytest.mark.parametrize(
+    ("pagination", "expected_current", "expected_has_next"),
+    [
+        (
+            '<div id="pagination_div"><div class="paging-inner"><strong>2</strong>'
+            '<a href="?page=3">다음</a></div></div>',
+            2,
+            True,
+        ),
+        (
+            '<div id="pagination_div"><div class="paging-inner">'
+            '<a href="?page=1">이전</a><strong>2</strong></div></div>',
+            2,
+            False,
+        ),
+        (
+            '<div id="pagination_div"><div class="paging-inner"><strong>2</strong>'
+            '<a href="?page=2&search_pos=">더보기</a></div></div>',
+            2,
+            None,
+        ),
+        ('<div id="pagination_div"><div class="paging-inner"></div></div>', None, None),
+    ],
+)
+def test_parse_mobile_board_pagination(pagination, expected_current, expected_has_next):
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(_mobile_board_html(pagination=pagination))
+
+    state = api._API__parse_board_pagination(
+        parsed,
+        "https://m.dcinside.com/board/test?page=2",
+    )
+
+    assert state == {
+        "requested_page": 2,
+        "current_page": expected_current,
+        "has_next": expected_has_next,
+    }
+
+
+@pytest.mark.parametrize(
+    ("requested_page", "pagination", "expected_current", "expected_has_next"),
+    [
+        (
+            2,
+            '<div class="bottom_paging_box"><a href="/mgallery/board/lists/?id=test&page=1">1</a>'
+            '<em>2</em><a class="search_next" href="/mgallery/board/lists/?id=test&page=3">다음</a></div>',
+            2,
+            True,
+        ),
+        (
+            2,
+            '<div class="bottom_paging_box"><a href="/mgallery/board/lists/?id=test&page=1">1</a>'
+            '<em>2</em></div>',
+            2,
+            False,
+        ),
+        (3, '<div class="bottom_paging_box"><em>2</em></div>', 2, False),
+        (1, '<div class="bottom_paging_box"><em>1</em></div>', 1, False),
+        (
+            2,
+            '<div class="bottom_paging_box"><em>2</em></div>'
+            '<div class="bottom_paging_box"><em>1</em>'
+            '<a href="javascript:ajax_list_search(1);">검색 위젯</a></div>',
+            2,
+            False,
+        ),
+        (
+            2,
+            '<div class="bottom_paging_box"><em>2</em></div>'
+            '<div class="bottom_paging_box"><em>3</em></div>',
+            None,
+            None,
+        ),
+        (
+            2,
+            '<div class="bottom_paging_box"><em>2</em>'
+            '<a href="/mgallery/board/lists/?id=test" class="next">다음</a></div>',
+            2,
+            None,
+        ),
+    ],
+)
+def test_parse_pc_board_pagination(
+    requested_page,
+    pagination,
+    expected_current,
+    expected_has_next,
+):
+    api = API.__new__(API)
+    parsed = lxml.html.fromstring(_pc_board_html_text(pagination=pagination))
+
+    state = api._API__parse_board_pagination(
+        parsed,
+        f"https://gall.dcinside.com/mgallery/board/lists/?id=test&page={requested_page}",
+    )
+
+    assert state == {
+        "requested_page": requested_page,
+        "current_page": expected_current,
+        "has_next": expected_has_next,
+    }
+
+
+@pytest.mark.asyncio
+async def test_board_rejects_ambiguous_clamped_mobile_and_falls_through_to_pc_with_cached_mobile_pattern(monkeypatch):
+    _clear_board_kind_cache()
+    api = API.__new__(API)
+    api.last_board_headtexts = []
+    mobile_pagination = (
+        '<div id="pagination_div"><div class="paging-inner"><strong>1</strong>'
+        '<a href="?page=1&s_pos=cursor">더보기</a></div></div>'
+    )
+    pc_pagination = '<div class="bottom_paging_box"><em>1</em></div>'
+    calls = []
+
+    async def fake_request(method, url, **kwargs):
+        calls.append(url)
+        if url.startswith("https://m.dcinside.com/"):
+            return 200, {}, _mobile_board_html(pagination=mobile_pagination)
+        return 200, {}, _pc_board_html_text(pagination=pc_pagination)
+
+    monkeypatch.setattr(api, "_API__request_text", fake_request)
+    urls = api._API__build_list_urls("test", 2, search_keyword="검색")
+    cache_key = api._API__board_kind_cache_key("test", search_keyword="검색")
+    api._API__cache_list_url_pattern(cache_key, urls[0])
+    pagination = {}
+
+    rows = [
+        row
+        async for row in api.board(
+            "test",
+            num=1,
+            start_page=2,
+            search_keyword="검색",
+            pagination_collector=pagination,
+        )
+    ]
+
+    assert [row.id for row in rows] == ["123"]
+    assert calls[0].startswith("https://m.dcinside.com/")
+    assert calls[1].startswith("https://gall.dcinside.com/")
+    assert pagination == {"requested_page": 2, "current_page": 1, "has_next": False}
+    _clear_board_kind_cache()
+
+
+@pytest.mark.asyncio
+async def test_board_collects_first_accepted_pagination_and_stops_after_last_page(monkeypatch):
+    api = API.__new__(API)
+    api.last_board_headtexts = []
+    pages = [
+        (
+            lxml.html.fromstring(
+                _mobile_board_html(
+                    "200",
+                    pagination='<div id="pagination_div"><div class="paging-inner"><strong>1</strong>'
+                    '<a href="?page=2">다음</a></div></div>',
+                )
+            ),
+            "https://m.dcinside.com/board/test?page=1",
+        ),
+        (
+            lxml.html.fromstring(
+                _mobile_board_html(
+                    "199",
+                    pagination='<div id="pagination_div"><div class="paging-inner"><strong>2</strong></div></div>',
+                )
+            ),
+            "https://m.dcinside.com/board/test?page=2",
+        ),
+    ]
+    fetch_calls = []
+
+    async def fake_fetch(urls, validator=None):
+        fetch_calls.append(list(urls))
+        parsed, used_url = pages.pop(0)
+        return parsed, "ok", used_url
+
+    monkeypatch.setattr(api, "_API__fetch_parsed_from_urls", fake_fetch)
+    pagination = {"stale": True}
+
+    rows = [
+        row
+        async for row in api.board(
+            "test",
+            num=3,
+            start_page=1,
+            max_scan_pages=3,
+            pagination_collector=pagination,
+        )
+    ]
+
+    assert [row.id for row in rows] == ["200", "199"]
+    assert len(fetch_calls) == 2
+    assert pagination == {"requested_page": 1, "current_page": 1, "has_next": True}
 
 
 @pytest.mark.asyncio

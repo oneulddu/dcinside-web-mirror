@@ -217,6 +217,10 @@ def _copy_categories(categories):
     return [dict(row) for row in (categories or [])]
 
 
+def _copy_pagination(pagination):
+    return dict(pagination or {})
+
+
 def _copy_read_payload(payload):
     data, comments, images = payload
     copied_data = dict(data or {})
@@ -608,7 +612,10 @@ async def async_index_with_head_categories(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    pagination_collector=None,
 ):
+    if pagination_collector is not None:
+        pagination_collector.clear()
     if limit is None:
         fetch_num = MAX_PAGE
     else:
@@ -641,11 +648,18 @@ async def async_index_with_head_categories(
     )
     cached = _cache_get(_BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK, cache_key)
     if cached is not None:
-        rows, categories = cached
+        if len(cached) >= 3:
+            rows, categories, pagination = cached[:3]
+        else:
+            rows, categories = cached
+            pagination = {}
+        if pagination_collector is not None:
+            pagination_collector.update(_copy_pagination(pagination))
         return _copy_rows(rows), _copy_categories(categories)
 
     data = []
     headtexts = []
+    pagination = {}
     async with dc_api_context() as api:
         async for item in api.board(
             board_id=board,
@@ -660,6 +674,7 @@ async def async_index_with_head_categories(
             search_keyword=search_keyword,
             head_id=head_id,
             headtexts_collector=headtexts,
+            pagination_collector=pagination,
         ):
             data.append(_index_item_to_dict(item))
         await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
@@ -669,10 +684,12 @@ async def async_index_with_head_categories(
             _BOARD_INDEX_CACHE,
             _BOARD_INDEX_CACHE_LOCK,
             cache_key,
-            (_copy_rows(data), _copy_categories(categories)),
+            (_copy_rows(data), _copy_categories(categories), _copy_pagination(pagination)),
             BOARD_PAGE_CACHE_TTL,
             BOARD_INDEX_CACHE_MAX_ITEMS,
         )
+    if pagination_collector is not None:
+        pagination_collector.update(_copy_pagination(pagination))
     return data, categories
 
 

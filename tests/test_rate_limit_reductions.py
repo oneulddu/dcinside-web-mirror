@@ -97,13 +97,15 @@ def test_shared_api_head_categories_are_request_scoped(monkeypatch):
             self.close_calls += 1
             self.session.closed = True
 
-        async def board(self, board_id, headtexts_collector=None, **kwargs):
+        async def board(self, board_id, headtexts_collector=None, pagination_collector=None, **kwargs):
             await asyncio.sleep(0.01 if board_id == "alpha" else 0)
             headtexts = [{"head_id": None, "label": board_id, "active": True}]
             if headtexts_collector is not None:
                 headtexts_collector[:] = headtexts
             else:
                 self.last_board_headtexts = headtexts
+            if pagination_collector is not None:
+                pagination_collector.update({"requested_page": 1, "current_page": 1, "has_next": False})
             yield _index_item(101 if board_id == "alpha" else 202)
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
@@ -139,14 +141,17 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def board(self, headtexts_collector=None, **kwargs):
+        async def board(self, headtexts_collector=None, pagination_collector=None, **kwargs):
             self.board_calls += 1
             if headtexts_collector is not None:
                 headtexts_collector[:] = [{"head_id": None, "label": "전체", "active": True}]
+            if pagination_collector is not None:
+                pagination_collector.update({"requested_page": 1, "current_page": 1, "has_next": False})
             yield _index_item(123, is_mobile_source=True)
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
+    first_pagination = {}
     first_rows, first_categories = await core.async_index_with_head_categories(
         1,
         "test",
@@ -154,9 +159,12 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
         kind="minor",
         limit=1,
         max_scan_pages=1,
+        pagination_collector=first_pagination,
     )
     first_rows[0]["title"] = "mutated"
     first_categories[0]["label"] = "mutated"
+    first_pagination["current_page"] = 99
+    second_pagination = {}
     second_rows, second_categories = await core.async_index_with_head_categories(
         1,
         "test",
@@ -164,12 +172,51 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
         kind="minor",
         limit=1,
         max_scan_pages=1,
+        pagination_collector=second_pagination,
     )
 
     assert len(FakeAPI.instances) == 1
     assert FakeAPI.instances[0].board_calls == 1
     assert second_rows[0]["title"] == "title 123"
     assert second_categories[0]["label"] == "전체"
+    assert second_pagination == {"requested_page": 1, "current_page": 1, "has_next": False}
+
+
+@pytest.mark.asyncio
+async def test_async_index_pagination_collector_clears_for_zero_limit_and_reads_legacy_cache():
+    cleared = {"stale": True}
+
+    assert await core.async_index_with_head_categories(
+        1,
+        "zero",
+        0,
+        limit=0,
+        pagination_collector=cleared,
+    ) == ([], [])
+    assert cleared == {}
+
+    cache_key = core._board_index_cache_key(1, "legacy", 0, fetch_num=1)
+    core._cache_set(
+        core._BOARD_INDEX_CACHE,
+        core._BOARD_INDEX_CACHE_LOCK,
+        cache_key,
+        ([{"id": "123"}], []),
+        core.BOARD_PAGE_CACHE_TTL,
+        core.BOARD_INDEX_CACHE_MAX_ITEMS,
+    )
+    legacy_pagination = {"stale": True}
+
+    rows, categories = await core.async_index_with_head_categories(
+        1,
+        "legacy",
+        0,
+        limit=1,
+        pagination_collector=legacy_pagination,
+    )
+
+    assert rows == [{"id": "123"}]
+    assert categories == []
+    assert legacy_pagination == {}
 
 
 @pytest.mark.asyncio

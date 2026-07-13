@@ -96,7 +96,11 @@
             <span class="pager-btn off">이전</span>
             {% endif %}
             <span class="pager-current">{{ page }}</span>
+            {% if board_has_next is sameas false %}
+            <span class="pager-btn off">다음</span>
+            {% else %}
             <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page + 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">다음</a>
+            {% endif %}
         </div>
     </div>
 </section>

@@ -1,6 +1,7 @@
 from urllib.parse import parse_qsl, urlparse
 
 from bs4 import BeautifulSoup
+import pytest
 
 from app import create_app, routes
 
@@ -153,3 +154,90 @@ def test_screen_status_redirect_cookie_and_html_contract(monkeypatch):
     assert response.headers["Location"] == f"/read?{exact_query}"
     assert client.get("/legacy/unknown", follow_redirects=False).status_code == 404
     assert client.get("/static/legacy/css/main.css", follow_redirects=False).status_code == 404
+
+
+def test_board_clamped_page_redirects_once_and_preserves_context(monkeypatch):
+    calls = []
+
+    async def clamped_payload(*args, pagination_collector=None, **kwargs):
+        calls.append((args, kwargs))
+        pagination_collector.update({"requested_page": 58, "current_page": 57, "has_next": False})
+        return await _board_payload()
+
+    monkeypatch.setattr(routes, "_load_board_payload", clamped_payload)
+    client = create_app().test_client()
+    query = {
+        "board": "test",
+        "page": "58",
+        "recommend": "1",
+        "kind": "minor",
+        "nav": "ai",
+        "s_type": "comment",
+        "serval": "검색어",
+        "headid": "17",
+        "gallery_name": "테스트 갤러리",
+    }
+
+    response = client.get("/board", query_string=query, follow_redirects=False)
+
+    assert response.status_code == 302
+    redirected = urlparse(response.headers["Location"])
+    assert parse_qsl(redirected.query) == [
+        ("board", "test"),
+        ("recommend", "1"),
+        ("page", "57"),
+        ("kind", "minor"),
+        ("nav", "ai"),
+        ("headid", "17"),
+        ("s_type", "comment"),
+        ("serval", "검색어"),
+        ("gallery_name", "테스트 갤러리"),
+    ]
+    final_response = client.get(response.headers["Location"], follow_redirects=False)
+    assert final_response.status_code == 200
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "pagination",
+    [
+        {"current_page": None, "has_next": False},
+        {"current_page": 3, "has_next": False},
+        {"current_page": 2, "has_next": None},
+        {"current_page": "invalid", "has_next": False},
+    ],
+)
+def test_board_does_not_redirect_without_known_clamped_final_page(monkeypatch, pagination):
+    async def payload(*args, pagination_collector=None, **kwargs):
+        pagination_collector.update(pagination)
+        return await _board_payload()
+
+    monkeypatch.setattr(routes, "_load_board_payload", payload)
+    response = create_app().test_client().get(
+        "/board?board=test&page=3&s_type=subject&serval=query",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(("has_next", "next_is_link"), [(False, False), (None, True)])
+def test_board_next_button_uses_explicit_final_page_state(monkeypatch, has_next, next_is_link):
+    async def payload(*args, pagination_collector=None, **kwargs):
+        pagination_collector.update({"requested_page": 2, "current_page": 2, "has_next": has_next})
+        return await _board_payload()
+
+    monkeypatch.setattr(routes, "_load_board_payload", payload)
+    response = create_app().test_client().get("/board?board=test&page=2")
+    soup = BeautifulSoup(response.data, "html.parser")
+    next_link = next(
+        (node for node in soup.select(".board-pager .pager-center a") if node.get_text(strip=True) == "다음"),
+        None,
+    )
+    next_disabled = next(
+        (node for node in soup.select(".board-pager .pager-center span.off") if node.get_text(strip=True) == "다음"),
+        None,
+    )
+
+    assert (next_link is not None) is next_is_link
+    assert (next_disabled is not None) is (not next_is_link)

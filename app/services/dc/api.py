@@ -235,6 +235,159 @@ class API(ParserMixin):
         host = (urlparse(url).netloc or "").lower()
         return host == "m.dcinside.com"
 
+    def __positive_page_from_url(self, url):
+        values = parse_qs(urlparse(url or "").query).get("page", [])
+        for value in values:
+            page = to_optional_int(value)
+            if page is not None and page > 0:
+                return page
+        return None
+
+    def __parse_board_pagination(self, parsed, used_url):
+        requested_page = self.__positive_page_from_url(used_url)
+        unknown = {
+            "requested_page": requested_page,
+            "current_page": None,
+            "has_next": None,
+        }
+
+        if self.__is_mobile_request(used_url):
+            containers = parsed.xpath("//*[@id='pagination_div']")
+            if len(containers) != 1:
+                return unknown
+            container = containers[0]
+            strong_nodes = container.xpath(
+                ".//*[contains(concat(' ', normalize-space(@class), ' '), ' paging-inner ')]//strong"
+            )
+            current_pages = []
+            for node in strong_nodes:
+                text = self.__compact_text(node)
+                if re.fullmatch(r"\d+", text):
+                    current_pages.append(int(text))
+            if len(current_pages) != 1 or current_pages[0] <= 0:
+                return unknown
+
+            current_page = current_pages[0]
+            linked_pages = []
+            has_cursor_link = False
+            for href in container.xpath(".//a[@href]/@href"):
+                page = self.__positive_page_from_url(href)
+                if page is not None:
+                    linked_pages.append(page)
+                query = parse_qs(urlparse(href or "").query, keep_blank_values=True)
+                if "s_pos" in query or "search_pos" in query:
+                    has_cursor_link = True
+
+            if any(linked_page > current_page for linked_page in linked_pages):
+                has_next = True
+            elif has_cursor_link:
+                has_next = None
+            else:
+                has_next = False
+            return {
+                "requested_page": requested_page,
+                "current_page": current_page,
+                "has_next": has_next,
+            }
+
+        candidates = []
+        containers = parsed.xpath(
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' bottom_paging_box ')]"
+        )
+        for container in containers:
+            em_nodes = container.xpath("./em")
+            if len(em_nodes) != 1:
+                continue
+            current_text = self.__compact_text(em_nodes[0])
+            if not re.fullmatch(r"\d+", current_text):
+                continue
+            current_page = int(current_text)
+            if current_page <= 0:
+                continue
+
+            direct_links = []
+            has_ajax_widget_links = False
+            for link in container.xpath("./a"):
+                href = (link.get("href") or "").strip()
+                lower_href = href.lower()
+                if lower_href.startswith("javascript:") and "ajax_list_search" in lower_href:
+                    has_ajax_widget_links = True
+                    continue
+                classes = set((link.get("class") or "").lower().split())
+                path = urlparse(href).path or ""
+                is_board_list = path.rstrip("/").endswith("/board/lists")
+                is_search_next = "search_next" in classes
+                direct_links.append((link, href, is_board_list, is_search_next))
+
+            if has_ajax_widget_links and not direct_links:
+                continue
+
+            relevant_links = [
+                link_info
+                for link_info in direct_links
+                if link_info[2] or link_info[3]
+            ]
+            if not relevant_links and direct_links:
+                continue
+
+            linked_pages = []
+            has_unknown_forward = False
+            for link, href, is_board_list, is_search_next in direct_links:
+                if is_board_list:
+                    linked_page = self.__positive_page_from_url(href)
+                    if linked_page is not None:
+                        linked_pages.append(linked_page)
+                        continue
+                if is_search_next:
+                    continue
+                link_text = self.__compact_text(link).lower()
+                link_classes = set((link.get("class") or "").lower().split())
+                accessible_text = " ".join(
+                    filter(None, [link_text, (link.get("title") or "").lower(), (link.get("aria-label") or "").lower()])
+                )
+                if (
+                    any("next" in token for token in link_classes)
+                    or "다음" in accessible_text
+                    or "next" in accessible_text
+                    or any(symbol in link_text for symbol in (">", "›", "»"))
+                ):
+                    has_unknown_forward = True
+
+            if any(linked_page > current_page for linked_page in linked_pages):
+                has_next = True
+            elif has_unknown_forward:
+                has_next = None
+            else:
+                has_next = False
+            candidates.append((current_page, has_next))
+
+        if not candidates:
+            return unknown
+        if any(candidate != candidates[0] for candidate in candidates[1:]):
+            return unknown
+        current_page, has_next = candidates[0]
+        return {
+            "requested_page": requested_page,
+            "current_page": current_page,
+            "has_next": has_next,
+        }
+
+    def __board_page_validator(self, parsed, text, url):
+        if not self.__is_usable_board_page(parsed, text, url):
+            return False
+        pagination = self.__parse_board_pagination(parsed, url)
+        requested_page = pagination.get("requested_page")
+        current_page = pagination.get("current_page")
+        if (
+            self.__is_mobile_request(url)
+            and requested_page is not None
+            and current_page is not None
+            and current_page < requested_page
+            and pagination.get("has_next") is None
+        ):
+            return False
+        return True
+
     def __is_rate_limited_response(self, status, text):
         if status == 429:
             return True
@@ -539,9 +692,11 @@ class API(ParserMixin):
         if preserved_head_id is not None and not head_added:
             query_items.append((target_head_key, preserved_head_id))
         return parsed._replace(query=urlencode(query_items)).geturl()
-    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None):
+    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, pagination_collector=None):
         page = start_page
         scanned_pages = 0
+        if pagination_collector is not None:
+            pagination_collector.clear()
         if headtexts_collector is not None:
             headtexts_collector[:] = []
         else:
@@ -571,18 +726,18 @@ class API(ParserMixin):
             if cached_url and cached_url != list_urls[0]:
                 parsed, text, used_url = await self.__fetch_parsed_from_urls(
                     [cached_url],
-                    validator=self.__is_usable_board_page,
+                    validator=self.__board_page_validator,
                 )
                 if parsed is None:
                     self.__invalidate_list_url_pattern(cache_key)
                     parsed, text, used_url = await self.__fetch_parsed_from_urls(
                         list_urls,
-                        validator=self.__is_usable_board_page,
+                        validator=self.__board_page_validator,
                     )
             else:
                 parsed, text, used_url = await self.__fetch_parsed_from_urls(
                     list_urls,
-                    validator=self.__is_usable_board_page,
+                    validator=self.__board_page_validator,
                 )
             if cached_pattern and used_url and self.__list_url_pattern(used_url) != cached_pattern:
                 self.__invalidate_list_url_pattern(cache_key)
@@ -591,6 +746,9 @@ class API(ParserMixin):
             scanned_pages += 1
             if parsed is None:
                 break
+            pagination = self.__parse_board_pagination(parsed, used_url)
+            if pagination_collector is not None and not pagination_collector:
+                pagination_collector.update(dict(pagination))
             if not headtexts_captured:
                 headtexts = self.__parse_mobile_headtext_tabs(parsed)
                 if headtexts_collector is not None:
@@ -659,6 +817,8 @@ class API(ParserMixin):
                         break
 
             if yielded_in_page == 0:
+                break
+            if pagination.get("has_next") is False:
                 break
             page += 1
 
