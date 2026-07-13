@@ -1548,3 +1548,49 @@ async def test_related_target_search_estimate_covers_dense_search_pages():
     assert has_more is True
     assert next_search_pos is None
     assert any(page == 7 for page, _num in calls)
+
+
+@pytest.mark.asyncio
+async def test_related_without_source_page_reports_found_page_before_block_change():
+    first_pos = -300
+    next_pos = -200
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            search_nav = kwargs.get("search_nav_collector")
+            if kwargs["num"] == 1:
+                yield _index_item(100)
+                return
+            if search_nav is not None:
+                search_nav.update({"source_pattern": "mobile"})
+            if search_pos == first_pos and page == 5:
+                if search_nav is not None:
+                    search_nav.update({"next_pos": next_pos})
+                yield _index_item(20)
+                return
+            if search_pos == first_pos and page == 6:
+                if search_nav is not None:
+                    search_nav.update({"next_pos": next_pos})
+                return
+            if search_pos == next_pos and page == 1:
+                yield _index_item(19)
+
+    related, has_more, returned_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "20",
+        "20",
+        "missing-source-page-block-change",
+        limit=1,
+        search_keyword="공군",
+        search_pos=first_pos,
+        list_pattern="mobile",
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["19"]
+    assert related[0]["source_page"] == 1
+    assert related[0]["previous_source_page"] == 5
+    assert has_more is False
+    assert returned_pos == next_pos

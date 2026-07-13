@@ -245,6 +245,37 @@ class API(ParserMixin):
                 return "id:" + document_id
         return "html:" + lxml.html.tostring(row, encoding="unicode")
 
+    async def __search_page_repeats_previous(self, parsed, used_url, page):
+        if page <= 1:
+            return False
+        current_kind, current_rows = self.__search_list_rows(parsed)
+        if not current_rows:
+            return False
+        previous_url = self.__replace_list_page(used_url, page - 1)
+        previous_parsed, _text, previous_used_url = await self.__fetch_parsed_from_urls(
+            [previous_url],
+            validator=self.__is_usable_board_page,
+        )
+        if (
+            previous_parsed is None
+            or self.__search_page_size_for_pattern(
+                self.__list_url_pattern(previous_used_url)
+            ) != self.__search_page_size_for_pattern(
+                self.__list_url_pattern(used_url)
+            )
+        ):
+            return False
+        previous_kind, previous_rows = self.__search_list_rows(previous_parsed)
+        if previous_kind != current_kind:
+            return False
+        current_keys = [
+            self.__search_list_row_key(row, current_kind) for row in current_rows
+        ]
+        previous_keys = [
+            self.__search_list_row_key(row, previous_kind) for row in previous_rows
+        ]
+        return bool(current_keys) and current_keys == previous_keys
+
     async def __fetch_cross_platform_search_window(
         self,
         all_list_urls,
@@ -294,6 +325,20 @@ class API(ParserMixin):
                 or self.__search_page_size_for_pattern(used_pattern) != target_size
             ):
                 return None, "", None, None
+            current_nav = self.__parse_search_navigation(
+                parsed,
+                used_url,
+                search_pos,
+            )
+            block_max_page = to_optional_int(current_nav.get("block_max_page"))
+            if block_max_page and target_page > block_max_page:
+                if await self.__search_page_repeats_previous(
+                    parsed,
+                    used_url,
+                    target_page,
+                ):
+                    break
+                current_nav["block_max_page"] = target_page
             current_kind, current_rows = self.__search_list_rows(parsed)
             if row_kind is not None and current_kind != row_kind:
                 return None, "", None, None
@@ -311,11 +356,6 @@ class API(ParserMixin):
             if current_rows and not unique_rows:
                 break
             collected_rows.extend(unique_rows)
-            current_nav = self.__parse_search_navigation(
-                parsed,
-                used_url,
-                search_pos,
-            )
             if first_nav is None:
                 first_nav = current_nav
             last_nav = current_nav
@@ -945,12 +985,27 @@ class API(ParserMixin):
                 else:
                     self.last_board_headtexts = headtexts
                 headtexts_captured = True
-            if search_keyword and search_nav_collector is not None and not search_nav_captured:
-                search_nav_collector.update(
+            if search_keyword:
+                current_search_nav = (
                     cross_platform_nav
                     or self.__parse_search_navigation(parsed, used_url, search_pos)
                 )
-                search_nav_captured = True
+                if search_nav_collector is not None and not search_nav_captured:
+                    search_nav_collector.update(current_search_nav)
+                    search_nav_captured = True
+                block_max_page = to_optional_int(
+                    current_search_nav.get("block_max_page")
+                )
+                if block_max_page and page > block_max_page:
+                    if await self.__search_page_repeats_previous(
+                        parsed,
+                        used_url,
+                        page,
+                    ):
+                        break
+                    current_search_nav["block_max_page"] = page
+                    if search_nav_collector is not None:
+                        search_nav_collector["block_max_page"] = page
             if "등록된 게시물이 없습니다." in text:
                 break
             yielded_in_page = 0

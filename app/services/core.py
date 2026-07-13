@@ -1123,6 +1123,8 @@ async def _related_after_position_with_api(
             row["search_pos"] = block_pos
             if block_pattern:
                 row["source_pattern"] = block_pattern
+        if returned and source_page_value <= 0:
+            returned[0][0]["previous_source_page"] = found_page
     rows = [row for row, _block_pos, _block_pattern in returned]
     # In search mode, continue from the block containing the last returned row.
     next_search_pos = returned[-1][1] if search_keyword_value and returned else None

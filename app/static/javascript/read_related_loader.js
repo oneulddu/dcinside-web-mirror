@@ -323,7 +323,7 @@
                 if (itemSearchPos !== context.searchPos) {
                     context.previousBlockPage = appendPreviousBlockCursor(
                         context.previousBlockPage,
-                        context.sourcePage,
+                        context.sourcePage || String(item.previous_source_page || ""),
                         context.searchPos,
                         context.sourcePattern
                     );

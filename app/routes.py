@@ -333,6 +333,9 @@ def _serialize_related_posts(posts, kind=None):
         if "search_pos" in item:
             search_pos = item.get("search_pos")
             row["s_pos"] = (_safe_int(search_pos, 0) or None) if search_pos is not None else None
+        previous_source_page = _safe_int(item.get("previous_source_page"), 0)
+        if previous_source_page > 0:
+            row["previous_source_page"] = previous_source_page
         source_pattern = _normalize_source_pattern(item.get("source_pattern"), kind)
         if source_pattern:
             row["source_pattern"] = source_pattern

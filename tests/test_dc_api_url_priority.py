@@ -1304,6 +1304,47 @@ async def test_cross_platform_fallback_stops_repeated_partial_tail_page():
 
 
 @pytest.mark.asyncio
+async def test_cross_platform_fallback_rejects_first_out_of_range_page():
+    api = API.__new__(API)
+
+    async def fake_fetch(urls, validator=None):
+        if all(url.startswith("https://m.dcinside.com/") for url in urls):
+            return None, "", None
+        used_url = urls[0]
+        paging_url = api._API__replace_list_page(used_url, 10)
+        return (
+            lxml.html.fromstring(
+                """
+                <html><body><table><tbody>
+                  <tr class="ub-content us-post" data-no="700">
+                    <td class="gall_tit"><a href="/board/view/?id=test&amp;no=700">repeated</a></td>
+                    <td class="gall_writer" data-nick="익명"></td>
+                    <td class="gall_date" title="2026.07.13 12:00:00"></td>
+                    <td class="gall_count">1</td><td class="gall_recommend">0</td>
+                  </tr>
+                </tbody></table><div class="paging"><a href="{}">10</a></div></body></html>
+                """.format(paging_url)
+            ),
+            "ok",
+            used_url,
+        )
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+    rows = [
+        item async for item in api.board(
+            "test",
+            num=30,
+            start_page=8,
+            search_keyword="ㅇㅇ",
+            list_pattern="mobile",
+            max_scan_pages=1,
+        )
+    ]
+
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_board_precise_times_fetches_pc_list_only():
     api = API.__new__(API)
     seen_urls = []
