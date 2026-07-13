@@ -1034,7 +1034,57 @@ def test_sanitize_html_fragment_rejects_scheme_relative_iframe_src():
     soup = BeautifulSoup(cleaned, "html.parser")
     iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
 
-    assert iframe_sources == ["/poll", "https://m.dcinside.com/poll"]
+    assert iframe_sources == ["https://m.dcinside.com/poll", "https://m.dcinside.com/poll"]
+
+
+def test_sanitize_html_fragment_rewrites_relative_poll_to_mobile_absolute():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        '<iframe src="/poll?no=12345&amp;depth=2"></iframe>'
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert soup.iframe["src"] == "https://m.dcinside.com/poll?no=12345&depth=2"
+    assert soup.iframe["title"] == "DCInside 투표"
+
+
+def test_sanitize_html_fragment_normalizes_twitter_status_iframes_to_embed():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="https://x.com/someone/status/1668868113725550592"></iframe>
+          <iframe src="https://twitter.com/someone/statuses/123"></iframe>
+          <iframe src="https://platform.twitter.com/embed/Tweet.html?id=456&theme=dark"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
+
+    assert iframe_sources == [
+        "https://platform.twitter.com/embed/Tweet.html?id=1668868113725550592&dnt=true",
+        "https://platform.twitter.com/embed/Tweet.html?id=123&dnt=true",
+        "https://platform.twitter.com/embed/Tweet.html?id=456&dnt=true",
+    ]
+    assert all(
+        iframe["title"] == "X 게시물" for iframe in soup.find_all("iframe")
+    )
+
+
+def test_sanitize_html_fragment_rejects_non_status_twitter_and_other_embeds():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="https://x.com/someone"></iframe>
+          <iframe src="https://platform.twitter.com/embed/Tweet.html?id=notdigits"></iframe>
+          <iframe src="https://platform.twitter.com/widgets.js"></iframe>
+          <iframe src="https://www.instagram.com/p/abc/embed"></iframe>
+          <iframe src="http://x.com/someone/status/123"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert soup.find_all("iframe") == []
 
 
 def test_sanitize_html_fragment_keeps_local_movie_iframe():

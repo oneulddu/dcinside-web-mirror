@@ -1034,9 +1034,19 @@ a.pager-btn:active {
     background: var(--fg);
 }
 
-.article-body iframe[src^="/poll"],
+/* sanitizer가 상대 /poll을 DC 모바일 절대 주소로 재작성하므로 절대 주소만 매칭한다. */
 .article-body iframe[src^="https://m.dcinside.com/poll"] {
     min-height: 400px;
+    background: var(--surface);
+}
+
+/* X(트위터) 게시물 임베드. 공식 카드 최대 폭 550px, 넘치는 내용은 iframe 스크롤로 본다. */
+.article-body iframe[src^="https://platform.twitter.com/embed/"] {
+    aspect-ratio: auto;
+    width: min(100%, 550px);
+    height: 420px;
+    margin-left: auto;
+    margin-right: auto;
     background: var(--surface);
 }
 
