@@ -71,6 +71,17 @@
         };
     }
 
+    function appendPreviousBlockPage(value, page) {
+        var pages = String(value || "").split(",").filter(function (item) {
+            return /^\d+$/.test(item) && Number(item) > 0;
+        });
+        var normalizedPage = String(page || "");
+        if (/^\d+$/.test(normalizedPage) && Number(normalizedPage) > 0) {
+            pages.push(normalizedPage);
+        }
+        return pages.slice(-64).join(",");
+    }
+
     function escapeHtml(value) {
         return String(value || "").replace(/[&<>"']/g, function (char) {
             return {
@@ -118,6 +129,7 @@
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
         var hasItemSearchPos = hasOwn(item, "s_pos");
         var itemSearchPos = hasItemSearchPos && item.s_pos !== null && item.s_pos !== undefined && item.s_pos !== "" ? String(item.s_pos) : "";
+        var itemSourcePattern = item && item.source_pattern ? String(item.source_pattern) : "";
         if (recommend === "1") {
             href += "&recommend=1";
         }
@@ -136,8 +148,8 @@
             if (itemSearchPos || (!hasItemSearchPos && searchPos)) {
                 href += "&s_pos=" + encodeURIComponent(itemSearchPos || searchPos);
             }
-            if (sourcePattern) {
-                href += "&source_pattern=" + encodeURIComponent(sourcePattern);
+            if (itemSourcePattern || sourcePattern) {
+                href += "&source_pattern=" + encodeURIComponent(itemSourcePattern || sourcePattern);
             }
             if (previousBlockPage) {
                 href += "&prev_page=" + encodeURIComponent(previousBlockPage);
@@ -296,9 +308,15 @@
             if (hasOwn(item, "s_pos")) {
                 var itemSearchPos = item.s_pos === null || item.s_pos === undefined ? "" : String(item.s_pos);
                 if (itemSearchPos !== context.searchPos) {
-                    context.previousBlockPage = context.sourcePage;
+                    context.previousBlockPage = appendPreviousBlockPage(
+                        context.previousBlockPage,
+                        context.sourcePage
+                    );
                     context.searchPos = itemSearchPos;
                 }
+            }
+            if (item && item.source_pattern) {
+                context.sourcePattern = String(item.source_pattern);
             }
             if (item && item.source_page) {
                 context.sourcePage = String(item.source_page);
@@ -542,6 +560,12 @@
             if (payload && payload.next_s_pos !== null && payload.next_s_pos !== undefined && payload.next_s_pos !== "") {
                 context.searchPos = String(payload.next_s_pos);
                 state.section.dataset.searchPos = context.searchPos;
+            }
+            if (payload && payload.next_source_pattern) {
+                context.sourcePattern = String(payload.next_source_pattern);
+            }
+            if (context.sourcePattern) {
+                state.section.dataset.sourcePattern = context.sourcePattern;
             }
             if (context.sourcePage) {
                 state.section.dataset.sourcePage = context.sourcePage;

@@ -1304,6 +1304,7 @@ async def test_related_after_position_uses_supplied_source_pattern_first():
     class FakeAPI:
         async def board(self, **kwargs):
             patterns.append(kwargs.get("list_pattern"))
+            kwargs["search_nav_collector"].update({"source_pattern": "normal"})
             yield _index_item(100)
             yield _index_item(99)
 
@@ -1320,6 +1321,7 @@ async def test_related_after_position_uses_supplied_source_pattern_first():
     )
 
     assert [row["id"] for row in related] == ["99"]
+    assert related[0]["source_pattern"] == "normal"
     assert patterns == ["normal"]
 
 

@@ -988,7 +988,7 @@ async def _related_after_position_with_api(
         if prefix_id > 0:
             seen_ids.add(str(prefix_id))
 
-    def append_rows(rows, block_pos):
+    def append_rows(rows, block_pos, block_pattern):
         nonlocal last_ordered_id
         appended = 0
         for row in rows:
@@ -1001,7 +1001,7 @@ async def _related_after_position_with_api(
             if search_keyword_value and not recommend_value and rid >= last_ordered_id:
                 continue
             seen_ids.add(rid_key)
-            related.append((row, block_pos))
+            related.append((row, block_pos, block_pattern))
             if search_keyword_value and not recommend_value:
                 last_ordered_id = rid
             appended += 1
@@ -1009,7 +1009,11 @@ async def _related_after_position_with_api(
                 break
         return appended
 
-    append_rows(found_posts[found_index + 1 :], search_pos_value)
+    append_rows(
+        found_posts[found_index + 1 :],
+        search_pos_value,
+        search_list_pattern,
+    )
 
     next_page = found_page + 1
     loaded_tail = 0
@@ -1038,6 +1042,11 @@ async def _related_after_position_with_api(
             list_pattern=search_list_pattern,
         )
         scanned_tail_pages += 1
+        if search_nav is not None:
+            last_successful_search_nav = dict(search_nav)
+            search_list_pattern = (
+                search_nav.get("source_pattern") or search_list_pattern
+            )
         if not page_posts:
             active_nav = search_nav or last_successful_search_nav or {}
             forward_page = _safe_int(active_nav.get("next_page"), 0)
@@ -1054,9 +1063,11 @@ async def _related_after_position_with_api(
                 unvisited_next_block_remains = False
                 continue
             break
-        if search_nav is not None:
-            last_successful_search_nav = dict(search_nav)
-        appended = append_rows(page_posts, search_pos_value)
+        appended = append_rows(
+            page_posts,
+            search_pos_value,
+            search_list_pattern,
+        )
         forward_page = _safe_int((search_nav or {}).get("next_page"), 0)
         if search_keyword_value and forward_page > next_page:
             next_page = forward_page
@@ -1096,9 +1107,11 @@ async def _related_after_position_with_api(
 
     returned = related[:fetch_limit]
     if search_keyword_value:
-        for row, block_pos in returned:
+        for row, block_pos, block_pattern in returned:
             row["search_pos"] = block_pos
-    rows = [row for row, _block_pos in returned]
+            if block_pattern:
+                row["source_pattern"] = block_pattern
+    rows = [row for row, _block_pos, _block_pattern in returned]
     # In search mode, continue from the block containing the last returned row.
     next_search_pos = returned[-1][1] if search_keyword_value and returned else None
     # `has_more` is also a cursor contract: when no row is returned, the client

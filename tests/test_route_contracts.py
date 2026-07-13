@@ -1,4 +1,4 @@
-from urllib.parse import parse_qs, parse_qsl, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -321,6 +321,69 @@ def test_search_block_roundtrip_restores_previous_block_last_page(monkeypatch):
     assert next_query["prev_page"] == ["7"]
     assert previous_query["page"] == ["7"]
     assert "s_pos" not in previous_query
+
+
+def test_search_three_block_roundtrip_preserves_full_previous_page_stack(monkeypatch):
+    async def search_payload(page, *args, **kwargs):
+        rows, categories, _search_nav = await _board_payload(page, *args, **kwargs)
+        search_pos = kwargs.get("search_pos")
+        if search_pos is None:
+            return rows, categories, {"next_pos": -20, "source_pattern": "mobile"}
+        if search_pos == -20:
+            return rows, categories, {
+                "prev_pos": 0,
+                "next_pos": -10 if page == 16 else None,
+                "source_pattern": "mobile",
+            }
+        return rows, categories, {"prev_pos": -20, "source_pattern": "mobile"}
+
+    monkeypatch.setattr(routes, "_load_board_payload", search_payload)
+    app = create_app()
+    client = app.test_client()
+
+    first = client.get("/board?board=test&page=18&serval=hello&source_pattern=mobile")
+    first_next = next(
+        link for link in BeautifulSoup(first.data, "html.parser").select(".board-pager a")
+        if link.get_text(strip=True) == "다음"
+    )
+    second_last_parts = urlparse(first_next["href"])
+    second_last_query = parse_qs(second_last_parts.query)
+    second_last_query["page"] = ["16"]
+    second_last_url = second_last_parts._replace(
+        query=urlencode(second_last_query, doseq=True)
+    ).geturl()
+    second_last = client.get(second_last_url)
+    second_next = next(
+        link for link in BeautifulSoup(second_last.data, "html.parser").select(".board-pager a")
+        if link.get_text(strip=True) == "다음"
+    )
+    third_query = parse_qs(urlparse(second_next["href"]).query)
+    third = client.get(second_next["href"])
+    back_to_second = next(
+        link for link in BeautifulSoup(third.data, "html.parser").select(".board-pager a")
+        if link.get_text(strip=True) == "이전"
+    )
+    second_query = parse_qs(urlparse(back_to_second["href"]).query)
+    second_first_parts = urlparse(back_to_second["href"])
+    second_first_query = parse_qs(second_first_parts.query)
+    second_first_query["page"] = ["1"]
+    second_first_url = second_first_parts._replace(
+        query=urlencode(second_first_query, doseq=True)
+    ).geturl()
+    second_first = client.get(second_first_url)
+    back_to_first = next(
+        link for link in BeautifulSoup(second_first.data, "html.parser").select(".board-pager a")
+        if link.get_text(strip=True) == "이전"
+    )
+    first_query = parse_qs(urlparse(back_to_first["href"]).query)
+
+    assert third_query["prev_page"] == ["18,16"]
+    assert second_query["page"] == ["16"]
+    assert second_query["s_pos"] == ["-20"]
+    assert second_query["prev_page"] == ["18"]
+    assert first_query["page"] == ["18"]
+    assert "s_pos" not in first_query
+    assert "prev_page" not in first_query
 
 
 def test_search_board_republishes_actual_source_pattern(monkeypatch):

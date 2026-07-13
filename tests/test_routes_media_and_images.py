@@ -1895,6 +1895,7 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
                     "comment_count": 0,
                     "voteup_count": 0,
                     "search_pos": -123,
+                    "source_pattern": "normal",
                     "source_page": 9,
                 },
                 {
@@ -1942,8 +1943,10 @@ def test_read_related_json_serializes_post_flags_and_subject(monkeypatch):
     assert seen["list_pattern"] == "mobile"
     assert payload["has_more"] is True
     assert payload["next_s_pos"] == -122
+    assert payload["next_source_pattern"] == "normal"
     assert payload["items"][0]["subject"] == "일반"
     assert payload["items"][0]["s_pos"] == -123
+    assert payload["items"][0]["source_pattern"] == "normal"
     assert payload["items"][0]["source_page"] == 9
     assert payload["items"][0]["has_image"] is False
     assert payload["items"][0]["isimage"] is False
@@ -2023,13 +2026,16 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "cachedResult.items.length > 0" not in script
     assert "payload.ok === false" in script
     assert "payload.next_s_pos" in script
+    assert "payload.next_source_pattern" in script
     assert "state.section.dataset.searchPos = context.searchPos" in script
     assert "state.section.dataset.sourcePage = context.sourcePage" in script
     assert 'params.set("source_pattern", sourcePattern)' in script
     assert 'href += "&source_pattern="' in script
     assert 'href += "&prev_page="' in script
-    assert "context.previousBlockPage = context.sourcePage" in script
+    assert "appendPreviousBlockPage(" in script
+    assert "pages.slice(-64).join" in script
     assert "state.section.dataset.prevPage = context.previousBlockPage" in script
+    assert "state.section.dataset.sourcePattern = context.sourcePattern" in script
     assert "context.lastPostId = postId;" in script
     assert script.index("context.lastPostId = postId;") < script.index("if (renderedIds[postId])")
     assert script.index("applyLoadedItems(context, button, items, payload);") < script.index("context.searchPos = String(payload.next_s_pos);")

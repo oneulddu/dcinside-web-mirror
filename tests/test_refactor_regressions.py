@@ -421,6 +421,7 @@ def test_read_related_empty_pid_skips_upstream(monkeypatch):
         "items": [],
         "has_more": False,
         "next_s_pos": None,
+        "next_source_pattern": None,
     }
 
 
