@@ -1253,6 +1253,57 @@ async def test_pc_search_page_maps_mobile_fallback_by_row_offset():
 
 
 @pytest.mark.asyncio
+async def test_cross_platform_fallback_stops_repeated_partial_tail_page():
+    api = API.__new__(API)
+    seen_pages = []
+
+    async def fake_fetch(urls, validator=None):
+        if all(url.startswith("https://m.dcinside.com/") for url in urls):
+            return None, "", None
+        page = int(parse_qs(urlparse(urls[0]).query)["page"][0])
+        seen_pages.append(page)
+        body_rows = "".join(
+            """
+              <tr class="ub-content us-post" data-no="{doc_id}">
+                <td class="gall_tit"><a href="/board/view/?id=test&amp;no={doc_id}">row {doc_id}</a></td>
+                <td class="gall_writer" data-nick="익명"></td>
+                <td class="gall_date" title="2026.07.13 12:00:00"></td>
+                <td class="gall_count">1</td><td class="gall_recommend">0</td>
+              </tr>
+            """.format(doc_id=doc_id)
+            for doc_id in (700, 699, 698, 697)
+        )
+        return (
+            lxml.html.fromstring(
+                "<html><body><table><tbody>{}</tbody></table></body></html>".format(
+                    body_rows
+                )
+            ),
+            "ok",
+            urls[0],
+        )
+
+    api._API__fetch_parsed_from_urls = fake_fetch
+    nav = {}
+    rows = [
+        item async for item in api.board(
+            "test",
+            num=30,
+            start_page=11,
+            search_keyword="ㅇㅇ",
+            list_pattern="mobile",
+            search_nav_collector=nav,
+            max_scan_pages=1,
+        )
+    ]
+
+    assert [row.id for row in rows] == ["700", "699", "698", "697"]
+    assert seen_pages == [16, 17]
+    assert nav["next_page"] is None
+    assert nav["source_pattern"] == "mobile"
+
+
+@pytest.mark.asyncio
 async def test_board_precise_times_fetches_pc_list_only():
     api = API.__new__(API)
     seen_urls = []

@@ -232,6 +232,19 @@ class API(ParserMixin):
             "//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]"
         )
 
+    def __search_list_row_key(self, row, row_kind):
+        if row_kind == "pc":
+            document_id = (row.get("data-no") or "").strip()
+            if document_id:
+                return "id:" + document_id
+        hrefs = row.xpath(".//a[contains(@class, 'lt')]/@href")
+        if hrefs:
+            parsed = urlparse(hrefs[0])
+            document_id = (parsed.path or "").rstrip("/").rsplit("/", 1)[-1]
+            if document_id.isdigit():
+                return "id:" + document_id
+        return "html:" + lxml.html.tostring(row, encoding="unicode")
+
     async def __fetch_cross_platform_search_window(
         self,
         all_list_urls,
@@ -264,6 +277,7 @@ class API(ParserMixin):
         first_nav = None
         last_nav = None
         last_used_url = None
+        seen_row_keys = set()
 
         for target_page in range(first_target_page, last_target_page + 1):
             page_urls = [
@@ -284,7 +298,19 @@ class API(ParserMixin):
             if row_kind is not None and current_kind != row_kind:
                 return None, "", None, None
             row_kind = current_kind
-            collected_rows.extend(current_rows)
+            unique_rows = []
+            for row in current_rows:
+                row_key = self.__search_list_row_key(row, current_kind)
+                if row_key in seen_row_keys:
+                    continue
+                seen_row_keys.add(row_key)
+                unique_rows.append(row)
+            # DC can repeat its last partial search page for an out-of-range
+            # page number. Stop before that duplicate page affects slicing or
+            # navigation state.
+            if current_rows and not unique_rows:
+                break
+            collected_rows.extend(unique_rows)
             current_nav = self.__parse_search_navigation(
                 parsed,
                 used_url,
