@@ -84,6 +84,35 @@ def test_dcinside_mobile_search_link_preserves_source_pattern():
     assert "source_pattern=mobile" in rewritten
 
 
+def test_hostless_mobile_search_link_uses_mobile_source_pattern():
+    app = create_app()
+    source = (
+        "/board/airforce/1615774?page=2&s_type=subject_m"
+        "&serval=공군&s_pos=-1597760"
+    )
+
+    with app.test_request_context("/read?board=airforce&pid=1616000"):
+        rewritten = dcinside_internal_href(source)
+
+    assert "pid=1615774" in rewritten
+    assert "source_page=2" in rewritten
+    assert "source_pattern=mobile" in rewritten
+
+
+def test_hostless_pc_list_search_link_stays_pc_source_pattern():
+    app = create_app()
+    source = (
+        "/board/lists/?id=airforce&page=2&s_type=search_subject_memo"
+        "&s_keyword=공군&search_pos=-1597760"
+    )
+
+    with app.test_request_context("/read?board=airforce&pid=1616000"):
+        rewritten = dcinside_internal_href(source)
+
+    assert "page=2" in rewritten
+    assert "source_pattern=normal" in rewritten
+
+
 def test_body_highlight_limits_total_matches_per_document():
     original_text = "a" * 2500
     soup = BeautifulSoup(f"<p>{original_text}</p><div>a</div>", "html.parser")

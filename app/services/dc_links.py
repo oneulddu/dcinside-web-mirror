@@ -222,6 +222,10 @@ def dcinside_internal_href(value):
         return _pc_gallery_href(parsed, query) or _pc_pretty_gallery_href(parsed, query)
 
     if not parsed.scheme and not host:
-        return _pc_gallery_href(parsed, query) or _pc_pretty_gallery_href(parsed, query) or _mobile_gallery_href(parsed, query)
+        return (
+            _pc_gallery_href(parsed, query)
+            or _mobile_gallery_href(parsed, query)
+            or _pc_pretty_gallery_href(parsed, query)
+        )
 
     return None
