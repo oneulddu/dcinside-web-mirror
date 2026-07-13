@@ -136,9 +136,16 @@ def _normalize_head_id(value):
     return raw
 
 
-def _normalize_source_pattern(value):
+def _normalize_source_pattern(value, kind=None):
     raw = (value or "").strip().lower()
-    return raw if raw in ALLOWED_SOURCE_PATTERNS else None
+    if raw not in ALLOWED_SOURCE_PATTERNS:
+        return None
+    normalized_kind = _query_kind_for_url(kind)
+    if raw == "mobile_mini" and normalized_kind != "mini":
+        return None
+    if raw == "mobile" and normalized_kind == "mini":
+        return None
+    return raw
 
 
 def _query_kind_for_url(kind):
@@ -172,7 +179,7 @@ def _add_search_params(params, search_type=None, search_keyword=None, search_pos
         params["s_pos"] = normalized_search_pos
 
 
-def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None, search_pos=None, source_pattern=None):
+def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None, search_pos=None, source_pattern=None, previous_block_page=None):
     params = {
         "board": board,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
@@ -185,9 +192,12 @@ def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_t
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword, search_pos)
-    normalized_source_pattern = _normalize_source_pattern(source_pattern)
+    normalized_source_pattern = _normalize_source_pattern(source_pattern, kind)
     if (search_keyword or "").strip() and normalized_source_pattern:
         params["source_pattern"] = normalized_source_pattern
+    previous_page = max(_safe_int(previous_block_page, 0), 0)
+    if (search_keyword or "").strip() and previous_page:
+        params["prev_page"] = previous_page
     return params
 
 
@@ -203,10 +213,11 @@ def board_url(
     gallery_name=None,
     search_pos=None,
     source_pattern=None,
+    previous_block_page=None,
 ):
     params = _board_link_params(
         board, recommend, page, kind, nav, search_type, search_keyword,
-        head_id, search_pos, source_pattern,
+        head_id, search_pos, source_pattern, previous_block_page,
     )
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
@@ -214,7 +225,7 @@ def board_url(
     return url_for("main.board", **params)
 
 
-def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None, source_pattern=None):
+def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None, search_pos=None, source_pattern=None, previous_block_page=None):
     params = {
         "board": board,
         "pid": pid,
@@ -229,9 +240,12 @@ def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, sear
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword, search_pos)
-    normalized_source_pattern = _normalize_source_pattern(source_pattern)
+    normalized_source_pattern = _normalize_source_pattern(source_pattern, kind)
     if (search_keyword or "").strip() and normalized_source_pattern:
         params["source_pattern"] = normalized_source_pattern
+    previous_page = max(_safe_int(previous_block_page, 0), 0)
+    if (search_keyword or "").strip() and previous_page:
+        params["prev_page"] = previous_page
     return params
 
 
@@ -247,10 +261,11 @@ def read_url(
     gallery_name=None,
     search_pos=None,
     source_pattern=None,
+    previous_block_page=None,
 ):
     params = _read_link_params(
         board, pid, recommend, source_page, kind, search_type, search_keyword,
-        head_id, search_pos, source_pattern,
+        head_id, search_pos, source_pattern, previous_block_page,
     )
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
@@ -702,7 +717,8 @@ def board():
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
     search_pos = _search_pos_arg()
-    source_pattern = _normalize_source_pattern(request.args.get("source_pattern"))
+    source_pattern = _normalize_source_pattern(request.args.get("source_pattern"), kind)
+    previous_block_page = max(_safe_int(request.args.get("prev_page"), 0), 0)
     ret, head_categories, search_nav = run_async(
         _load_board_payload(
             page,
@@ -717,8 +733,8 @@ def board():
         )
     )
     source_pattern = (
-        source_pattern
-        or _normalize_source_pattern((search_nav or {}).get("source_pattern"))
+        _normalize_source_pattern((search_nav or {}).get("source_pattern"), kind)
+        or source_pattern
     )
     search_prev_url = None
     search_next_url = None
@@ -728,13 +744,15 @@ def board():
                 board, recommend, page - 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, search_pos,
                 source_pattern,
+                previous_block_page,
             )
         elif search_pos is not None and search_nav.get("prev_pos") is not None:
             prev_pos = _safe_int(search_nav.get("prev_pos"), 0) or None
             search_prev_url = board_url(
-                board, recommend, 1, kind, nav_mode, search_type, search_keyword,
+                board, recommend, previous_block_page or 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, prev_pos,
                 source_pattern,
+                None,
             )
         block_max_page = _safe_int(search_nav.get("block_max_page"), 0)
         next_page = _safe_int(search_nav.get("next_page"), 0)
@@ -744,18 +762,21 @@ def board():
                 board, recommend, next_page, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, search_pos,
                 source_pattern,
+                previous_block_page,
             )
         elif block_max_page and page < block_max_page:
             search_next_url = board_url(
                 board, recommend, page + 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, search_pos,
                 source_pattern,
+                previous_block_page,
             )
         elif next_pos:
             search_next_url = board_url(
                 board, recommend, 1, kind, nav_mode, search_type, search_keyword,
                 head_id, gallery_name, next_pos,
                 source_pattern,
+                page,
             )
 
     response = make_response(
@@ -777,6 +798,7 @@ def board():
             search_prev_url=search_prev_url,
             search_next_url=search_next_url,
             source_pattern=source_pattern,
+            previous_block_page=previous_block_page,
             head_id=head_id,
             head_categories=head_categories,
         )
@@ -863,7 +885,8 @@ def read():
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
     search_pos = _search_pos_arg()
-    source_pattern = _normalize_source_pattern(request.args.get("source_pattern"))
+    source_pattern = _normalize_source_pattern(request.args.get("source_pattern"), kind)
+    previous_block_page = max(_safe_int(request.args.get("prev_page"), 0), 0)
     data, comments, images = run_async(
         async_read(
             pid,
@@ -909,6 +932,7 @@ def read():
             search_keyword=search_keyword,
             search_pos=search_pos,
             source_pattern=source_pattern,
+            previous_block_page=previous_block_page,
             embedded_related_posts=embedded_related_posts,
             social_meta=_read_social_meta(
                 data,
@@ -949,7 +973,7 @@ def read_related():
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
     search_pos = _search_pos_arg()
-    source_pattern = _normalize_source_pattern(request.args.get("source_pattern"))
+    source_pattern = _normalize_source_pattern(request.args.get("source_pattern"), kind)
 
     posts = []
     has_more = False

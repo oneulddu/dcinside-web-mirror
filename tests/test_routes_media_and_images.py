@@ -2027,6 +2027,7 @@ def test_related_loader_appends_related_results_without_replacing_existing_rows(
     assert "state.section.dataset.sourcePage = context.sourcePage" in script
     assert 'params.set("source_pattern", sourcePattern)' in script
     assert 'href += "&source_pattern="' in script
+    assert 'href += "&prev_page="' in script
     assert "context.lastPostId = postId;" in script
     assert script.index("context.lastPostId = postId;") < script.index("if (renderedIds[postId])")
     assert script.index("applyLoadedItems(context, button, items, payload);") < script.index("context.searchPos = String(payload.next_s_pos);")

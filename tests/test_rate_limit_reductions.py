@@ -1321,3 +1321,38 @@ async def test_related_after_position_uses_supplied_source_pattern_first():
 
     assert [row["id"] for row in related] == ["99"]
     assert patterns == ["normal"]
+
+
+@pytest.mark.asyncio
+async def test_related_after_position_rejects_cyclic_newer_search_rows():
+    first_pos = -100
+    cyclic_pos = -200
+
+    class FakeAPI:
+        async def board(self, **kwargs):
+            page = kwargs["start_page"]
+            search_pos = kwargs.get("search_pos")
+            search_nav = kwargs.get("search_nav_collector")
+            if search_nav is not None and search_pos == first_pos:
+                search_nav.update({"next_pos": cyclic_pos, "source_pattern": "mobile"})
+            if search_pos == first_pos and page == 1:
+                yield _index_item(296)
+                yield _index_item(295)
+            elif search_pos == cyclic_pos and page == 1:
+                yield _index_item(300)
+
+    related, has_more, _next_search_pos = await core._related_after_position_with_api(
+        FakeAPI(),
+        "296",
+        "296",
+        "cyclic-search-order",
+        limit=2,
+        source_page=1,
+        search_keyword="hello",
+        search_pos=first_pos,
+        list_pattern="mobile",
+        tail_pages=1,
+    )
+
+    assert [row["id"] for row in related] == ["295"]
+    assert has_more is False

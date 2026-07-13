@@ -903,12 +903,14 @@ async def _related_after_position_with_api(
     collect_limit = fetch_limit + 1
     related = []
     seen_ids = {str(current_id)}
+    last_ordered_id = target_id
     for row in found_posts[: found_index + 1]:
         prefix_id = _safe_int(row.get("id"), 0)
         if prefix_id > 0:
             seen_ids.add(str(prefix_id))
 
     def append_rows(rows, block_pos):
+        nonlocal last_ordered_id
         appended = 0
         for row in rows:
             rid = _safe_int(row.get("id"), 0)
@@ -917,8 +919,12 @@ async def _related_after_position_with_api(
             rid_key = str(rid)
             if rid_key in seen_ids:
                 continue
+            if search_keyword_value and not recommend_value and rid >= last_ordered_id:
+                continue
             seen_ids.add(rid_key)
             related.append((row, block_pos))
+            if search_keyword_value and not recommend_value:
+                last_ordered_id = rid
             appended += 1
             if len(related) >= collect_limit:
                 break

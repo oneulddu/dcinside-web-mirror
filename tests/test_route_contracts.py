@@ -285,6 +285,90 @@ def test_search_first_page_previous_link_omits_position_for_first_block(monkeypa
     assert "s_pos" not in previous_query
 
 
+def test_search_block_roundtrip_restores_previous_block_last_page(monkeypatch):
+    async def search_payload(page, *args, **kwargs):
+        rows, categories, _search_nav = await _board_payload(page, *args, **kwargs)
+        if kwargs.get("search_pos") is None:
+            return rows, categories, {
+                "next_pos": -20,
+                "source_pattern": "mobile",
+            }
+        return rows, categories, {
+            "prev_pos": 0,
+            "source_pattern": "mobile",
+        }
+
+    monkeypatch.setattr(routes, "_load_board_payload", search_payload)
+    app = create_app()
+    client = app.test_client()
+
+    first = client.get("/board?board=test&page=7&serval=hello&source_pattern=mobile")
+    first_soup = BeautifulSoup(first.data, "html.parser")
+    next_link = next(
+        link for link in first_soup.select(".board-pager a")
+        if link.get_text(strip=True) == "다음"
+    )
+    next_query = parse_qs(urlparse(next_link["href"]).query)
+    second = client.get(next_link["href"])
+    second_soup = BeautifulSoup(second.data, "html.parser")
+    previous_link = next(
+        link for link in second_soup.select(".board-pager a")
+        if link.get_text(strip=True) == "이전"
+    )
+    previous_query = parse_qs(urlparse(previous_link["href"]).query)
+
+    assert next_query["page"] == ["1"]
+    assert next_query["prev_page"] == ["7"]
+    assert previous_query["page"] == ["7"]
+    assert "s_pos" not in previous_query
+
+
+def test_search_board_republishes_actual_source_pattern(monkeypatch):
+    seen = {}
+
+    async def search_payload(*args, **kwargs):
+        seen["list_pattern"] = kwargs.get("list_pattern")
+        rows, categories, _search_nav = await _board_payload(*args, **kwargs)
+        return rows, categories, {
+            "next_page": 2,
+            "source_pattern": "normal",
+        }
+
+    monkeypatch.setattr(routes, "_load_board_payload", search_payload)
+    app = create_app()
+    response = app.test_client().get(
+        "/board?board=test&page=1&serval=hello&source_pattern=mobile"
+    )
+    soup = BeautifulSoup(response.data, "html.parser")
+    next_link = next(
+        link for link in soup.select(".board-pager a")
+        if link.get_text(strip=True) == "다음"
+    )
+
+    assert seen["list_pattern"] == "mobile"
+    assert parse_qs(urlparse(next_link["href"]).query)["source_pattern"] == ["normal"]
+    assert parse_qs(urlparse(soup.select_one("#board-list a.feed-item")["href"]).query)["source_pattern"] == ["normal"]
+
+
+def test_search_board_rejects_incompatible_mobile_mini_pattern(monkeypatch):
+    seen = {}
+
+    async def search_payload(*args, **kwargs):
+        seen["list_pattern"] = kwargs.get("list_pattern")
+        rows, categories, _search_nav = await _board_payload(*args, **kwargs)
+        return rows, categories, {"source_pattern": "mobile"}
+
+    monkeypatch.setattr(routes, "_load_board_payload", search_payload)
+    app = create_app()
+    response = app.test_client().get(
+        "/board?board=test&page=1&serval=hello&source_pattern=mobile_mini"
+    )
+    soup = BeautifulSoup(response.data, "html.parser")
+
+    assert seen["list_pattern"] is None
+    assert parse_qs(urlparse(soup.select_one("#board-list a.feed-item")["href"]).query)["source_pattern"] == ["mobile"]
+
+
 def test_read_navigation_preserves_search_position(monkeypatch):
     seen = {}
 

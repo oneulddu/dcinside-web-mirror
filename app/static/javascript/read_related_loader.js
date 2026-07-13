@@ -112,7 +112,7 @@
         return "[" + subject + "]";
     }
 
-    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, searchPos, sourcePattern, headId, galleryName) {
+    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, searchPos, sourcePattern, previousBlockPage, headId, galleryName) {
         var pid = getItemPostId(item);
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
@@ -138,6 +138,9 @@
             }
             if (sourcePattern) {
                 href += "&source_pattern=" + encodeURIComponent(sourcePattern);
+            }
+            if (previousBlockPage) {
+                href += "&prev_page=" + encodeURIComponent(previousBlockPage);
             }
         }
         if (galleryName) {
@@ -199,7 +202,7 @@
         return "";
     }
 
-    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, searchPos, sourcePattern, headId, galleryName) {
+    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, searchPos, sourcePattern, previousBlockPage, headId, galleryName) {
         var postId = getItemPostId(item);
         var li = document.createElement("li");
         li.dataset.postId = postId;
@@ -209,7 +212,8 @@
         link.dataset.postId = postId;
         link.href = buildReadHref(
             board, item, kind, recommend, sourcePage, searchType,
-            searchKeyword, searchPos, sourcePattern, headId, galleryName
+            searchKeyword, searchPos, sourcePattern, previousBlockPage,
+            headId, galleryName
         );
 
         var titleWrap = document.createElement("div");
@@ -305,6 +309,7 @@
                 context.searchKeyword,
                 context.searchPos,
                 context.sourcePattern,
+                context.previousBlockPage,
                 context.headId,
                 context.galleryName
             ));
@@ -438,6 +443,7 @@
         var searchKeyword = section.dataset.searchKeyword || "";
         var searchPos = section.dataset.searchPos || "";
         var sourcePattern = section.dataset.sourcePattern || "";
+        var previousBlockPage = section.dataset.prevPage || "";
         var galleryName = section.dataset.galleryName || "";
         var afterPid = state.lastPostId || "";
 
@@ -490,6 +496,7 @@
             searchKeyword: searchKeyword,
             searchPos: searchPos,
             sourcePattern: sourcePattern,
+            previousBlockPage: previousBlockPage,
             afterPid: afterPid,
             galleryName: galleryName,
             list: list,

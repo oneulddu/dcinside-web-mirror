@@ -682,8 +682,9 @@ class API(ParserMixin):
                     url for url in list_urls
                     if self.__list_url_pattern(url) == list_pattern
                 ]
-                if matching_urls:
-                    list_urls = matching_urls
+                if not matching_urls:
+                    break
+                list_urls = matching_urls
             cache_key = self.__board_kind_cache_key(
                 board_id,
                 kind=kind,

@@ -4,7 +4,7 @@
 {% block content %}
 <section class="read-shell">
     <div class="crumb-row">
-        <a class="crumb-link" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, search_pos=search_pos, source_pattern=source_pattern) }}">← {{ gallery_display_name }} 게시판</a>
+        <a class="crumb-link" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, search_pos=search_pos, source_pattern=source_pattern, previous_block_page=previous_block_page) }}">← {{ gallery_display_name }} 게시판</a>
     </div>
     <div class="article-head">
         <h1>{{ data.title }}</h1>
@@ -47,7 +47,7 @@
         </ul>
     </section>
 
-    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-source-pattern="{{ source_pattern or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}" data-search-pos="{{ search_pos if search_pos is not none else '' }}" data-gallery-name="{{ gallery_name or '' }}">
+    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-source-pattern="{{ source_pattern or '' }}" data-prev-page="{{ previous_block_page or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}" data-search-pos="{{ search_pos if search_pos is not none else '' }}" data-gallery-name="{{ gallery_name or '' }}">
         <div class="board-head related-head">
             <h2>{% if search_keyword %}다른 검색 결과{% elif recommend == 1 %}다른 개념글{% else %}다른 게시글{% endif %}</h2>
         </div>
@@ -115,7 +115,7 @@
     </section>
 
     <div class="pager-row single">
-        <a class="pager-btn" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, search_pos=search_pos, source_pattern=source_pattern) }}">목록으로</a>
+        <a class="pager-btn" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, search_pos=search_pos, source_pattern=source_pattern, previous_block_page=previous_block_page) }}">목록으로</a>
     </div>
 </section>
 <button class="back-to-top" id="back-to-top" type="button" aria-label="맨 위로" title="맨 위로">↑</button>
