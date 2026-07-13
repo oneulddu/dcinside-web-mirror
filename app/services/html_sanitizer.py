@@ -1,4 +1,5 @@
 from collections import defaultdict, deque
+import re
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
@@ -68,6 +69,13 @@ def is_safe_youtube_embed_path(path):
         return False
     video_id = path[len("/embed/"):]
     return bool(video_id) and "/" not in video_id
+
+
+def youtube_shorts_video_id(path):
+    if has_dot_path_segment(path):
+        return None
+    match = re.match(r"^/shorts/([A-Za-z0-9_-]{11})/?$", path or "")
+    return match.group(1) if match else None
 
 
 def dc_movie_id_from_parsed_url(parsed):
@@ -156,8 +164,12 @@ def normalize_safe_iframe_src(value):
     if movie_src:
         return movie_src
 
-    if host in YOUTUBE_IFRAME_HOSTS and is_safe_youtube_embed_path(parsed.path):
-        return parsed._replace(scheme="https").geturl()
+    if host in YOUTUBE_IFRAME_HOSTS:
+        if is_safe_youtube_embed_path(parsed.path):
+            return parsed._replace(scheme="https").geturl()
+        shorts_id = youtube_shorts_video_id(parsed.path)
+        if shorts_id:
+            return f"https://www.youtube.com/embed/{shorts_id}"
 
     twitter_src = normalize_twitter_iframe_src(parsed)
     if twitter_src:

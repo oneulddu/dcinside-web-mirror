@@ -18,6 +18,7 @@ from .services.core import (
 from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
+from .services import youtube_meta
 from .services.recent import (
     RECENT_MAX_ITEMS,
     clear_recent_galleries,
@@ -777,6 +778,17 @@ def movie():
         abort(400)
     board, pid, kind = _media_request_context()
     return build_movie_response(movie_no, board, pid, kind=kind)
+
+
+@bp.route("/embed/youtube-size")
+def youtube_size():
+    raw_ids = (request.args.get("ids") or "").split(",")
+    sizes = youtube_meta.sizes_for_ids(raw_ids)
+    if not sizes:
+        abort(400)
+    response = jsonify(sizes)
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @bp.route("/read")

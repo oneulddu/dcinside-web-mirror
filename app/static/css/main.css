@@ -1025,7 +1025,7 @@ a.pager-btn:active {
 }
 
 /* sanitizer가 같은 출처 /movie?no=...(board/pid/kind 쿼리 포함)로 재작성한 DC 동영상.
-   실제 비율은 movie_embed_resizer.js가 postMessage 핸드셰이크로 인라인 적용하고,
+   실제 비율은 embed_resizer.js가 postMessage 핸드셰이크로 인라인 적용하고,
    수신 전과 JS 미동작 시에는 위 일반 규칙의 16:9 기본 프레임을 쓴다.
    세로 영상은 JS가 인라인 width만 줄이므로 중앙 정렬은 여기 margin auto가 맡는다. */
 .article-body iframe[src^="/movie"] {

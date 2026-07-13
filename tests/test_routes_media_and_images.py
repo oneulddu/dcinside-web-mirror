@@ -17,6 +17,7 @@ from app.services import heung
 from app.services import html_sanitizer
 from app.services import media_proxy
 from app.services import recent
+from app.services import youtube_meta
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -3158,3 +3159,100 @@ def test_movie_error_html_reports_error_handshake():
     assert "error: true" in script_text
     assert "mirror:movie-meta-request" in script_text
     assert "window.location.origin" in script_text
+
+
+def _synthetic_jpeg(width, height, prefix_segments=b""):
+    sof = (
+        b"\xff\xc0\x00\x11\x08"
+        + height.to_bytes(2, "big")
+        + width.to_bytes(2, "big")
+        + b"\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+    )
+    return b"\xff\xd8" + prefix_segments + sof + b"\x00" * 8
+
+
+def test_parse_jpeg_dimensions_reads_sof_marker():
+    assert youtube_meta.parse_jpeg_dimensions(_synthetic_jpeg(480, 268)) == (480, 268)
+
+    app0 = b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    assert youtube_meta.parse_jpeg_dimensions(_synthetic_jpeg(268, 480, prefix_segments=app0)) == (268, 480)
+
+    assert youtube_meta.parse_jpeg_dimensions(b"") is None
+    assert youtube_meta.parse_jpeg_dimensions(b"notajpegfile") is None
+
+
+class DummyProbeResponse:
+    def __init__(self, status_code, content=b""):
+        self.status_code = status_code
+        self.content = content
+
+
+def test_video_size_uses_frame0_and_falls_back_to_shorts(monkeypatch):
+    monkeypatch.setattr(
+        youtube_meta.requests,
+        "get",
+        lambda *args, **kwargs: DummyProbeResponse(200, _synthetic_jpeg(270, 480)),
+    )
+    assert youtube_meta.video_size("aaaaaaaaaa1") == {"width": 270, "height": 480}
+
+    # frame0이 404 플레이스홀더를 주면 쇼츠 리다이렉트 폴백으로 세로만 판별한다.
+    monkeypatch.setattr(
+        youtube_meta.requests,
+        "get",
+        lambda *args, **kwargs: DummyProbeResponse(404, _synthetic_jpeg(120, 90)),
+    )
+    monkeypatch.setattr(
+        youtube_meta.requests,
+        "head",
+        lambda *args, **kwargs: DummyProbeResponse(200),
+    )
+    assert youtube_meta.video_size("aaaaaaaaaa2") == {"width": 9, "height": 16}
+
+    # 둘 다 실패하면 None이고, 캐시로 인해 재호출 없이 같은 답을 준다.
+    monkeypatch.setattr(
+        youtube_meta.requests,
+        "head",
+        lambda *args, **kwargs: DummyProbeResponse(303),
+    )
+    assert youtube_meta.video_size("aaaaaaaaaa3") is None
+    assert youtube_meta.video_size("aaaaaaaaaa3") is None
+
+
+def test_youtube_size_route_returns_sizes_and_rejects_garbage(monkeypatch):
+    monkeypatch.setattr(
+        youtube_meta,
+        "video_size",
+        lambda video_id: {"width": 268, "height": 480} if video_id == "oHCWsqUWRcs" else None,
+    )
+    app = create_app()
+    client = app.test_client()
+
+    response = client.get("/embed/youtube-size?ids=oHCWsqUWRcs,dQw4w9WgXcQ,../etc,short")
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "oHCWsqUWRcs": {"width": 268, "height": 480},
+        "dQw4w9WgXcQ": None,
+    }
+    assert "max-age=86400" in response.headers.get("Cache-Control", "")
+
+    assert client.get("/embed/youtube-size").status_code == 400
+    assert client.get("/embed/youtube-size?ids=..%2Fetc,zz").status_code == 400
+
+
+def test_sanitize_html_fragment_rewrites_youtube_shorts_iframe_to_embed():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="https://www.youtube.com/shorts/oHCWsqUWRcs"></iframe>
+          <iframe src="https://youtube.com/shorts/vlSuxU73Uiw/"></iframe>
+          <iframe src="https://www.youtube.com/shorts/../etc"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
+
+    assert iframe_sources == [
+        "https://www.youtube.com/embed/oHCWsqUWRcs",
+        "https://www.youtube.com/embed/vlSuxU73Uiw",
+    ]

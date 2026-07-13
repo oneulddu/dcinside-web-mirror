@@ -104,6 +104,11 @@
 - X(트위터) 게시물 iframe은 `platform.twitter.com/embed/Tweet.html` 공식 임베드로
   정규화해 렌더링한다(`x.com`/`twitter.com` status URL 포함). 카드 최대 폭 550px 중앙
   정렬, 높이 420px 고정이며 넘치는 내용은 iframe 스크롤로 본다.
+- 유튜브 세로 영상(쇼츠와 일반 업로드 세로 직캠 모두)은 서버가
+  `i.ytimg.com/vi/<id>/frame0.jpg`의 JPEG 헤더에서 실제 비율을 읽어
+  (`/embed/youtube-size`, id별 캐시) 클라이언트가 iframe 비율을 실비율로 맞춘다.
+  frame0 실패 시 `/shorts/<id>` 리다이렉트 여부로 쇼츠만 폴백 판별하고,
+  최종 폴백은 16:9다. `youtube.com/shorts/<id>` iframe src는 embed URL로 재작성한다.
 - 투표 iframe의 상대 `/poll` src는 미러 도메인에서 404가 되므로
   `https://m.dcinside.com/poll` 절대 주소(원본 쿼리 보존)로 재작성한다.
 - 모든 임베드는 모바일(390px)에서 본문 컬럼 밖으로 넘치거나 가로 스크롤을 만들면 안 된다.

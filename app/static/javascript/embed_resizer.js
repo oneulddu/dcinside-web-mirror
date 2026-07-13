@@ -4,6 +4,9 @@
     var META_TYPE = "mirror:movie-meta";
     var REQUEST_TYPE = "mirror:movie-meta-request";
     var CANDIDATE_SELECTOR = '.article-body iframe[src^="/movie"]';
+    var YOUTUBE_SELECTOR = '.article-body iframe[src*="youtube.com/embed/"], .article-body iframe[src*="youtube-nocookie.com/embed/"]';
+    var YOUTUBE_SIZE_ENDPOINT = "/embed/youtube-size";
+    var YOUTUBE_ID_PATTERN = /\/embed\/([A-Za-z0-9_-]{11})(?:[/?#&]|$)/;
     var MIN_RATIO = 0.2;
     var MAX_RATIO = 5;
     var ERROR_TITLE = "동영상을 불러오지 못했습니다";
@@ -62,6 +65,9 @@
         if (ratio < 1) {
             // 세로 영상: 폭을 제한해 화면 높이를 넘지 않게 한다. 중앙 정렬은 CSS margin auto가 처리한다.
             iframe.style.width = "min(100%, 360px, calc(82vh * " + ratio + "))";
+            // 유튜브 등 CSS margin auto가 없는 임베드도 중앙에 놓이게 인라인으로 보강한다.
+            iframe.style.marginLeft = "auto";
+            iframe.style.marginRight = "auto";
         } else {
             iframe.style.removeProperty("width");
         }
@@ -111,4 +117,59 @@
             requestMeta(iframe);
         }(initialCandidates[i]));
     }
+
+    // 유튜브 임베드: 서버가 frame0 썸네일에서 읽은 실제 영상 비율을 조회해 적용한다.
+    // (oEmbed는 세로 영상도 16:9로 보고하므로 서버측 판별 결과를 쓴다.)
+    function youtubeVideoId(iframe) {
+        var src = iframe.getAttribute("src") || "";
+        var match = YOUTUBE_ID_PATTERN.exec(src);
+        return match ? match[1] : null;
+    }
+
+    function initYoutubeSizes() {
+        if (typeof window.fetch !== "function") {
+            return;
+        }
+        var frames = document.querySelectorAll(YOUTUBE_SELECTOR);
+        var framesById = {};
+        var ids = [];
+        for (var j = 0; j < frames.length; j += 1) {
+            var videoId = youtubeVideoId(frames[j]);
+            if (!videoId) {
+                continue;
+            }
+            if (!framesById[videoId]) {
+                framesById[videoId] = [];
+                ids.push(videoId);
+            }
+            framesById[videoId].push(frames[j]);
+        }
+        if (!ids.length) {
+            return;
+        }
+        fetch(YOUTUBE_SIZE_ENDPOINT + "?ids=" + ids.join(","), { credentials: "same-origin" })
+            .then(function (response) {
+                return response.ok ? response.json() : null;
+            })
+            .then(function (sizes) {
+                if (!sizes) {
+                    return;
+                }
+                for (var k = 0; k < ids.length; k += 1) {
+                    var size = sizes[ids[k]];
+                    if (!size || !isFinitePositive(size.width) || !isFinitePositive(size.height)) {
+                        continue;
+                    }
+                    var targets = framesById[ids[k]];
+                    for (var m = 0; m < targets.length; m += 1) {
+                        applySize(targets[m], size.width, size.height);
+                    }
+                }
+            })
+            .catch(function () {
+                // 조회 실패 시 16:9 기본 프레임을 유지한다.
+            });
+    }
+
+    initYoutubeSizes();
 }());
