@@ -17,6 +17,7 @@ from app.services import heung
 from app.services import html_sanitizer
 from app.services import media_proxy
 from app.services import recent
+from app.services import youtube_meta
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -1034,7 +1035,57 @@ def test_sanitize_html_fragment_rejects_scheme_relative_iframe_src():
     soup = BeautifulSoup(cleaned, "html.parser")
     iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
 
-    assert iframe_sources == ["/poll", "https://m.dcinside.com/poll"]
+    assert iframe_sources == ["https://m.dcinside.com/poll", "https://m.dcinside.com/poll"]
+
+
+def test_sanitize_html_fragment_rewrites_relative_poll_to_mobile_absolute():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        '<iframe src="/poll?no=12345&amp;depth=2"></iframe>'
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert soup.iframe["src"] == "https://m.dcinside.com/poll?no=12345&depth=2"
+    assert soup.iframe["title"] == "DCInside 투표"
+
+
+def test_sanitize_html_fragment_normalizes_twitter_status_iframes_to_embed():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="https://x.com/someone/status/1668868113725550592"></iframe>
+          <iframe src="https://twitter.com/someone/statuses/123"></iframe>
+          <iframe src="https://platform.twitter.com/embed/Tweet.html?id=456&theme=dark"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
+
+    assert iframe_sources == [
+        "https://platform.twitter.com/embed/Tweet.html?id=1668868113725550592&dnt=true",
+        "https://platform.twitter.com/embed/Tweet.html?id=123&dnt=true",
+        "https://platform.twitter.com/embed/Tweet.html?id=456&dnt=true",
+    ]
+    assert all(
+        iframe["title"] == "X 게시물" for iframe in soup.find_all("iframe")
+    )
+
+
+def test_sanitize_html_fragment_rejects_non_status_twitter_and_other_embeds():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="https://x.com/someone"></iframe>
+          <iframe src="https://platform.twitter.com/embed/Tweet.html?id=notdigits"></iframe>
+          <iframe src="https://platform.twitter.com/widgets.js"></iframe>
+          <iframe src="https://www.instagram.com/p/abc/embed"></iframe>
+          <iframe src="http://x.com/someone/status/123"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert soup.find_all("iframe") == []
 
 
 def test_sanitize_html_fragment_keeps_local_movie_iframe():
@@ -1188,8 +1239,9 @@ def test_movie_route_renders_same_origin_video_player(monkeypatch):
 
     assert response.status_code == 200
     soup = BeautifulSoup(response.data.decode("utf-8"), "html.parser")
-    source_query = parse_qs(urlparse(soup.find("source")["src"]).query)
-    poster_query = parse_qs(urlparse(soup.find("video")["poster"]).query)
+    video = soup.find("video")
+    source_query = parse_qs(urlparse(video["src"]).query)
+    poster_query = parse_qs(urlparse(video["poster"]).query)
     assert source_query["src"] == ["https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4&code=movie"]
     assert poster_query["src"] == ["https://dcm6.dcinside.co.kr/viewmovie.php?type=jpg&code=poster"]
     assert requests_seen[0][0] == "https://gall.dcinside.com/board/movie/movie_view?no=6499430"
@@ -3063,3 +3115,174 @@ def test_search_galleries_reuses_short_cache(monkeypatch):
 
     assert len(calls) == 1
     assert second[0]["name"] == "테스트 일반"
+
+
+def test_movie_html_uses_direct_src_with_metadata_handshake_script():
+    app = create_app()
+    media = {
+        "source": "https://dcm6.dcinside.co.kr/viewmovie.php?type=mp4",
+        "poster": "https://images.dcinside.com/poster.jpg",
+    }
+
+    with app.test_request_context("/movie?no=6499430&board=idolism&pid=1193413"):
+        html = media_proxy.movie_html(media, "idolism", "1193413")
+
+    soup = BeautifulSoup(html, "html.parser")
+    video = soup.find("video")
+    assert video is not None
+    # <source> 자식 구조에서는 로드 실패 error 이벤트가 video에 발화하지 않으므로
+    # src 속성을 직접 써야 한다.
+    assert video.find("source") is None
+    assert video.get("src", "").startswith("/media?")
+    assert video.get("preload") == "metadata"
+
+    script = soup.find("script")
+    assert script is not None
+    script_text = script.get_text()
+    assert "window.parent === window" in script_text
+    assert "mirror:movie-meta" in script_text
+    assert "mirror:movie-meta-request" in script_text
+    assert "loadedmetadata" in script_text
+    assert "videoWidth" in script_text
+    assert "window.location.origin" in script_text
+
+
+def test_movie_error_html_reports_error_handshake():
+    html = media_proxy.movie_error_html()
+
+    soup = BeautifulSoup(html, "html.parser")
+    script = soup.find("script")
+    assert script is not None
+    script_text = script.get_text()
+    assert "window.parent === window" in script_text
+    assert "mirror:movie-meta" in script_text
+    assert "error: true" in script_text
+    assert "mirror:movie-meta-request" in script_text
+    assert "window.location.origin" in script_text
+
+
+def _synthetic_jpeg(width, height, prefix_segments=b""):
+    sof = (
+        b"\xff\xc0\x00\x11\x08"
+        + height.to_bytes(2, "big")
+        + width.to_bytes(2, "big")
+        + b"\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+    )
+    return b"\xff\xd8" + prefix_segments + sof + b"\x00" * 8
+
+
+def test_parse_jpeg_dimensions_reads_sof_marker():
+    assert youtube_meta.parse_jpeg_dimensions(_synthetic_jpeg(480, 268)) == (480, 268)
+
+    app0 = b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    assert youtube_meta.parse_jpeg_dimensions(_synthetic_jpeg(268, 480, prefix_segments=app0)) == (268, 480)
+
+    assert youtube_meta.parse_jpeg_dimensions(b"") is None
+    assert youtube_meta.parse_jpeg_dimensions(b"notajpegfile") is None
+
+
+class DummyProbeResponse:
+    def __init__(self, status_code, content=b""):
+        self.status_code = status_code
+        self.content = content
+
+
+def test_video_size_uses_frame0_and_falls_back_to_shorts(monkeypatch):
+    monkeypatch.setattr(
+        youtube_meta.requests,
+        "get",
+        lambda *args, **kwargs: DummyProbeResponse(200, _synthetic_jpeg(270, 480)),
+    )
+    assert youtube_meta.video_size("aaaaaaaaaa1") == {"width": 270, "height": 480}
+
+    # frame0이 404 플레이스홀더를 주면 쇼츠 리다이렉트 폴백으로 세로만 판별한다.
+    monkeypatch.setattr(
+        youtube_meta.requests,
+        "get",
+        lambda *args, **kwargs: DummyProbeResponse(404, _synthetic_jpeg(120, 90)),
+    )
+    monkeypatch.setattr(
+        youtube_meta.requests,
+        "head",
+        lambda *args, **kwargs: DummyProbeResponse(200),
+    )
+    assert youtube_meta.video_size("aaaaaaaaaa2") == {"width": 9, "height": 16}
+
+    # 둘 다 실패하면 None이고, 캐시로 인해 재호출 없이 같은 답을 준다.
+    monkeypatch.setattr(
+        youtube_meta.requests,
+        "head",
+        lambda *args, **kwargs: DummyProbeResponse(303),
+    )
+    assert youtube_meta.video_size("aaaaaaaaaa3") is None
+    assert youtube_meta.video_size("aaaaaaaaaa3") is None
+
+
+def test_youtube_size_route_returns_sizes_and_rejects_garbage(monkeypatch):
+    monkeypatch.setattr(
+        youtube_meta,
+        "video_size",
+        lambda video_id, deadline=None: {"width": 268, "height": 480} if video_id == "oHCWsqUWRcs" else None,
+    )
+    app = create_app()
+    client = app.test_client()
+
+    response = client.get("/embed/youtube-size?ids=oHCWsqUWRcs,dQw4w9WgXcQ,../etc,short")
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "oHCWsqUWRcs": {"width": 268, "height": 480},
+        "dQw4w9WgXcQ": None,
+    }
+    # 실패(null)가 섞이면 브라우저 캐시를 짧게 가져가 unknown 재시도를 살린다.
+    assert "max-age=300" in response.headers.get("Cache-Control", "")
+
+    success_response = client.get("/embed/youtube-size?ids=oHCWsqUWRcs")
+    assert "max-age=86400" in success_response.headers.get("Cache-Control", "")
+
+    assert client.get("/embed/youtube-size").status_code == 400
+    assert client.get("/embed/youtube-size?ids=..%2Fetc,zz").status_code == 400
+
+
+def test_video_size_skips_probe_when_budget_or_deadline_exhausted(monkeypatch):
+    probe_calls = []
+
+    def fake_probe(video_id):
+        probe_calls.append(video_id)
+        return {"width": 480, "height": 268}
+
+    monkeypatch.setattr(youtube_meta, "probe_frame0_size", fake_probe)
+
+    # 전역 프로브 예산 소진 상태에서는 outbound 없이 None을 반환하고 캐시하지 않는다.
+    monkeypatch.setattr(youtube_meta, "PROBE_RATE_MAX_CALLS", 0)
+    monkeypatch.setitem(youtube_meta._probe_rate, "window_start", youtube_meta.time.monotonic())
+    monkeypatch.setitem(youtube_meta._probe_rate, "used", 0)
+    assert youtube_meta.video_size("bbbbbbbbbb1") is None
+    assert probe_calls == []
+
+    # 요청 시간 예산을 넘긴 경우에도 프로브를 건너뛴다.
+    monkeypatch.setattr(youtube_meta, "PROBE_RATE_MAX_CALLS", 100)
+    assert youtube_meta.video_size("bbbbbbbbbb1", deadline=youtube_meta.time.monotonic() - 1) is None
+    assert probe_calls == []
+
+    # 예산이 있으면 정상 프로브하고 캐시한다.
+    assert youtube_meta.video_size("bbbbbbbbbb1") == {"width": 480, "height": 268}
+    assert probe_calls == ["bbbbbbbbbb1"]
+
+
+def test_sanitize_html_fragment_rewrites_youtube_shorts_iframe_to_embed():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <div>
+          <iframe src="https://www.youtube.com/shorts/oHCWsqUWRcs"></iframe>
+          <iframe src="https://youtube.com/shorts/vlSuxU73Uiw/"></iframe>
+          <iframe src="https://www.youtube.com/shorts/../etc"></iframe>
+        </div>
+        """
+    )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    iframe_sources = [iframe.get("src") for iframe in soup.find_all("iframe")]
+
+    assert iframe_sources == [
+        "https://www.youtube.com/embed/oHCWsqUWRcs",
+        "https://www.youtube.com/embed/vlSuxU73Uiw",
+    ]

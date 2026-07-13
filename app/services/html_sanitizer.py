@@ -1,4 +1,5 @@
 from collections import defaultdict, deque
+import re
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
@@ -28,6 +29,13 @@ HTML_TAG_ATTRS = {
 }
 YOUTUBE_IFRAME_HOSTS = {"youtube.com", "www.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com"}
 DC_MOVIE_VIEW_URL = "https://gall.dcinside.com/board/movie/movie_view?no={}"
+DC_POLL_URL = "https://m.dcinside.com/poll"
+TWITTER_EMBED_URL = "https://platform.twitter.com/embed/Tweet.html?id={}&dnt=true"
+TWITTER_PLATFORM_HOSTS = {"platform.twitter.com", "platform.x.com"}
+TWITTER_STATUS_HOSTS = {
+    "twitter.com", "www.twitter.com", "mobile.twitter.com",
+    "x.com", "www.x.com", "mobile.x.com",
+}
 HTML_PARSER = "lxml"
 
 
@@ -63,6 +71,13 @@ def is_safe_youtube_embed_path(path):
     return bool(video_id) and "/" not in video_id
 
 
+def youtube_shorts_video_id(path):
+    if has_dot_path_segment(path):
+        return None
+    match = re.match(r"^/shorts/([A-Za-z0-9_-]{11})/?$", path or "")
+    return match.group(1) if match else None
+
+
 def dc_movie_id_from_parsed_url(parsed):
     host = (parsed.netloc or "").lower()
     if (
@@ -95,6 +110,31 @@ def normalize_dc_movie_iframe_src(parsed):
     return None
 
 
+def tweet_id_from_status_path(path):
+    if has_dot_path_segment(path):
+        return None
+    segments = [segment for segment in (path or "").split("/") if segment]
+    if len(segments) >= 3 and segments[-2] in {"status", "statuses"} and segments[-1].isdigit():
+        return segments[-1]
+    return None
+
+
+def normalize_twitter_iframe_src(parsed):
+    host = (parsed.netloc or "").lower()
+    if host in TWITTER_PLATFORM_HOSTS:
+        if has_dot_path_segment(parsed.path) or parsed.path != "/embed/Tweet.html":
+            return None
+        tweet_ids = parse_qs(parsed.query).get("id", [])
+        if tweet_ids and tweet_ids[0].isdigit():
+            return TWITTER_EMBED_URL.format(tweet_ids[0])
+        return None
+    if host in TWITTER_STATUS_HOSTS:
+        tweet_id = tweet_id_from_status_path(parsed.path)
+        if tweet_id:
+            return TWITTER_EMBED_URL.format(tweet_id)
+    return None
+
+
 def normalize_safe_iframe_src(value):
     url = str(value or "").strip()
     if not url:
@@ -106,7 +146,9 @@ def normalize_safe_iframe_src(value):
 
     if not parsed.scheme and not host:
         if parsed.path == "/poll":
-            return url
+            # 상대 /poll은 원문(m.dcinside.com) 기준 경로라 미러 도메인에서는 404가 된다.
+            # DC 모바일 투표 페이지 절대 주소로 되돌려 iframe이 실제 투표를 렌더링하게 한다.
+            return f"{DC_POLL_URL}?{parsed.query}" if parsed.query else DC_POLL_URL
         if parsed.path == "/movie":
             movie_ids = parse_qs(parsed.query).get("no", [])
             return url if movie_ids and movie_ids[0].isdigit() else None
@@ -122,8 +164,16 @@ def normalize_safe_iframe_src(value):
     if movie_src:
         return movie_src
 
-    if host in YOUTUBE_IFRAME_HOSTS and is_safe_youtube_embed_path(parsed.path):
-        return parsed._replace(scheme="https").geturl()
+    if host in YOUTUBE_IFRAME_HOSTS:
+        if is_safe_youtube_embed_path(parsed.path):
+            return parsed._replace(scheme="https").geturl()
+        shorts_id = youtube_shorts_video_id(parsed.path)
+        if shorts_id:
+            return f"https://www.youtube.com/embed/{shorts_id}"
+
+    twitter_src = normalize_twitter_iframe_src(parsed)
+    if twitter_src:
+        return twitter_src
 
     return None
 
@@ -141,6 +191,8 @@ def default_iframe_title(src):
         return "DCInside 동영상"
     if (parsed.netloc or "").lower() in YOUTUBE_IFRAME_HOSTS:
         return "YouTube 동영상"
+    if (parsed.netloc or "").lower() in TWITTER_PLATFORM_HOSTS:
+        return "X 게시물"
     return "첨부 콘텐츠"
 
 

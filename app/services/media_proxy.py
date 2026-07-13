@@ -734,10 +734,62 @@ video {{
 </style>
 </head>
 <body>
-<video controls playsinline controlslist="nodownload"{poster_attr}>
-  <source src="{escape(source_url, quote=True)}" type="video/mp4">
+<video controls playsinline preload="metadata" controlslist="nodownload"{poster_attr} src="{escape(source_url, quote=True)}">
   이 브라우저에서는 동영상을 재생할 수 없습니다.
 </video>
+<script>
+(function () {{
+    "use strict";
+
+    // 직접 열람(top-level)에서는 부모가 없으므로 아무것도 하지 않는다.
+    if (window.parent === window) {{
+        return;
+    }}
+
+    var video = document.querySelector("video");
+    if (!video) {{
+        return;
+    }}
+
+    var lastMessage = null;
+
+    function send(message) {{
+        lastMessage = message;
+        window.parent.postMessage(message, window.location.origin);
+    }}
+
+    function reportError() {{
+        send({{ type: "mirror:movie-meta", error: true }});
+    }}
+
+    video.addEventListener("loadedmetadata", function () {{
+        var width = video.videoWidth;
+        var height = video.videoHeight;
+        if (!width || !height) {{
+            reportError();
+            return;
+        }}
+        send({{ type: "mirror:movie-meta", width: width, height: height }});
+    }});
+
+    // src 속성을 직접 쓰므로 로드 실패 시 video 자신에게 error 이벤트가 발화한다.
+    video.addEventListener("error", reportError);
+
+    // 부모 리스너 등록 전에 보낸 메시지 유실을 재요청으로 복구한다.
+    window.addEventListener("message", function (event) {{
+        if (event.origin !== window.location.origin) {{
+            return;
+        }}
+        var data = event.data;
+        if (!data || data.type !== "mirror:movie-meta-request") {{
+            return;
+        }}
+        if (lastMessage) {{
+            window.parent.postMessage(lastMessage, window.location.origin);
+        }}
+    }});
+}}());
+</script>
 </body>
 </html>"""
 
@@ -754,7 +806,37 @@ body { display: flex; align-items: center; justify-content: center; font: 14px/1
 .message { box-sizing: border-box; width: 100%; padding: 18px; background: #fff; }
 </style>
 </head>
-<body><div class="message">동영상을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.</div></body>
+<body>
+<div class="message">동영상을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.</div>
+<script>
+(function () {
+    "use strict";
+
+    if (window.parent === window) {
+        return;
+    }
+
+    var message = { type: "mirror:movie-meta", error: true };
+
+    function send() {
+        window.parent.postMessage(message, window.location.origin);
+    }
+
+    window.addEventListener("message", function (event) {
+        if (event.origin !== window.location.origin) {
+            return;
+        }
+        var data = event.data;
+        if (!data || data.type !== "mirror:movie-meta-request") {
+            return;
+        }
+        send();
+    });
+
+    send();
+}());
+</script>
+</body>
 </html>"""
 
 

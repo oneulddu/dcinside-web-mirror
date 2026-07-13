@@ -1007,6 +1007,8 @@ a.pager-btn:active {
     display: block;
     margin: var(--space-4) 0;
     border: 0;
+    /* 목적별 셀렉터에 안 잡히는 iframe도 브라우저 기본 150px로 납작해지지 않게 한다. */
+    aspect-ratio: 16 / 9;
 }
 
 /* 크로스 오리진 iframe은 Tab 진입 시 :focus-visible 대신 :focus-within으로 잡힌다. */
@@ -1023,21 +1025,35 @@ a.pager-btn:active {
 }
 
 /* sanitizer가 같은 출처 /movie?no=...(board/pid/kind 쿼리 포함)로 재작성한 DC 동영상.
-   컨텍스트 없이 원본 URL로 남는 폴백도 함께 커버한다. */
-.article-body iframe[src^="/movie"],
-.article-body iframe[src*="/board/movie/movie_view"],
-.article-body iframe[src*="m.dcinside.com/movie/player"] {
-    aspect-ratio: 9 / 16;
-    /* 낮은 뷰포트에서는 max-height로 높이만 자르면 9:16이 깨지므로 폭을 줄여 비율을 지킨다. */
-    width: min(100%, 360px, calc(82vh * 9 / 16));
+   실제 비율은 embed_resizer.js가 postMessage 핸드셰이크로 인라인 적용하고,
+   수신 전과 JS 미동작 시에는 위 일반 규칙의 16:9 기본 프레임을 쓴다.
+   세로 영상은 JS가 인라인 width만 줄이므로 중앙 정렬은 여기 margin auto가 맡는다. */
+.article-body iframe[src^="/movie"] {
     margin-left: auto;
     margin-right: auto;
     background: var(--fg);
 }
 
-.article-body iframe[src^="/poll"],
+/* sanitizer가 상대 /poll을 DC 모바일 절대 주소로 재작성하므로 절대 주소만 매칭한다. */
 .article-body iframe[src^="https://m.dcinside.com/poll"] {
     min-height: 400px;
+    background: var(--surface);
+}
+
+/* X(트위터) 게시물 임베드. 공식 카드 최대 폭 550px, 넘치는 내용은 iframe 스크롤로 본다. */
+.article-body iframe[src^="https://platform.twitter.com/embed/"] {
+    aspect-ratio: auto;
+    width: min(100%, 550px);
+    height: 420px;
+    margin-left: auto;
+    margin-right: auto;
+    background: var(--surface);
+}
+
+/* 로드 실패가 확정된 DC 동영상 임베드. 위 16:9 기본 규칙을 확실히 이기도록 뒤에 둔다. */
+.article-body iframe.is-embed-error {
+    height: 144px;
+    aspect-ratio: auto;
     background: var(--surface);
 }
 
@@ -1326,10 +1342,12 @@ html[data-theme="dark"] .comment-main img.dccon {
 
 html[data-theme="dark"] .article-body iframe[src*="youtube.com/embed"],
 html[data-theme="dark"] .article-body iframe[src*="youtube-nocookie.com/embed"],
-html[data-theme="dark"] .article-body iframe[src^="/movie"],
-html[data-theme="dark"] .article-body iframe[src*="/board/movie/movie_view"],
-html[data-theme="dark"] .article-body iframe[src*="m.dcinside.com/movie/player"] {
+html[data-theme="dark"] .article-body iframe[src^="/movie"] {
     background: var(--surface-strong);
+}
+
+html[data-theme="dark"] .article-body iframe.is-embed-error {
+    background: var(--surface);
 }
 
 /* 위 outline-color 재정의보다 특이성이 높아야 포커스 링이 유지된다. */

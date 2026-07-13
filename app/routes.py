@@ -18,6 +18,7 @@ from .services.core import (
 from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
+from .services import youtube_meta
 from .services.recent import (
     RECENT_MAX_ITEMS,
     clear_recent_galleries,
@@ -777,6 +778,19 @@ def movie():
         abort(400)
     board, pid, kind = _media_request_context()
     return build_movie_response(movie_no, board, pid, kind=kind)
+
+
+@bp.route("/embed/youtube-size")
+def youtube_size():
+    raw_ids = (request.args.get("ids") or "").split(",")
+    sizes = youtube_meta.sizes_for_ids(raw_ids)
+    if not sizes:
+        abort(400)
+    response = jsonify(sizes)
+    # 실패(null)가 섞인 응답이 브라우저에 하루 동안 남으면 짧은 unknown TTL이 무의미해진다.
+    max_age = 86400 if all(sizes.values()) else 300
+    response.headers["Cache-Control"] = f"public, max-age={max_age}"
+    return response
 
 
 @bp.route("/read")
