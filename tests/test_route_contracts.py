@@ -303,9 +303,11 @@ def test_read_navigation_preserves_search_position(monkeypatch):
 
     assert response.status_code == 200
     assert seen["search_pos"] == -123
-    for selector in (".crumb-link", ".pager-row .pager-btn", "#related-list a.feed-item"):
+    for selector in (".crumb-link", ".pager-row .pager-btn"):
         query = parse_qs(urlparse(soup.select_one(selector)["href"]).query)
         assert query["s_pos"] == ["-123"]
+    assert soup.select_one("#related-list a.feed-item") is None
+    assert "더보기를 누르면 불러옵니다" in soup.select_one("#related-list").get_text(" ", strip=True)
     assert soup.select_one("#related-section")["data-search-pos"] == "-123"
     canonical_query = parse_qs(urlparse(soup.select_one('meta[property="og:url"]')["content"]).query)
     assert canonical_query["s_pos"] == ["-123"]

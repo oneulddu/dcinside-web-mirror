@@ -842,7 +842,14 @@ def read():
         )
     )
     _format_read_payload_times(data, comments)
-    embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
+    raw_embedded_related_posts = data.pop("related_posts", [])
+    # Search view_next rows can cross a 10k-result block boundary, but DC does
+    # not expose each embedded row's source page/search position. Rendering
+    # them with the current article's cursor corrupts the next related request.
+    # Start search-related loading from the article's known cursor instead.
+    embedded_related_posts = (
+        [] if search_keyword else _serialize_related_posts(raw_embedded_related_posts)
+    )
 
     for comment in comments:
         if comment.get("dccon"):
