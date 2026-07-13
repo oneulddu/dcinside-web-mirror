@@ -122,7 +122,10 @@ def _media_http_session():
     return session
 
 
-def _pinned_media_adapter(target):
+def _pinned_media_adapter(target, *, shared=True):
+    if not shared:
+        return PinnedMediaAdapter(target)
+
     adapter = getattr(_MEDIA_SESSION_LOCAL, "adapter", None)
     if adapter is None:
         adapter = PinnedMediaAdapter(target)
@@ -257,7 +260,7 @@ def is_public_hostname(hostname):
     return result
 
 
-def _parse_media_url(raw_url, base_url=None):
+def _parse_media_url(raw_url, base_url=None, *, require_allowed_media_host=True):
     url = (raw_url or "").strip()
     if not url:
         return None, None
@@ -276,7 +279,7 @@ def _parse_media_url(raw_url, base_url=None):
         return None, None
     if parsed.username or parsed.password:
         return None, None
-    if not is_allowed_media_host(parsed.hostname):
+    if require_allowed_media_host and not is_allowed_media_host(parsed.hostname):
         return None, None
     return url, parsed
 
@@ -302,8 +305,12 @@ def _select_pinned_addresses(addresses):
     return tuple(selected)
 
 
-def resolve_media_target(raw_url, base_url=None):
-    url, parsed = _parse_media_url(raw_url, base_url=base_url)
+def resolve_media_target(raw_url, base_url=None, *, require_allowed_media_host=True):
+    url, parsed = _parse_media_url(
+        raw_url,
+        base_url=base_url,
+        require_allowed_media_host=require_allowed_media_host,
+    )
     if not url:
         return None
 

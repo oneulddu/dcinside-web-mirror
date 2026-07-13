@@ -1,6 +1,7 @@
 import base64
 import json
 import socket
+import ssl
 import threading
 import time
 from datetime import datetime
@@ -15,6 +16,7 @@ from app import create_app
 from app import routes
 from app.services import heung
 from app.services import html_sanitizer
+from app.services import link_preview
 from app.services import media_proxy
 from app.services import recent
 from app.services import youtube_meta
@@ -59,6 +61,429 @@ class DummyMovieResponse:
 
     def close(self):
         self.closed = True
+
+
+class DummyPreviewResponse:
+    def __init__(self, body=b"", status_code=200, headers=None, chunks=None):
+        self.status_code = status_code
+        self.headers = {"Content-Type": "text/html"} if headers is None else headers
+        self.chunks = list(chunks) if chunks is not None else [body]
+        self.closed = False
+        self.iterated = 0
+
+    def read(self, size):
+        if not self.chunks:
+            return b""
+        chunk = self.chunks.pop(0)
+        self.iterated += 1
+        if len(chunk) > size:
+            self.chunks.insert(0, chunk[size:])
+            return chunk[:size]
+        return chunk
+
+    def close(self):
+        self.closed = True
+
+
+def _install_preview_responses(monkeypatch, responses):
+    pending = list(responses)
+    calls = []
+
+    def fake_request(url, target, started_at, socket_guard):
+        calls.append((url, target))
+        response = pending.pop(0)
+        try:
+            body = None
+            if 200 <= response.status_code < 300:
+                body = link_preview._read_limited_html(response, started_at)
+            return response.status_code, response.headers, body
+        finally:
+            response.close()
+
+    monkeypatch.setattr(link_preview, "_request_preview_target", fake_request)
+    return calls
+
+
+def _reset_link_preview_rate(monkeypatch, maximum=100):
+    monkeypatch.setattr(link_preview, "PREVIEW_RATE_MAX_CALLS", maximum)
+    monkeypatch.setattr(link_preview, "PREVIEW_RATE_WINDOW_SECONDS", 10)
+    monkeypatch.setitem(link_preview._probe_rate, "window_start", link_preview.time.monotonic())
+    monkeypatch.setitem(link_preview._probe_rate, "used", 0)
+
+
+def _preview_target(url, address="93.184.216.34"):
+    parsed = urlparse(url)
+    return media_proxy.ResolvedMediaTarget(
+        scheme=parsed.scheme,
+        hostname=parsed.hostname,
+        port=parsed.port or 443,
+        host_header=parsed.hostname,
+        addresses=(address,),
+    )
+
+
+def test_link_preview_rejects_non_https_credentials_nonstandard_ports_and_private_hosts(monkeypatch):
+    assert link_preview.normalize_preview_url("http://example.com/post") is None
+    assert link_preview.normalize_preview_url("https://user:pass@example.com/post") is None
+    assert link_preview.normalize_preview_url("https://example.com:444/post") is None
+    assert link_preview.normalize_preview_url("https://example.com:443/post") == "https://example.com:443/post"
+
+    request_calls = []
+    monkeypatch.setattr(
+        link_preview,
+        "_request_preview_target",
+        lambda *args: request_calls.append(args),
+    )
+    monkeypatch.setattr(link_preview, "resolve_media_target", lambda *args, **kwargs: None)
+    _reset_link_preview_rate(monkeypatch)
+
+    assert link_preview.fetch_preview("https://private-preview.test/post") is None
+    assert request_calls == []
+
+
+def test_link_preview_follows_relative_redirects_and_revalidates_each_hop(monkeypatch):
+    redirect = DummyPreviewResponse(status_code=302, headers={"Location": "/final"})
+    final = DummyPreviewResponse(
+        b'<meta name="og:title" content="Redirect title"><meta property="og:site_name" content="Site">'
+    )
+    checked_urls = []
+    request_calls = _install_preview_responses(monkeypatch, [redirect, final])
+    monkeypatch.setattr(
+        link_preview,
+        "resolve_media_target",
+        lambda url, **kwargs: checked_urls.append(url) or _preview_target(url),
+    )
+    _reset_link_preview_rate(monkeypatch)
+
+    result = link_preview.fetch_preview("https://redirect-preview.test/start")
+
+    assert result == {
+        "title": "Redirect title",
+        "description": None,
+        "site_name": "Site",
+        "host": "redirect-preview.test",
+    }
+    assert checked_urls == [
+        "https://redirect-preview.test/start",
+        "https://redirect-preview.test/final",
+    ]
+    assert [call[0] for call in request_calls] == [
+        "https://redirect-preview.test/start",
+        "https://redirect-preview.test/final",
+    ]
+    assert redirect.closed is True and final.closed is True
+
+
+def test_link_preview_stops_before_redirect_to_private_host(monkeypatch):
+    redirect = DummyPreviewResponse(
+        status_code=302,
+        headers={"Location": "https://private-hop.test/secret"},
+    )
+    request_calls = _install_preview_responses(monkeypatch, [redirect])
+    monkeypatch.setattr(
+        link_preview,
+        "resolve_media_target",
+        lambda url, **kwargs: (
+            None if urlparse(url).hostname == "private-hop.test" else _preview_target(url)
+        ),
+    )
+    _reset_link_preview_rate(monkeypatch)
+
+    assert link_preview.fetch_preview("https://public-hop.test/start") is None
+    assert len(request_calls) == 1
+
+
+def test_link_preview_requires_html_limits_stream_and_requires_title(monkeypatch):
+    non_html = DummyPreviewResponse(b"ignored", headers={"Content-Type": "application/json"})
+    first = b"<title>Bounded title</title>"
+    first += b"x" * (8192 - len(first))
+    oversized = DummyPreviewResponse(chunks=[first] + [b"x" * 8192 for _ in range(20)])
+    no_title = DummyPreviewResponse(b"<html><body>missing</body></html>")
+    _install_preview_responses(monkeypatch, [non_html, oversized, no_title])
+    monkeypatch.setattr(link_preview, "resolve_media_target", lambda url, **kwargs: _preview_target(url))
+    _reset_link_preview_rate(monkeypatch)
+
+    assert link_preview.fetch_preview("https://content-type-preview.test/") is None
+    bounded = link_preview.fetch_preview("https://bounded-preview.test/")
+    assert bounded["title"] == "Bounded title"
+    assert oversized.iterated == link_preview.PREVIEW_MAX_BYTES // 8192
+    assert link_preview.fetch_preview("https://missing-title-preview.test/") is None
+
+
+def test_link_preview_caches_success_and_failure_with_separate_ttls(monkeypatch):
+    success = DummyPreviewResponse(
+        b'<meta property="og:title" content="Cached"><meta name="og:description" content="Description">'
+    )
+    failure = DummyPreviewResponse(b"<html><body>no title</body></html>")
+    recorded_ttls = []
+    real_cache_set = link_preview.cache_set_after_insert
+
+    def recording_cache_set(cache, lock, key, value, ttl, max_items):
+        recorded_ttls.append(ttl)
+        return real_cache_set(cache, lock, key, value, ttl, max_items)
+
+    request_calls = _install_preview_responses(monkeypatch, [success, failure])
+    monkeypatch.setattr(link_preview, "resolve_media_target", lambda url, **kwargs: _preview_target(url))
+    monkeypatch.setattr(link_preview, "cache_set_after_insert", recording_cache_set)
+    _reset_link_preview_rate(monkeypatch)
+
+    success_url = "https://success-cache-preview.test/"
+    failure_url = "https://failure-cache-preview.test/"
+    assert link_preview.fetch_preview(success_url)["title"] == "Cached"
+    assert link_preview.fetch_preview(success_url)["title"] == "Cached"
+    assert link_preview.fetch_preview(failure_url) is None
+    assert link_preview.fetch_preview(failure_url) is None
+
+    assert len(request_calls) == 2
+    assert link_preview.PREVIEW_FAILURE_CACHE_TTL == 300
+    assert recorded_ttls == [link_preview.PREVIEW_CACHE_TTL, 300]
+
+
+def test_link_preview_budget_exhaustion_skips_outbound_and_is_not_cached(monkeypatch):
+    request_calls = []
+    monkeypatch.setattr(
+        link_preview,
+        "_request_preview_target",
+        lambda *args: request_calls.append(args),
+    )
+
+    def fail_resolve(*args, **kwargs):
+        raise AssertionError("DNS resolution must not run after the outbound budget is exhausted")
+
+    monkeypatch.setattr(link_preview, "resolve_media_target", fail_resolve)
+    _reset_link_preview_rate(monkeypatch, maximum=0)
+    url = "https://rate-limited-preview.test/"
+
+    assert link_preview.fetch_preview(url) is link_preview.RATE_LIMITED
+    assert request_calls == []
+    assert link_preview._cache_key(url) not in link_preview._preview_cache
+
+
+def test_link_preview_connects_only_to_pinned_address_with_original_tls_name(monkeypatch):
+    target = _preview_target("https://pinned-preview.test/post", address="93.184.216.35")
+    captured = {}
+
+    class FakeSocket:
+        def settimeout(self, timeout):
+            captured["timeout"] = timeout
+
+        def do_handshake(self):
+            captured["handshake"] = True
+
+        def shutdown(self, how):
+            captured["shutdown"] = how
+
+        def close(self):
+            captured["closed"] = True
+
+    raw_socket = FakeSocket()
+    tls_socket = FakeSocket()
+
+    class FakeSSLContext:
+        def wrap_socket(self, sock, server_hostname, do_handshake_on_connect):
+            captured["wrapped_socket"] = sock
+            captured["server_hostname"] = server_hostname
+            captured["do_handshake_on_connect"] = do_handshake_on_connect
+            return tls_socket
+
+    monkeypatch.setattr(
+        link_preview.socket,
+        "create_connection",
+        lambda address, timeout: captured.update(address=address, connect_timeout=timeout)
+        or raw_socket,
+    )
+    monkeypatch.setattr(link_preview.ssl, "create_default_context", FakeSSLContext)
+    socket_guard = link_preview._DeadlineSocketGuard()
+
+    result = link_preview._connect_pinned_target(
+        target,
+        time.monotonic(),
+        socket_guard,
+    )
+
+    assert result is tls_socket
+    assert captured["address"] == ("93.184.216.35", 443)
+    assert captured["wrapped_socket"] is raw_socket
+    assert captured["server_hostname"] == "pinned-preview.test"
+    assert captured["do_handshake_on_connect"] is False
+    assert captured["handshake"] is True
+    socket_guard.close_current()
+
+
+def _run_drip_preview(monkeypatch, chunks, url, deadline=0.08):
+    client_socket, server_socket = socket.socketpair()
+
+    def send_slow_chunks():
+        try:
+            for chunk in chunks:
+                time.sleep(0.02)
+                server_socket.sendall(chunk)
+        except OSError:
+            pass
+        finally:
+            server_socket.close()
+
+    sender = threading.Thread(target=send_slow_chunks, daemon=True)
+    sender.start()
+    monkeypatch.setattr(link_preview, "PREVIEW_DEADLINE_SECONDS", deadline)
+    monkeypatch.setattr(
+        link_preview,
+        "resolve_media_target",
+        lambda url, **kwargs: _preview_target(url),
+    )
+    monkeypatch.setattr(
+        link_preview,
+        "_connect_pinned_target",
+        lambda target, started_at, socket_guard: socket_guard.track(client_socket)
+        or client_socket,
+    )
+    _reset_link_preview_rate(monkeypatch)
+
+    started_at = time.monotonic()
+    result = link_preview.fetch_preview(url)
+    elapsed = time.monotonic() - started_at
+    sender.join(timeout=1)
+    return result, elapsed
+
+
+def test_link_preview_deadline_force_closes_body_drip(monkeypatch):
+    headers = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: text/html\r\n"
+        b"Content-Length: 1000\r\n\r\n"
+    )
+    result, elapsed = _run_drip_preview(
+        monkeypatch,
+        [headers] + [b"x"] * 30,
+        "https://body-drip-preview.test/",
+    )
+
+    assert result is None
+    assert elapsed < 0.18
+
+
+def test_link_preview_deadline_force_closes_status_and_header_drip(monkeypatch):
+    response_head = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: text/html\r\n"
+        b"Content-Length: 20\r\n\r\n"
+    )
+    result, elapsed = _run_drip_preview(
+        monkeypatch,
+        [bytes([value]) for value in response_head],
+        "https://header-drip-preview.test/",
+    )
+
+    assert result is None
+    assert elapsed < 0.18
+
+
+def test_link_preview_rejects_tls_hostname_verification_failure(monkeypatch):
+    target = _preview_target("https://wrong-cert-preview.test/")
+
+    class FakeSocket:
+        def settimeout(self, timeout):
+            pass
+
+        def shutdown(self, how):
+            pass
+
+        def close(self):
+            pass
+
+    class RejectingSSLContext:
+        def wrap_socket(self, sock, server_hostname, do_handshake_on_connect):
+            assert server_hostname == "wrong-cert-preview.test"
+            raise ssl.SSLCertVerificationError("hostname mismatch")
+
+    monkeypatch.setattr(link_preview.socket, "create_connection", lambda *args, **kwargs: FakeSocket())
+    monkeypatch.setattr(link_preview.ssl, "create_default_context", RejectingSSLContext)
+    rejected = False
+    try:
+        link_preview._connect_pinned_target(
+            target,
+            time.monotonic(),
+            link_preview._DeadlineSocketGuard(),
+        )
+    except ssl.SSLCertVerificationError:
+        rejected = True
+
+    assert rejected is True
+
+
+def test_link_preview_dns_resolution_respects_wall_clock_deadline(monkeypatch):
+    resolver_done = threading.Event()
+
+    def slow_resolve(*args, **kwargs):
+        try:
+            time.sleep(0.25)
+            return _preview_target(args[0])
+        finally:
+            resolver_done.set()
+
+    monkeypatch.setattr(link_preview, "PREVIEW_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(link_preview, "resolve_media_target", slow_resolve)
+    monkeypatch.setattr(
+        link_preview,
+        "_request_preview_target",
+        lambda *args: (_ for _ in ()).throw(AssertionError("timed-out DNS must not start HTTP")),
+    )
+    _reset_link_preview_rate(monkeypatch)
+
+    started_at = time.monotonic()
+    assert link_preview.fetch_preview("https://slow-dns-preview.test/") is None
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 0.15
+    assert resolver_done.wait(timeout=1)
+
+
+def test_link_preview_concurrency_limit_returns_503(monkeypatch):
+    semaphore = threading.BoundedSemaphore(1)
+    assert semaphore.acquire(blocking=False) is True
+    monkeypatch.setattr(link_preview, "_preview_concurrency", semaphore)
+    _reset_link_preview_rate(monkeypatch)
+    client = create_app().test_client()
+
+    response = client.get("/embed/link-preview?url=https%3A%2F%2Fconcurrency-preview.test%2F")
+
+    assert response.status_code == 503
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Retry-After"] == "10"
+
+
+def test_link_preview_route_status_and_cache_contract(monkeypatch):
+    monkeypatch.setattr(routes.link_preview, "is_valid_preview_url", lambda url: url.startswith("https://"))
+
+    def fake_fetch(url):
+        if "ok.test" in url:
+            return {"title": "Title", "description": None, "site_name": "Site", "host": "ok.test"}
+        if "limited.test" in url:
+            return routes.link_preview.RATE_LIMITED
+        return None
+
+    monkeypatch.setattr(routes.link_preview, "fetch_preview", fake_fetch)
+    client = create_app().test_client()
+
+    success = client.get("/embed/link-preview?url=https%3A%2F%2Fok.test%2Fpost")
+    failure = client.get("/embed/link-preview?url=https%3A%2F%2Ffail.test%2Fpost")
+    invalid = client.get("/embed/link-preview?url=http%3A%2F%2Fbad.test%2Fpost")
+    limited = client.get("/embed/link-preview?url=https%3A%2F%2Flimited.test%2Fpost")
+
+    assert success.status_code == 200
+    assert success.get_json() == {
+        "ok": True,
+        "title": "Title",
+        "description": None,
+        "site_name": "Site",
+        "host": "ok.test",
+    }
+    assert "max-age=86400" in success.headers["Cache-Control"]
+    assert failure.status_code == 200 and failure.get_json() == {"ok": False}
+    assert "max-age=300" in failure.headers["Cache-Control"]
+    assert invalid.status_code == 400
+    assert limited.status_code == 503 and limited.headers["Retry-After"] == "10"
+    assert limited.headers["Cache-Control"] == "no-store"
 
 
 def test_media_proxy_mobile_user_agent_uses_ios():
@@ -1069,6 +1494,135 @@ def test_sanitize_html_fragment_normalizes_twitter_status_iframes_to_embed():
     assert all(
         iframe["title"] == "X 게시물" for iframe in soup.find_all("iframe")
     )
+
+
+def test_prepare_read_html_wraps_normalized_twitter_iframe_with_source_link():
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            '<iframe src="https://x.com/user/status/1668868113725550592" allowfullscreen></iframe>',
+            [],
+            "test",
+            123,
+            None,
+        )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    figure = soup.select_one("figure.embed-card.embed-card-twitter")
+    assert figure is not None
+    assert figure.select_one("figcaption.embed-card-head .embed-card-label").get_text(strip=True) == "X 게시물"
+    source = figure.select_one("a.embed-card-source")
+    assert source["href"] == "https://x.com/i/status/1668868113725550592"
+    assert source["target"] == "_blank"
+    assert set(source["rel"]) == {"noopener", "noreferrer"}
+    assert figure.iframe["src"] == (
+        "https://platform.twitter.com/embed/Tweet.html?id=1668868113725550592&dnt=true"
+    )
+    assert figure.iframe.has_attr("allowfullscreen")
+
+
+def test_prepare_read_html_normalizes_og_wrap_without_image_or_nested_anchor():
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            """
+            <a href="https://n.news.naver.com/article/001/123" class="og-wrap" target="_blank">
+              <div class="og-img"><img class="og-img" src="https://imgnews.pstatic.net/thumb.jpg"></div>
+              <div class="og-info"><strong class="og-tit"><a href="https://nested.test">뉴스 제목</a></strong>
+              <div class="og-description">뉴스 설명</div><span class="og-host">무시할 호스트</span></div>
+            </a>
+            """,
+            ["https://imgnews.pstatic.net/thumb.jpg"],
+            "test",
+            123,
+            None,
+        )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    preview = soup.select_one("a.link-preview")
+    assert preview["href"] == "https://n.news.naver.com/article/001/123"
+    assert preview.select_one(".link-preview-title").get_text(strip=True) == "뉴스 제목"
+    assert preview.select_one(".link-preview-desc").get_text(strip=True) == "뉴스 설명"
+    assert preview.select_one(".link-preview-host").get_text(strip=True) == "n.news.naver.com"
+    assert preview.find("img") is None
+    assert preview.find("a") is None
+    assert len(soup.find_all("a")) == 1
+
+
+def test_prepare_read_html_removes_unsafe_or_titleless_og_wrap():
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            """
+            <a class="og-wrap" href="javascript:alert(1)"><strong class="og-tit">unsafe</strong></a>
+            <a class="og-wrap" href="https://example.test/no-title"><span class="og-desc">desc</span></a>
+            """,
+            [],
+            "test",
+            123,
+            None,
+        )
+
+    assert BeautifulSoup(cleaned, "html.parser").select(".og-wrap, .link-preview") == []
+
+
+def test_prepare_read_html_marks_bare_external_links_and_applies_exclusions():
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            """
+            <div>
+              <a href="https://example.com/path?q=1">https://example.com/path?q=1</a>
+              <a href="https://scheme-less.test/path">scheme-less.test/path</a>
+              <a href="https://label.test/path">일반 라벨</a>
+              <a href="https://gall.dcinside.com/board/view?id=test&amp;no=1">https://gall.dcinside.com/board/view?id=test&amp;no=1</a>
+              <a href="https://www.youtube.com/watch?v=abcdefghijk">https://www.youtube.com/watch?v=abcdefghijk</a>
+              <a href="https://youtu.be/abcdefghijk">https://youtu.be/abcdefghijk</a>
+              <a href="https://x.com/user/status/1">https://x.com/user/status/1</a>
+              <a href="https://twitter.com/user/status/1">https://twitter.com/user/status/1</a>
+            </div>
+            """,
+            [],
+            "test",
+            123,
+            None,
+        )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    links = {link.get_text(strip=True): link for link in soup.find_all("a")}
+
+    assert "link-preview-target" in links["https://example.com/path?q=1"].get("class", [])
+    assert "link-preview-target" in links["scheme-less.test/path"].get("class", [])
+    assert "link-preview-target" not in links["일반 라벨"].get("class", [])
+    for text in (
+        "https://www.youtube.com/watch?v=abcdefghijk",
+        "https://youtu.be/abcdefghijk",
+        "https://x.com/user/status/1",
+        "https://twitter.com/user/status/1",
+    ):
+        assert "link-preview-target" not in links[text].get("class", [])
+
+
+def test_prepare_read_html_skips_bare_link_when_matching_og_preview_follows_parent_block():
+    href = "https://paired-preview.test/post"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            f"""
+            <div>
+              <p><a href="{href}">{href}</a></p>
+              <a class="og-wrap" href="{href}"><strong class="og-tit">Paired title</strong></a>
+            </div>
+            """,
+            [],
+            "test",
+            123,
+            None,
+        )
+    soup = BeautifulSoup(cleaned, "html.parser")
+    bare = soup.p.a
+
+    assert "link-preview-target" not in bare.get("class", [])
+    assert soup.select_one("a.link-preview")["href"] == href
 
 
 def test_sanitize_html_fragment_rejects_non_status_twitter_and_other_embeds():

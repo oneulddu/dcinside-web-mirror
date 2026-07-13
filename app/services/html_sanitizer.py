@@ -270,11 +270,143 @@ def sanitize_html_fragment(raw_html):
 
 def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
     soup = parse_html_fragment(raw_html)
+    normalize_og_wraps(soup)
     rewrite_content_images(soup, images, board, pid, kind)
     rewrite_dcinside_links(soup)
     sanitize_html_tree(soup)
+    wrap_twitter_iframes(soup)
+    mark_link_preview_targets(soup)
     highlight_soup_text(soup, search_keyword)
     return serialize_html_fragment(soup)
+
+
+def _class_tokens(tag):
+    return {str(value).lower() for value in (tag.get("class") or [])}
+
+
+def _find_og_text(anchor, class_names):
+    for tag in anchor.find_all(True):
+        classes = _class_tokens(tag)
+        if classes.intersection(class_names):
+            text = " ".join(tag.stripped_strings).strip()
+            if text:
+                return text
+    return None
+
+
+def normalize_og_wraps(soup):
+    for anchor in list(soup.select("a.og-wrap")):
+        href = str(anchor.get("href") or "").strip()
+        title = _find_og_text(anchor, {"og-tit", "og-title"})
+        if not is_safe_href(href) or not title:
+            anchor.decompose()
+            continue
+        parsed = _safe_urlparse(href)
+        host = (parsed.hostname or "").lower() if parsed else ""
+
+        preview = soup.new_tag("a", href=href)
+        preview["class"] = ["link-preview"]
+        preview["target"] = "_blank"
+        preview["rel"] = "noopener noreferrer"
+
+        title_tag = soup.new_tag("span")
+        title_tag["class"] = ["link-preview-title"]
+        title_tag.string = title
+        preview.append(title_tag)
+
+        description = _find_og_text(anchor, {"og-desc", "og-description", "og-summary", "og-txt"})
+        if description:
+            description_tag = soup.new_tag("span")
+            description_tag["class"] = ["link-preview-desc"]
+            description_tag.string = description
+            preview.append(description_tag)
+
+        host_tag = soup.new_tag("span")
+        host_tag["class"] = ["link-preview-host"]
+        host_tag.string = host
+        preview.append(host_tag)
+        anchor.replace_with(preview)
+    return soup
+
+
+def wrap_twitter_iframes(soup):
+    for iframe in list(soup.find_all("iframe", src=True)):
+        parsed = _safe_urlparse(iframe.get("src"))
+        if parsed is None or (parsed.netloc or "").lower() not in TWITTER_PLATFORM_HOSTS:
+            continue
+        tweet_ids = parse_qs(parsed.query).get("id", [])
+        if not tweet_ids or not tweet_ids[0].isdigit():
+            continue
+        if iframe.find_parent("figure", class_="embed-card-twitter"):
+            continue
+        tweet_id = tweet_ids[0]
+
+        figure = soup.new_tag("figure")
+        figure["class"] = ["embed-card", "embed-card-twitter"]
+        head = soup.new_tag("figcaption")
+        head["class"] = ["embed-card-head"]
+        label = soup.new_tag("span")
+        label["class"] = ["embed-card-label"]
+        label.string = "X 게시물"
+        source = soup.new_tag("a", href=f"https://x.com/i/status/{tweet_id}")
+        source["class"] = ["embed-card-source"]
+        source["target"] = "_blank"
+        source["rel"] = "noopener noreferrer"
+        source.string = "X에서 열기"
+        head.extend([label, source])
+        iframe.replace_with(figure)
+        figure.extend([head, iframe])
+    return soup
+
+
+def _excluded_preview_host(host):
+    excluded = ("dcinside.com", "youtube.com", "youtu.be", "x.com", "twitter.com")
+    return any(host == domain or host.endswith("." + domain) for domain in excluded)
+
+
+def _is_matching_preview(tag, href):
+    return bool(
+        tag
+        and getattr(tag, "name", None) == "a"
+        and "link-preview" in _class_tokens(tag)
+        and str(tag.get("href") or "").strip() == href
+    )
+
+
+def _has_adjacent_preview(anchor, href):
+    if _is_matching_preview(anchor.find_next_sibling(), href):
+        return True
+    block_names = {
+        "blockquote", "dd", "div", "dl", "dt", "figcaption", "figure", "li",
+        "ol", "p", "pre", "table", "td", "th", "tr", "ul",
+    }
+    parent = anchor.parent
+    while parent and getattr(parent, "name", None):
+        if parent.name in block_names:
+            return _is_matching_preview(parent.find_next_sibling(), href)
+        parent = parent.parent
+    return False
+
+
+def mark_link_preview_targets(soup):
+    for anchor in soup.find_all("a", href=True):
+        href = str(anchor.get("href") or "").strip()
+        parsed = _safe_urlparse(href)
+        if parsed is None or parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            continue
+        host = parsed.hostname.lower()
+        if _excluded_preview_host(host):
+            continue
+        text = " ".join(anchor.stripped_strings).strip()
+        without_scheme = href.split("://", 1)[1] if "://" in href else href
+        if text not in {href, without_scheme}:
+            continue
+        if _has_adjacent_preview(anchor, href):
+            continue
+        classes = list(anchor.get("class") or [])
+        if "link-preview-target" not in classes:
+            anchor["class"] = classes + ["link-preview-target"]
+    return soup
 
 
 def pick_soup_image_src(tag):
@@ -357,6 +489,8 @@ def rewrite_content_images(soup, images, board, pid, kind):
 
 def rewrite_dcinside_links(soup):
     for anchor in soup.find_all("a", href=True):
+        if "link-preview" in (anchor.get("class") or []):
+            continue
         href = dcinside_internal_href(anchor.get("href"))
         if not href:
             continue

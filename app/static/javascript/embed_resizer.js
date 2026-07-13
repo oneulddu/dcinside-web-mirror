@@ -14,6 +14,12 @@
     var YOUTUBE_SIZE_ENDPOINT = "/embed/youtube-size";
     var YOUTUBE_ID_PATTERN = /\/embed\/([A-Za-z0-9_-]{11})(?:[/?#&]|$)/;
     var YOUTUBE_SIZE_BATCH = 12;
+    var TWITTER_ORIGIN = "https://platform.twitter.com";
+    var TWITTER_SELECTOR = '.article-body iframe[src^="https://platform.twitter.com/embed/"]';
+    var TWITTER_MIN_HEIGHT = 100;
+    var TWITTER_MAX_HEIGHT = 3000;
+    var TWITTER_TIMEOUT_MS = 8000;
+    var TWITTER_ERROR_TEXT = "X 게시물을 불러오지 못했습니다";
     var MIN_RATIO = 0.2;
     var MAX_RATIO = 5;
     var ERROR_TITLE = "동영상을 불러오지 못했습니다";
@@ -183,4 +189,136 @@
     }
 
     initYoutubeSizes();
+
+    // --- X(트위터) 임베드: 테마 일치, 실제 높이 적용, 무응답 폴백 ---
+    // platform.twitter.com은 성공 렌더링 시 twttr.private.resize 메시지를 보낸다(실측).
+    // 유효 resize 수신이 곧 성공 신호이고, 일정 시간 무응답이면 공통 오류 상태로
+    // 접는다. 늦게 신호가 오면 오류 상태를 되돌린다(복구 허용).
+
+    function twitterFrames() {
+        return document.querySelectorAll(TWITTER_SELECTOR);
+    }
+
+    function currentTheme() {
+        return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+    }
+
+    function ensureTwitterTheme(iframe, theme) {
+        var src = iframe.getAttribute("src") || "";
+        var desired = "theme=" + theme;
+        if (src.indexOf("theme=") === -1) {
+            if (theme === "light") {
+                return; // 기본 테마가 light이므로 재로드하지 않는다.
+            }
+            iframe.setAttribute("src", src + (src.indexOf("?") === -1 ? "?" : "&") + desired);
+            resetTwitterState(iframe);
+            return;
+        }
+        if (src.indexOf(desired) !== -1) {
+            return; // 이미 일치하면 재로드하지 않는다.
+        }
+        iframe.setAttribute("src", src.replace(/theme=(dark|light)/, desired));
+        resetTwitterState(iframe);
+    }
+
+    function twitterWrapper(iframe) {
+        var parent = iframe.parentElement;
+        return parent && parent.classList && parent.classList.contains("embed-card") ? parent : null;
+    }
+
+    function clearTwitterError(iframe) {
+        var wrapper = twitterWrapper(iframe);
+        if (!wrapper) {
+            return;
+        }
+        wrapper.classList.remove("is-embed-timeout");
+        var status = wrapper.querySelector(".embed-card-status");
+        if (status) {
+            status.parentNode.removeChild(status);
+        }
+    }
+
+    function markTwitterError(iframe) {
+        var wrapper = twitterWrapper(iframe);
+        if (!wrapper || wrapper.classList.contains("is-embed-timeout")) {
+            return;
+        }
+        wrapper.classList.add("is-embed-timeout");
+        var status = document.createElement("p");
+        status.className = "embed-card-status";
+        status.setAttribute("aria-live", "polite");
+        status.textContent = TWITTER_ERROR_TEXT;
+        wrapper.appendChild(status);
+    }
+
+    function armTwitterWatchdog(iframe) {
+        if (iframe.__twitterWatchdog) {
+            clearTimeout(iframe.__twitterWatchdog);
+        }
+        iframe.__twitterWatchdog = setTimeout(function () {
+            if (iframe.dataset.twitterState !== "sized" && document.contains(iframe)) {
+                markTwitterError(iframe);
+            }
+        }, TWITTER_TIMEOUT_MS);
+    }
+
+    function resetTwitterState(iframe) {
+        delete iframe.dataset.twitterState;
+        clearTwitterError(iframe);
+        armTwitterWatchdog(iframe);
+    }
+
+    function applyTwitterHeight(iframe, height) {
+        var clamped = Math.min(Math.max(Math.round(height), TWITTER_MIN_HEIGHT), TWITTER_MAX_HEIGHT);
+        iframe.dataset.twitterState = "sized";
+        iframe.style.height = clamped + "px";
+        clearTwitterError(iframe);
+    }
+
+    window.addEventListener("message", function (event) {
+        if (event.origin !== TWITTER_ORIGIN || !event.source) {
+            return;
+        }
+        var data = event.data;
+        var embed = data && typeof data === "object" ? data["twttr.embed"] : null;
+        if (!embed || embed.method !== "twttr.private.resize") {
+            return;
+        }
+        var params = embed.params && embed.params[0];
+        var height = params ? params.height : null;
+        if (!isFinitePositive(height)) {
+            return;
+        }
+        var frames = twitterFrames();
+        for (var t = 0; t < frames.length; t += 1) {
+            if (frames[t].contentWindow && frames[t].contentWindow === event.source) {
+                applyTwitterHeight(frames[t], height);
+                return;
+            }
+        }
+    });
+
+    function initTwitterEmbeds() {
+        var frames = twitterFrames();
+        if (!frames.length) {
+            return;
+        }
+        var theme = currentTheme();
+        for (var t = 0; t < frames.length; t += 1) {
+            ensureTwitterTheme(frames[t], theme);
+            armTwitterWatchdog(frames[t]);
+        }
+        // 테마 전환 시 X iframe만 필요한 경우 재로드한다. 포커스·스크롤은 건드리지 않는다.
+        if (typeof MutationObserver === "function") {
+            new MutationObserver(function () {
+                var nextTheme = currentTheme();
+                var current = twitterFrames();
+                for (var m = 0; m < current.length; m += 1) {
+                    ensureTwitterTheme(current[m], nextTheme);
+                }
+            }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+        }
+    }
+
+    initTwitterEmbeds();
 }());
