@@ -265,7 +265,10 @@
     function resetTwitterState(iframe) {
         delete iframe.dataset.twitterState;
         clearTwitterError(iframe);
-        armTwitterWatchdog(iframe);
+        if (iframe.__twitterWatchdog) {
+            clearTimeout(iframe.__twitterWatchdog);
+            iframe.__twitterWatchdog = null;
+        }
     }
 
     function applyTwitterHeight(iframe, height) {
@@ -305,8 +308,16 @@
         }
         var theme = currentTheme();
         for (var t = 0; t < frames.length; t += 1) {
+            // lazy 로딩 iframe은 뷰포트에 접근하기 전까지 로드되지 않으므로,
+            // 워치독은 실제 load 이후에만 무장한다(화면 밖 임베드 오탐 방지).
+            (function (iframe) {
+                iframe.addEventListener("load", function () {
+                    if (iframe.dataset.twitterState !== "sized") {
+                        armTwitterWatchdog(iframe);
+                    }
+                });
+            }(frames[t]));
             ensureTwitterTheme(frames[t], theme);
-            armTwitterWatchdog(frames[t]);
         }
         // 테마 전환 시 X iframe만 필요한 경우 재로드한다. 포커스·스크롤은 건드리지 않는다.
         if (typeof MutationObserver === "function") {

@@ -14,7 +14,6 @@
     var TARGET_SELECTOR = ".article-body a.link-preview-target";
     var MAX_PREVIEWS = 6;
     var LOADING_TEXT = "미리보기 불러오는 중";
-    var ERROR_TEXT = "미리보기를 불러오지 못했습니다";
 
     function buildPlaceholder() {
         var placeholder = document.createElement("span");
@@ -50,6 +49,14 @@
         return card;
     }
 
+    function removePlaceholder(placeholder) {
+        // 봇 차단 사이트 등 조회 실패는 흔하므로 오류 문구로 본문을 어지럽히지 않고
+        // 플레이스홀더를 제거해 원래 링크만 남긴다.
+        if (placeholder.parentNode) {
+            placeholder.parentNode.removeChild(placeholder);
+        }
+    }
+
     function queryPreview(anchor) {
         var href = anchor.href;
         var placeholder = buildPlaceholder();
@@ -62,14 +69,11 @@
                 if (data && data.ok && data.title) {
                     placeholder.parentNode.replaceChild(buildCard(href, data), placeholder);
                 } else {
-                    // 실패해도 원래 링크는 그대로 동작한다. 문구만 남긴다.
-                    placeholder.className = "link-preview is-error";
-                    placeholder.textContent = ERROR_TEXT;
+                    removePlaceholder(placeholder);
                 }
             })
             .catch(function () {
-                placeholder.className = "link-preview is-error";
-                placeholder.textContent = ERROR_TEXT;
+                removePlaceholder(placeholder);
             });
     }
 

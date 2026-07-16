@@ -1,6 +1,8 @@
+import codecs
 import hashlib
 import html
 import http.client
+import re
 import socket
 import ssl
 import threading
@@ -27,6 +29,8 @@ PREVIEW_DEADLINE_SECONDS = max(env_int("MIRROR_LINK_PREVIEW_DEADLINE", 8), 1)
 
 RATE_LIMITED = object()
 _CACHE_FAILURE = object()
+
+_CHARSET_PATTERN = re.compile(r"charset\s*=\s*[\"']?\s*([a-zA-Z0-9._:-]+)", re.IGNORECASE)
 
 _preview_cache = {}
 _preview_cache_lock = threading.Lock()
@@ -154,8 +158,37 @@ def _meta_content(soup, key):
     return None
 
 
-def _parse_preview(body, host):
-    soup = BeautifulSoup(body, "lxml")
+def _decode_preview_body(body, content_type=None):
+    candidates = []
+    if content_type:
+        match = _CHARSET_PATTERN.search(content_type)
+        if match:
+            candidates.append(match.group(1))
+
+    match = _CHARSET_PATTERN.search(body[:8192].decode("ascii", errors="ignore"))
+    if match:
+        candidates.append(match.group(1))
+
+    # 선언된 charset이 틀린 경우(예: utf-8 헤더 + 실제 EUC-KR 본문)를 걸러내기 위해
+    # 먼저 strict 디코딩으로 검증한다. 본문이 128KB에서 잘려 마지막 멀티바이트가
+    # 끊겼을 수 있으므로 incremental decoder(final=False)로 꼬리 불완전은 허용한다.
+    for encoding in candidates + ["utf-8", "cp949"]:
+        try:
+            decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
+            return decoder.decode(body, False)
+        except (LookupError, UnicodeDecodeError):
+            continue
+
+    for encoding in candidates:
+        try:
+            return body.decode(encoding, errors="replace")
+        except LookupError:
+            continue
+    return body.decode("utf-8", errors="replace")
+
+
+def _parse_preview(body, host, content_type=None):
+    soup = BeautifulSoup(_decode_preview_body(body, content_type), "lxml")
     title = _clean_text(_meta_content(soup, "og:title"), 150)
     if not title and soup.title:
         title = _clean_text(soup.title.get_text(" ", strip=True), 150)
@@ -226,7 +259,11 @@ def _read_limited_html(response, started_at):
 def _connect_pinned_target(target, started_at, socket_guard):
     ssl_context = ssl.create_default_context()
     last_error = None
-    for address in target.addresses:
+    addresses = sorted(
+        target.addresses,
+        key=lambda address: 0 if _is_ipv4_address(address) else 1,
+    )
+    for address in addresses:
         raw_socket = None
         try:
             raw_socket = socket.create_connection(
@@ -255,6 +292,14 @@ def _connect_pinned_target(target, started_at, socket_guard):
     if last_error is not None:
         raise last_error
     raise OSError("no validated preview address")
+
+
+def _is_ipv4_address(address):
+    try:
+        socket.inet_pton(socket.AF_INET, address)
+    except OSError:
+        return False
+    return True
 
 
 def _request_preview_target(url, target, started_at, socket_guard):
@@ -343,7 +388,11 @@ def _fetch_uncached(url):
                 continue
             if not 200 <= status_code < 300 or body is None:
                 return None
-            return _parse_preview(body, target.hostname)
+            return _parse_preview(
+                body,
+                target.hostname,
+                headers.get("Content-Type"),
+            )
     except (
         OSError,
         ssl.SSLError,
