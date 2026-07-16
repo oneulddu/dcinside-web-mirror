@@ -1233,9 +1233,8 @@ a.pager-btn:active {
     text-overflow: ellipsis;
 }
 
-/* 조회 중/실패 상태(비링크 플레이스홀더 포함) */
-.article-body .link-preview.is-loading,
-.article-body .link-preview.is-error {
+/* 조회 중 상태(비링크 플레이스홀더). 실패 시에는 플레이스홀더를 제거한다. */
+.article-body .link-preview.is-loading {
     display: block;
     margin: var(--space-3) 0 var(--space-4);
     padding: var(--space-2) var(--space-4);

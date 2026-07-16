@@ -210,6 +210,35 @@ def test_link_preview_requires_html_limits_stream_and_requires_title(monkeypatch
     assert link_preview.fetch_preview("https://missing-title-preview.test/") is None
 
 
+def test_link_preview_decodes_content_type_charset_before_parsing(monkeypatch):
+    body = '<meta property="og:title" content="뽐뿌">'.encode("euc-kr")
+    response = DummyPreviewResponse(
+        body,
+        headers={"Content-Type": "text/html; charset=euc-kr"},
+    )
+    _install_preview_responses(monkeypatch, [response])
+    monkeypatch.setattr(link_preview, "resolve_media_target", lambda url, **kwargs: _preview_target(url))
+    _reset_link_preview_rate(monkeypatch)
+
+    result = link_preview.fetch_preview("https://euc-kr-header-preview.test/")
+
+    assert result["title"] == "뽐뿌"
+
+
+def test_link_preview_sniffs_meta_charset_before_parsing(monkeypatch):
+    body = (
+        '<meta charset="euc-kr"><meta property="og:title" content="한글 제목">'
+    ).encode("euc-kr")
+    response = DummyPreviewResponse(body)
+    _install_preview_responses(monkeypatch, [response])
+    monkeypatch.setattr(link_preview, "resolve_media_target", lambda url, **kwargs: _preview_target(url))
+    _reset_link_preview_rate(monkeypatch)
+
+    result = link_preview.fetch_preview("https://euc-kr-meta-preview.test/")
+
+    assert result["title"] == "한글 제목"
+
+
 def test_link_preview_caches_success_and_failure_with_separate_ttls(monkeypatch):
     success = DummyPreviewResponse(
         b'<meta property="og:title" content="Cached"><meta name="og:description" content="Description">'
@@ -308,6 +337,113 @@ def test_link_preview_connects_only_to_pinned_address_with_original_tls_name(mon
     assert captured["do_handshake_on_connect"] is False
     assert captured["handshake"] is True
     socket_guard.close_current()
+
+
+def test_link_preview_connect_falls_back_to_next_pinned_address(monkeypatch):
+    target = media_proxy.ResolvedMediaTarget(
+        scheme="https",
+        hostname="fallback-preview.test",
+        port=443,
+        host_header="fallback-preview.test",
+        addresses=("93.184.216.35", "93.184.216.36"),
+    )
+    attempts = []
+
+    class FakeSocket:
+        def settimeout(self, timeout):
+            pass
+
+        def do_handshake(self):
+            pass
+
+        def shutdown(self, how):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeSSLContext:
+        def wrap_socket(self, sock, **kwargs):
+            return sock
+
+    def fake_connect(address, timeout):
+        attempts.append(address)
+        if address[0] == "93.184.216.35":
+            raise OSError("no route to host")
+        return FakeSocket()
+
+    monkeypatch.setattr(link_preview.socket, "create_connection", fake_connect)
+    monkeypatch.setattr(link_preview.ssl, "create_default_context", FakeSSLContext)
+    socket_guard = link_preview._DeadlineSocketGuard()
+
+    result = link_preview._connect_pinned_target(target, time.monotonic(), socket_guard)
+
+    assert isinstance(result, FakeSocket)
+    assert attempts == [("93.184.216.35", 443), ("93.184.216.36", 443)]
+    socket_guard.close_current()
+
+
+def test_link_preview_connect_prefers_ipv4_addresses(monkeypatch):
+    target = media_proxy.ResolvedMediaTarget(
+        scheme="https",
+        hostname="ipv4-first-preview.test",
+        port=443,
+        host_header="ipv4-first-preview.test",
+        addresses=("2606:4700:20::ac43:46ad", "172.67.70.173"),
+    )
+    attempts = []
+
+    class FakeSocket:
+        def settimeout(self, timeout):
+            pass
+
+        def do_handshake(self):
+            pass
+
+        def shutdown(self, how):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeSSLContext:
+        def wrap_socket(self, sock, **kwargs):
+            return sock
+
+    monkeypatch.setattr(
+        link_preview.socket,
+        "create_connection",
+        lambda address, timeout: attempts.append(address) or FakeSocket(),
+    )
+    monkeypatch.setattr(link_preview.ssl, "create_default_context", FakeSSLContext)
+    socket_guard = link_preview._DeadlineSocketGuard()
+
+    link_preview._connect_pinned_target(target, time.monotonic(), socket_guard)
+
+    assert attempts == [("172.67.70.173", 443)]
+    socket_guard.close_current()
+
+
+def test_link_preview_returns_none_when_all_pinned_addresses_fail(monkeypatch):
+    target = media_proxy.ResolvedMediaTarget(
+        scheme="https",
+        hostname="all-fail-preview.test",
+        port=443,
+        host_header="all-fail-preview.test",
+        addresses=("93.184.216.35", "93.184.216.36"),
+    )
+    attempts = []
+    monkeypatch.setattr(
+        link_preview.socket,
+        "create_connection",
+        lambda address, timeout: attempts.append(address)
+        or (_ for _ in ()).throw(OSError("connect failed")),
+    )
+    monkeypatch.setattr(link_preview, "resolve_media_target", lambda url, **kwargs: target)
+    _reset_link_preview_rate(monkeypatch)
+
+    assert link_preview.fetch_preview("https://all-fail-preview.test/") is None
+    assert attempts == [("93.184.216.35", 443), ("93.184.216.36", 443)]
 
 
 def _run_drip_preview(monkeypatch, chunks, url, deadline=0.08):
@@ -3840,3 +3976,22 @@ def test_sanitize_html_fragment_rewrites_youtube_shorts_iframe_to_embed():
         "https://www.youtube.com/embed/oHCWsqUWRcs",
         "https://www.youtube.com/embed/vlSuxU73Uiw",
     ]
+
+
+def test_decode_preview_body_recovers_from_wrong_charset_header():
+    # 잘못된 utf-8 헤더 선언 + 올바른 euc-kr meta/본문: strict 검증이 헤더 후보를
+    # 걸러내고 meta 후보로 정상 디코딩해야 한다.
+    body = (
+        '<html><head><meta charset="euc-kr"><meta property="og:title" content="한글 제목">'
+        "</head><body>본문</body></html>"
+    ).encode("euc-kr")
+    decoded = link_preview._decode_preview_body(body, "text/html; charset=utf-8")
+    assert "한글 제목" in decoded
+
+
+def test_decode_preview_body_tolerates_truncated_multibyte_tail():
+    # 128KB 절단으로 마지막 멀티바이트 문자가 끊긴 본문도 strict 후보를 통과해야 한다.
+    full = ('<html><head><meta charset="utf-8"></head><body>' + "가" * 10).encode("utf-8")
+    truncated = full[:-1]  # 마지막 UTF-8 시퀀스 절단
+    decoded = link_preview._decode_preview_body(truncated, "text/html; charset=utf-8")
+    assert "가가가" in decoded
