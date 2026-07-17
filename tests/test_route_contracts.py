@@ -196,13 +196,17 @@ def test_board_refresh_query_bypasses_service_cache(monkeypatch):
     assert calls == [False, True]
 
 
-def test_board_history_refresh_script_is_loaded_and_canonicalizes_url(monkeypatch):
+def test_board_history_refresh_script_is_loaded_and_refreshes_at_most_once(monkeypatch):
     monkeypatch.setattr(routes, "_load_board_payload", _board_payload)
     response = create_app().test_client().get("/board?board=test&page=1")
     soup = BeautifulSoup(response.data, "html.parser")
     script = Path("app/static/javascript/board_return_refresh.js").read_text()
 
     assert soup.select_one("script[src*='/static/javascript/board_return_refresh.js']") is not None
+    assert "markCurrentBoardForRefresh" in script
+    assert 'target.pathname !== "/read"' in script
+    assert "var enteredWithRefreshMarker = hasRefreshMarker();" in script
+    assert "if (enteredWithRefreshMarker)" in script
     assert 'entries[0].type === "back_forward"' in script
     assert 'window.location.replace(url.toString())' in script
     assert "window.history.replaceState(" in script
