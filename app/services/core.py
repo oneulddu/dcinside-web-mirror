@@ -613,6 +613,7 @@ async def async_index_with_head_categories(
     search_keyword=None,
     head_id=None,
     pagination_collector=None,
+    force_refresh=False,
 ):
     if pagination_collector is not None:
         pagination_collector.clear()
@@ -646,16 +647,17 @@ async def async_index_with_head_categories(
         search_keyword=search_keyword,
         head_id=head_id,
     )
-    cached = _cache_get(_BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK, cache_key)
-    if cached is not None:
-        if len(cached) >= 3:
-            rows, categories, pagination = cached[:3]
-        else:
-            rows, categories = cached
-            pagination = {}
-        if pagination_collector is not None:
-            pagination_collector.update(_copy_pagination(pagination))
-        return _copy_rows(rows), _copy_categories(categories)
+    if not force_refresh:
+        cached = _cache_get(_BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK, cache_key)
+        if cached is not None:
+            if len(cached) >= 3:
+                rows, categories, pagination = cached[:3]
+            else:
+                rows, categories = cached
+                pagination = {}
+            if pagination_collector is not None:
+                pagination_collector.update(_copy_pagination(pagination))
+            return _copy_rows(rows), _copy_categories(categories)
 
     data = []
     headtexts = []

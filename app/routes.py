@@ -154,7 +154,17 @@ def _add_search_params(params, search_type=None, search_keyword=None):
     params["serval"] = keyword
 
 
-def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_type=None, search_keyword=None, head_id=None):
+def _board_link_params(
+    board,
+    recommend=0,
+    page=1,
+    kind=None,
+    nav=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+    refresh=False,
+):
     params = {
         "board": board,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
@@ -167,6 +177,8 @@ def _board_link_params(board, recommend=0, page=1, kind=None, nav=None, search_t
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
     _add_search_params(params, search_type, search_keyword)
+    if _safe_bool(refresh):
+        params["refresh"] = 1
     return params
 
 
@@ -180,8 +192,19 @@ def board_url(
     search_keyword=None,
     head_id=None,
     gallery_name=None,
+    refresh=False,
 ):
-    params = _board_link_params(board, recommend, page, kind, nav, search_type, search_keyword, head_id)
+    params = _board_link_params(
+        board,
+        recommend,
+        page,
+        kind,
+        nav,
+        search_type,
+        search_keyword,
+        head_id,
+        refresh,
+    )
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
         params["gallery_name"] = clean_name
@@ -426,18 +449,28 @@ def _read_social_meta(data, images, board, pid, kind, recommend, source_page, se
     }
 
 
-async def _load_board_payload(page, board, recommend, kind=None, search_type=None, search_keyword=None, head_id=None, pagination_collector=None):
-    return await async_index_with_head_categories(
-        page,
-        board,
-        recommend,
-        kind=kind,
-        max_scan_pages=1,
-        search_type=search_type,
-        search_keyword=search_keyword,
-        head_id=head_id,
-        pagination_collector=pagination_collector,
-    )
+async def _load_board_payload(
+    page,
+    board,
+    recommend,
+    kind=None,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+    pagination_collector=None,
+    force_refresh=False,
+):
+    kwargs = {
+        "kind": kind,
+        "max_scan_pages": 1,
+        "search_type": search_type,
+        "search_keyword": search_keyword,
+        "head_id": head_id,
+        "pagination_collector": pagination_collector,
+    }
+    if force_refresh:
+        kwargs["force_refresh"] = True
+    return await async_index_with_head_categories(page, board, recommend, **kwargs)
 
 
 def _nav_tab_for_gallery(board, recommend=0, nav_mode=None):
@@ -663,18 +696,19 @@ def board():
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    force_refresh = _safe_bool(request.args.get("refresh"))
     pagination = {}
+    board_payload_kwargs = {
+        "kind": kind,
+        "search_type": search_type,
+        "search_keyword": search_keyword,
+        "head_id": head_id,
+        "pagination_collector": pagination,
+    }
+    if force_refresh:
+        board_payload_kwargs["force_refresh"] = True
     ret, head_categories = run_async(
-        _load_board_payload(
-            page,
-            board,
-            recommend,
-            kind=kind,
-            search_type=search_type,
-            search_keyword=search_keyword,
-            head_id=head_id,
-            pagination_collector=pagination,
-        )
+        _load_board_payload(page, board, recommend, **board_payload_kwargs)
     )
 
     current_page = _safe_int(pagination.get("current_page"), 0)
@@ -690,6 +724,7 @@ def board():
                 search_keyword=search_keyword,
                 head_id=head_id,
                 gallery_name=gallery_name,
+                refresh=force_refresh,
             ),
             code=302,
         )

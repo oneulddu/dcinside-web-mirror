@@ -4,7 +4,7 @@
 {% block content %}
 <section class="read-shell">
     <div class="crumb-row">
-        <a class="crumb-link" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">← {{ gallery_display_name }} 게시판</a>
+        <a class="crumb-link" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, refresh=true) }}">← {{ gallery_display_name }} 게시판</a>
     </div>
     <div class="article-head">
         <h1>{{ data.title }}</h1>
@@ -115,7 +115,7 @@
     </section>
 
     <div class="pager-row single">
-        <a class="pager-btn" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">목록으로</a>
+        <a class="pager-btn" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, refresh=true) }}">목록으로</a>
     </div>
 </section>
 <button class="back-to-top" id="back-to-top" type="button" aria-label="맨 위로" title="맨 위로">↑</button>

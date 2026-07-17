@@ -183,6 +183,46 @@ async def test_async_index_with_head_categories_reuses_short_cache(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_async_index_force_refresh_replaces_cached_board_rows(monkeypatch):
+    class FakeAPI:
+        instances = []
+        board_calls = 0
+
+        def __init__(self):
+            self.__class__.instances.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def board(self, **kwargs):
+            self.__class__.board_calls += 1
+            yield _index_item(100 + self.__class__.board_calls, is_mobile_source=True)
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    first_rows, _ = await core.async_index_with_head_categories(1, "test", 0, limit=1)
+    cached_rows, _ = await core.async_index_with_head_categories(1, "test", 0, limit=1)
+    refreshed_rows, _ = await core.async_index_with_head_categories(
+        1,
+        "test",
+        0,
+        limit=1,
+        force_refresh=True,
+    )
+    replaced_cache_rows, _ = await core.async_index_with_head_categories(1, "test", 0, limit=1)
+
+    assert [row["id"] for row in first_rows] == ["101"]
+    assert [row["id"] for row in cached_rows] == ["101"]
+    assert [row["id"] for row in refreshed_rows] == ["102"]
+    assert [row["id"] for row in replaced_cache_rows] == ["102"]
+    assert len(FakeAPI.instances) == 2
+    assert FakeAPI.board_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_async_index_pagination_collector_clears_for_zero_limit_and_reads_legacy_cache():
     cleared = {"stale": True}
 

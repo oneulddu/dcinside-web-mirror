@@ -1,4 +1,5 @@
-from urllib.parse import parse_qsl, urlparse
+from pathlib import Path
+from urllib.parse import parse_qs, parse_qsl, urlparse
 
 from bs4 import BeautifulSoup
 import pytest
@@ -156,6 +157,55 @@ def test_screen_status_redirect_cookie_and_html_contract(monkeypatch):
     assert response.headers["Location"] == f"/read?{exact_query}"
     assert client.get("/legacy/unknown", follow_redirects=False).status_code == 404
     assert client.get("/static/legacy/css/main.css", follow_redirects=False).status_code == 404
+
+
+def test_read_return_links_request_a_fresh_board_page(monkeypatch):
+    monkeypatch.setattr(routes, "async_read", _read_payload)
+    response = create_app().test_client().get(
+        "/read?board=test&pid=123&source_page=3&recommend=1&kind=minor"
+    )
+    soup = BeautifulSoup(response.data, "html.parser")
+    return_links = [
+        soup.select_one(".crumb-link"),
+        soup.select_one(".pager-row.single .pager-btn"),
+    ]
+
+    assert response.status_code == 200
+    for link in return_links:
+        query = parse_qs(urlparse(link["href"]).query)
+        assert query["board"] == ["test"]
+        assert query["page"] == ["3"]
+        assert query["refresh"] == ["1"]
+
+
+def test_board_refresh_query_bypasses_service_cache(monkeypatch):
+    calls = []
+
+    async def board_payload(*args, force_refresh=False, **kwargs):
+        calls.append(force_refresh)
+        return await _board_payload()
+
+    monkeypatch.setattr(routes, "_load_board_payload", board_payload)
+    client = create_app().test_client()
+
+    normal_response = client.get("/board?board=test&page=1")
+    refresh_response = client.get("/board?board=test&page=1&refresh=1")
+
+    assert normal_response.status_code == 200
+    assert refresh_response.status_code == 200
+    assert calls == [False, True]
+
+
+def test_board_history_refresh_script_is_loaded_and_canonicalizes_url(monkeypatch):
+    monkeypatch.setattr(routes, "_load_board_payload", _board_payload)
+    response = create_app().test_client().get("/board?board=test&page=1")
+    soup = BeautifulSoup(response.data, "html.parser")
+    script = Path("app/static/javascript/board_return_refresh.js").read_text()
+
+    assert soup.select_one("script[src*='/static/javascript/board_return_refresh.js']") is not None
+    assert 'entries[0].type === "back_forward"' in script
+    assert 'window.location.replace(url.toString())' in script
+    assert "window.history.replaceState(" in script
 
 
 def test_board_clamped_page_redirects_once_and_preserves_context(monkeypatch):
