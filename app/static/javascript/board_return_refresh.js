@@ -111,6 +111,25 @@
         }));
     }
 
+    function canonicalizeBoardUrl(responseUrl) {
+        var url;
+        try {
+            url = new URL(responseUrl, window.location.href);
+        } catch (err) {
+            return;
+        }
+        if (url.origin !== window.location.origin || url.pathname !== "/board") {
+            return;
+        }
+        url.searchParams.delete(REFRESH_PARAM);
+        var current = currentUrl();
+        window.history.replaceState(
+            window.history.state,
+            "",
+            url.pathname + url.search + (url.hash || (current && current.hash) || "")
+        );
+    }
+
     function refreshAfterHistoryNavigation(event) {
         var isMarkedReturn = consumeBoardReturn();
         if (enteredWithRefreshMarker) {
@@ -137,9 +156,17 @@
                 if (!response.ok) {
                     throw new Error("board refresh failed");
                 }
-                return response.text();
+                return response.text().then(function (html) {
+                    return {
+                        html: html,
+                        url: response.url
+                    };
+                });
             })
-            .then(replaceBoardList)
+            .then(function (payload) {
+                canonicalizeBoardUrl(payload.url);
+                replaceBoardList(payload.html);
+            })
             .catch(function () {
             })
             .finally(function () {

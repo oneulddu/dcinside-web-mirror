@@ -210,6 +210,8 @@ def test_board_history_refresh_script_is_loaded_and_refreshes_at_most_once(monke
     assert 'entries[0].type === "back_forward"' in script
     assert 'fetch(url.toString(), {' in script
     assert 'currentBoardList.replaceWith(nextBoardList)' in script
+    assert "canonicalizeBoardUrl(payload.url)" in script
+    assert "url.searchParams.delete(REFRESH_PARAM)" in script
     assert 'new CustomEvent("mirror:board-refreshed"' in script
     assert "window.location.replace" not in script
     assert "window.history.replaceState(" in script
