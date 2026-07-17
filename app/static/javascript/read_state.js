@@ -374,6 +374,11 @@
         wireDynamicApply();
     }
 
+    document.addEventListener("mirror:board-refreshed", function (event) {
+        readStore = loadStore();
+        applyReadState(event.detail && event.detail.root, readStore);
+    });
+
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", boot, { once: true });
     } else {
