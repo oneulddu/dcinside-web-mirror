@@ -203,13 +203,25 @@ def test_board_history_refresh_script_is_loaded_and_refreshes_at_most_once(monke
     script = Path("app/static/javascript/board_return_refresh.js").read_text()
 
     assert soup.select_one("script[src*='/static/javascript/board_return_refresh.js']") is not None
-    assert "markCurrentBoardForRefresh" in script
-    assert 'target.pathname !== "/read"' in script
+    assert 'var RETURN_MARKER_KEY = "mirror_board_return_refresh_v1"' in script
+    assert "window.sessionStorage.setItem(RETURN_MARKER_KEY, boardKey)" in script
+    assert "var isMarkedReturn = consumeBoardReturn();" in script
     assert "var enteredWithRefreshMarker = hasRefreshMarker();" in script
-    assert "if (enteredWithRefreshMarker)" in script
     assert 'entries[0].type === "back_forward"' in script
-    assert 'window.location.replace(url.toString())' in script
+    assert 'fetch(url.toString(), {' in script
+    assert 'currentBoardList.replaceWith(nextBoardList)' in script
+    assert 'new CustomEvent("mirror:board-refreshed"' in script
+    assert "window.location.replace" not in script
     assert "window.history.replaceState(" in script
+
+
+def test_board_refresh_event_rehydrates_time_and_read_state_scripts():
+    time_script = Path("app/static/javascript/board_time_hydrator.js").read_text()
+    read_state_script = Path("app/static/javascript/read_state.js").read_text()
+
+    assert 'document.addEventListener("mirror:board-refreshed", hydrateBoardTimes)' in time_script
+    assert 'document.addEventListener("mirror:board-refreshed", function (event)' in read_state_script
+    assert "applyReadState(event.detail && event.detail.root, readStore)" in read_state_script
 
 
 def test_board_clamped_page_redirects_once_and_preserves_context(monkeypatch):

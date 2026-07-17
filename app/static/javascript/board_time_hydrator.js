@@ -101,4 +101,5 @@
     } else {
         hydrateBoardTimes();
     }
+    document.addEventListener("mirror:board-refreshed", hydrateBoardTimes);
 })();
