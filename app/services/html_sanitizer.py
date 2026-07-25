@@ -21,7 +21,10 @@ HTML_GLOBAL_ATTRS = {"class", "title"}
 HTML_TAG_ATTRS = {
     "a": {"href", "target", "rel"},
     "iframe": {"src", "title", "loading", "width", "height", "frameborder", "scrolling", "allow", "allowfullscreen"},
-    "img": {"src", "alt", "loading", "decoding", "fetchpriority", "width", "height"},
+    "img": {
+        "src", "alt", "loading", "decoding", "fetchpriority", "width", "height",
+        "data-body-image-src", "data-dccon-src", "hidden",
+    },
     "source": {"src", "type"},
     "td": {"colspan", "rowspan"},
     "th": {"colspan", "rowspan"},
@@ -255,6 +258,9 @@ def sanitize_html_tree(soup):
             elif attr_name == "fetchpriority":
                 if name != "img" or str(value).strip().lower() not in {"high", "low", "auto"}:
                     del tag.attrs[attr]
+            elif attr_name in {"data-body-image-src", "data-dccon-src"}:
+                if name != "img" or not str(value).startswith("/media?"):
+                    del tag.attrs[attr]
     return soup
 
 
@@ -417,6 +423,18 @@ def pick_soup_image_src(tag):
     return None
 
 
+def is_dccon_image(tag, src):
+    classes = {value.lower() for value in (tag.get("class") or [])}
+    if classes.intersection({"dccon", "written_dccon"}):
+        return True
+    parsed = _safe_urlparse(src)
+    if parsed is None:
+        return False
+    host = (parsed.hostname or "").lower()
+    media_hint = f"{parsed.path or ''}?{parsed.query or ''}".lower()
+    return host == "dccon.dcinside.com" or "dccon" in media_hint
+
+
 def pick_soup_media_src(tag):
     if (tag.name or "").lower() == "video":
         for source in tag.find_all("source"):
@@ -442,7 +460,16 @@ def rewrite_content_images(soup, images, board, pid, kind):
         if not original_src or not image_urls[original_src]:
             img.decompose()
             continue
-        img["src"] = image_urls[original_src].popleft()
+        proxied_src = image_urls[original_src].popleft()
+        classes = list(img.get("class") or [])
+        if is_dccon_image(img, original_src):
+            img["class"] = list(dict.fromkeys(classes + ["dccon", "body-dccon"]))
+            img["data-dccon-src"] = proxied_src
+        else:
+            img["class"] = list(dict.fromkeys(classes + ["body-image"]))
+            img["data-body-image-src"] = proxied_src
+        img.attrs.pop("src", None)
+        img["hidden"] = ""
         img["decoding"] = "async"
         if image_index == 0:
             img["loading"] = "eager"
@@ -451,7 +478,7 @@ def rewrite_content_images(soup, images, board, pid, kind):
             img["loading"] = "lazy"
             img.attrs.pop("fetchpriority", None)
         image_index += 1
-        for attr in ("data-original", "data-gif", "srcset"):
+        for attr in ("data-original", "data-gif", "data-src", "srcset"):
             img.attrs.pop(attr, None)
 
     for source in soup.find_all("source"):

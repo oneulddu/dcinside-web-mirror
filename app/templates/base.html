@@ -8,18 +8,25 @@
             "use strict";
 
             var theme = "dark";
-            var dcconBlocked = false;
+            var mediaBlockMode = "none";
+            var mediaBlockModes = { none: true, dccon: true, body: true, all: true };
             try {
                 theme = window.localStorage.getItem("mirror_theme_v1") === "light" ? "light" : "dark";
-                dcconBlocked = window.localStorage.getItem("mirror_dccon_block_v1") === "1";
+                var savedMediaBlockMode = window.localStorage.getItem("mirror_media_block_mode_v1");
+                if (mediaBlockModes[savedMediaBlockMode]) {
+                    mediaBlockMode = savedMediaBlockMode;
+                } else if (window.localStorage.getItem("mirror_dccon_block_v1") === "1") {
+                    mediaBlockMode = "dccon";
+                }
             } catch (err) {
                 theme = "dark";
-                dcconBlocked = false;
+                mediaBlockMode = "none";
             }
 
             var root = document.documentElement;
             root.dataset.theme = theme;
-            root.dataset.dcconBlocked = dcconBlocked ? "true" : "false";
+            root.dataset.mediaBlockMode = mediaBlockMode;
+            root.dataset.dcconBlocked = mediaBlockMode === "dccon" || mediaBlockMode === "all" ? "true" : "false";
             root.style.colorScheme = theme;
         })();
     </script>
@@ -62,17 +69,38 @@
                     <span class="brand-note">가볍게 읽는 공간</span>
                 </a>
                 <div class="header-actions">
-                    <button class="dccon-toggle" type="button" aria-label="이모티콘 자동 차단 전환" aria-pressed="false" title="이모티콘 자동 차단">
-                        <svg class="dccon-icon dccon-icon-show" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <rect x="3.5" y="5" width="17" height="14" rx="2.5"/>
-                            <circle cx="8.2" cy="9.2" r="1.4"/>
-                            <path d="M5.8 16.4l4.2-4.2 3.1 3.1 1.8-1.8 3.4 3.4"/>
-                        </svg>
-                        <svg class="dccon-icon dccon-icon-block" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <rect x="3.5" y="5" width="17" height="14" rx="2.5"/>
-                            <path d="M5 5l14 14"/>
-                        </svg>
-                    </button>
+                    <div class="media-block-control">
+                        <button class="dccon-toggle" type="button" aria-label="이미지 차단 설정: 차단 없음" aria-haspopup="menu" aria-expanded="false" aria-controls="media-block-menu" title="이미지 차단 설정: 차단 없음">
+                            <svg class="dccon-icon dccon-icon-show" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <rect x="3.5" y="5" width="17" height="14" rx="2.5"/>
+                                <circle cx="8.2" cy="9.2" r="1.4"/>
+                                <path d="M5.8 16.4l4.2-4.2 3.1 3.1 1.8-1.8 3.4 3.4"/>
+                            </svg>
+                            <svg class="dccon-icon dccon-icon-block" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <rect x="3.5" y="5" width="17" height="14" rx="2.5"/>
+                                <path d="M5 5l14 14"/>
+                            </svg>
+                        </button>
+                        <div class="media-block-menu" id="media-block-menu" role="menu" aria-label="이미지 차단 범위" hidden>
+                            <div class="media-block-menu-title">이미지 차단</div>
+                            <button class="media-block-option" type="button" role="menuitemradio" aria-checked="true" data-media-block-mode="none">
+                                <span class="media-block-option-name">차단 없음</span>
+                                <span class="media-block-option-desc">모든 이미지 표시</span>
+                            </button>
+                            <button class="media-block-option" type="button" role="menuitemradio" aria-checked="false" data-media-block-mode="dccon">
+                                <span class="media-block-option-name">디시콘만</span>
+                                <span class="media-block-option-desc">댓글·본문 디시콘 차단</span>
+                            </button>
+                            <button class="media-block-option" type="button" role="menuitemradio" aria-checked="false" data-media-block-mode="body">
+                                <span class="media-block-option-name">본문 이미지만</span>
+                                <span class="media-block-option-desc">본문 이미지를 차단하고 댓글 디시콘은 표시</span>
+                            </button>
+                            <button class="media-block-option" type="button" role="menuitemradio" aria-checked="false" data-media-block-mode="all">
+                                <span class="media-block-option-name">본문 이미지까지</span>
+                                <span class="media-block-option-desc">디시콘과 본문 이미지 모두 차단</span>
+                            </button>
+                        </div>
+                    </div>
                     <button class="theme-toggle" type="button" aria-label="테마 전환" title="테마 전환">
                         <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                             <circle cx="12" cy="12" r="4.2"/>
