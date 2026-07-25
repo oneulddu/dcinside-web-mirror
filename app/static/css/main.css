@@ -170,6 +170,93 @@ button {
     flex: none;
 }
 
+.media-block-control {
+    position: relative;
+}
+
+.media-block-menu {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + var(--space-2));
+    right: 0;
+    width: min(292px, calc(100vw - var(--space-8)));
+    border: var(--rule) solid var(--line-strong);
+    border-radius: var(--radius-m);
+    background: var(--bg);
+    padding: var(--space-1);
+}
+
+.media-block-menu[hidden] {
+    display: none;
+}
+
+.media-block-menu-title {
+    color: var(--muted);
+    font: var(--type-meta);
+    font-weight: 650;
+    padding: var(--space-2) var(--space-3);
+}
+
+.media-block-option {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    width: 100%;
+    min-height: 48px;
+    border: 0;
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--fg);
+    padding: var(--space-2) var(--space-3) var(--space-2) var(--space-8);
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--dur) ease-out, transform var(--dur-fast) ease-out;
+}
+
+.media-block-option::before {
+    content: "";
+    position: absolute;
+    left: var(--space-3);
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    border: var(--rule) solid var(--line-strong);
+    border-radius: 50%;
+    background: transparent;
+    transform: translateY(-50%);
+    transition: background-color var(--dur) ease-out, border-color var(--dur) ease-out;
+}
+
+.media-block-option:hover {
+    background: var(--hover);
+}
+
+.media-block-option:active {
+    transform: scale(0.96);
+}
+
+.media-block-option.is-selected {
+    background: var(--accent-wash);
+}
+
+.media-block-option.is-selected::before {
+    border-color: var(--accent);
+    background: var(--accent);
+}
+
+.media-block-option-name {
+    font: var(--type-label);
+}
+
+.media-block-option-desc {
+    margin-top: var(--space-1);
+    color: var(--muted);
+    font: var(--type-meta);
+    text-wrap: pretty;
+}
+
 .theme-toggle,
 .dccon-toggle {
     flex: none;
@@ -260,8 +347,8 @@ html[data-theme="dark"] .theme-icon-sun {
     transform: scale(1);
 }
 
-html:not([data-dccon-blocked="true"]) .dccon-icon-show,
-html[data-dccon-blocked="true"] .dccon-icon-block {
+html[data-media-block-mode="none"] .dccon-icon-show,
+html:not([data-media-block-mode="none"]) .dccon-icon-block {
     opacity: 1;
     filter: blur(0);
     transform: scale(1);

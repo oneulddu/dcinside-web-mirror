@@ -1395,15 +1395,37 @@ def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
 
     images = soup.find_all("img")
     assert len(images) == 2
-    first_query = parse_qs(urlparse(images[0]["src"]).query)
-    second_query = parse_qs(urlparse(images[1]["src"]).query)
+    first_query = parse_qs(urlparse(images[0]["data-body-image-src"]).query)
+    second_query = parse_qs(urlparse(images[1]["data-body-image-src"]).query)
     assert first_query["src"] == ["https://images.dcinside.com/post-a.jpg"]
     assert second_query["src"] == ["https://images.dcinside.com/post-b.jpg"]
+    assert all("src" not in image.attrs for image in images)
+    assert all(image.has_attr("hidden") for image in images)
+    assert all("body-image" in image.get("class", []) for image in images)
     assert images[0]["loading"] == "eager"
     assert images[0]["fetchpriority"] == "high"
     assert images[1]["loading"] == "lazy"
     assert "fetchpriority" not in images[1].attrs
     assert "data-original" not in images[0].attrs
+
+
+def test_is_dccon_image_uses_only_dedicated_signals():
+    written_dccon = BeautifulSoup('<img class="written_dccon">', "html.parser").img
+    hosted_dccon = BeautifulSoup("<img>", "html.parser").img
+    gallery_name_collision = BeautifulSoup("<img>", "html.parser").img
+
+    assert html_sanitizer.is_dccon_image(
+        written_dccon,
+        "https://images.dcinside.com/ordinary.png",
+    ) is True
+    assert html_sanitizer.is_dccon_image(
+        hosted_dccon,
+        "https://dccon.dcinside.com/original.png",
+    ) is True
+    assert html_sanitizer.is_dccon_image(
+        gallery_name_collision,
+        "https://dcimg7.dcinside.co.kr/viewimage.php?id=my_dccon_gallery&no=123",
+    ) is False
 
 
 def test_rewrite_content_images_rewrites_dc_movie_iframes_to_local_player():
@@ -1548,6 +1570,22 @@ def test_sanitize_html_fragment_removes_unsafe_tags_and_attributes():
     assert images[0]["fetchpriority"] == "high"
     assert "onerror" not in images[0].attrs
     assert "fetchpriority" not in images[1].attrs
+
+
+def test_sanitize_html_fragment_rejects_unsafe_deferred_image_sources():
+    cleaned = html_sanitizer.sanitize_html_fragment(
+        """
+        <img class="body-image" data-body-image-src="javascript:alert(1)" hidden>
+        <img class="dccon" data-dccon-src="https://evil.example/image.png" hidden>
+        <img class="body-image" data-body-image-src="/media?src=https%3A%2F%2Fimages.dcinside.com%2Fsafe.jpg" hidden>
+        """
+    )
+
+    images = BeautifulSoup(cleaned, "html.parser").find_all("img")
+
+    assert "data-body-image-src" not in images[0].attrs
+    assert "data-dccon-src" not in images[1].attrs
+    assert images[2]["data-body-image-src"].startswith("/media?")
 
 
 def test_sanitize_html_fragment_keeps_rewritten_video_source():
@@ -1841,13 +1879,15 @@ def test_prepare_read_html_rewrites_sanitizes_and_highlights_with_one_parse(monk
         )
 
     soup = BeautifulSoup(rendered, "html.parser")
-    media_query = parse_qs(urlparse(soup.find("img")["src"]).query)
+    media_query = parse_qs(urlparse(soup.find("img")["data-body-image-src"]).query)
 
     assert parser_calls == [html_sanitizer.HTML_PARSER]
     assert soup.find("script") is None
     assert "onclick" not in soup.div.attrs
     assert len(soup.find_all("img")) == 1
     assert "onerror" not in soup.find("img").attrs
+    assert "src" not in soup.find("img").attrs
+    assert soup.find("img").has_attr("hidden")
     assert media_query["src"] == ["https://images.dcinside.com/body.jpg"]
     assert soup.p.find("mark", class_="search-highlight").text == "BODY"
     assert soup.code.find("mark") is None
@@ -2772,7 +2812,7 @@ def test_theme_toggle_persists_and_updates_accessibility_state():
     assert "--accent: #3182F6;" in style
 
 
-def test_dccon_block_toggle_folds_comments_and_prevents_initial_image_src(monkeypatch):
+def test_media_block_menu_defers_comment_dccon_and_body_images(monkeypatch):
     async def fake_async_read(pid, board, kind=None, recommend=0, **kwargs):
         return (
             {
@@ -2781,7 +2821,11 @@ def test_dccon_block_toggle_folds_comments_and_prevents_initial_image_src(monkey
                 "author_code": None,
                 "time": "-",
                 "voteup_count": 0,
-                "html": "<p>body</p>",
+                "html": """
+                    <p>body</p>
+                    <img src="https://images.dcinside.com/body.jpg" alt="body image">
+                    <img class="written_dccon" src="https://dccon.dcinside.com/body-dccon.png" alt="body dccon">
+                """,
                 "related_posts": [],
             },
             [
@@ -2795,7 +2839,10 @@ def test_dccon_block_toggle_folds_comments_and_prevents_initial_image_src(monkey
                     "dccon": "https://dccon.dcinside.com/original.png",
                 }
             ],
-            [],
+            [
+                "https://images.dcinside.com/body.jpg",
+                "https://dccon.dcinside.com/body-dccon.png",
+            ],
         )
 
     monkeypatch.setattr(routes, "async_read", fake_async_read)
@@ -2803,25 +2850,46 @@ def test_dccon_block_toggle_folds_comments_and_prevents_initial_image_src(monkey
 
     response = app.test_client().get("/read?board=test&pid=123")
     soup = BeautifulSoup(response.data, "html.parser")
-    dccon = soup.select_one("img.dccon")
+    comment_dccon = soup.select_one(".comment-shell img.dccon")
+    body_image = soup.select_one(".article-body img.body-image")
+    body_dccon = soup.select_one(".article-body img.body-dccon")
     template = (PROJECT_ROOT / "app/templates/base.html").read_text()
     script = (PROJECT_ROOT / "app/static/javascript/read_state.js").read_text()
     style = (PROJECT_ROOT / "app/static/css/main.css").read_text()
 
     assert response.status_code == 200
     assert soup.select_one(".dccon-toggle") is not None
-    assert dccon is not None
-    assert not dccon.has_attr("src")
-    assert dccon["data-dccon-src"].startswith("/media?src=https")
-    assert dccon.has_attr("hidden")
+    assert [option.get_text(" ", strip=True) for option in soup.select(".media-block-option")] == [
+        "차단 없음 모든 이미지 표시",
+        "디시콘만 댓글·본문 디시콘 차단",
+        "본문 이미지만 본문 이미지를 차단하고 댓글 디시콘은 표시",
+        "본문 이미지까지 디시콘과 본문 이미지 모두 차단",
+    ]
+    assert comment_dccon is not None
+    assert not comment_dccon.has_attr("src")
+    assert comment_dccon["data-dccon-src"].startswith("/media?src=https")
+    assert comment_dccon.has_attr("hidden")
+    assert body_image is not None
+    assert not body_image.has_attr("src")
+    assert body_image["data-body-image-src"].startswith("/media?src=https")
+    assert body_image.has_attr("hidden")
+    assert body_dccon is not None
+    assert not body_dccon.has_attr("src")
+    assert body_dccon["data-dccon-src"].startswith("/media?src=https")
+    assert body_dccon.has_attr("hidden")
     assert soup.select_one(".dccon-blocked-note") is None
-    assert "이모티콘 자동 차단 전환" in template
+    assert "이미지 차단 설정: 차단 없음" in template
+    assert 'window.localStorage.getItem("mirror_media_block_mode_v1")' in template
     assert 'window.localStorage.getItem("mirror_dccon_block_v1") === "1"' in template
-    assert 'DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1"' in script
+    assert 'MEDIA_BLOCK_STORAGE_KEY = "mirror_media_block_mode_v1"' in script
+    assert 'LEGACY_DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1"' in script
     assert 'image.removeAttribute("src")' in script
+    assert "hydrateBodyImages(document, bodyBlocked)" in script
+    assert "hydrateDccons(articleBody, dcconBlocked || bodyBlocked)" in script
     assert "차단된 이모티콘 보기" in script
     assert "comment-dccon-block-hidden" in script
     assert ".comment-dccon-block-hidden" in style
+    assert ".media-block-option.is-selected" in style
 
 
 def test_read_passes_head_id_to_initial_document_fetch(monkeypatch):

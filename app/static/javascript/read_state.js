@@ -3,7 +3,9 @@
 
     var STORAGE_KEY = "read_posts_v1";
     var THEME_STORAGE_KEY = "mirror_theme_v1";
-    var DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1";
+    var MEDIA_BLOCK_STORAGE_KEY = "mirror_media_block_mode_v1";
+    var LEGACY_DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1";
+    var MEDIA_BLOCK_MODES = { none: true, dccon: true, body: true, all: true };
     var MAX_ENTRIES = 1500;
     var DEFAULT_THEME = "dark";
     var readStore = null;
@@ -88,17 +90,26 @@
         }
     }
 
-    function loadDcconBlocked() {
+    function normalizeMediaBlockMode(mode) {
+        return MEDIA_BLOCK_MODES[mode] ? mode : "none";
+    }
+
+    function loadMediaBlockMode() {
         try {
-            return window.localStorage.getItem(DCCON_BLOCK_STORAGE_KEY) === "1";
+            var saved = window.localStorage.getItem(MEDIA_BLOCK_STORAGE_KEY);
+            if (MEDIA_BLOCK_MODES[saved]) {
+                return saved;
+            }
+            return window.localStorage.getItem(LEGACY_DCCON_BLOCK_STORAGE_KEY) === "1" ? "dccon" : "none";
         } catch (err) {
-            return false;
+            return "none";
         }
     }
 
-    function saveDcconBlocked(isBlocked) {
+    function saveMediaBlockMode(mode) {
         try {
-            window.localStorage.setItem(DCCON_BLOCK_STORAGE_KEY, isBlocked ? "1" : "0");
+            window.localStorage.setItem(MEDIA_BLOCK_STORAGE_KEY, normalizeMediaBlockMode(mode));
+            window.localStorage.removeItem(LEGACY_DCCON_BLOCK_STORAGE_KEY);
         } catch (err) {
         }
     }
@@ -135,20 +146,45 @@
         }
     }
 
-    function updateDcconToggle(isBlocked) {
+    function mediaModeBlocksDccons(mode) {
+        return mode === "dccon" || mode === "all";
+    }
+
+    function mediaModeBlocksBodyImages(mode) {
+        return mode === "body" || mode === "all";
+    }
+
+    function mediaBlockModeLabel(mode) {
+        var labels = {
+            none: "차단 없음",
+            dccon: "디시콘만",
+            body: "본문 이미지만",
+            all: "본문 이미지까지"
+        };
+        return labels[normalizeMediaBlockMode(mode)];
+    }
+
+    function updateMediaBlockControl(mode) {
+        var normalized = normalizeMediaBlockMode(mode);
         var button = document.querySelector(".dccon-toggle");
         if (!button) {
             return;
         }
-        var label = isBlocked ? "이모티콘 차단 중, 표시로 전환" : "이모티콘 표시 중, 차단으로 전환";
+        var label = "이미지 차단 설정: " + mediaBlockModeLabel(normalized);
         button.setAttribute("aria-label", label);
-        button.setAttribute("aria-pressed", isBlocked ? "true" : "false");
         button.title = label;
+        var options = document.querySelectorAll(".media-block-option[data-media-block-mode]");
+        var i;
+        for (i = 0; i < options.length; i += 1) {
+            var selected = options[i].getAttribute("data-media-block-mode") === normalized;
+            options[i].setAttribute("aria-checked", selected ? "true" : "false");
+            options[i].classList.toggle("is-selected", selected);
+        }
     }
 
-    function hydrateDccons(root, isBlocked) {
+    function hydrateDeferredImages(root, selector, sourceAttribute, isBlocked) {
         var scope = root || document;
-        var images = scope.querySelectorAll("img.dccon[data-dccon-src]");
+        var images = scope.querySelectorAll(selector);
         var i;
         for (i = 0; i < images.length; i += 1) {
             var image = images[i];
@@ -158,10 +194,18 @@
                 continue;
             }
             if (!image.getAttribute("src")) {
-                image.setAttribute("src", image.getAttribute("data-dccon-src"));
+                image.setAttribute("src", image.getAttribute(sourceAttribute));
             }
             image.hidden = false;
         }
+    }
+
+    function hydrateDccons(root, isBlocked) {
+        hydrateDeferredImages(root, "img.dccon[data-dccon-src]", "data-dccon-src", isBlocked);
+    }
+
+    function hydrateBodyImages(root, isBlocked) {
+        hydrateDeferredImages(root, "img.body-image[data-body-image-src]", "data-body-image-src", isBlocked);
     }
 
     function dcconCommentItems() {
@@ -223,7 +267,10 @@
             for (i = 0; i < items.length; i += 1) {
                 items[i].classList.remove("comment-dccon-block-hidden", "comment-spam-highlight");
             }
-            hydrateDccons(document, false);
+            var commentShell = document.querySelector(".comment-shell");
+            if (commentShell) {
+                hydrateDccons(commentShell, false);
+            }
             return;
         }
 
@@ -235,19 +282,28 @@
         }
     }
 
-    function applyDcconBlock(isBlocked, shouldSave) {
-        var blocked = !!isBlocked;
-        document.documentElement.dataset.dcconBlocked = blocked ? "true" : "false";
+    function applyMediaBlockMode(mode, shouldSave) {
+        var normalized = normalizeMediaBlockMode(mode);
+        var dcconBlocked = mediaModeBlocksDccons(normalized);
+        var bodyBlocked = mediaModeBlocksBodyImages(normalized);
+        document.documentElement.dataset.mediaBlockMode = normalized;
+        document.documentElement.dataset.dcconBlocked = dcconBlocked ? "true" : "false";
         if (document.body) {
-            document.body.dataset.dcconBlocked = blocked ? "true" : "false";
+            document.body.dataset.mediaBlockMode = normalized;
+            document.body.dataset.dcconBlocked = dcconBlocked ? "true" : "false";
         }
-        if (!blocked) {
+        if (!dcconBlocked) {
             dcconFoldShowing = false;
         }
-        syncDcconCommentFold(blocked);
-        updateDcconToggle(blocked);
+        hydrateBodyImages(document, bodyBlocked);
+        var articleBody = document.querySelector(".article-body");
+        if (articleBody) {
+            hydrateDccons(articleBody, dcconBlocked || bodyBlocked);
+        }
+        syncDcconCommentFold(dcconBlocked);
+        updateMediaBlockControl(normalized);
         if (shouldSave) {
-            saveDcconBlocked(blocked);
+            saveMediaBlockMode(normalized);
         }
     }
 
@@ -262,14 +318,86 @@
         });
     }
 
-    function wireDcconToggle() {
+    function closeMediaBlockMenu(shouldFocus) {
         var button = document.querySelector(".dccon-toggle");
-        if (!button) {
+        var menu = document.querySelector(".media-block-menu");
+        if (!button || !menu) {
+            return;
+        }
+        menu.hidden = true;
+        button.setAttribute("aria-expanded", "false");
+        if (shouldFocus) {
+            button.focus();
+        }
+    }
+
+    function openMediaBlockMenu() {
+        var button = document.querySelector(".dccon-toggle");
+        var menu = document.querySelector(".media-block-menu");
+        if (!button || !menu) {
+            return;
+        }
+        menu.hidden = false;
+        button.setAttribute("aria-expanded", "true");
+        var selected = menu.querySelector('.media-block-option[aria-checked="true"]');
+        if (selected) {
+            selected.focus();
+        }
+    }
+
+    function wireMediaBlockControl() {
+        var button = document.querySelector(".dccon-toggle");
+        var control = document.querySelector(".media-block-control");
+        var menu = document.querySelector(".media-block-menu");
+        if (!button || !control || !menu) {
             return;
         }
         button.addEventListener("click", function () {
-            var isBlocked = document.documentElement.dataset.dcconBlocked === "true";
-            applyDcconBlock(!isBlocked, true);
+            if (menu.hidden) {
+                openMediaBlockMenu();
+            } else {
+                closeMediaBlockMenu(false);
+            }
+        });
+        menu.addEventListener("click", function (event) {
+            var option = event.target.closest(".media-block-option[data-media-block-mode]");
+            if (!option) {
+                return;
+            }
+            applyMediaBlockMode(option.getAttribute("data-media-block-mode"), true);
+            closeMediaBlockMenu(true);
+        });
+        menu.addEventListener("keydown", function (event) {
+            if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+                return;
+            }
+            var options = Array.prototype.slice.call(menu.querySelectorAll(".media-block-option"));
+            if (!options.length) {
+                return;
+            }
+            event.preventDefault();
+            var currentIndex = options.indexOf(document.activeElement);
+            var nextIndex = currentIndex;
+            if (event.key === "Home") {
+                nextIndex = 0;
+            } else if (event.key === "End") {
+                nextIndex = options.length - 1;
+            } else if (event.key === "ArrowDown") {
+                nextIndex = (currentIndex + 1 + options.length) % options.length;
+            } else {
+                nextIndex = (currentIndex - 1 + options.length) % options.length;
+            }
+            options[nextIndex].focus();
+        });
+        document.addEventListener("click", function (event) {
+            if (!control.contains(event.target)) {
+                closeMediaBlockMenu(false);
+            }
+        });
+        document.addEventListener("keydown", function (event) {
+            if (event.key === "Escape" && !menu.hidden) {
+                closeMediaBlockMenu(true);
+            }
         });
     }
 
@@ -365,8 +493,8 @@
     function boot() {
         applyTheme(loadTheme(), false);
         wireThemeToggle();
-        applyDcconBlock(loadDcconBlocked(), false);
-        wireDcconToggle();
+        applyMediaBlockMode(loadMediaBlockMode(), false);
+        wireMediaBlockControl();
         readStore = loadStore();
         markCurrentRead();
         applyReadState(document, readStore);
