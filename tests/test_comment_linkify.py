@@ -82,3 +82,15 @@ def test_linkify_comment_text_rewrites_html_escaped_dcinside_url_to_internal_rou
         "https://gall.dcinside.com/mgallery/board/view/?id=minor_test&no=456&page=3"
     )
     assert "target" not in link.attrs
+
+
+def test_linkify_comment_text_does_not_decode_query_names_as_html_entities():
+    original_url = "https://example.com/?x=1&not=2&copy=3&reg=4"
+
+    rendered = linkify_comment_text(original_url)
+
+    soup = BeautifulSoup(str(rendered), "html.parser")
+    link = soup.find("a")
+
+    assert link["href"] == original_url
+    assert link.get_text() == original_url

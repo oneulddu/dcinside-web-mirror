@@ -1,4 +1,3 @@
-import html
 import re
 
 from bs4 import NavigableString
@@ -11,6 +10,7 @@ SEARCH_HIGHLIGHT_CLASS = "search-highlight"
 HTML_HIGHLIGHT_MAX_MATCHES = 2000
 HTML_HIGHLIGHT_IGNORED_PARENTS = {"script", "style", "textarea", "code", "pre", "mark"}
 COMMENT_URL_RE = re.compile(r"(?P<url>(?:https?://|www\.)[^\s<]+)", re.IGNORECASE)
+COMMENT_URL_ESCAPED_AMPERSAND_RE = re.compile(r"&(?:amp|#0*38|#x0*26);", re.IGNORECASE)
 COMMENT_LINK_TRAILING_CHARS = ".,!?;:)]}>'\""
 
 
@@ -51,6 +51,10 @@ def _split_comment_link_trailing_text(url):
     return url, "".join(trailing)
 
 
+def _decode_comment_url_ampersands(url):
+    return COMMENT_URL_ESCAPED_AMPERSAND_RE.sub("&", url)
+
+
 def linkify_comment_text(value):
     text = "" if value is None else str(value)
     pieces = []
@@ -59,7 +63,7 @@ def linkify_comment_text(value):
     for match in COMMENT_URL_RE.finditer(text):
         start, end = match.span("url")
         raw_url = match.group("url")
-        url, trailing = _split_comment_link_trailing_text(html.unescape(raw_url))
+        url, trailing = _split_comment_link_trailing_text(_decode_comment_url_ampersands(raw_url))
         if not url:
             continue
 
