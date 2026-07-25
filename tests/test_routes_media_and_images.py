@@ -2812,6 +2812,23 @@ def test_theme_toggle_persists_and_updates_accessibility_state():
     assert "--accent: #3182F6;" in style
 
 
+def test_comment_links_keep_long_urls_inside_comment_width():
+    style = (PROJECT_ROOT / "app/static/css/main.css").read_text()
+
+    item_rule = style.split("\n.comment-item {\n", 1)[1].split("\n}", 1)[0]
+    paragraph_rule = style.rsplit("\n.comment-main p {\n", 1)[1].split("\n}", 1)[0]
+    link_rule = style.split("\n.comment-main a {\n", 1)[1].split("\n}", 1)[0]
+
+    assert "min-width: 0;" in item_rule
+    assert "max-width: 100%;" in item_rule
+    assert "max-width: 100%;" in paragraph_rule
+    assert "overflow-wrap: anywhere;" in paragraph_rule
+    assert "word-break: break-word;" in paragraph_rule
+    assert "max-width: 100%;" in link_rule
+    assert "overflow-wrap: anywhere;" in link_rule
+    assert "word-break: break-word;" in link_rule
+
+
 def test_media_block_menu_defers_comment_dccon_and_body_images(monkeypatch):
     async def fake_async_read(pid, board, kind=None, recommend=0, **kwargs):
         return (
