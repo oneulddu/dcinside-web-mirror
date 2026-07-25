@@ -1,3 +1,4 @@
+import html
 import re
 
 from bs4 import NavigableString
@@ -58,7 +59,7 @@ def linkify_comment_text(value):
     for match in COMMENT_URL_RE.finditer(text):
         start, end = match.span("url")
         raw_url = match.group("url")
-        url, trailing = _split_comment_link_trailing_text(raw_url)
+        url, trailing = _split_comment_link_trailing_text(html.unescape(raw_url))
         if not url:
             continue
 

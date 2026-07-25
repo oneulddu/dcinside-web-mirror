@@ -58,3 +58,27 @@ def test_linkify_comment_text_rewrites_dcinside_url_to_internal_route():
     assert query["pid"] == ["456"]
     assert query["recommend"] == ["1"]
     assert "target" not in link.attrs
+
+
+def test_linkify_comment_text_rewrites_html_escaped_dcinside_url_to_internal_route():
+    app = create_app()
+
+    with app.test_request_context("/read?board=test&pid=123"):
+        rendered = linkify_comment_text(
+            "관련글 https://gall.dcinside.com/mgallery/board/view/?id=minor_test&amp;no=456&amp;page=3"
+        )
+
+    soup = BeautifulSoup(str(rendered), "html.parser")
+    link = soup.find("a")
+    parsed = urlparse(link["href"])
+    query = parse_qs(parsed.query)
+
+    assert parsed.path == "/read"
+    assert query["board"] == ["minor_test"]
+    assert query["pid"] == ["456"]
+    assert query["kind"] == ["minor"]
+    assert query["source_page"] == ["3"]
+    assert link.get_text() == (
+        "https://gall.dcinside.com/mgallery/board/view/?id=minor_test&no=456&page=3"
+    )
+    assert "target" not in link.attrs
