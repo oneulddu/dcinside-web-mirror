@@ -1409,6 +1409,25 @@ def test_rewrite_content_images_removes_unmapped_images_without_shifting_urls():
     assert "data-original" not in images[0].attrs
 
 
+def test_is_dccon_image_uses_only_dedicated_signals():
+    written_dccon = BeautifulSoup('<img class="written_dccon">', "html.parser").img
+    hosted_dccon = BeautifulSoup("<img>", "html.parser").img
+    gallery_name_collision = BeautifulSoup("<img>", "html.parser").img
+
+    assert html_sanitizer.is_dccon_image(
+        written_dccon,
+        "https://images.dcinside.com/ordinary.png",
+    ) is True
+    assert html_sanitizer.is_dccon_image(
+        hosted_dccon,
+        "https://dccon.dcinside.com/original.png",
+    ) is True
+    assert html_sanitizer.is_dccon_image(
+        gallery_name_collision,
+        "https://dcimg7.dcinside.co.kr/viewimage.php?id=my_dccon_gallery&no=123",
+    ) is False
+
+
 def test_rewrite_content_images_rewrites_dc_movie_iframes_to_local_player():
     app = create_app()
     soup = BeautifulSoup(

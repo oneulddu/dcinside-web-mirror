@@ -431,8 +431,7 @@ def is_dccon_image(tag, src):
     if parsed is None:
         return False
     host = (parsed.hostname or "").lower()
-    media_hint = f"{parsed.path or ''}?{parsed.query or ''}".lower()
-    return host == "dccon.dcinside.com" or "dccon" in media_hint
+    return host == "dccon.dcinside.com"
 
 
 def pick_soup_media_src(tag):
