@@ -1903,6 +1903,7 @@ def test_prepare_read_html_rewrites_dcinside_links_to_internal_routes():
               <a href="https://m.dcinside.com/board/test/456?recommend=1&amp;headid=10#comment_box" target="_blank">mobile read</a>
               <a href="https://m.dcinside.com/mini/minitest?page=3&amp;s_type=subject_m&amp;s_keyword=hello">mobile list</a>
               <a href="https://gall.dcinside.com/mgallery/board/view/?id=minor_test&amp;no=789&amp;page=4&amp;search_head=20">pc read</a>
+              <a href="https://gall.dcinside.com/ai_utilize/4639">pc short read</a>
               <a href="/board/lists/?id=normal_test&amp;page=2&amp;exception_mode=recommend">pc list</a>
               <a href="https://gallog.dcinside.com/writer">gallog</a>
             </div>
@@ -1918,6 +1919,7 @@ def test_prepare_read_html_rewrites_dcinside_links_to_internal_routes():
     mobile_read = links["mobile read"]
     mobile_list = links["mobile list"]
     pc_read = links["pc read"]
+    pc_short_read = links["pc short read"]
     pc_list = links["pc list"]
 
     assert mobile_read["href"] == "/read?board=test&pid=456&recommend=1&headid=10#comment_box"
@@ -1938,6 +1940,12 @@ def test_prepare_read_html_rewrites_dcinside_links_to_internal_routes():
     assert pc_read_query["kind"] == ["minor"]
     assert pc_read_query["source_page"] == ["4"]
     assert pc_read_query["headid"] == ["20"]
+
+    pc_short_read_query = parse_qs(urlparse(pc_short_read["href"]).query)
+    assert urlparse(pc_short_read["href"]).path == "/read"
+    assert pc_short_read_query["board"] == ["ai_utilize"]
+    assert pc_short_read_query["pid"] == ["4639"]
+    assert "target" not in pc_short_read.attrs
 
     pc_list_query = parse_qs(urlparse(pc_list["href"]).query)
     assert urlparse(pc_list["href"]).path == "/board"
