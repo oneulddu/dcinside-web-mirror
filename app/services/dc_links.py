@@ -154,6 +154,12 @@ def _pc_pretty_gallery_href(parsed, query):
         return _board_href(segments[1], query, None, parsed.fragment)
     if len(segments) == 3 and segments[0] == "board":
         return _read_href(segments[1], segments[2], query, None, parsed.fragment)
+    if (
+        len(segments) == 2
+        and segments[0] not in GALLERY_KIND_BY_PC_PREFIX
+        and _is_positive_int(segments[1])
+    ):
+        return _read_href(segments[0], segments[1], query, None, parsed.fragment)
     return None
 
 
