@@ -1,5 +1,14 @@
 /* 숨터. 고밀도 읽기 화면. 토큰 계약: /DESIGN.md */
 
+/* 폰트는 로컬 CSS에서 직접 선언한다. 외부 CSS 링크를 쓰면 렌더 차단 요청이
+   하나 더 늘어나 읽음 표시 같은 초기 화면 상태가 늦게 반영된다. */
+@font-face {
+    font-family: "SUIT Variable";
+    font-weight: 100 900;
+    font-display: swap;
+    src: url("https://cdn.jsdelivr.net/gh/sun-typeface/SUIT@2/fonts/variable/woff2/SUIT-Variable.woff2") format("woff2-variations");
+}
+
 :root {
     --bg: #FFFFFF;
     --fg: #191F28;

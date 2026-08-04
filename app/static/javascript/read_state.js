@@ -421,7 +421,8 @@
         if (!key) {
             return;
         }
-        var store = readStore || loadStore();
+        // 다른 탭이나 이전 방문에서 쌓인 기록을 덮어쓰지 않도록 항상 최신 저장소를 다시 읽는다.
+        var store = loadStore();
         store[key] = Date.now();
         readStore = pruneStore(store);
         saveStore(readStore);
@@ -502,9 +503,35 @@
         wireDynamicApply();
     }
 
+    function refreshReadState() {
+        readStore = loadStore();
+        applyReadState(document, readStore);
+    }
+
     document.addEventListener("mirror:board-refreshed", function (event) {
         readStore = loadStore();
         applyReadState(event.detail && event.detail.root, readStore);
+    });
+
+    // 뒤로 가기로 bfcache에서 복원되면 스크립트가 다시 실행되지 않는다.
+    // 그동안 다른 탭이나 상세 화면에서 늘어난 읽음 기록을 즉시 반영한다.
+    window.addEventListener("pageshow", function (event) {
+        if (event.persisted) {
+            refreshReadState();
+        }
+    });
+
+    // 다른 탭에서 글을 읽은 경우 저장소 변경을 즉시 반영한다.
+    window.addEventListener("storage", function (event) {
+        if (!event.key || event.key === STORAGE_KEY) {
+            refreshReadState();
+        }
+    });
+
+    document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState === "visible") {
+            refreshReadState();
+        }
     });
 
     if (document.readyState === "loading") {
