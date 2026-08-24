@@ -238,7 +238,7 @@ mirror/
 | `MIRROR_HTTP_TIMEOUT` | `20` | DCinside 요청 타임아웃 |
 | `MIRROR_DC_CONN_LIMIT` | `20` | DCinside 공유 세션 커넥션 제한 |
 | `MIRROR_DC_DNS_CACHE_TTL` | `60` | DCinside 공유 세션 DNS 캐시 유지 시간 |
-| `MIRROR_DC_RATE_LIMIT_COOLDOWN` | `10` | 차단 응답 뒤 추가 DCinside 요청을 멈추는 시간(초) |
+| `MIRROR_DC_RATE_LIMIT_COOLDOWN` | `10` | 차단 응답 뒤 같은 DCinside 호스트의 추가 요청을 멈추는 시간(초) |
 | `MIRROR_HEUNG_CACHE_TTL` | `3600` | 흥한 갤러리 캐시 유지 시간 |
 | `MIRROR_HEUNG_CACHE_FILE` | `instance/heung_gallery_cache.json` | 캐시 파일 경로 |
 | `MIRROR_BOARD_PAGE_CACHE_TTL` | `20` | 게시판 페이지 짧은 캐시 |
