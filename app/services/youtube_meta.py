@@ -26,6 +26,7 @@ SIZE_CACHE_MAX_ITEMS = env_int("MIRROR_YT_SIZE_CACHE_MAX_ITEMS", 4096)
 SIZE_PROBE_TIMEOUT = env_int("MIRROR_YT_SIZE_TIMEOUT", 5)
 SIZE_MAX_IDS_PER_REQUEST = 12
 FRAME0_RANGE_BYTES = 16383
+FRAME0_READ_BYTES = FRAME0_RANGE_BYTES + 1
 # 공개 엔드포인트의 outbound 증폭 방어: 전역 프로브 예산과 요청당 시간 예산.
 # 예산 초과 시 프로브 없이 None을 반환하고 캐시하지 않는다(화면은 16:9 폴백).
 PROBE_RATE_WINDOW_SECONDS = env_int("MIRROR_YT_PROBE_RATE_WINDOW", 10)
@@ -91,26 +92,49 @@ def parse_jpeg_dimensions(data):
     return None
 
 
+def _read_response_prefix(response, max_bytes):
+    iter_content = getattr(response, "iter_content", None)
+    if not callable(iter_content):
+        return bytes(getattr(response, "content", b"") or b"")[:max_bytes]
+
+    chunks = []
+    remaining = max_bytes
+    for chunk in iter_content(chunk_size=min(8192, max_bytes)):
+        if not chunk:
+            continue
+        chunks.append(chunk[:remaining])
+        remaining -= min(len(chunk), remaining)
+        if remaining <= 0:
+            break
+    return b"".join(chunks)
+
+
 def probe_frame0_size(video_id):
+    response = None
     try:
         response = requests.get(
             YOUTUBE_FRAME0_URL.format(video_id),
             timeout=SIZE_PROBE_TIMEOUT,
+            stream=True,
             headers={
                 "User-Agent": PROBE_USER_AGENT,
                 "Range": f"bytes=0-{FRAME0_RANGE_BYTES}",
             },
         )
-    except requests.RequestException:
+        # 존재하지 않는 영상은 404여도 120x90 플레이스홀더 JPEG 본문을 준다.
+        if response.status_code not in (200, 206):
+            return None
+        dimensions = parse_jpeg_dimensions(_read_response_prefix(response, FRAME0_READ_BYTES))
+        if not dimensions:
+            return None
+        width, height = dimensions
+        return {"width": width, "height": height}
+    except (requests.RequestException, OSError):
         return None
-    # 존재하지 않는 영상은 404여도 120x90 플레이스홀더 JPEG 본문을 준다.
-    if response.status_code not in (200, 206):
-        return None
-    dimensions = parse_jpeg_dimensions(response.content)
-    if not dimensions:
-        return None
-    width, height = dimensions
-    return {"width": width, "height": height}
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
 
 
 def probe_shorts_orientation(video_id):

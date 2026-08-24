@@ -74,6 +74,22 @@ def test_parse_time_preserves_two_digit_year(monkeypatch):
     assert parsed == datetime(2025, 12, 31, 23, 59, 59)
 
 
+def test_parse_time_keeps_invalid_or_missing_values_unknown():
+    api = API.__new__(API)
+
+    assert api._API__parse_time("") is None
+    assert api._API__parse_time("날짜 없음") is None
+
+
+def test_document_header_keeps_missing_time_unknown():
+    api = API.__new__(API)
+    header = lxml.html.fromstring("<div><span class='nickname'>작성자</span></div>")
+
+    parsed = api._API__parse_document_header(header)
+
+    assert parsed["time_str"] == ""
+
+
 def test_parse_mobile_list_item_extracts_gallog_author_id():
     api = API.__new__(API)
     row = lxml.html.fromstring(

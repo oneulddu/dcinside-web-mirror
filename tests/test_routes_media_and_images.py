@@ -3900,6 +3900,20 @@ def test_search_galleries_reuses_short_cache(monkeypatch):
     assert second[0]["name"] == "테스트 일반"
 
 
+def test_search_galleries_bounds_query_before_cache_lookup(monkeypatch):
+    cache_keys = []
+
+    def cached_result(key):
+        cache_keys.append(key)
+        return []
+
+    monkeypatch.setattr(heung, "_search_cache_get", cached_result)
+    query = "가" * (heung.SEARCH_QUERY_MAX_LENGTH + 20)
+
+    assert heung.search_galleries(query) == []
+    assert cache_keys == ["가" * heung.SEARCH_QUERY_MAX_LENGTH]
+
+
 def test_movie_html_uses_direct_src_with_metadata_handshake_script():
     app = create_app()
     media = {
@@ -3970,6 +3984,22 @@ class DummyProbeResponse:
         self.content = content
 
 
+class DummyStreamingProbeResponse:
+    def __init__(self, chunks):
+        self.status_code = 200
+        self.chunks = list(chunks)
+        self.yielded = 0
+        self.closed = False
+
+    def iter_content(self, chunk_size):
+        for chunk in self.chunks:
+            self.yielded += 1
+            yield chunk
+
+    def close(self):
+        self.closed = True
+
+
 def test_video_size_uses_frame0_and_falls_back_to_shorts(monkeypatch):
     monkeypatch.setattr(
         youtube_meta.requests,
@@ -3999,6 +4029,28 @@ def test_video_size_uses_frame0_and_falls_back_to_shorts(monkeypatch):
     )
     assert youtube_meta.video_size("aaaaaaaaaa3") is None
     assert youtube_meta.video_size("aaaaaaaaaa3") is None
+
+
+def test_probe_frame0_reads_only_bounded_stream_prefix(monkeypatch):
+    response = DummyStreamingProbeResponse(
+        [
+            _synthetic_jpeg(480, 268),
+            b"x" * youtube_meta.FRAME0_READ_BYTES,
+            b"must-not-be-read",
+        ]
+    )
+    request_kwargs = {}
+
+    def fake_get(*args, **kwargs):
+        request_kwargs.update(kwargs)
+        return response
+
+    monkeypatch.setattr(youtube_meta.requests, "get", fake_get)
+
+    assert youtube_meta.probe_frame0_size("cccccccccc1") == {"width": 480, "height": 268}
+    assert request_kwargs["stream"] is True
+    assert response.yielded == 2
+    assert response.closed is True
 
 
 def test_youtube_size_route_returns_sizes_and_rejects_garbage(monkeypatch):

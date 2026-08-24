@@ -1,3 +1,4 @@
+import heapq
 import os
 import time
 
@@ -35,7 +36,11 @@ def cache_prune(cache, now, max_items):
     overflow = len(cache) - max(max_items, 0)
     if overflow <= 0:
         return
-    oldest_keys = sorted(cache, key=lambda key: cache[key]["expires_at"])[:overflow]
+    oldest_keys = heapq.nsmallest(
+        overflow,
+        cache,
+        key=lambda key: cache[key]["expires_at"],
+    )
     for key in oldest_keys:
         cache.pop(key, None)
 

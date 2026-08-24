@@ -26,7 +26,8 @@ class DocumentIndex:
         self.ishit = ishit
         self.is_mobile_source = bool(is_mobile_source)
     def __str__(self):
-        return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count}"
+        time_text = self.time.isoformat() if hasattr(self.time, "isoformat") else str(self.time or "-")
+        return f"{self.subject or ''}\t|{self.id}\t|{time_text}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count}"
 
 class Document:
     __slots__ = ["id", "board_id", "title", "author", "author_id", "author_role", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total"]
@@ -52,7 +53,8 @@ class Document:
         self.embedded_comments = list(embedded_comments or [])
         self.embedded_comment_total = embedded_comment_total
     def __str__(self):
-        return f"{self.subject or ''}\t|{self.id}\t|{self.time.isoformat()}\t|{self.author}\t|{self.title} +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
+        time_text = self.time.isoformat() if hasattr(self.time, "isoformat") else str(self.time or "-")
+        return f"{self.subject or ''}\t|{self.id}\t|{time_text}\t|{self.author}\t|{self.title} +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
 
 class Comment:
     __slots__ = ["id", "parent_id", "author", "author_id", "author_role", "contents", "dccon", "voice", "time", "is_reply"]
