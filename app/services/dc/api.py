@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import threading
+import time
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
 import aiohttp
@@ -52,6 +53,7 @@ BOARD_KIND_CACHE_TTL = max(env_int("MIRROR_BOARD_KIND_CACHE_TTL", 21600), 0)
 BOARD_KIND_CACHE_MAX_ITEMS = 2048
 DC_CONN_LIMIT = max(env_int("MIRROR_DC_CONN_LIMIT", 20), 1)
 DC_DNS_CACHE_TTL = max(env_int("MIRROR_DC_DNS_CACHE_TTL", 60), 0)
+DC_RATE_LIMIT_COOLDOWN = max(env_int("MIRROR_DC_RATE_LIMIT_COOLDOWN", 10), 0)
 DC_SESSION_COOKIE_ALLOWLIST = frozenset({"_ga", "ci_c"})
 MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -150,6 +152,7 @@ class API(ParserMixin):
             connector=connector,
         )
         self.last_board_headtexts = []
+        self._rate_limited_until = 0.0
     async def close(self):
         await self.session.close()
     async def __aenter__(self):
@@ -411,22 +414,27 @@ class API(ParserMixin):
         clear(lambda morsel: morsel.key not in DC_SESSION_COOKIE_ALLOWLIST)
 
     async def __request_text(self, method, url, headers=None, data=None, cookies=None):
+        if time.monotonic() < float(getattr(self, "_rate_limited_until", 0.0) or 0.0):
+            raise RuntimeError("rate limited: cooldown")
+
         request_headers = self.__prepare_headers(url, headers)
 
-        async with self.session.request(
-            method,
-            url,
-            headers=request_headers,
-            data=data,
-            cookies=cookies,
-        ) as res:
-            text = await res.text()
-            status = res.status
-            response_headers = dict(res.headers)
-
-        self.__prune_session_cookies()
+        try:
+            async with self.session.request(
+                method,
+                url,
+                headers=request_headers,
+                data=data,
+                cookies=cookies,
+            ) as res:
+                text = await res.text()
+                status = res.status
+                response_headers = dict(res.headers)
+        finally:
+            self.__prune_session_cookies()
 
         if self.__is_rate_limited_response(status, text[:1000]):
+            self._rate_limited_until = time.monotonic() + DC_RATE_LIMIT_COOLDOWN
             logger.warning("rate limited: status=%s url=%s", status, url)
             raise RuntimeError(f"rate limited: {status}")
 

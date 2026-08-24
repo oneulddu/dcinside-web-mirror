@@ -29,6 +29,7 @@ HEUNG_CACHE_TTL = _env_int("MIRROR_HEUNG_CACHE_TTL", 3600)
 HEUNG_CACHE_FILE = os.getenv("MIRROR_HEUNG_CACHE_FILE", os.path.join(INSTANCE_DIR, "heung_gallery_cache.json"))
 SEARCH_CACHE_TTL = max(_env_int("MIRROR_HEUNG_SEARCH_CACHE_TTL", 60), 0)
 SEARCH_CACHE_MAX_ITEMS = max(_env_int("MIRROR_HEUNG_SEARCH_CACHE_MAX_ITEMS", 256), 0)
+SEARCH_QUERY_MAX_LENGTH = 80
 HEUNG_CACHE = {"updated_at": 0.0, "items": []}
 SEARCH_CACHE = {}
 HEUNG_CACHE_LOCK = threading.Lock()
@@ -282,7 +283,7 @@ def _search_cache_set(key, items):
 
 
 def search_galleries(query):
-    query_text = (query or "").strip()
+    query_text = (query or "").strip()[:SEARCH_QUERY_MAX_LENGTH]
     cache_key = query_text.lower()
     cached = _search_cache_get(cache_key)
     if cached is not None:

@@ -121,6 +121,45 @@ async def test_request_text_logs_rate_limit_warning(caplog):
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_cooldown_stops_fallback_network_requests(monkeypatch):
+    requested_urls = []
+
+    class FakeResponse:
+        status = 429
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "Too Many Requests"
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            requested_urls.append(url)
+            return FakeResponse()
+
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 10)
+    api = API.__new__(API)
+    api.session = FakeSession()
+    api._rate_limited_until = 0.0
+
+    parsed, text, used_url = await api._API__fetch_parsed_from_urls(
+        [
+            "https://m.dcinside.com/board/test?page=1",
+            "https://gall.dcinside.com/board/lists/?id=test&page=1",
+            "https://gall.dcinside.com/mgallery/board/lists/?id=test&page=1",
+        ]
+    )
+
+    assert (parsed, text, used_url) == (None, "", None)
+    assert requested_urls == ["https://m.dcinside.com/board/test?page=1"]
+
+
+@pytest.mark.asyncio
 async def test_request_text_prunes_shared_session_cookies():
     class FakeResponse:
         status = 200
@@ -162,6 +201,42 @@ async def test_request_text_prunes_shared_session_cookies():
     assert set(cookies) == {"_ga", "ci_c"}
     assert cookies["_ga"].value == "ga-value"
     assert cookies["ci_c"].value == "ci-value"
+
+
+@pytest.mark.asyncio
+async def test_request_text_prunes_shared_session_cookies_when_body_read_fails():
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            raise OSError("body read failed")
+
+    class FakeSession:
+        def __init__(self):
+            self.cookie_jar = CookieJar(unsafe=True)
+            self.cookie_jar.update_cookies(
+                {"_ga": "ga-value", "tracking": "drop-me"},
+                URL("https://gall.dcinside.com/"),
+            )
+
+        def request(self, *args, **kwargs):
+            return FakeResponse()
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+
+    with pytest.raises(OSError, match="body read failed"):
+        await api._API__request_text("GET", "https://gall.dcinside.com/m")
+
+    cookies = api.session.cookie_jar.filter_cookies(URL("https://gall.dcinside.com/"))
+    assert set(cookies) == {"_ga"}
 
 
 def test_list_urls_prefer_mobile_before_pc():

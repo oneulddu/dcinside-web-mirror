@@ -34,6 +34,7 @@ BOARD_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,80}$")
 ALLOWED_GALLERY_KINDS = {"normal", "minor", "mini", "person"}
 ALLOWED_NAV_MODES = {"ai"}
 DEFAULT_SEARCH_TYPE = "subject_m"
+SEARCH_QUERY_MAX_LENGTH = 80
 SITE_NAME = "숨터"
 SOCIAL_DESCRIPTION_MAX_LENGTH = 180
 SOCIAL_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
@@ -305,7 +306,8 @@ def _normalize_board_search_type(value):
 
 
 def _board_search_keyword():
-    return ((request.args.get("serval") or request.args.get("s_keyword") or "")).strip()
+    value = request.args.get("serval") or request.args.get("s_keyword") or ""
+    return value.strip()[:SEARCH_QUERY_MAX_LENGTH]
 
 
 def _current_search_context():
@@ -558,7 +560,7 @@ def _recent_gallery_name_lookup(rows):
 @bp.route("/")
 def index():
     page = _safe_int(request.args.get("heung_page", 1), 1)
-    heung_q = (request.args.get("heung_q") or "").strip()
+    heung_q = (request.args.get("heung_q") or "").strip()[:SEARCH_QUERY_MAX_LENGTH]
     context = _heung_index_context(page, heung_q)
 
     return render_template(

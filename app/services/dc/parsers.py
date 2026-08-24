@@ -767,7 +767,7 @@ class ParserMixin:
             if m:
                 time_str = m.group(0)
         if not time_str:
-            time_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
+            time_str = ""
 
         return {
             "title": title,
@@ -1155,4 +1155,4 @@ class ParserMixin:
                 else:
                     return datetime.strptime(time, "%Y-%m-%d %H:%M:%S")
         except Exception:
-            return datetime.now()
+            return None

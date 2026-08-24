@@ -196,6 +196,30 @@ def test_board_refresh_query_bypasses_service_cache(monkeypatch):
     assert calls == [False, True]
 
 
+def test_search_queries_are_bounded_before_service_calls(monkeypatch):
+    captured = {"board": None, "heung": None}
+
+    async def board_payload(*args, search_keyword=None, **kwargs):
+        captured["board"] = search_keyword
+        return await _board_payload()
+
+    def search_galleries(query):
+        captured["heung"] = query
+        return []
+
+    monkeypatch.setattr(routes, "_load_board_payload", board_payload)
+    monkeypatch.setattr(routes, "search_galleries", search_galleries)
+    client = create_app().test_client()
+    long_query = "가" * (routes.SEARCH_QUERY_MAX_LENGTH + 20)
+
+    assert client.get("/board", query_string={"board": "test", "serval": long_query}).status_code == 200
+    assert client.get("/", query_string={"heung_q": long_query}).status_code == 200
+    assert captured == {
+        "board": "가" * routes.SEARCH_QUERY_MAX_LENGTH,
+        "heung": "가" * routes.SEARCH_QUERY_MAX_LENGTH,
+    }
+
+
 def test_board_history_refresh_script_is_loaded_and_refreshes_at_most_once(monkeypatch):
     monkeypatch.setattr(routes, "_load_board_payload", _board_payload)
     response = create_app().test_client().get("/board?board=test&page=1")

@@ -34,6 +34,7 @@ def _index_item(doc_id, *, author_id=None, is_mobile_source=False):
 def clear_core_caches():
     core._BOARD_PAGE_CACHE.clear()
     core._BOARD_INDEX_CACHE.clear()
+    core._BOARD_REFRESH_CACHE.clear()
     core._BOARD_TIME_CACHE.clear()
     core._READ_CACHE.clear()
     core._LATEST_ID_CACHE.clear()
@@ -42,6 +43,7 @@ def clear_core_caches():
     yield
     core._BOARD_PAGE_CACHE.clear()
     core._BOARD_INDEX_CACHE.clear()
+    core._BOARD_REFRESH_CACHE.clear()
     core._BOARD_TIME_CACHE.clear()
     core._READ_CACHE.clear()
     core._LATEST_ID_CACHE.clear()
@@ -68,6 +70,11 @@ def test_author_code_cache_ttl_is_one_hour():
 
 def test_board_time_cache_has_dedicated_max_items_constant():
     assert core.BOARD_TIME_CACHE_MAX_ITEMS == core.BOARD_PAGE_CACHE_MAX_ITEMS
+
+
+def test_related_page_estimate_matches_board_list_page_size():
+    assert core.DOCS_PER_PAGE_ESTIMATE == core.dc_api.BOARD_LIST_PAGE_SIZE
+    assert core.RELATED_PAGE_FETCH_SIZE == core.dc_api.BOARD_LIST_PAGE_SIZE
 
 
 def test_normalize_author_preserves_existing_name_and_code_rules():
@@ -220,6 +227,85 @@ async def test_async_index_force_refresh_replaces_cached_board_rows(monkeypatch)
     assert [row["id"] for row in replaced_cache_rows] == ["102"]
     assert len(FakeAPI.instances) == 2
     assert FakeAPI.board_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_async_index_throttles_repeated_force_refresh(monkeypatch):
+    class FakeAPI:
+        board_calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def board(self, **kwargs):
+            self.__class__.board_calls += 1
+            yield _index_item(200 + self.__class__.board_calls, is_mobile_source=True)
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+    monkeypatch.setattr(core, "BOARD_FORCE_REFRESH_COOLDOWN", 5)
+
+    initial_rows, _ = await core.async_index_with_head_categories(1, "test", 0, limit=1)
+    refreshed_rows, _ = await core.async_index_with_head_categories(
+        1,
+        "test",
+        0,
+        limit=1,
+        force_refresh=True,
+    )
+    throttled_rows, _ = await core.async_index_with_head_categories(
+        1,
+        "test",
+        0,
+        limit=1,
+        force_refresh=True,
+    )
+
+    assert [row["id"] for row in initial_rows] == ["201"]
+    assert [row["id"] for row in refreshed_rows] == ["202"]
+    assert [row["id"] for row in throttled_rows] == ["202"]
+    assert FakeAPI.board_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_async_index_short_caches_empty_force_refresh(monkeypatch):
+    class FakeAPI:
+        board_calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def board(self, **kwargs):
+            self.__class__.board_calls += 1
+            if False:
+                yield None
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+    monkeypatch.setattr(core, "BOARD_FORCE_REFRESH_COOLDOWN", 5)
+
+    first_rows, first_categories = await core.async_index_with_head_categories(
+        1,
+        "missing",
+        0,
+        limit=1,
+        force_refresh=True,
+    )
+    second_rows, second_categories = await core.async_index_with_head_categories(
+        1,
+        "missing",
+        0,
+        limit=1,
+        force_refresh=True,
+    )
+
+    assert (first_rows, first_categories) == ([], [])
+    assert (second_rows, second_categories) == ([], [])
+    assert FakeAPI.board_calls == 1
 
 
 @pytest.mark.asyncio
@@ -924,7 +1010,7 @@ async def test_related_after_position_falls_back_to_estimate_when_source_page_hi
         async def board(self, **kwargs):
             self.calls.append((kwargs["start_page"], kwargs["num"]))
             if kwargs["start_page"] == 1 and kwargs["num"] == 1:
-                yield _index_item(500)
+                yield _index_item(160)
             elif kwargs["start_page"] == 3:
                 yield _index_item(100)
                 yield _index_item(99)

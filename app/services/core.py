@@ -20,11 +20,12 @@ def _env_bool(name, default=False):
 
 MAX_PAGE = 31
 RELATED_LIMIT = 12
-DOCS_PER_PAGE_ESTIMATE = max(int(getattr(dc_api, "DOCS_PER_PAGE", 200)), 1)
+DOCS_PER_PAGE_ESTIMATE = max(int(getattr(dc_api, "BOARD_LIST_PAGE_SIZE", 30)), 1)
 RELATED_PAGE_FETCH_SIZE = DOCS_PER_PAGE_ESTIMATE
 RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1)
 RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
 BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)
+BOARD_FORCE_REFRESH_COOLDOWN = max(_env_int("MIRROR_BOARD_FORCE_REFRESH_COOLDOWN", 5), 0)
 BOARD_TIME_CACHE_TTL = max(_env_int("MIRROR_BOARD_TIME_CACHE_TTL", BOARD_PAGE_CACHE_TTL), 0)
 READ_CACHE_TTL = max(_env_int("MIRROR_READ_CACHE_TTL", 0), 0)
 BOARD_FILL_AUTHOR_CODES = _env_bool("MIRROR_BOARD_FILL_AUTHOR_CODES", False)
@@ -41,6 +42,7 @@ CACHE_PRUNE_MIN_INTERVAL = max(_env_int("MIRROR_CACHE_PRUNE_MIN_INTERVAL", 1), 0
 
 _BOARD_PAGE_CACHE = {}
 _BOARD_INDEX_CACHE = {}
+_BOARD_REFRESH_CACHE = {}
 _BOARD_TIME_CACHE = {}
 _READ_CACHE = {}
 _LATEST_ID_CACHE = {}
@@ -207,6 +209,23 @@ def _cache_set(cache, lock, key, value, ttl, max_items):
         now = time.time()
         if _should_prune_cache(cache, now, max_items):
             _cache_prune(cache, now, max_items)
+
+
+def _claim_board_force_refresh(cache_key):
+    if BOARD_FORCE_REFRESH_COOLDOWN <= 0:
+        return True
+
+    now = time.time()
+    with _BOARD_INDEX_CACHE_LOCK:
+        entry = _BOARD_REFRESH_CACHE.get(cache_key)
+        if entry and entry["expires_at"] > now:
+            return False
+        _BOARD_REFRESH_CACHE[cache_key] = {
+            "value": True,
+            "expires_at": now + BOARD_FORCE_REFRESH_COOLDOWN,
+        }
+        _cache_prune(_BOARD_REFRESH_CACHE, now, BOARD_INDEX_CACHE_MAX_ITEMS)
+        return True
 
 
 def _copy_rows(rows):
@@ -647,6 +666,9 @@ async def async_index_with_head_categories(
         search_keyword=search_keyword,
         head_id=head_id,
     )
+    force_refresh_requested = bool(force_refresh)
+    if force_refresh_requested:
+        force_refresh = _claim_board_force_refresh(cache_key)
     if not force_refresh:
         cached = _cache_get(_BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK, cache_key)
         if cached is not None:
@@ -681,13 +703,16 @@ async def async_index_with_head_categories(
             data.append(_index_item_to_dict(item))
         await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
         categories = _normalize_head_categories(headtexts, head_id=head_id)
-    if data or categories:
+    if data or categories or (force_refresh_requested and force_refresh):
+        cache_ttl = BOARD_PAGE_CACHE_TTL
+        if not data and not categories:
+            cache_ttl = min(BOARD_PAGE_CACHE_TTL, BOARD_FORCE_REFRESH_COOLDOWN)
         _cache_set(
             _BOARD_INDEX_CACHE,
             _BOARD_INDEX_CACHE_LOCK,
             cache_key,
             (_copy_rows(data), _copy_categories(categories), _copy_pagination(pagination)),
-            BOARD_PAGE_CACHE_TTL,
+            cache_ttl,
             BOARD_INDEX_CACHE_MAX_ITEMS,
         )
     if pagination_collector is not None:
