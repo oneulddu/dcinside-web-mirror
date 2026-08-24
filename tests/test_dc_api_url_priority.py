@@ -121,12 +121,14 @@ async def test_request_text_logs_rate_limit_warning(caplog):
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_cooldown_stops_fallback_network_requests(monkeypatch):
+async def test_rate_limit_cooldown_skips_same_host_and_allows_pc_fallback(monkeypatch):
     requested_urls = []
 
     class FakeResponse:
-        status = 429
-        headers = {}
+        def __init__(self, status, text):
+            self.status = status
+            self.headers = {}
+            self._text = text
 
         async def __aenter__(self):
             return self
@@ -135,28 +137,81 @@ async def test_rate_limit_cooldown_stops_fallback_network_requests(monkeypatch):
             return None
 
         async def text(self):
-            return "Too Many Requests"
+            return self._text
 
     class FakeSession:
         def request(self, method, url, **kwargs):
             requested_urls.append(url)
-            return FakeResponse()
+            if url == mobile_first:
+                return FakeResponse(429, "Too Many Requests")
+            return FakeResponse(200, "<html><body><div id='pc-ok'>ok</div></body></html>")
 
     monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 10)
     api = API.__new__(API)
     api.session = FakeSession()
-    api._rate_limited_until = 0.0
+    api._rate_limited_until_by_host = {}
+
+    mobile_first = "https://m.dcinside.com/board/test?page=1"
+    mobile_second = "https://m.dcinside.com/board/test?page=2"
+    pc = "https://gall.dcinside.com/board/lists/?id=test&page=1"
 
     parsed, text, used_url = await api._API__fetch_parsed_from_urls(
-        [
-            "https://m.dcinside.com/board/test?page=1",
-            "https://gall.dcinside.com/board/lists/?id=test&page=1",
-            "https://gall.dcinside.com/mgallery/board/lists/?id=test&page=1",
-        ]
+        [mobile_first, mobile_second, pc]
     )
 
-    assert (parsed, text, used_url) == (None, "", None)
-    assert requested_urls == ["https://m.dcinside.com/board/test?page=1"]
+    assert used_url == pc
+    assert parsed.get_element_by_id("pc-ok").text == "ok"
+    assert "pc-ok" in text
+    assert requested_urls == [mobile_first, pc]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_cooldown_allows_same_host_after_expiry(monkeypatch):
+    now = [100.0]
+    request_count = 0
+
+    class FakeResponse:
+        headers = {}
+
+        def __init__(self, status, text):
+            self.status = status
+            self._text = text
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return self._text
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            nonlocal request_count
+            request_count += 1
+            if request_count == 1:
+                return FakeResponse(429, "Too Many Requests")
+            return FakeResponse(200, "ok")
+
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 10)
+    monkeypatch.setattr(dc_api.time, "monotonic", lambda: now[0])
+    api = API.__new__(API)
+    api.session = FakeSession()
+    api._rate_limited_until_by_host = {}
+    url = "https://m.dcinside.com/board/test"
+
+    with pytest.raises(RuntimeError, match="rate limited: 429"):
+        await api._API__request_text("GET", url)
+    with pytest.raises(RuntimeError, match="rate limited: cooldown"):
+        await api._API__request_text("GET", url)
+
+    now[0] = 111.0
+    status, _, text = await api._API__request_text("GET", url)
+
+    assert (status, text) == (200, "ok")
+    assert request_count == 2
+    assert api._rate_limited_until_by_host == {}
 
 
 @pytest.mark.asyncio

@@ -152,7 +152,7 @@ class API(ParserMixin):
             connector=connector,
         )
         self.last_board_headtexts = []
-        self._rate_limited_until = 0.0
+        self._rate_limited_until_by_host = {}
     async def close(self):
         await self.session.close()
     async def __aenter__(self):
@@ -414,8 +414,16 @@ class API(ParserMixin):
         clear(lambda morsel: morsel.key not in DC_SESSION_COOKIE_ALLOWLIST)
 
     async def __request_text(self, method, url, headers=None, data=None, cookies=None):
-        if time.monotonic() < float(getattr(self, "_rate_limited_until", 0.0) or 0.0):
+        host = (urlparse(url).hostname or "").lower()
+        rate_limited_until_by_host = getattr(self, "_rate_limited_until_by_host", None)
+        if rate_limited_until_by_host is None:
+            rate_limited_until_by_host = {}
+            self._rate_limited_until_by_host = rate_limited_until_by_host
+
+        now = time.monotonic()
+        if now < float(rate_limited_until_by_host.get(host, 0.0) or 0.0):
             raise RuntimeError("rate limited: cooldown")
+        rate_limited_until_by_host.pop(host, None)
 
         request_headers = self.__prepare_headers(url, headers)
 
@@ -434,7 +442,7 @@ class API(ParserMixin):
             self.__prune_session_cookies()
 
         if self.__is_rate_limited_response(status, text[:1000]):
-            self._rate_limited_until = time.monotonic() + DC_RATE_LIMIT_COOLDOWN
+            rate_limited_until_by_host[host] = time.monotonic() + DC_RATE_LIMIT_COOLDOWN
             logger.warning("rate limited: status=%s url=%s", status, url)
             raise RuntimeError(f"rate limited: {status}")
 
