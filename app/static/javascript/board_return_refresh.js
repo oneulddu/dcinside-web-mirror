@@ -4,6 +4,8 @@
     var REFRESH_PARAM = "refresh";
     var RETURN_MARKER_KEY = "mirror_board_return_refresh_v1";
     var refreshInFlight = false;
+    var refreshPending = false;
+    var returnRefreshHandled = false;
 
     function currentUrl() {
         try {
@@ -52,6 +54,7 @@
         if (!boardKey) {
             return;
         }
+        returnRefreshHandled = false;
         try {
             window.sessionStorage.setItem(RETURN_MARKER_KEY, boardKey);
         } catch (err) {
@@ -130,15 +133,7 @@
         );
     }
 
-    function refreshAfterHistoryNavigation(event) {
-        var isMarkedReturn = consumeBoardReturn();
-        if (enteredWithRefreshMarker) {
-            enteredWithRefreshMarker = false;
-            return;
-        }
-        if ((!isMarkedReturn && !isHistoryNavigation(event)) || refreshInFlight) {
-            return;
-        }
+    function requestBoardRefresh() {
         var url = currentUrl();
         if (!url) {
             return;
@@ -171,7 +166,32 @@
             })
             .finally(function () {
                 refreshInFlight = false;
+                if (refreshPending) {
+                    refreshPending = false;
+                    requestBoardRefresh();
+                }
             });
+    }
+
+    function refreshAfterHistoryNavigation(event) {
+        if (returnRefreshHandled) {
+            return;
+        }
+        var isMarkedReturn = consumeBoardReturn();
+        if (enteredWithRefreshMarker) {
+            enteredWithRefreshMarker = false;
+            returnRefreshHandled = true;
+            return;
+        }
+        if (!isMarkedReturn && !isHistoryNavigation(event)) {
+            return;
+        }
+        returnRefreshHandled = true;
+        if (refreshInFlight) {
+            refreshPending = true;
+            return;
+        }
+        requestBoardRefresh();
     }
 
     var enteredWithRefreshMarker = hasRefreshMarker();

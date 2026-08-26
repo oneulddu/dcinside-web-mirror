@@ -1,4 +1,6 @@
 from pathlib import Path
+import shutil
+import subprocess
 from urllib.parse import parse_qs, parse_qsl, urlparse
 
 from bs4 import BeautifulSoup
@@ -228,6 +230,7 @@ def test_board_history_refresh_script_is_loaded_and_refreshes_at_most_once(monke
 
     assert soup.select_one("script[src*='/static/javascript/board_return_refresh.js']") is not None
     assert 'var RETURN_MARKER_KEY = "mirror_board_return_refresh_v1"' in script
+    assert "var returnRefreshHandled = false;" in script
     assert "window.sessionStorage.setItem(RETURN_MARKER_KEY, boardKey)" in script
     assert "var isMarkedReturn = consumeBoardReturn();" in script
     assert "var enteredWithRefreshMarker = hasRefreshMarker();" in script
@@ -239,6 +242,41 @@ def test_board_history_refresh_script_is_loaded_and_refreshes_at_most_once(monke
     assert 'new CustomEvent("mirror:board-refreshed"' in script
     assert "window.location.replace" not in script
     assert "window.history.replaceState(" in script
+
+    remember_handler = script.split("function rememberBoardReturn(event) {", 1)[1].split(
+        "function consumeBoardReturn() {", 1
+    )[0]
+    request_handler = script.split("function requestBoardRefresh() {", 1)[1].split(
+        "function refreshAfterHistoryNavigation(event) {", 1
+    )[0]
+    refresh_handler = script.split("function refreshAfterHistoryNavigation(event) {", 1)[1].split(
+        "var enteredWithRefreshMarker", 1
+    )[0]
+    assert "returnRefreshHandled = false;" in remember_handler
+    assert "if (returnRefreshHandled)" in refresh_handler
+    assert refresh_handler.count("returnRefreshHandled = true;") == 2
+    assert "if (refreshInFlight)" in refresh_handler
+    assert "refreshPending = true;" in refresh_handler
+    assert "if (refreshPending)" in request_handler
+    assert "refreshPending = false;" in request_handler
+    assert request_handler.count("requestBoardRefresh();") == 1
+
+
+def test_board_history_refresh_state_transitions_execute_in_node():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the board return state-machine test")
+
+    test_script = Path(__file__).parent / "javascript" / "board_return_refresh.test.cjs"
+    completed = subprocess.run(
+        [node, str(test_script)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "board_return_refresh_state_machine=passed" in completed.stdout
 
 
 def test_board_refresh_event_rehydrates_time_and_read_state_scripts():
