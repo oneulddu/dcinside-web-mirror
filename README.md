@@ -219,7 +219,7 @@ mirror/
 | `MIRROR_HOST` | `0.0.0.0` | 개발 서버 바인드 호스트 |
 | `MIRROR_PORT` | `8080` | 개발 서버 포트 |
 | `MIRROR_BIND` | `[::]:6100` | Gunicorn 바인드 주소 |
-| `MIRROR_WORKERS` | CPU×2+1 | Gunicorn 워커 수 |
+| `MIRROR_WORKERS` | CPU×2+1 | Gunicorn 워커 수. 인메모리 조회 보호를 서버 전체에 공유하려면 운영에서 `1` 사용 |
 | `MIRROR_THREADS` | `4` | 워커당 스레드 |
 | `MIRROR_TIMEOUT` | `60` | 요청 제한 시간 |
 | `MIRROR_LOG_LEVEL` | `info` | Gunicorn 로그 레벨 |
@@ -238,13 +238,18 @@ mirror/
 | `MIRROR_HTTP_TIMEOUT` | `20` | DCinside 요청 타임아웃 |
 | `MIRROR_DC_CONN_LIMIT` | `20` | DCinside 공유 세션 커넥션 제한 |
 | `MIRROR_DC_DNS_CACHE_TTL` | `60` | DCinside 공유 세션 DNS 캐시 유지 시간 |
-| `MIRROR_DC_RATE_LIMIT_COOLDOWN` | `10` | 차단 응답 뒤 같은 DCinside 호스트의 추가 요청을 멈추는 시간(초) |
+| `MIRROR_DC_RATE_LIMIT_COOLDOWN` | `10` | 댓글 API 차단 응답 뒤 같은 댓글 경로의 추가 요청을 멈추는 최소 시간(초) |
+| `MIRROR_DC_RATE_LIMIT_MAX_COOLDOWN` | `3600` | `Retry-After` 적용 시 댓글 cooldown 최대 시간(초) |
 | `MIRROR_HEUNG_CACHE_TTL` | `3600` | 흥한 갤러리 캐시 유지 시간 |
 | `MIRROR_HEUNG_CACHE_FILE` | `instance/heung_gallery_cache.json` | 캐시 파일 경로 |
 | `MIRROR_BOARD_PAGE_CACHE_TTL` | `20` | 게시판 페이지 짧은 캐시 |
 | `MIRROR_BOARD_FORCE_REFRESH_COOLDOWN` | `5` | 같은 목록의 강제 새로고침 최소 간격(초) |
 | `MIRROR_BOARD_FILL_AUTHOR_CODES` | `0` | 게시판 목록에서 캐시된 작성자 코드 보강 |
 | `MIRROR_BOARD_KIND_CACHE_TTL` | `21600` | 게시판 URL 후보 성공 패턴 캐시 |
+| `MIRROR_READ_CACHE_TTL` | `30` | 정상 본문·완전한 댓글 결과의 짧은 캐시(초) |
+| `MIRROR_READ_STALE_TTL` | `300` | 댓글이 불완전해도 유지하는 최근 정상 본문 보관 시간(초) |
+| `MIRROR_READ_FETCH_TIMEOUT` | `50` | 본문·댓글 조회 owner 작업의 전체 상한(초) |
+| `MIRROR_READ_SINGLEFLIGHT_TIMEOUT` | `55` | 같은 게시글 동시 조회 병합 대기 상한(초) |
 | `MIRROR_RELATED_PAGE_PROBE_STEPS` | `4` | 관련 글 주변 탐색 페이지 수 |
 | `MIRROR_RELATED_TAIL_PAGES` | `1` | 관련 글 뒤쪽 보충 페이지 |
 | `MIRROR_ASYNC_BRIDGE_WORKERS` | `2` | async bridge 보조 실행자 수 |
@@ -298,6 +303,9 @@ mirror/
 <br/>
 
 ## 🖥️ 배포
+
+공개 Nginx 앞단에서는 AI 크롤러 차단과 `/read`별 IP 요청 제한을 함께 적용합니다.
+운영 설정 예시는 [`ops/nginx/mirror-protection.conf.example`](ops/nginx/mirror-protection.conf.example)에 있습니다.
 
 ```bash
 # Gunicorn 직접 실행

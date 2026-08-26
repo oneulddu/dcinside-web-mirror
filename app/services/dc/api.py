@@ -1,8 +1,11 @@
+import asyncio
 import json
 import logging
 import re
 import threading
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
 import aiohttp
@@ -15,6 +18,26 @@ from app.services.cache_utils import cache_set_after_insert
 from app.services.cache_utils import env_int
 
 logger = logging.getLogger(__name__)
+
+
+class RateLimitError(RuntimeError):
+    """DCinside rejected an upstream request because of rate limiting."""
+
+
+class RateLimitCooldownError(RateLimitError):
+    """An optional upstream request was skipped during a shared cooldown."""
+
+
+class DocumentFetchError(RuntimeError):
+    """Base class for document lookup failures."""
+
+
+class DocumentNotFoundError(DocumentFetchError):
+    """All usable upstream document endpoints explicitly reported absence."""
+
+
+class DocumentUnavailableError(DocumentFetchError):
+    """The document could not be verified because the upstream was unstable."""
 
 
 def to_optional_int(value):
@@ -54,6 +77,7 @@ BOARD_KIND_CACHE_MAX_ITEMS = 2048
 DC_CONN_LIMIT = max(env_int("MIRROR_DC_CONN_LIMIT", 20), 1)
 DC_DNS_CACHE_TTL = max(env_int("MIRROR_DC_DNS_CACHE_TTL", 60), 0)
 DC_RATE_LIMIT_COOLDOWN = max(env_int("MIRROR_DC_RATE_LIMIT_COOLDOWN", 10), 0)
+DC_RATE_LIMIT_MAX_COOLDOWN = max(env_int("MIRROR_DC_RATE_LIMIT_MAX_COOLDOWN", 3600), 1)
 DC_SESSION_COOKIE_ALLOWLIST = frozenset({"_ga", "ci_c"})
 MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -78,6 +102,15 @@ GALLERY_POSTS_COOKIES = {
 
 _BOARD_KIND_CACHE = {}
 _BOARD_KIND_CACHE_LOCK = threading.Lock()
+_RATE_LIMITED_UNTIL_BY_SCOPE = {}
+_RATE_LIMIT_LOCK = threading.Lock()
+_DOCUMENT_NOT_FOUND_PHRASES = (
+    "삭제되었거나 존재하지 않는 게시물입니다",
+    "삭제되거나 존재하지 않는 게시물입니다",
+    "해당 게시물은 삭제되었습니다",
+    "존재하지 않는 게시물입니다",
+    "게시물이 존재하지 않습니다",
+)
 
 
 from .models import Comment, Document, DocumentIndex, Image
@@ -152,7 +185,7 @@ class API(ParserMixin):
             connector=connector,
         )
         self.last_board_headtexts = []
-        self._rate_limited_until_by_host = {}
+        self._cooldown_scope_locks = {}
     async def close(self):
         await self.session.close()
     async def __aenter__(self):
@@ -406,6 +439,66 @@ class API(ParserMixin):
             return True
         return False
 
+    def __is_explicit_not_found_response(self, status, text):
+        if status in {404, 410}:
+            return True
+        compact_text = " ".join((text or "")[:10000].split())
+        return any(phrase in compact_text for phrase in _DOCUMENT_NOT_FOUND_PHRASES)
+
+    def __cooldown_active(self, scope):
+        if not scope or DC_RATE_LIMIT_COOLDOWN <= 0:
+            return False
+        now = time.monotonic()
+        with _RATE_LIMIT_LOCK:
+            deadline = float(_RATE_LIMITED_UNTIL_BY_SCOPE.get(scope, 0.0) or 0.0)
+            if now < deadline:
+                return True
+            _RATE_LIMITED_UNTIL_BY_SCOPE.pop(scope, None)
+        return False
+
+    def __start_cooldown_for(self, scope, delay):
+        if not scope or DC_RATE_LIMIT_COOLDOWN <= 0:
+            return
+        bounded_delay = min(max(float(delay or 0), 0.0), float(DC_RATE_LIMIT_MAX_COOLDOWN))
+        deadline = time.monotonic() + bounded_delay
+        with _RATE_LIMIT_LOCK:
+            current = float(_RATE_LIMITED_UNTIL_BY_SCOPE.get(scope, 0.0) or 0.0)
+            _RATE_LIMITED_UNTIL_BY_SCOPE[scope] = max(current, deadline)
+
+    def __retry_after_delay(self, response_headers):
+        value = ""
+        for key, header_value in (response_headers or {}).items():
+            if str(key).lower() == "retry-after":
+                value = str(header_value or "").strip()
+                break
+        if not value:
+            return float(DC_RATE_LIMIT_COOLDOWN)
+        if value.isdigit():
+            if len(value) > 10:
+                return float(DC_RATE_LIMIT_MAX_COOLDOWN)
+            return min(max(float(int(value)), 0.0), float(DC_RATE_LIMIT_MAX_COOLDOWN))
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            delay = retry_at.timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            return float(DC_RATE_LIMIT_COOLDOWN)
+        return min(max(delay, 0.0), float(DC_RATE_LIMIT_MAX_COOLDOWN))
+
+    def __cooldown_scope_lock(self, scope):
+        if not scope:
+            return None
+        locks = getattr(self, "_cooldown_scope_locks", None)
+        if locks is None:
+            locks = {}
+            self._cooldown_scope_locks = locks
+        lock = locks.get(scope)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[scope] = lock
+        return lock
+
     def __prune_session_cookies(self):
         cookie_jar = getattr(self.session, "cookie_jar", None)
         clear = getattr(cookie_jar, "clear", None)
@@ -413,40 +506,60 @@ class API(ParserMixin):
             return
         clear(lambda morsel: morsel.key not in DC_SESSION_COOKIE_ALLOWLIST)
 
-    async def __request_text(self, method, url, headers=None, data=None, cookies=None):
-        host = (urlparse(url).hostname or "").lower()
-        rate_limited_until_by_host = getattr(self, "_rate_limited_until_by_host", None)
-        if rate_limited_until_by_host is None:
-            rate_limited_until_by_host = {}
-            self._rate_limited_until_by_host = rate_limited_until_by_host
-
-        now = time.monotonic()
-        if now < float(rate_limited_until_by_host.get(host, 0.0) or 0.0):
-            raise RuntimeError("rate limited: cooldown")
-        rate_limited_until_by_host.pop(host, None)
-
-        request_headers = self.__prepare_headers(url, headers)
-
+    async def __request_text(
+        self,
+        method,
+        url,
+        headers=None,
+        data=None,
+        cookies=None,
+        cooldown_scope=None,
+    ):
+        parsed_url = urlparse(url)
+        host = (parsed_url.hostname or "").lower()
+        scope_lock = self.__cooldown_scope_lock(cooldown_scope)
+        if scope_lock is not None:
+            await scope_lock.acquire()
         try:
-            async with self.session.request(
-                method,
-                url,
-                headers=request_headers,
-                data=data,
-                cookies=cookies,
-            ) as res:
-                text = await res.text()
-                status = res.status
-                response_headers = dict(res.headers)
+            if self.__cooldown_active(cooldown_scope):
+                raise RateLimitCooldownError("rate limited: cooldown")
+
+            request_headers = self.__prepare_headers(url, headers)
+
+            try:
+                async with self.session.request(
+                    method,
+                    url,
+                    headers=request_headers,
+                    data=data,
+                    cookies=cookies,
+                ) as res:
+                    text = await res.text()
+                    status = res.status
+                    response_headers = dict(res.headers)
+            finally:
+                self.__prune_session_cookies()
+
+            if self.__is_rate_limited_response(status, text[:1000]):
+                retry_delay = max(
+                    float(DC_RATE_LIMIT_COOLDOWN),
+                    self.__retry_after_delay(response_headers),
+                )
+                self.__start_cooldown_for(cooldown_scope, retry_delay)
+                logger.warning(
+                    "rate limited: status=%s host=%s path=%s scope=%s retry_after=%.0f",
+                    status,
+                    host,
+                    parsed_url.path or "/",
+                    cooldown_scope or "none",
+                    retry_delay,
+                )
+                raise RateLimitError(f"rate limited: {status}")
+
+            return status, response_headers, text
         finally:
-            self.__prune_session_cookies()
-
-        if self.__is_rate_limited_response(status, text[:1000]):
-            rate_limited_until_by_host[host] = time.monotonic() + DC_RATE_LIMIT_COOLDOWN
-            logger.warning("rate limited: status=%s url=%s", status, url)
-            raise RuntimeError(f"rate limited: {status}")
-
-        return status, response_headers, text
+            if scope_lock is not None and scope_lock.locked():
+                scope_lock.release()
 
     def __normalize_head_id(self, head_id):
         if head_id is None:
@@ -631,18 +744,39 @@ class API(ParserMixin):
         ])
         return self.__dedupe_urls(urls)
 
-    async def __fetch_parsed_from_urls(self, urls, validator=None):
+    async def __fetch_parsed_from_urls(
+        self,
+        urls,
+        validator=None,
+        failure_outcomes=None,
+        cooldown_namespace=None,
+        classify_not_found=False,
+    ):
         queue = list(urls)
         idx = 0
         while idx < len(queue):
             url = queue[idx]
             idx += 1
+            host = (urlparse(url).hostname or "").lower()
+            cooldown_scope = f"{cooldown_namespace}:{host}" if cooldown_namespace and host else None
 
             try:
-                status, _, text = await self.__request_text("GET", url)
+                status, _, text = await self.__request_text(
+                    "GET",
+                    url,
+                    cooldown_scope=cooldown_scope,
+                )
+                if classify_not_found and status in {404, 410}:
+                    if failure_outcomes is not None:
+                        failure_outcomes.append((host, "not_found", status))
+                    continue
                 if status >= 400:
+                    if failure_outcomes is not None:
+                        failure_outcomes.append((host, "http_error", status))
                     continue
                 if not text:
+                    if failure_outcomes is not None:
+                        failure_outcomes.append((host, "empty", status))
                     continue
 
                 redirect_url = self.__extract_top_level_redirect_url(text)
@@ -650,12 +784,23 @@ class API(ParserMixin):
                     redirect_url = self.__normalize_redirect_url(url, redirect_url)
                     if redirect_url and redirect_url not in queue:
                         queue.append(redirect_url)
+                    if failure_outcomes is not None:
+                        failure_outcomes.append((host, "redirect", status))
                     continue
                 parsed = lxml.html.fromstring(text)
                 if validator and not validator(parsed, text, url):
+                    if failure_outcomes is not None:
+                        outcome = "not_found" if classify_not_found and self.__is_explicit_not_found_response(status, text) else "unusable"
+                        failure_outcomes.append((host, outcome, status))
                     continue
                 return parsed, text, url
+            except RateLimitError:
+                if failure_outcomes is not None:
+                    failure_outcomes.append((host, "rate_limited", None))
+                continue
             except Exception:
+                if failure_outcomes is not None:
+                    failure_outcomes.append((host, "request_error", None))
                 continue
         return None, "", None
 
@@ -743,17 +888,20 @@ class API(ParserMixin):
                 parsed, text, used_url = await self.__fetch_parsed_from_urls(
                     [cached_url],
                     validator=self.__board_page_validator,
+                    cooldown_namespace="board",
                 )
                 if parsed is None:
                     self.__invalidate_list_url_pattern(cache_key)
                     parsed, text, used_url = await self.__fetch_parsed_from_urls(
                         list_urls,
                         validator=self.__board_page_validator,
+                        cooldown_namespace="board",
                     )
             else:
                 parsed, text, used_url = await self.__fetch_parsed_from_urls(
                     list_urls,
                     validator=self.__board_page_validator,
+                    cooldown_namespace="board",
                 )
             if cached_pattern and used_url and self.__list_url_pattern(used_url) != cached_pattern:
                 self.__invalidate_list_url_pattern(cache_key)
@@ -862,6 +1010,7 @@ class API(ParserMixin):
             parsed, _, _ = await self.__fetch_parsed_from_urls(
                 list_urls,
                 validator=self.__is_usable_board_page,
+                cooldown_namespace="board",
             )
             if parsed is None:
                 continue
@@ -976,6 +1125,7 @@ class API(ParserMixin):
         return doc_content
 
     async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None):
+        failure_outcomes = []
         parsed, text, used_url = await self.__fetch_parsed_from_urls(
             self.__build_view_urls(
                 board_id,
@@ -987,9 +1137,24 @@ class API(ParserMixin):
                 head_id=head_id,
             ),
             validator=self.__is_usable_document_page,
+            failure_outcomes=failure_outcomes,
+            cooldown_namespace="document",
+            classify_not_found=True,
         )
         if parsed is None:
-            return None
+            outcome_summary = ",".join(
+                "{}:{}:{}".format(host or "unknown", outcome, status if status is not None else "-")
+                for host, outcome, status in failure_outcomes
+            )
+            logger.warning(
+                "document fetch exhausted: board=%s document=%s attempts=%s",
+                board_id,
+                document_id,
+                outcome_summary or "none",
+            )
+            if failure_outcomes and all(outcome == "not_found" for _, outcome, _ in failure_outcomes):
+                raise DocumentNotFoundError("document not found")
+            raise DocumentUnavailableError("document upstream unavailable")
         is_mobile_source = self.__is_mobile_request(used_url)
         # Try various XPaths for title/meta container
         doc_head_containers = parsed.xpath("//div[contains(@class, 'gallview-tit-box')]")
@@ -1042,6 +1207,7 @@ class API(ParserMixin):
             if is_mobile_source:
                 related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind, recommend=recommend)
                 embedded_comments, embedded_comment_total = self.__parse_embedded_mobile_comments(parsed)
+            comment_status = {}
 
             return Document(
                     id = document_id,
@@ -1057,7 +1223,14 @@ class API(ParserMixin):
                     voteup_count= voteup_count,
                     votedown_count= votedown_count,
                     logined_voteup_count= logined_voteup_count,
-                    comments= lambda b=board_id, d=document_id, k=kind, mobile=is_mobile_source: self.comments(b, d, kind=k, prefer_mobile=mobile),
+                    comments=lambda b=board_id, d=document_id, k=kind, mobile=is_mobile_source, status=comment_status: self.comments(
+                        b,
+                        d,
+                        kind=k,
+                        prefer_mobile=mobile,
+                        status_collector=status,
+                    ),
+                    comment_status=comment_status,
                     time= self.__parse_time(time_str),
                     subject=subject,
                     is_mobile_source=is_mobile_source,
@@ -1073,7 +1246,11 @@ class API(ParserMixin):
     async def __get_pc_comment_context(self, board_id, document_id, kind=None):
         for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
             try:
-                status, _, text = await self.__request_text("GET", url)
+                status, _, text = await self.__request_text(
+                    "GET",
+                    url,
+                    cooldown_scope="comments:gall.dcinside.com",
+                )
             except Exception:
                 continue
             if status >= 400 or not text:
@@ -1123,6 +1300,7 @@ class API(ParserMixin):
                 "https://gall.dcinside.com/board/comment/",
                 headers=headers,
                 data=payload,
+                cooldown_scope="comments:gall.dcinside.com",
             )
             if status >= 400:
                 raise RuntimeError(f"pc comment fetch failed: {status}")
@@ -1178,6 +1356,7 @@ class API(ParserMixin):
                     url,
                     headers=XML_HTTP_REQ_HEADERS,
                     data=payload,
+                    cooldown_scope="comments:m.dcinside.com",
                 )
             except RuntimeError:
                 if fail_fast:
@@ -1244,8 +1423,22 @@ class API(ParserMixin):
             if remaining_state["value"] == 0:
                 return
 
-    async def comments(self, board_id, document_id, num=-1, start_page=1, kind=None, prefer_mobile=True):
+    async def comments(
+        self,
+        board_id,
+        document_id,
+        num=-1,
+        start_page=1,
+        kind=None,
+        prefer_mobile=True,
+        status_collector=None,
+    ):
+        if status_collector is not None:
+            status_collector.clear()
+            status_collector.update({"complete": False, "source": None})
         if num == 0:
+            if status_collector is not None:
+                status_collector.update({"complete": True, "source": "none"})
             return
         yielded_ids = set()
         remaining_state = {"value": num}
@@ -1267,14 +1460,16 @@ class API(ParserMixin):
                     mobile_stats,
                 ):
                     yield comment
+                if status_collector is not None:
+                    status_collector.update({"complete": True, "source": "mobile"})
                 if mobile_stats["seen"]:
                     return
-            except Exception:
-                logger.debug(
-                    "mobile comments failed, falling back to pc: board=%s doc=%s",
+            except Exception as exc:
+                logger.info(
+                    "comment fetch fallback: source=mobile board=%s document=%s reason=%s",
                     board_id,
                     document_id,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
 
         pc_stats = {"seen": False}
@@ -1295,31 +1490,46 @@ class API(ParserMixin):
                 skip_seen=True,
             ):
                 yield comment
+            if status_collector is not None:
+                status_collector.update({"complete": True, "source": "pc"})
             if pc_stats["seen"] and (remaining_state["value"] == -1 or remaining_state["value"] <= 0):
                 return
-        except Exception:
-            logger.debug(
-                "pc comments failed, falling back to mobile: board=%s doc=%s",
+        except Exception as exc:
+            logger.info(
+                "comment fetch fallback: source=pc board=%s document=%s reason=%s",
                 board_id,
                 document_id,
-                exc_info=True,
+                type(exc).__name__,
             )
 
         if prefer_mobile:
             return
 
-        mobile_comments = self.__comments_from_mobile(
-            board_id,
-            document_id,
-            num=-1,
-            start_page=start_page,
-        )
-        mobile_stats = {"seen": False}
-        async for comment in self.__deduped_comments(
-            mobile_comments,
-            yielded_ids,
-            remaining_state,
-            mobile_stats,
-            skip_seen=True,
-        ):
-            yield comment
+        if status_collector is not None:
+            status_collector.update({"complete": False, "source": None})
+        try:
+            mobile_comments = self.__comments_from_mobile(
+                board_id,
+                document_id,
+                num=-1,
+                start_page=start_page,
+                fail_fast=True,
+            )
+            mobile_stats = {"seen": False}
+            async for comment in self.__deduped_comments(
+                mobile_comments,
+                yielded_ids,
+                remaining_state,
+                mobile_stats,
+                skip_seen=True,
+            ):
+                yield comment
+            if status_collector is not None:
+                status_collector.update({"complete": True, "source": "mobile"})
+        except Exception as exc:
+            logger.info(
+                "comment fetch failed: source=mobile board=%s document=%s reason=%s",
+                board_id,
+                document_id,
+                type(exc).__name__,
+            )

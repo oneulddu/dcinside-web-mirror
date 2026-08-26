@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 
 from app import create_app, routes
 from app.services import media_proxy
+from app.services.dc.api import DocumentNotFoundError, DocumentUnavailableError
 
 
 def _gallery_item(name="테스트 갤러리"):
@@ -305,6 +306,52 @@ def test_board_and_read_upstream_500_does_not_set_recent_cookie(monkeypatch, rou
     assert response.status_code == 500
     assert len(calls) == 1
     assert {"recent_galleries", "recent_galleries_key"}.isdisjoint(_cookie_names(response))
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (DocumentNotFoundError("gone"), 404),
+        (DocumentUnavailableError("temporary"), 503),
+    ],
+)
+def test_read_typed_upstream_failures_use_correct_status_without_recent_cookie(
+    monkeypatch,
+    error,
+    expected_status,
+):
+    async def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(routes, "async_read", fail)
+    app = create_app()
+
+    response = app.test_client().get(
+        "/read?board=test&pid=321&kind=mini&gallery_name=fail"
+    )
+
+    assert response.status_code == expected_status
+    assert {"recent_galleries", "recent_galleries_key"}.isdisjoint(_cookie_names(response))
+    if expected_status == 503:
+        assert response.headers["Retry-After"] == "3"
+        assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_read_stale_success_is_200_and_marked_no_store(monkeypatch):
+    async def stale(*args, **kwargs):
+        data, comments, images = _read_payload()
+        data["_served_stale"] = True
+        data["_comments_complete"] = True
+        return data, comments, images
+
+    monkeypatch.setattr(routes, "async_read", stale)
+    app = create_app()
+
+    response = app.test_client().get("/read?board=test&pid=321&kind=mini")
+
+    assert response.status_code == 200
+    assert response.headers["Warning"] == '110 - "Response is stale"'
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def _related_item(post_id):

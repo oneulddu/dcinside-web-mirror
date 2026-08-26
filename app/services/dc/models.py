@@ -30,8 +30,8 @@ class DocumentIndex:
         return f"{self.subject or ''}\t|{self.id}\t|{time_text}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count}"
 
 class Document:
-    __slots__ = ["id", "board_id", "title", "author", "author_id", "author_role", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total"]
-    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=0, author_role=None):
+    __slots__ = ["id", "board_id", "title", "author", "author_id", "author_role", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "comment_status", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total"]
+    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=0, author_role=None, comment_status=None):
         self.id = id
         self.board_id = board_id
         self.title = title
@@ -46,6 +46,7 @@ class Document:
         self.votedown_count = votedown_count
         self.logined_voteup_count = logined_voteup_count
         self.comments = comments
+        self.comment_status = comment_status if comment_status is not None else {}
         self.time = time
         self.subject = subject
         self.is_mobile_source = bool(is_mobile_source)

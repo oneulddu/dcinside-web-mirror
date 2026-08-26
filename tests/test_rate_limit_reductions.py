@@ -37,6 +37,8 @@ def clear_core_caches():
     core._BOARD_REFRESH_CACHE.clear()
     core._BOARD_TIME_CACHE.clear()
     core._READ_CACHE.clear()
+    core._READ_STALE_CACHE.clear()
+    core._READ_INFLIGHT.clear()
     core._LATEST_ID_CACHE.clear()
     core._AUTHOR_CODE_CACHE.clear()
     core._CACHE_PRUNE_STATE.clear()
@@ -46,6 +48,8 @@ def clear_core_caches():
     core._BOARD_REFRESH_CACHE.clear()
     core._BOARD_TIME_CACHE.clear()
     core._READ_CACHE.clear()
+    core._READ_STALE_CACHE.clear()
+    core._READ_INFLIGHT.clear()
     core._LATEST_ID_CACHE.clear()
     core._AUTHOR_CODE_CACHE.clear()
     core._CACHE_PRUNE_STATE.clear()
@@ -57,11 +61,43 @@ def test_core_caches_use_separate_locks():
         core._BOARD_INDEX_CACHE_LOCK,
         core._BOARD_TIME_CACHE_LOCK,
         core._READ_CACHE_LOCK,
+        core._READ_STALE_CACHE_LOCK,
+        core._READ_INFLIGHT_LOCK,
         core._LATEST_ID_CACHE_LOCK,
         core._AUTHOR_CODE_CACHE_LOCK,
     }
 
-    assert len(locks) == 6
+    assert len(locks) == 8
+
+
+def test_read_resilience_defaults_are_enabled():
+    assert core.READ_CACHE_TTL == 30
+    assert core.READ_STALE_TTL == 300
+    assert core.READ_FETCH_TIMEOUT == 50
+    assert core.READ_SINGLEFLIGHT_TIMEOUT >= 30
+
+
+def test_read_cache_key_is_canonical_across_navigation_context():
+    first = core._read_cache_key(
+        "123",
+        "test",
+        kind="minor",
+        recommend=0,
+        search_type="subject_m",
+        search_keyword="first",
+        head_id="10",
+    )
+    second = core._read_cache_key(
+        "123",
+        "test",
+        kind="minor",
+        recommend=1,
+        search_type="memo",
+        search_keyword="second",
+        head_id="20",
+    )
+
+    assert first == second == ("test", "minor", "123")
 
 
 def test_author_code_cache_ttl_is_one_hour():
@@ -642,8 +678,9 @@ async def test_read_document_passes_head_id_to_document_fetch():
 
 
 @pytest.mark.asyncio
-async def test_async_read_cache_is_disabled_by_default(monkeypatch):
+async def test_async_read_cache_can_be_disabled(monkeypatch):
     monkeypatch.setattr(core, "READ_CACHE_TTL", 0)
+    monkeypatch.setattr(core, "READ_STALE_TTL", 0)
 
     class FakeDocument:
         title = "title"
@@ -743,8 +780,7 @@ async def test_async_read_cache_returns_mutation_safe_copies(monkeypatch):
 
     assert FakeAPI.calls == 1
     assert cached_data["html"] == "<p>body</p>"
-    assert [row["id"] for row in cached_data["related_posts"]] == ["456"]
-    assert cached_data["related_posts"][0]["title"] == "title 456"
+    assert cached_data["related_posts"] == []
     assert cached_comments[0]["dccon"] == "https://dccon.dcinside.com/original.png"
     assert cached_images == ["https://img.dcinside.com/original.jpg"]
 
@@ -768,12 +804,261 @@ async def test_async_read_cache_skips_missing_document_payload(monkeypatch):
 
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
-    first_data, _first_comments, _first_images = await core.async_read("123", "test")
-    second_data, _second_comments, _second_images = await core.async_read("123", "test")
+    with pytest.raises(core.dc_api.DocumentUnavailableError):
+        await core.async_read("123", "test")
+    with pytest.raises(core.dc_api.DocumentUnavailableError):
+        await core.async_read("123", "test")
 
-    assert first_data["html"] == "게시글 데이터를 가져오는 데 실패했습니다."
-    assert second_data["html"] == "게시글 데이터를 가져오는 데 실패했습니다."
     assert FakeAPI.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_async_read_singleflight_collapses_concurrent_requests(monkeypatch):
+    monkeypatch.setattr(core, "READ_CACHE_TTL", 30)
+
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>body</p>"
+        images = []
+        related_posts = []
+        embedded_comments = []
+        embedded_comment_total = 0
+
+        async def comments(self):
+            if False:
+                yield None
+
+    class FakeAPI:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def document(self, **kwargs):
+            self.__class__.calls += 1
+            await asyncio.sleep(0.05)
+            return FakeDocument()
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    results = await asyncio.gather(*(core.async_read("123", "test") for _ in range(12)))
+
+    assert FakeAPI.calls == 1
+    results[0][0]["html"] = "mutated"
+    assert all(result[0]["html"] == "<p>body</p>" for result in results[1:])
+
+
+@pytest.mark.asyncio
+async def test_async_read_singleflight_failure_is_removed_for_retry(monkeypatch):
+    monkeypatch.setattr(core, "READ_CACHE_TTL", 0)
+    attempts = 0
+
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>recovered</p>"
+        images = []
+        related_posts = []
+        embedded_comments = []
+        embedded_comment_total = 0
+
+        async def comments(self):
+            if False:
+                yield None
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def document(self, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise core.dc_api.DocumentUnavailableError("temporary")
+            return FakeDocument()
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    with pytest.raises(core.dc_api.DocumentUnavailableError):
+        await core.async_read("123", "test")
+    recovered, _comments, _images = await core.async_read("123", "test")
+
+    assert recovered["html"] == "<p>recovered</p>"
+    assert attempts == 2
+    assert core._READ_INFLIGHT == {}
+
+
+@pytest.mark.asyncio
+async def test_async_read_waiter_cancellation_does_not_cancel_owner(monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_load(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return (
+            {
+                "title": "title",
+                "html": "<p>body</p>",
+                "related_posts": [],
+                "_comments_complete": True,
+                "_comment_prefer_mobile": True,
+            },
+            [],
+            [],
+        )
+
+    monkeypatch.setattr(core, "_load_read_payload", slow_load)
+    owner = asyncio.create_task(core.async_read("123", "test"))
+    await started.wait()
+    waiter = asyncio.create_task(core.async_read("123", "test"))
+    await asyncio.sleep(0)
+    waiter.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    release.set()
+    data, _comments, _images = await owner
+
+    assert data["html"] == "<p>body</p>"
+    assert core._READ_INFLIGHT == {}
+
+
+@pytest.mark.asyncio
+async def test_async_read_reuses_recent_body_without_refetching_document(monkeypatch):
+    monkeypatch.setattr(core, "READ_CACHE_TTL", 0)
+    monkeypatch.setattr(core, "READ_STALE_TTL", 30)
+    document_calls = 0
+
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>stable</p>"
+        images = []
+        related_posts = []
+        embedded_comments = []
+        embedded_comment_total = 0
+
+        async def comments(self):
+            if False:
+                yield None
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def document(self, **kwargs):
+            nonlocal document_calls
+            document_calls += 1
+            return FakeDocument()
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    first, _comments, _images = await core.async_read("123", "test")
+    cache_key = core._read_cache_key("123", "test")
+    first_expiry = core._READ_STALE_CACHE[cache_key]["expires_at"]
+    cached_body, _comments, _images = await core.async_read("123", "test")
+
+    assert first["html"] == "<p>stable</p>"
+    assert cached_body["html"] == "<p>stable</p>"
+    assert document_calls == 1
+    assert core._READ_STALE_CACHE[cache_key]["expires_at"] == first_expiry
+
+
+@pytest.mark.asyncio
+async def test_async_read_does_not_cache_incomplete_comments(monkeypatch):
+    monkeypatch.setattr(core, "READ_CACHE_TTL", 30)
+
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>body</p>"
+        images = []
+        related_posts = []
+        embedded_comments = []
+        embedded_comment_total = 1
+
+        def __init__(self):
+            self.comment_status = {"complete": False}
+
+        async def comments(self):
+            self.comment_status = {"complete": False}
+            if False:
+                yield None
+
+    class FakeAPI:
+        calls = 0
+        comment_calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def document(self, **kwargs):
+            self.__class__.calls += 1
+            return FakeDocument()
+
+        async def comments(self, *args, status_collector=None, **kwargs):
+            self.__class__.comment_calls += 1
+            if status_collector is not None:
+                status_collector.update({"complete": False, "source": None})
+            if False:
+                yield None
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    await core.async_read("123", "test")
+    await core.async_read("123", "test")
+
+    assert FakeAPI.calls == 1
+    assert FakeAPI.comment_calls == 1
+    assert core._READ_CACHE == {}
+
+
+@pytest.mark.asyncio
+async def test_async_read_owner_timeout_is_bounded_and_cleans_flight(monkeypatch):
+    monkeypatch.setattr(core, "READ_FETCH_TIMEOUT", 0.01)
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def document(self, **kwargs):
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    with pytest.raises(core.dc_api.DocumentUnavailableError, match="timed out"):
+        await core.async_read("123", "test")
+
+    assert core._READ_INFLIGHT == {}
 
 
 @pytest.mark.asyncio

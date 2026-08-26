@@ -326,7 +326,7 @@ async def test_repair_placeholder_images_uses_pc_change_gif_fallback_image():
         """
     )
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         return (
             200,
             {},
@@ -510,7 +510,7 @@ async def test_replace_poll_iframes_handles_relative_poll_src():
     )
     requests = []
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         requests.append((method, url))
         return (
             200,
@@ -601,7 +601,7 @@ async def test_comments_pc_duplicates_are_skipped_on_mobile_fallback():
         yield _DummyComment("1")
         raise RuntimeError("pc page failed")
 
-    async def fake_mobile(board_id, document_id, num=-1, start_page=1):
+    async def fake_mobile(board_id, document_id, num=-1, start_page=1, fail_fast=False):
         assert num == -1
         yield _DummyComment("1")
         yield _DummyComment("2")
