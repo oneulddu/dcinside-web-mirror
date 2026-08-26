@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlparse
 from flask import Blueprint, abort, current_app, jsonify, make_response, redirect, render_template, request, url_for
 
 from .services.async_bridge import run_async
+from .services.dc.api import DocumentNotFoundError, DocumentUnavailableError
 from .services.core import (
     async_board_precise_times,
     async_index_with_head_categories,
@@ -864,16 +865,30 @@ def read():
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
-    data, comments, images = run_async(
-        async_read(
-            pid,
-            board,
-            kind=kind,
-            recommend=recommend,
-            head_id=head_id,
-            **_search_call_kwargs(search_type, search_keyword),
+    try:
+        data, comments, images = run_async(
+            async_read(
+                pid,
+                board,
+                kind=kind,
+                recommend=recommend,
+                head_id=head_id,
+                **_search_call_kwargs(search_type, search_keyword),
+            )
         )
-    )
+    except DocumentNotFoundError:
+        current_app.logger.info("read document_not_found board=%s pid=%s", board, pid)
+        abort(404, description="삭제되었거나 존재하지 않는 게시글입니다.")
+    except DocumentUnavailableError:
+        current_app.logger.warning("read upstream_unavailable board=%s pid=%s", board, pid)
+        response = make_response("게시글을 일시적으로 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.\n", 503)
+        response.headers["Content-Type"] = "text/plain; charset=utf-8"
+        response.headers["Retry-After"] = "3"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    served_stale = bool(data.pop("_served_stale", False))
+    data.pop("_comments_complete", None)
+    data.pop("_comment_prefer_mobile", None)
     _format_read_payload_times(data, comments)
     embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
 
@@ -915,6 +930,9 @@ def read():
             nav_tab=_nav_tab_for_gallery(board, recommend),
         )
     )
+    if served_stale:
+        response.headers["Warning"] = '110 - "Response is stale"'
+        response.headers["Cache-Control"] = "no-store"
     touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
     return response
 

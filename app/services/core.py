@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 import re
 import threading
@@ -9,6 +11,8 @@ from .cache_utils import cache_get as _shared_cache_get
 from .cache_utils import cache_prune as _shared_cache_prune
 from .cache_utils import env_int as _env_int
 from .cache_utils import safe_int as _safe_int
+
+logger = logging.getLogger(__name__)
 
 
 def _env_bool(name, default=False):
@@ -27,7 +31,13 @@ RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
 BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)
 BOARD_FORCE_REFRESH_COOLDOWN = max(_env_int("MIRROR_BOARD_FORCE_REFRESH_COOLDOWN", 5), 0)
 BOARD_TIME_CACHE_TTL = max(_env_int("MIRROR_BOARD_TIME_CACHE_TTL", BOARD_PAGE_CACHE_TTL), 0)
-READ_CACHE_TTL = max(_env_int("MIRROR_READ_CACHE_TTL", 0), 0)
+READ_CACHE_TTL = max(_env_int("MIRROR_READ_CACHE_TTL", 30), 0)
+READ_STALE_TTL = max(_env_int("MIRROR_READ_STALE_TTL", 300), 0)
+READ_FETCH_TIMEOUT = max(_env_int("MIRROR_READ_FETCH_TIMEOUT", 50), 1)
+READ_SINGLEFLIGHT_TIMEOUT = max(
+    _env_int("MIRROR_READ_SINGLEFLIGHT_TIMEOUT", 55),
+    1,
+)
 BOARD_FILL_AUTHOR_CODES = _env_bool("MIRROR_BOARD_FILL_AUTHOR_CODES", False)
 LATEST_ID_CACHE_TTL = 20
 AUTHOR_CODE_CACHE_TTL = 3600
@@ -45,12 +55,16 @@ _BOARD_INDEX_CACHE = {}
 _BOARD_REFRESH_CACHE = {}
 _BOARD_TIME_CACHE = {}
 _READ_CACHE = {}
+_READ_STALE_CACHE = {}
+_READ_INFLIGHT = {}
 _LATEST_ID_CACHE = {}
 _AUTHOR_CODE_CACHE = {}
 _BOARD_PAGE_CACHE_LOCK = threading.Lock()
 _BOARD_INDEX_CACHE_LOCK = threading.Lock()
 _BOARD_TIME_CACHE_LOCK = threading.Lock()
 _READ_CACHE_LOCK = threading.Lock()
+_READ_STALE_CACHE_LOCK = threading.Lock()
+_READ_INFLIGHT_LOCK = threading.Lock()
 _LATEST_ID_CACHE_LOCK = threading.Lock()
 _AUTHOR_CODE_CACHE_LOCK = threading.Lock()
 _CACHE_PRUNE_STATE = {}
@@ -248,9 +262,52 @@ def _copy_read_payload(payload):
     return copied_data, _copy_rows(comments), list(images or [])
 
 
+def _copy_read_payload_for_cache(payload):
+    copied_data, copied_comments, copied_images = _copy_read_payload(payload)
+    copied_data["related_posts"] = []
+    return copied_data, copied_comments, copied_images
+
+
 def _is_read_payload_cacheable(payload):
     data, _comments, _images = payload
-    return (data or {}).get("html") != "게시글 데이터를 가져오는 데 실패했습니다."
+    return bool((data or {}).get("_comments_complete", True))
+
+
+def _claim_read_flight(cache_key):
+    with _READ_INFLIGHT_LOCK:
+        flight = _READ_INFLIGHT.get(cache_key)
+        if flight is not None:
+            return flight, False
+        flight = {
+            "event": threading.Event(),
+            "payload": None,
+            "error": None,
+        }
+        _READ_INFLIGHT[cache_key] = flight
+        return flight, True
+
+
+def _copy_read_flight_error(error):
+    if isinstance(error, dc_api.DocumentNotFoundError):
+        return dc_api.DocumentNotFoundError(str(error))
+    if isinstance(error, dc_api.DocumentUnavailableError):
+        return dc_api.DocumentUnavailableError(str(error))
+    return dc_api.DocumentUnavailableError("concurrent document fetch failed")
+
+
+async def _wait_for_read_flight(flight):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + READ_SINGLEFLIGHT_TIMEOUT
+    while not flight["event"].is_set():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise dc_api.DocumentUnavailableError("document fetch wait timed out")
+        await asyncio.sleep(min(0.05, remaining))
+    if flight["error"] is not None:
+        raise _copy_read_flight_error(flight["error"])
+    if flight["payload"] is None:
+        raise dc_api.DocumentUnavailableError("document fetch completed without a payload")
+    return _copy_read_payload(flight["payload"])
 
 
 def _board_index_cache_key(
@@ -282,15 +339,7 @@ def _board_index_cache_key(
 
 
 def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
-    return (
-        board,
-        kind or "",
-        str(api_id),
-        _safe_int(recommend, 0),
-        (search_type or "").strip(),
-        (search_keyword or "").strip(),
-        "" if head_id is None else str(head_id).strip(),
-    )
+    return board, kind or "", str(api_id)
 
 
 def _author_code_cache_key(board, kind, doc_id):
@@ -532,14 +581,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         head_id=head_id,
     )
     if doc is None:
-        return {
-            "title": "삭제되거나 찾을 수 없는 게시글입니다.",
-            "author": "-",
-            "author_code": None,
-            "time": "-",
-            "voteup_count": 0,
-            "html": "게시글 데이터를 가져오는 데 실패했습니다.",
-        }, [], []
+        raise dc_api.DocumentUnavailableError("document parser returned no payload")
     author, author_code = _normalize_author(doc.author, doc.author_id)
     author_role = _normalize_author_role(getattr(doc, "author_role", None))
     _cache_author_code(board, kind, api_id, author, author_code, author_role)
@@ -553,6 +595,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         "contents": getattr(doc, "contents", ""),
         "html": doc.html,
         "related_posts": [_index_item_to_dict(item) for item in getattr(doc, "related_posts", [])],
+        "_comment_prefer_mobile": bool(getattr(doc, "is_mobile_source", True)),
     }
     seen_comment_ids = set()
     embedded_comments = list(getattr(doc, "embedded_comments", []) or [])
@@ -568,6 +611,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         or embedded_total <= 0
         or embedded_total > len(embedded_comments)
     )
+    comments_complete = not should_fetch_comments
     if should_fetch_comments:
         async for com in doc.comments():
             comment_id = str(getattr(com, "id", "") or "").strip()
@@ -576,9 +620,78 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
             if comment_id:
                 seen_comment_ids.add(comment_id)
             comments.append(_comment_to_dict(com))
+        comment_status = getattr(doc, "comment_status", None)
+        comments_complete = True if comment_status is None else bool(comment_status.get("complete"))
+    data["_comments_complete"] = comments_complete
     for img in doc.images:
         images.append(img.src)
     return data, comments, images
+
+
+async def _refresh_cached_comments(payload, api_id, board, kind=None):
+    data, comments, images = _copy_read_payload(payload)
+    if data.get("_comments_complete"):
+        return data, comments, images
+
+    seen_comment_ids = {
+        str(comment.get("id") or "").strip()
+        for comment in comments
+        if str(comment.get("id") or "").strip()
+    }
+    status = {}
+    try:
+        async with dc_api_context() as api:
+            async for comment in api.comments(
+                board,
+                api_id,
+                kind=kind,
+                prefer_mobile=bool(data.get("_comment_prefer_mobile", True)),
+                status_collector=status,
+            ):
+                comment_id = str(getattr(comment, "id", "") or "").strip()
+                if comment_id and comment_id in seen_comment_ids:
+                    continue
+                if comment_id:
+                    seen_comment_ids.add(comment_id)
+                comments.append(_comment_to_dict(comment))
+    except Exception as exc:
+        logger.info(
+            "cached comment refresh failed: board=%s document=%s reason=%s",
+            board,
+            api_id,
+            type(exc).__name__,
+        )
+    data["_comments_complete"] = bool(status.get("complete"))
+    return data, comments, images
+
+
+async def _load_read_payload(
+    cache_key,
+    api_id,
+    board,
+    kind=None,
+    recommend=0,
+    search_type=None,
+    search_keyword=None,
+    head_id=None,
+):
+    body_cached = _cache_get(_READ_STALE_CACHE, _READ_STALE_CACHE_LOCK, cache_key)
+    if body_cached is not None:
+        refreshed = await _refresh_cached_comments(body_cached, api_id, board, kind=kind)
+        refreshed[0]["_body_from_cache"] = True
+        return refreshed
+
+    async with dc_api_context() as api:
+        return await _read_document_with_api(
+            api,
+            api_id,
+            board,
+            kind=kind,
+            recommend=recommend,
+            search_type=search_type,
+            search_keyword=search_keyword,
+            head_id=head_id,
+        )
 
 
 async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
@@ -596,27 +709,88 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
         if cached is not None:
             return _copy_read_payload(cached)
 
-    async with dc_api_context() as api:
-        payload = await _read_document_with_api(
-            api,
-            api_id,
-            board,
-            kind=kind,
-            recommend=recommend,
-            search_type=search_type,
-            search_keyword=search_keyword,
-            head_id=head_id,
+    flight, is_owner = _claim_read_flight(cache_key)
+    if not is_owner:
+        return await _wait_for_read_flight(flight)
+
+    try:
+        if READ_CACHE_TTL > 0:
+            cached = _cache_get(_READ_CACHE, _READ_CACHE_LOCK, cache_key)
+            if cached is not None:
+                flight["payload"] = _copy_read_payload(cached)
+                return _copy_read_payload(cached)
+
+        payload = await asyncio.wait_for(
+            _load_read_payload(
+                cache_key,
+                api_id,
+                board,
+                kind=kind,
+                recommend=recommend,
+                search_type=search_type,
+                search_keyword=search_keyword,
+                head_id=head_id,
+            ),
+            timeout=READ_FETCH_TIMEOUT,
         )
-    if READ_CACHE_TTL > 0 and _is_read_payload_cacheable(payload):
-        _cache_set(
-            _READ_CACHE,
-            _READ_CACHE_LOCK,
-            cache_key,
-            _copy_read_payload(payload),
-            READ_CACHE_TTL,
-            READ_CACHE_MAX_ITEMS,
-        )
-    return payload
+        body_from_cache = bool(payload[0].pop("_body_from_cache", False))
+        body_cache_payload = _copy_read_payload_for_cache(payload)
+        if _is_read_payload_cacheable(payload):
+            cache_payload = body_cache_payload
+        else:
+            cache_payload = None
+        if READ_CACHE_TTL > 0 and cache_payload is not None:
+            _cache_set(
+                _READ_CACHE,
+                _READ_CACHE_LOCK,
+                cache_key,
+                cache_payload,
+                READ_CACHE_TTL,
+                READ_CACHE_MAX_ITEMS,
+            )
+        if READ_STALE_TTL > 0 and not body_from_cache:
+            _cache_set(
+                _READ_STALE_CACHE,
+                _READ_STALE_CACHE_LOCK,
+                cache_key,
+                body_cache_payload,
+                READ_STALE_TTL,
+                READ_CACHE_MAX_ITEMS,
+            )
+        flight["payload"] = body_cache_payload
+        return payload
+    except asyncio.TimeoutError as exc:
+        stale = _cache_get(_READ_STALE_CACHE, _READ_STALE_CACHE_LOCK, cache_key)
+        if stale is not None:
+            stale_payload = _copy_read_payload(stale)
+            stale_payload[0]["_served_stale"] = True
+            flight["payload"] = _copy_read_payload(stale_payload)
+            logger.warning("serving cached document after comment refresh timeout: board=%s document=%s", board, api_id)
+            return stale_payload
+        timeout_error = dc_api.DocumentUnavailableError("document fetch timed out")
+        flight["error"] = timeout_error
+        raise timeout_error from exc
+    except dc_api.DocumentUnavailableError as exc:
+        stale = _cache_get(_READ_STALE_CACHE, _READ_STALE_CACHE_LOCK, cache_key)
+        if stale is not None:
+            stale_payload = _copy_read_payload(stale)
+            stale_payload[0]["_served_stale"] = True
+            flight["payload"] = _copy_read_payload(stale_payload)
+            logger.warning("serving stale document after upstream failure: board=%s document=%s", board, api_id)
+            return stale_payload
+        flight["error"] = exc
+        raise
+    except asyncio.CancelledError:
+        flight["error"] = dc_api.DocumentUnavailableError("document fetch was cancelled")
+        raise
+    except Exception as exc:
+        flight["error"] = exc
+        raise
+    finally:
+        flight["event"].set()
+        with _READ_INFLIGHT_LOCK:
+            if _READ_INFLIGHT.get(cache_key) is flight:
+                _READ_INFLIGHT.pop(cache_key, None)
 
 
 async def async_index_with_head_categories(

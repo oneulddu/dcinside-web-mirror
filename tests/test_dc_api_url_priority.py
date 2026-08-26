@@ -1,4 +1,6 @@
+import asyncio
 import threading
+import time
 
 from aiohttp import CookieJar
 import lxml.html
@@ -58,6 +60,15 @@ def _clear_board_kind_cache():
         dc_api._BOARD_KIND_CACHE.clear()
 
 
+@pytest.fixture(autouse=True)
+def clear_rate_limit_state():
+    with dc_api._RATE_LIMIT_LOCK:
+        dc_api._RATE_LIMITED_UNTIL_BY_SCOPE.clear()
+    yield
+    with dc_api._RATE_LIMIT_LOCK:
+        dc_api._RATE_LIMITED_UNTIL_BY_SCOPE.clear()
+
+
 def test_board_kind_cache_ttl_default_is_six_hours():
     assert dc_api.BOARD_KIND_CACHE_TTL == 21600
 
@@ -115,13 +126,13 @@ async def test_request_text_logs_rate_limit_warning(caplog):
         await api._API__request_text("GET", "https://m.dcinside.com/board/test")
 
     assert any(
-        "rate limited: status=429 url=https://m.dcinside.com/board/test" in record.getMessage()
+        "rate limited: status=429 host=m.dcinside.com path=/board/test scope=none" in record.getMessage()
         for record in caplog.records
     )
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_cooldown_skips_same_host_and_allows_pc_fallback(monkeypatch):
+async def test_document_fallback_is_not_blocked_by_comment_cooldown(monkeypatch):
     requested_urls = []
 
     class FakeResponse:
@@ -149,14 +160,16 @@ async def test_rate_limit_cooldown_skips_same_host_and_allows_pc_fallback(monkey
     monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 10)
     api = API.__new__(API)
     api.session = FakeSession()
-    api._rate_limited_until_by_host = {}
 
     mobile_first = "https://m.dcinside.com/board/test?page=1"
     mobile_second = "https://m.dcinside.com/board/test?page=2"
     pc = "https://gall.dcinside.com/board/lists/?id=test&page=1"
+    with dc_api._RATE_LIMIT_LOCK:
+        dc_api._RATE_LIMITED_UNTIL_BY_SCOPE["comments:m.dcinside.com"] = time.monotonic() + 60
 
     parsed, text, used_url = await api._API__fetch_parsed_from_urls(
-        [mobile_first, mobile_second, pc]
+        [mobile_first, mobile_second, pc],
+        cooldown_namespace="document",
     )
 
     assert used_url == pc
@@ -198,20 +211,351 @@ async def test_rate_limit_cooldown_allows_same_host_after_expiry(monkeypatch):
     monkeypatch.setattr(dc_api.time, "monotonic", lambda: now[0])
     api = API.__new__(API)
     api.session = FakeSession()
-    api._rate_limited_until_by_host = {}
     url = "https://m.dcinside.com/board/test"
+    scope = "comments:m.dcinside.com"
 
     with pytest.raises(RuntimeError, match="rate limited: 429"):
-        await api._API__request_text("GET", url)
+        await api._API__request_text("GET", url, cooldown_scope=scope)
     with pytest.raises(RuntimeError, match="rate limited: cooldown"):
-        await api._API__request_text("GET", url)
+        await api._API__request_text("GET", url, cooldown_scope=scope)
 
     now[0] = 111.0
-    status, _, text = await api._API__request_text("GET", url)
+    status, _, text = await api._API__request_text("GET", url, cooldown_scope=scope)
 
     assert (status, text) == (200, "ok")
     assert request_count == 2
-    assert api._rate_limited_until_by_host == {}
+    assert dc_api._RATE_LIMITED_UNTIL_BY_SCOPE == {}
+
+
+@pytest.mark.asyncio
+async def test_comment_cooldown_is_shared_but_does_not_block_document_lane(monkeypatch):
+    class FakeResponse:
+        headers = {}
+
+        def __init__(self, status, text):
+            self.status = status
+            self._text = text
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return self._text
+
+    class LimitedSession:
+        def request(self, method, url, **kwargs):
+            return FakeResponse(429, "Too Many Requests")
+
+    class HealthySession:
+        calls = 0
+
+        def request(self, method, url, **kwargs):
+            self.__class__.calls += 1
+            return FakeResponse(200, "document ok")
+
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 30)
+    first = API.__new__(API)
+    first.session = LimitedSession()
+    second = API.__new__(API)
+    second.session = HealthySession()
+    scope = "comments:m.dcinside.com"
+    url = "https://m.dcinside.com/board/test/123"
+
+    with pytest.raises(dc_api.RateLimitError):
+        await first._API__request_text("POST", url, cooldown_scope=scope)
+    with pytest.raises(dc_api.RateLimitCooldownError):
+        await second._API__request_text("POST", url, cooldown_scope=scope)
+
+    status, _, text = await second._API__request_text("GET", url)
+
+    assert (status, text) == (200, "document ok")
+    assert HealthySession.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_scoped_requests_atomically_limit_concurrent_probes(monkeypatch):
+    class FakeResponse:
+        status = 429
+        headers = {}
+
+        async def __aenter__(self):
+            await asyncio.sleep(0.02)
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "Too Many Requests"
+
+    class FakeSession:
+        calls = 0
+
+        def request(self, method, url, **kwargs):
+            self.__class__.calls += 1
+            return FakeResponse()
+
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 30)
+    api = API.__new__(API)
+    api.session = FakeSession()
+    scope = "document:m.dcinside.com"
+    url = "https://m.dcinside.com/board/test/123"
+
+    results = await asyncio.gather(
+        api._API__request_text("GET", url, cooldown_scope=scope),
+        api._API__request_text("GET", url, cooldown_scope=scope),
+        return_exceptions=True,
+    )
+
+    assert FakeSession.calls == 1
+    assert sum(isinstance(result, dc_api.RateLimitError) for result in results) == 2
+    assert any(isinstance(result, dc_api.RateLimitCooldownError) for result in results)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("120", 120),
+        ("invalid", 10),
+        ("9" * 5000, 3600),
+    ],
+)
+def test_retry_after_delay_is_bounded(monkeypatch, value, expected):
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 10)
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_MAX_COOLDOWN", 3600)
+    api = API.__new__(API)
+
+    assert api._API__retry_after_delay({"Retry-After": value}) == expected
+
+
+def test_retry_after_header_lookup_is_case_insensitive(monkeypatch):
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 10)
+    api = API.__new__(API)
+
+    assert api._API__retry_after_delay({"retry-after": "45"}) == 45
+
+
+def test_retry_after_http_date_is_supported(monkeypatch):
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 10)
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_MAX_COOLDOWN", 3600)
+    monkeypatch.setattr(dc_api.time, "time", lambda: 1_700_000_000.0)
+    api = API.__new__(API)
+
+    delay = api._API__retry_after_delay({"Retry-After": "Tue, 14 Nov 2023 22:15:20 GMT"})
+
+    assert delay == 120
+
+
+@pytest.mark.asyncio
+async def test_document_all_explicit_not_found_responses_raise_not_found():
+    class FakeResponse:
+        status = 404
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "not found"
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            return FakeResponse()
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+
+    with pytest.raises(dc_api.DocumentNotFoundError):
+        await api.document("test", "123", kind="minor")
+
+
+@pytest.mark.asyncio
+async def test_document_verified_deleted_page_raises_not_found():
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "<html><body>삭제되었거나 존재하지 않는 게시물입니다.</body></html>"
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            return FakeResponse()
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+
+    with pytest.raises(dc_api.DocumentNotFoundError):
+        await api.document("test", "123", kind="minor")
+
+
+@pytest.mark.asyncio
+async def test_not_found_phrase_inside_valid_document_does_not_override_validator():
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "<html><body><article>삭제되었거나 존재하지 않는 게시물입니다.</article></body></html>"
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            return FakeResponse()
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+    url = "https://m.dcinside.com/board/test/123"
+
+    parsed, _text, used_url = await api._API__fetch_parsed_from_urls(
+        [url],
+        validator=lambda parsed, text, candidate: True,
+        classify_not_found=True,
+    )
+
+    assert parsed is not None
+    assert used_url == url
+
+
+@pytest.mark.asyncio
+async def test_document_mixed_not_found_and_timeout_is_unavailable():
+    request_count = 0
+
+    class FakeResponse:
+        status = 404
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "not found"
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            nonlocal request_count
+            request_count += 1
+            if request_count == 1:
+                return FakeResponse()
+            raise TimeoutError("temporary")
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+
+    with pytest.raises(dc_api.DocumentUnavailableError):
+        await api.document("test", "123", kind="minor")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 429, 500])
+async def test_document_transient_http_failures_are_unavailable(status):
+    class FakeResponse:
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "Too Many Requests" if status == 429 else "temporary"
+
+    FakeResponse.status = status
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            return FakeResponse()
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+
+    with pytest.raises(dc_api.DocumentUnavailableError):
+        await api.document("test", "123", kind="minor")
+
+
+@pytest.mark.asyncio
+async def test_document_unknown_success_html_is_unavailable():
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "<html><body>challenge</body></html>"
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            return FakeResponse()
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+
+    with pytest.raises(dc_api.DocumentUnavailableError):
+        await api.document("test", "123", kind="minor")
+
+
+@pytest.mark.asyncio
+async def test_comment_rate_limit_keeps_incomplete_status():
+    class FakeResponse:
+        status = 429
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def text(self):
+            return "Too Many Requests"
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            return FakeResponse()
+
+    api = API.__new__(API)
+    api.session = FakeSession()
+    status = {}
+
+    comments = [
+        item
+        async for item in api.comments(
+            "test",
+            "123",
+            kind="minor",
+            prefer_mobile=True,
+            status_collector=status,
+        )
+    ]
+
+    assert comments == []
+    assert status == {"complete": False, "source": None}
 
 
 @pytest.mark.asyncio
@@ -559,7 +903,7 @@ async def test_board_collects_first_accepted_pagination_and_stops_after_last_pag
     ]
     fetch_calls = []
 
-    async def fake_fetch(urls, validator=None):
+    async def fake_fetch(urls, validator=None, **kwargs):
         fetch_calls.append(list(urls))
         parsed, used_url = pages.pop(0)
         return parsed, "ok", used_url
@@ -622,7 +966,7 @@ async def test_board_keeps_headtext_tabs_from_first_scanned_page(monkeypatch):
         ),
     ]
 
-    async def fake_fetch(urls, validator=None):
+    async def fake_fetch(urls, validator=None, **kwargs):
         parsed = pages.pop(0)
         return parsed, "ok", "https://m.dcinside.com/board/test"
 
@@ -644,7 +988,7 @@ async def test_board_tries_cached_successful_list_url_pattern_first(monkeypatch)
     api.last_board_headtexts = []
     seen_url_batches = []
 
-    async def fake_fetch(urls, validator=None):
+    async def fake_fetch(urls, validator=None, **kwargs):
         seen_url_batches.append(list(urls))
         used_url = next(url for url in urls if "/mgallery/board/lists/" in url)
         return _pc_board_html(), "ok", used_url
@@ -674,7 +1018,7 @@ async def test_board_invalidates_stale_cached_list_url_pattern(monkeypatch):
     api._API__cache_list_url_pattern(cache_key, stale_url)
     seen_url_batches = []
 
-    async def fake_fetch(urls, validator=None):
+    async def fake_fetch(urls, validator=None, **kwargs):
         seen_url_batches.append(list(urls))
         if urls == [stale_url]:
             return None, "", None
@@ -1072,7 +1416,7 @@ async def test_comments_fallback_to_mobile_when_pc_yields_nothing():
         if False:
             yield None
 
-    async def fake_mobile(board_id, document_id, num=-1, start_page=1):
+    async def fake_mobile(board_id, document_id, num=-1, start_page=1, fail_fast=False):
         yield "mobile-comment"
 
     api._API__comments_from_pc = fake_pc
@@ -1094,7 +1438,7 @@ async def test_comments_preserve_remaining_limit_and_skip_duplicates_on_mobile_f
         yield DummyComment("1")
         raise RuntimeError("transient pc failure")
 
-    async def fake_mobile(board_id, document_id, num=-1, start_page=1):
+    async def fake_mobile(board_id, document_id, num=-1, start_page=1, fail_fast=False):
         assert num == -1
         yield DummyComment("1")
         yield DummyComment("2")
@@ -1126,7 +1470,7 @@ async def test_comments_fallback_to_mobile_after_partial_pc_fetch_with_unlimited
 
     call_state = {"count": 0}
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         call_state["count"] += 1
         if call_state["count"] == 1:
             body = (
@@ -1136,7 +1480,7 @@ async def test_comments_fallback_to_mobile_after_partial_pc_fetch_with_unlimited
             return 200, {}, body
         return 200, {}, ""
 
-    async def fake_mobile(board_id, document_id, num=-1, start_page=1):
+    async def fake_mobile(board_id, document_id, num=-1, start_page=1, fail_fast=False):
         yield DummyComment("2")
 
     api._API__get_pc_comment_context = fake_context
@@ -1164,7 +1508,7 @@ async def test_fetch_parsed_from_urls_ignores_nested_location_href_inside_real_p
     </html>
     """
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         return 200, {}, html
 
     api._API__request_text = fake_request_text
@@ -1179,7 +1523,7 @@ async def test_fetch_parsed_from_urls_ignores_nested_location_href_inside_real_p
 
 
 def _make_fake_request_text(responses):
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         return 200, {}, responses[url]
 
     return fake_request_text
@@ -1245,7 +1589,7 @@ async def test_fetch_parsed_from_urls_preserves_recommend_on_top_level_redirect(
     }
     requested_urls = []
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         requested_urls.append(url)
         return 200, {}, responses[url]
 
@@ -1303,7 +1647,7 @@ async def test_board_falls_back_to_pc_when_mobile_page_is_not_parseable():
         """,
     }
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         assert url in responses
         return 200, {}, responses[url]
 
@@ -1324,7 +1668,7 @@ async def test_board_precise_times_fetches_pc_list_only():
     api = API.__new__(API)
     seen_urls = []
 
-    async def fake_fetch(urls, validator=None):
+    async def fake_fetch(urls, validator=None, **kwargs):
         seen_urls.extend(urls)
         parsed = lxml.html.fromstring(
             """
@@ -1357,7 +1701,7 @@ async def test_board_precise_times_uses_pc_recommend_list_parameter():
     api = API.__new__(API)
     seen_urls = []
 
-    async def fake_fetch(urls, validator=None):
+    async def fake_fetch(urls, validator=None, **kwargs):
         seen_urls.extend(urls)
         parsed = lxml.html.fromstring(
             """
@@ -1396,7 +1740,7 @@ async def test_board_precise_times_looks_ahead_for_rendered_overflow_row():
     api = API.__new__(API)
     seen_urls = []
 
-    async def fake_fetch(urls, validator=None):
+    async def fake_fetch(urls, validator=None, **kwargs):
         seen_urls.extend(urls)
         doc_id = "124" if "page=3" in urls[0] else "123"
         parsed = lxml.html.fromstring(
@@ -1449,7 +1793,7 @@ async def test_board_falls_back_to_pc_when_mobile_list_has_only_ads():
         """,
     }
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         assert url in responses
         return 200, {}, responses[url]
 
@@ -1467,7 +1811,7 @@ async def test_board_accepts_mobile_mini_list_links():
     api = API.__new__(API)
     mini_url = "https://m.dcinside.com/mini/test?page=1"
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         assert url == mini_url
         return 200, {}, """
         <html><body>
@@ -1519,7 +1863,7 @@ async def test_document_falls_back_to_pc_when_mobile_page_is_not_parseable():
         """,
     }
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         assert url in responses
         return 200, {}, responses[url]
 
@@ -1538,7 +1882,7 @@ async def test_document_reuses_embedded_mobile_post_list():
     api = API.__new__(API)
     mobile_url = "https://m.dcinside.com/board/test/123"
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         assert url == mobile_url
         return 200, {}, """
         <html><body>
@@ -1707,7 +2051,7 @@ async def test_comments_prefer_mobile_falls_back_to_pc_after_mobile_ends_prematu
 
     calls = {"count": 0}
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         calls["count"] += 1
         if calls["count"] == 1:
             return 200, {}, """
@@ -1757,7 +2101,7 @@ async def test_comments_prefer_mobile_stops_without_pc_fallback_when_pagination_
         def __init__(self, cid):
             self.id = cid
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         return 200, {}, """
         <html><head></head><body>
           <li no="1" m_no="0">
@@ -1794,7 +2138,7 @@ async def test_comments_prefer_mobile_stops_without_pc_fallback_when_pagination_
 async def test_mobile_comment_rows_accept_classless_comment_items():
     api = API.__new__(API)
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         return 200, {}, """
         <html><head></head><body>
           <ul class="all-comment-lst">
@@ -1858,7 +2202,7 @@ async def test_document_parses_comma_formatted_embedded_comment_total():
     api = API.__new__(API)
     mobile_url = "https://m.dcinside.com/board/test/123"
 
-    async def fake_request_text(method, url, headers=None, data=None, cookies=None):
+    async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         assert url == mobile_url
         return 200, {}, """
         <html><body>

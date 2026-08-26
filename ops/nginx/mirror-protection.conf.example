@@ -1,0 +1,41 @@
+# Apply the map and limit_req_zone directives in the nginx http context.
+map $http_user_agent $mirror_blocked_ai_crawler {
+    default                                             0;
+    ~*(ClaudeBot|Claude-SearchBot|Claude-User|GPTBot)    1;
+}
+
+map $uri $mirror_is_robots_txt {
+    default         0;
+    /robots.txt     1;
+}
+
+map "$mirror_blocked_ai_crawler:$mirror_is_robots_txt" $mirror_block_ai_request {
+    default     0;
+    "1:0"       1;
+}
+
+limit_req_zone $binary_remote_addr zone=mirror_read_per_ip:10m rate=2r/s;
+
+# Merge the directives below into the mir.rootios.com server block.
+access_log /var/log/nginx/blocked-ai-crawlers.log combined if=$mirror_blocked_ai_crawler;
+
+if ($mirror_block_ai_request) {
+    return 403;
+}
+
+location = /robots.txt {
+    default_type text/plain;
+    access_log off;
+    return 200 "User-agent: ClaudeBot\nDisallow: /\n\nUser-agent: Claude-SearchBot\nDisallow: /\n\nUser-agent: Claude-User\nDisallow: /\n\nUser-agent: GPTBot\nDisallow: /\n";
+}
+
+location = /read {
+    limit_req zone=mirror_read_per_ip burst=10 nodelay;
+    limit_req_status 429;
+
+    proxy_pass http://127.0.0.1:6100;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
