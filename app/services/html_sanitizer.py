@@ -282,6 +282,7 @@ def sanitize_html_fragment(raw_html):
 def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
     soup = parse_html_fragment(raw_html)
     normalize_twitter_blockquotes(soup)
+    normalize_twitter_status_links(soup)
     normalize_og_wraps(soup)
     rewrite_content_images(soup, images, board, pid, kind)
     rewrite_dcinside_links(soup)
@@ -391,15 +392,27 @@ def _twitter_figure(soup, tweet_id):
     source["class"] = ["embed-card-source"]
     source["target"] = "_blank"
     source["rel"] = "noopener noreferrer"
-    source.string = "X에서 열기"
+    source.string = "안 보이면 X에서 열기"
     head.extend([label, source])
 
     iframe = soup.new_tag("iframe", src=TWITTER_EMBED_URL.format(tweet_id))
     iframe["title"] = "X 게시물"
     iframe["loading"] = "lazy"
     iframe["referrerpolicy"] = "strict-origin-when-cross-origin"
-    figure.extend([head, iframe])
-    return figure, iframe
+
+    fallback = soup.new_tag("blockquote")
+    fallback["class"] = ["embed-card-fallback"]
+    fallback_text = soup.new_tag("p")
+    fallback_text.append("X 미리보기를 표시할 수 없습니다. ")
+    fallback_link = soup.new_tag("a", href=f"https://x.com/i/status/{tweet_id}")
+    fallback_link["target"] = "_blank"
+    fallback_link["rel"] = "noopener noreferrer"
+    fallback_link.string = "X에서 원문 열기"
+    fallback_text.append(fallback_link)
+    fallback.append(fallback_text)
+
+    figure.extend([head, iframe, fallback])
+    return figure, iframe, fallback
 
 
 def _remove_empty_anchor_wrappers(anchor):
@@ -424,10 +437,10 @@ def normalize_twitter_blockquotes(soup):
         tweet_id = _twitter_status_id_from_tag(quote)
         if not tweet_id:
             continue
-        figure, _ = _twitter_figure(soup, tweet_id)
+        figure, _, fallback = _twitter_figure(soup, tweet_id)
         quote.replace_with(figure)
         quote["class"] = ["embed-card-fallback"]
-        figure.append(quote)
+        fallback.replace_with(quote)
         converted_ids.add(tweet_id)
 
     if not converted_ids:
@@ -447,6 +460,88 @@ def normalize_twitter_blockquotes(soup):
     return soup
 
 
+def _is_bare_twitter_status_link(anchor, href):
+    parsed = _safe_urlparse(href)
+    if (
+        parsed is None
+        or parsed.scheme != "https"
+        or (parsed.netloc or "").lower() not in TWITTER_STATUS_HOSTS
+        or not tweet_id_from_status_path(parsed.path)
+    ):
+        return False
+
+    text = " ".join(anchor.stripped_strings).strip()
+    without_fragment = href.split("#", 1)[0]
+    without_query = without_fragment.split("?", 1)[0]
+    without_scheme = href.split("://", 1)[1]
+    without_scheme_fragment = without_scheme.split("#", 1)[0]
+    without_scheme_query = without_scheme_fragment.split("?", 1)[0]
+    return text in {
+        href,
+        without_fragment,
+        without_query,
+        without_scheme,
+        without_scheme_fragment,
+        without_scheme_query,
+    }
+
+
+def _standalone_twitter_link_container(anchor):
+    """p/span 안의 단독 링크만 안전한 블록 컨테이너까지 끌어올린다."""
+    container = anchor
+    parent = anchor.parent
+    while getattr(parent, "name", None) in {"p", "span"}:
+        if any(
+            child is not container
+            and getattr(child, "name", None) != "br"
+            and str(child).strip()
+            for child in parent.contents
+        ):
+            return None
+        container = parent
+        parent = parent.parent
+    return container
+
+
+def _twitter_iframe_ids(soup):
+    tweet_ids = set()
+    for iframe in soup.find_all("iframe", src=True):
+        parsed = _safe_urlparse(iframe.get("src"))
+        if parsed is None:
+            continue
+        normalized_src = normalize_twitter_iframe_src(parsed)
+        if not normalized_src:
+            continue
+        normalized = _safe_urlparse(normalized_src)
+        values = parse_qs(normalized.query).get("id", []) if normalized else []
+        if values and values[0].isdigit():
+            tweet_ids.add(values[0])
+    return tweet_ids
+
+
+def normalize_twitter_status_links(soup):
+    """DC가 위젯 마크업을 만들지 않은 맨몸 X status 링크도 공식 카드로 승격한다."""
+    embedded_ids = _twitter_iframe_ids(soup)
+    for anchor in list(soup.find_all("a", href=True)):
+        if anchor.find_parent("figure", class_="embed-card-twitter"):
+            continue
+        href = str(anchor.get("href") or "").strip()
+        if not _is_bare_twitter_status_link(anchor, href):
+            continue
+        container = _standalone_twitter_link_container(anchor)
+        if container is None:
+            continue
+        parsed = _safe_urlparse(href)
+        tweet_id = tweet_id_from_status_path(parsed.path)
+        if tweet_id in embedded_ids:
+            container.decompose()
+            continue
+        figure, _, _ = _twitter_figure(soup, tweet_id)
+        container.replace_with(figure)
+        embedded_ids.add(tweet_id)
+    return soup
+
+
 def wrap_twitter_iframes(soup):
     for iframe in list(soup.find_all("iframe", src=True)):
         parsed = _safe_urlparse(iframe.get("src"))
@@ -459,7 +554,7 @@ def wrap_twitter_iframes(soup):
             continue
         tweet_id = tweet_ids[0]
 
-        figure, normalized_iframe = _twitter_figure(soup, tweet_id)
+        figure, normalized_iframe, _ = _twitter_figure(soup, tweet_id)
         normalized_iframe.attrs.update(iframe.attrs)
         normalized_iframe["src"] = TWITTER_EMBED_URL.format(tweet_id)
         normalized_iframe["title"] = iframe.get("title") or "X 게시물"

@@ -21,9 +21,9 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -119,6 +119,23 @@ jobs:
               --retry-max-time 30 \
               --max-time 5 \
               http://127.0.0.1:6100/healthz >/dev/null
+
+            PUBLIC_SMOKE_URL="$(.venv/bin/python scripts/public_smoke_url.py)"
+            if [ -n "${PUBLIC_SMOKE_URL}" ]; then
+              curl --fail --silent --show-error \
+                --location \
+                --max-redirs 3 \
+                --proto '=https' \
+                --proto-redir '=https' \
+                --retry 5 \
+                --retry-delay 1 \
+                --retry-connrefused \
+                --retry-max-time 20 \
+                --max-time 10 \
+                "${PUBLIC_SMOKE_URL}" >/dev/null
+            else
+              echo "::warning::MIRROR_PUBLIC_BASE_URL is unset; public smoke test skipped"
+            fi
             git diff-index --quiet HEAD --
             test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
           EOF

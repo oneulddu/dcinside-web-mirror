@@ -122,9 +122,12 @@ Sol UX 플랜(ux-first-fable 워크플로) 기반. 원칙: 본문 흐름을 유�
 대행하지 않는다.
 
 - X 게시물: sanitizer가 `figure.embed-card.embed-card-twitter`(헤더: "X 게시물"
-  라벨 + "X에서 열기" 원본 링크)로 감싼다. 원문의 `blockquote.twitter-tweet`도
+  라벨 + "안 보이면 X에서 열기" 원본 링크)로 감싼다. 원문의 `blockquote.twitter-tweet`뿐
+  아니라 URL 자체가 본문에 노출된 맨몸 `x.com`/`twitter.com` status 링크도
   공식 iframe으로 승격해 사진·영상을 렌더링하고, 원래 blockquote는 로드 오류 때
-  보여줄 읽기 가능한 폴백으로 보존한다. embed_resizer.js는 현재 테마와 일치하는
+  보여줄 읽기 가능한 폴백으로 보존한다. 맨몸 링크와 직접 iframe에는 원문 이동
+  폴백을 생성한다. 원문 링크는 모바일에서도 40px 이상의 터치 높이를 갖는다.
+  embed_resizer.js는 현재 테마와 일치하는
   `theme` 파라미터를 적용하며, iframe `load`를 성공 신호로 사용한다. 현재 X 직접
   iframe은 정상 렌더링해도 resize 메시지를 항상 보내지 않으므로
   `twttr.private.resize`는 origin/source 검증 후 높이 보정에만 사용한다.
@@ -132,8 +135,9 @@ Sol UX 플랜(ux-first-fable 워크플로) 기반. 원칙: 본문 흐름을 유�
   카드(제목 1줄, 설명 2줄, 도메인, 썸네일)로 정규화한다. 브라우저가 제3자 이미지에
   직접 접속하지 않도록 썸네일은 HMAC 서명된 동일 출처
   `/embed/link-preview-image`에서만 가져온다.
-  맨몸 링크(앵커 텍스트==href, dcinside·유튜브·X 제외)는 `link-preview-target`으로
-  마킹되고 link_preview.js가 뷰포트 근처에서 `/embed/link-preview`로 조회한다
+  X status 링크는 위 전용 카드로 먼저 처리한다. 그 외 맨몸 링크(앵커 텍스트==href,
+  dcinside·유튜브·X 제외)는 `link-preview-target`으로 마킹되고 link_preview.js가
+  뷰포트 근처에서 `/embed/link-preview`로 조회한다
   (문서당 6개, https만, 문서 내 기존 카드와 URL 중복 제거, textContent만 주입).
   실패 시 원래 링크는 그대로 두고 작은 실패 문구만 남긴다. JS 비활성이면
   서버 정규화 카드만 보인다.

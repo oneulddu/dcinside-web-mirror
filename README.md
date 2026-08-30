@@ -224,7 +224,7 @@ mirror/
 | `MIRROR_TIMEOUT` | `60` | 요청 제한 시간 |
 | `MIRROR_LOG_LEVEL` | `info` | Gunicorn 로그 레벨 |
 | `MIRROR_SECRET_KEY` | — | 운영에서 반드시 설정 |
-| `MIRROR_PUBLIC_BASE_URL` | — | URL 미리보기용 공개 기본 주소. 예: `https://example.com` |
+| `MIRROR_PUBLIC_BASE_URL` | — | URL 미리보기와 배포 후 공개 경로 점검에 쓰는 HTTPS 기본 주소. 예: `https://example.com` |
 
 </details>
 
@@ -320,6 +320,8 @@ pm2 start ecosystem.config.js && pm2 save && pm2 startup
 ```
 
 `main` 브랜치에 push하면 `.github/workflows/deploy.yml`이 테스트 → SSH 배포까지 자동으로 수행합니다.
+운영 `.env`에 `MIRROR_PUBLIC_BASE_URL`이 있으면 내부 헬스 체크 뒤 공개 HTTPS `/recent`
+경로까지 확인하며, 값이 없으면 공개 경로 점검만 경고와 함께 건너뜁니다.
 
 <br/>
 

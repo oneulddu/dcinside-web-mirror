@@ -1853,10 +1853,69 @@ def test_prepare_read_html_wraps_normalized_twitter_iframe_with_source_link():
     assert source["href"] == "https://x.com/i/status/1668868113725550592"
     assert source["target"] == "_blank"
     assert set(source["rel"]) == {"noopener", "noreferrer"}
+    assert source.get_text(strip=True) == "안 보이면 X에서 열기"
     assert figure.iframe["src"] == (
         "https://platform.twitter.com/embed/Tweet.html?id=1668868113725550592&dnt=true"
     )
     assert figure.iframe.has_attr("allowfullscreen")
+    fallback = figure.select_one("blockquote.embed-card-fallback")
+    assert fallback.get_text(" ", strip=True) == (
+        "X 미리보기를 표시할 수 없습니다. X에서 원문 열기"
+    )
+
+
+def test_prepare_read_html_promotes_bare_twitter_status_links_but_not_labeled_inline_links():
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            """
+            <p><a href="https://x.com/team/status/1961339385720320478?s=19">https://x.com/team/status/1961339385720320478?s=19</a><br></p>
+            <div><a href="https://twitter.com/team/statuses/1668868113725550592">twitter.com/team/statuses/1668868113725550592</a></div>
+            <p>참고: <a href="https://x.com/team/status/123">관련 X 게시물</a></p>
+            """,
+            [],
+            "test",
+            123,
+            None,
+        )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    figures = soup.select("figure.embed-card.embed-card-twitter")
+    assert [figure.iframe["src"] for figure in figures] == [
+        "https://platform.twitter.com/embed/Tweet.html?id=1961339385720320478&dnt=true",
+        "https://platform.twitter.com/embed/Tweet.html?id=1668868113725550592&dnt=true",
+    ]
+    assert all(figure.select_one("blockquote.embed-card-fallback") for figure in figures)
+    labeled = soup.find("a", string="관련 X 게시물")
+    assert labeled is not None
+    assert labeled["href"] == "https://x.com/team/status/123"
+    assert labeled.find_parent("figure") is None
+
+
+def test_prepare_read_html_deduplicates_bare_twitter_link_paired_with_iframe():
+    tweet_id = "1961339385720320478"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            f"""
+            <p><a href="https://x.com/team/status/{tweet_id}">https://x.com/team/status/{tweet_id}</a></p>
+            <iframe src="https://x.com/team/status/{tweet_id}"></iframe>
+            """,
+            [],
+            "test",
+            123,
+            None,
+        )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert len(soup.select("figure.embed-card.embed-card-twitter")) == 1
+    assert soup.select_one("figure.embed-card-twitter iframe")["src"] == (
+        f"https://platform.twitter.com/embed/Tweet.html?id={tweet_id}&dnt=true"
+    )
+    assert not any(
+        anchor.get_text(strip=True).startswith("https://x.com/")
+        for anchor in soup.find_all("a")
+    )
 
 
 def test_prepare_read_html_promotes_twitter_blockquote_and_keeps_text_fallback():
@@ -1985,10 +2044,9 @@ def test_prepare_read_html_marks_bare_external_links_and_applies_exclusions():
     for text in (
         "https://www.youtube.com/watch?v=abcdefghijk",
         "https://youtu.be/abcdefghijk",
-        "https://x.com/user/status/1",
-        "https://twitter.com/user/status/1",
     ):
         assert "link-preview-target" not in links[text].get("class", [])
+    assert len(soup.select("figure.embed-card.embed-card-twitter")) == 1
 
 
 def test_prepare_read_html_skips_bare_link_when_matching_og_preview_follows_parent_block():
