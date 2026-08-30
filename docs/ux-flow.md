@@ -122,15 +122,16 @@ Sol UX 플랜(ux-first-fable 워크플로) 기반. 원칙: 본문 흐름을 유�
 대행하지 않는다.
 
 - X 게시물: sanitizer가 `figure.embed-card.embed-card-twitter`(헤더: "X 게시물"
-  라벨 + "X에서 열기" 원본 링크)로 감싼다. embed_resizer.js가 현재 테마와 일치하는
-  `theme` 파라미터를 적용(일치하면 재로드 금지, 테마 전환은 MutationObserver)하고,
-  platform.twitter.com의 `twttr.private.resize` 메시지(origin/source 검증,
-  100~3000px 클램프)로 실제 높이를 적용한다. 8초 무응답이면 iframe을 접고
-  (`visibility: hidden`으로 탭 진입도 차단) "X 게시물을 불러오지 못했습니다"
-  상태 문구(aria-live=polite)를 보인다. 늦은 신호가 오면 복구한다.
+  라벨 + "X에서 열기" 원본 링크)로 감싼다. 원문의 `blockquote.twitter-tweet`도
+  공식 iframe으로 승격해 사진·영상을 렌더링하고, 원래 blockquote는 로드 오류 때
+  보여줄 읽기 가능한 폴백으로 보존한다. embed_resizer.js는 현재 테마와 일치하는
+  `theme` 파라미터를 적용하며, iframe `load`를 성공 신호로 사용한다. 현재 X 직접
+  iframe은 정상 렌더링해도 resize 메시지를 항상 보내지 않으므로
+  `twttr.private.resize`는 origin/source 검증 후 높이 보정에만 사용한다.
 - 링크 미리보기: DC 원문의 `a.og-wrap`은 서버(sanitizer)가 `a.link-preview`
-  텍스트 카드(제목 1줄, 설명 2줄, 도메인)로 정규화한다. 썸네일은 제3자 이미지
-  직접 요청(프라이버시)과 전용 프록시 비용을 피해 지원하지 않는다(제품 결정).
+  카드(제목 1줄, 설명 2줄, 도메인, 썸네일)로 정규화한다. 브라우저가 제3자 이미지에
+  직접 접속하지 않도록 썸네일은 HMAC 서명된 동일 출처
+  `/embed/link-preview-image`에서만 가져온다.
   맨몸 링크(앵커 텍스트==href, dcinside·유튜브·X 제외)는 `link-preview-target`으로
   마킹되고 link_preview.js가 뷰포트 근처에서 `/embed/link-preview`로 조회한다
   (문서당 6개, https만, 문서 내 기존 카드와 URL 중복 제거, textContent만 주입).
@@ -139,7 +140,8 @@ Sol UX 플랜(ux-first-fable 워크플로) 기반. 원칙: 본문 흐름을 유�
 - `/embed/link-preview`는 사용자 제어 URL을 fetch하므로: https·공인 IP를
   리다이렉트 hop마다 검증하고 검증된 IP로 연결을 고정(DNS 재바인딩 방어),
   text/html·128KB·전체 deadline 제한, 전역 예산+동시 실행 상한(초과 503),
-  성공 24h/실패 300s 캐시.
+  성공 24h/실패 300s 캐시. 이미지 프록시도 매 hop을 다시 검증하고 JPEG·PNG·GIF·
+  WebP·AVIF만 허용하며 5MiB와 같은 deadline·동시 실행·outbound 예산을 적용한다.
 - 투표: 스크래퍼가 만드는 읽기 전용 `dc-poll-card` DOM(제목·메타·항목/결과·
   "원본에서 투표하기")에 토큰 기반 카드 스타일만 입힌다. 미러에 투표 컨트롤을
   만들지 않는다.

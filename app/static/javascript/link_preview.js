@@ -30,23 +30,54 @@
         card.target = "_blank";
         card.rel = "noopener noreferrer";
 
+        var copy = document.createElement("span");
+        copy.className = "link-preview-copy";
+
         var title = document.createElement("span");
         title.className = "link-preview-title";
         title.textContent = data.title;
-        card.appendChild(title);
+        copy.appendChild(title);
 
         if (data.description) {
             var desc = document.createElement("span");
             desc.className = "link-preview-desc";
             desc.textContent = data.description;
-            card.appendChild(desc);
+            copy.appendChild(desc);
         }
 
         var host = document.createElement("span");
         host.className = "link-preview-host";
         host.textContent = data.site_name || data.host || "";
-        card.appendChild(host);
+        copy.appendChild(host);
+        card.appendChild(copy);
+
+        if (isSafePreviewImageUrl(data.image_url)) {
+            var media = document.createElement("span");
+            media.className = "link-preview-media";
+            var image = document.createElement("img");
+            image.className = "link-preview-image";
+            image.src = data.image_url;
+            image.alt = data.title + " 미리보기";
+            image.loading = "lazy";
+            image.decoding = "async";
+            media.appendChild(image);
+            card.appendChild(media);
+            card.classList.add("has-media");
+        }
         return card;
+    }
+
+    function isSafePreviewImageUrl(value) {
+        if (!value || typeof value !== "string") {
+            return false;
+        }
+        try {
+            var parsed = new URL(value, window.location.origin);
+            return parsed.origin === window.location.origin
+                && parsed.pathname === "/embed/link-preview-image";
+        } catch (err) {
+            return false;
+        }
     }
 
     function removePlaceholder(placeholder) {

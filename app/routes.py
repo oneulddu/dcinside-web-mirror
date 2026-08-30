@@ -847,8 +847,45 @@ def embed_link_preview():
         response = jsonify({"ok": False})
         response.headers["Cache-Control"] = "public, max-age=300"
         return response
-    response = jsonify({"ok": True, **preview})
+    payload = {"ok": True, **preview}
+    remote_image_url = payload.pop("image_url", None)
+    if remote_image_url:
+        token = link_preview.preview_image_signature(remote_image_url, current_app.secret_key)
+        if token:
+            payload["image_url"] = url_for(
+                "main.embed_link_preview_image",
+                url=remote_image_url,
+                token=token,
+            )
+    response = jsonify(payload)
     response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
+@bp.route("/embed/link-preview-image")
+def embed_link_preview_image():
+    url = (request.args.get("url") or "").strip()
+    token = (request.args.get("token") or "").strip()
+    if not link_preview.has_valid_preview_image_signature(url, token, current_app.secret_key):
+        abort(403)
+
+    image = link_preview.fetch_preview_image(url)
+    if image is link_preview.RATE_LIMITED:
+        response = make_response("", 503)
+        response.headers["Retry-After"] = "10"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    if image is None:
+        response = make_response("", 404)
+        response.headers["Cache-Control"] = "public, max-age=300"
+        return response
+
+    body, content_type = image
+    response = make_response(body)
+    response.headers["Content-Type"] = content_type
+    response.headers["Content-Length"] = str(len(body))
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 

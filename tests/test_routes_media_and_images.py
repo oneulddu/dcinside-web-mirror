@@ -239,6 +239,83 @@ def test_link_preview_sniffs_meta_charset_before_parsing(monkeypatch):
     assert result["title"] == "한글 제목"
 
 
+def test_link_preview_resolves_safe_og_image_against_final_url(monkeypatch):
+    response = DummyPreviewResponse(
+        b"""
+        <meta property="og:title" content="Preview with image">
+        <meta property="og:image" content="/assets/cover.jpg">
+        """
+    )
+    _install_preview_responses(monkeypatch, [response])
+    monkeypatch.setattr(link_preview, "resolve_media_target", lambda url, **kwargs: _preview_target(url))
+    _reset_link_preview_rate(monkeypatch)
+
+    result = link_preview.fetch_preview("https://image-preview.test/articles/1")
+
+    assert result["image_url"] == "https://image-preview.test/assets/cover.jpg"
+
+
+def test_preview_image_signature_is_bound_to_normalized_url():
+    secret = "test-secret"
+    url = "https://cdn-preview.test/photo.jpg?size=large"
+    token = link_preview.preview_image_signature(url, secret)
+
+    assert link_preview.has_valid_preview_image_signature(url, token, secret) is True
+    assert link_preview.has_valid_preview_image_signature(
+        "https://cdn-preview.test/other.jpg?size=large",
+        token,
+        secret,
+    ) is False
+    assert link_preview.preview_image_signature("http://cdn-preview.test/photo.jpg", secret) is None
+
+
+def test_preview_image_reader_allows_bounded_raster_and_rejects_unsafe_types(monkeypatch):
+    monkeypatch.setattr(link_preview, "PREVIEW_IMAGE_MAX_BYTES", 4)
+    started_at = time.monotonic()
+
+    valid = DummyPreviewResponse(b"jpeg", headers={"Content-Type": "image/jpeg", "Content-Length": "4"})
+    svg = DummyPreviewResponse(b"<svg>", headers={"Content-Type": "image/svg+xml"})
+    declared_oversize = DummyPreviewResponse(
+        b"xxxxx",
+        headers={"Content-Type": "image/png", "Content-Length": "5"},
+    )
+    streamed_oversize = DummyPreviewResponse(
+        headers={"Content-Type": "image/webp"},
+        chunks=[b"xxxx", b"x"],
+    )
+
+    assert link_preview._read_limited_image(valid, started_at) == (b"jpeg", "image/jpeg")
+    assert link_preview._read_limited_image(svg, started_at) is None
+    assert link_preview._read_limited_image(declared_oversize, started_at) is None
+    assert link_preview._read_limited_image(streamed_oversize, started_at) is None
+
+
+def test_preview_image_redirect_is_revalidated_before_second_request(monkeypatch):
+    checked_urls = []
+    request_calls = []
+
+    def resolve(url, **kwargs):
+        checked_urls.append(url)
+        if urlparse(url).hostname == "private-image.test":
+            return None
+        return _preview_target(url)
+
+    def request_image(url, target, started_at, socket_guard):
+        request_calls.append(url)
+        return 302, {"Location": "https://private-image.test/secret.png"}, None
+
+    monkeypatch.setattr(link_preview, "resolve_media_target", resolve)
+    monkeypatch.setattr(link_preview, "_request_preview_image_target", request_image)
+    _reset_link_preview_rate(monkeypatch)
+
+    assert link_preview.fetch_preview_image("https://public-image.test/start.png") is None
+    assert request_calls == ["https://public-image.test/start.png"]
+    assert checked_urls == [
+        "https://public-image.test/start.png",
+        "https://private-image.test/secret.png",
+    ]
+
+
 def test_link_preview_caches_success_and_failure_with_separate_ttls(monkeypatch):
     success = DummyPreviewResponse(
         b'<meta property="og:title" content="Cached"><meta name="og:description" content="Description">'
@@ -620,6 +697,93 @@ def test_link_preview_route_status_and_cache_contract(monkeypatch):
     assert invalid.status_code == 400
     assert limited.status_code == 503 and limited.headers["Retry-After"] == "10"
     assert limited.headers["Cache-Control"] == "no-store"
+
+
+def test_link_preview_route_replaces_remote_image_with_signed_same_origin_url(monkeypatch):
+    remote_image = "https://cdn-preview.test/cover.jpg?size=large"
+    monkeypatch.setattr(
+        routes.link_preview,
+        "fetch_preview",
+        lambda url: {
+            "title": "Image title",
+            "description": None,
+            "site_name": "Image site",
+            "host": "image.test",
+            "image_url": remote_image,
+        },
+    )
+    app = create_app()
+    response = app.test_client().get(
+        "/embed/link-preview",
+        query_string={"url": "https://image.test/post"},
+    )
+
+    payload = response.get_json()
+    parsed = urlparse(payload["image_url"])
+    query = parse_qs(parsed.query)
+
+    assert response.status_code == 200
+    assert parsed.path == "/embed/link-preview-image"
+    assert query["url"] == [remote_image]
+    assert link_preview.has_valid_preview_image_signature(
+        query["url"][0],
+        query["token"][0],
+        app.secret_key,
+    )
+    assert payload["image_url"] != remote_image
+
+
+def test_link_preview_image_route_requires_signature_and_preserves_raster_headers(monkeypatch):
+    app = create_app()
+    remote_image = "https://cdn-preview.test/cover.webp"
+    token = link_preview.preview_image_signature(remote_image, app.secret_key)
+    monkeypatch.setattr(
+        routes.link_preview,
+        "fetch_preview_image",
+        lambda url: (b"webp-bytes", "image/webp"),
+    )
+    client = app.test_client()
+
+    success = client.get(
+        "/embed/link-preview-image",
+        query_string={"url": remote_image, "token": token},
+    )
+    invalid = client.get(
+        "/embed/link-preview-image",
+        query_string={"url": remote_image, "token": "tampered"},
+    )
+
+    assert success.status_code == 200
+    assert success.data == b"webp-bytes"
+    assert success.headers["Content-Type"].startswith("image/webp")
+    assert success.headers["Content-Length"] == str(len(b"webp-bytes"))
+    assert success.headers["X-Content-Type-Options"] == "nosniff"
+    assert "max-age=86400" in success.headers["Cache-Control"]
+    assert invalid.status_code == 403
+
+
+def test_link_preview_image_route_reports_rate_limit_and_failure(monkeypatch):
+    app = create_app()
+    remote_image = "https://cdn-preview.test/cover.png"
+    token = link_preview.preview_image_signature(remote_image, app.secret_key)
+    client = app.test_client()
+
+    monkeypatch.setattr(routes.link_preview, "fetch_preview_image", lambda url: link_preview.RATE_LIMITED)
+    limited = client.get(
+        "/embed/link-preview-image",
+        query_string={"url": remote_image, "token": token},
+    )
+    monkeypatch.setattr(routes.link_preview, "fetch_preview_image", lambda url: None)
+    missing = client.get(
+        "/embed/link-preview-image",
+        query_string={"url": remote_image, "token": token},
+    )
+
+    assert limited.status_code == 503
+    assert limited.headers["Retry-After"] == "10"
+    assert limited.headers["Cache-Control"] == "no-store"
+    assert missing.status_code == 404
+    assert "max-age=300" in missing.headers["Cache-Control"]
 
 
 def test_media_proxy_mobile_user_agent_uses_ios():
@@ -1695,7 +1859,47 @@ def test_prepare_read_html_wraps_normalized_twitter_iframe_with_source_link():
     assert figure.iframe.has_attr("allowfullscreen")
 
 
-def test_prepare_read_html_normalizes_og_wrap_without_image_or_nested_anchor():
+def test_prepare_read_html_promotes_twitter_blockquote_and_keeps_text_fallback():
+    tweet_id = "1961339385720320478"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            f"""
+            <div><a href="https://x.com/team/status/{tweet_id}?s=19">https://x.com/team/status/{tweet_id}?s=19</a></div>
+            <div>
+              <blockquote class="twitter-tweet">
+                <p>사진이 포함된 게시물 내용</p>
+                — 작성자 <a href="https://x.com/team/status/{tweet_id}?ref_src=twsrc%5Etfw">August 29, 2025</a>
+              </blockquote>
+              <script async src="https://platform.x.com/widgets.js"></script>
+            </div>
+            """,
+            [],
+            "test",
+            123,
+            None,
+        )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    figure = soup.select_one("figure.embed-card.embed-card-twitter")
+    fallback = figure.select_one("blockquote.embed-card-fallback")
+    outside_status_links = [
+        anchor
+        for anchor in soup.find_all("a", href=True)
+        if "/status/" in anchor["href"] and not anchor.find_parent("figure")
+    ]
+
+    assert figure.iframe["src"] == (
+        f"https://platform.twitter.com/embed/Tweet.html?id={tweet_id}&dnt=true"
+    )
+    assert figure.iframe["loading"] == "lazy"
+    assert figure.iframe["referrerpolicy"] == "strict-origin-when-cross-origin"
+    assert fallback.get_text(" ", strip=True).startswith("사진이 포함된 게시물 내용")
+    assert soup.select("blockquote.twitter-tweet, script") == []
+    assert outside_status_links == []
+
+
+def test_prepare_read_html_normalizes_og_wrap_with_signed_thumbnail_and_no_nested_anchor():
     app = create_app()
     with app.test_request_context("/read?board=test&pid=123"):
         cleaned = html_sanitizer.prepare_read_html(
@@ -1718,7 +1922,18 @@ def test_prepare_read_html_normalizes_og_wrap_without_image_or_nested_anchor():
     assert preview.select_one(".link-preview-title").get_text(strip=True) == "뉴스 제목"
     assert preview.select_one(".link-preview-desc").get_text(strip=True) == "뉴스 설명"
     assert preview.select_one(".link-preview-host").get_text(strip=True) == "n.news.naver.com"
-    assert preview.find("img") is None
+    thumbnail = preview.select_one("img.link-preview-image")
+    thumbnail_url = urlparse(thumbnail["src"])
+    thumbnail_query = parse_qs(thumbnail_url.query)
+    assert "has-media" in preview.get("class", [])
+    assert thumbnail_url.path == "/embed/link-preview-image"
+    assert thumbnail_query["url"] == ["https://imgnews.pstatic.net/thumb.jpg"]
+    assert link_preview.has_valid_preview_image_signature(
+        thumbnail_query["url"][0],
+        thumbnail_query["token"][0],
+        app.secret_key,
+    )
+    assert thumbnail["alt"] == "뉴스 제목 미리보기"
     assert preview.find("a") is None
     assert len(soup.find_all("a")) == 1
 
