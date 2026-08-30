@@ -268,6 +268,10 @@ mirror/
 | `MIRROR_LINK_PREVIEW_MAX_CONCURRENCY` | `4` | 워커 프로세스별 동시 실행 상한 |
 | `MIRROR_LINK_PREVIEW_DEADLINE` | `8` | 리다이렉트·본문 스트리밍을 포함한 전체 제한 시간(초) |
 
+링크 썸네일은 브라우저가 외부 이미지 호스트에 직접 접속하지 않도록 서명된 동일 출처
+프록시를 사용합니다. 프록시는 HTTPS 공인 주소를 리다이렉트마다 다시 검증하고,
+JPEG·PNG·GIF·WebP·AVIF만 최대 5MiB까지 허용합니다.
+
 </details>
 
 <details>

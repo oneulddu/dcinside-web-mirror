@@ -85,6 +85,7 @@ def test_screen_and_service_route_map_contract():
         "/board": "main.board",
         "/board/times": "main.board_times",
         "/embed/link-preview": "main.embed_link_preview",
+        "/embed/link-preview-image": "main.embed_link_preview_image",
         "/embed/youtube-size": "main.youtube_size",
         "/favicon.ico": "main.favicon",
         "/healthz": "main.healthz",

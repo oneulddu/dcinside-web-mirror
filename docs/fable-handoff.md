@@ -6,13 +6,16 @@
 ## 계약 요약
 
 - DOM: `figure.embed-card.embed-card-twitter`(`.embed-card-head` > `.embed-card-label`
-  + `.embed-card-source`), `a.link-preview`(`.link-preview-title/desc/host`),
+  + `.embed-card-source`, `.embed-card-fallback`), `a.link-preview`
+  (`.link-preview-copy`, `.link-preview-title/desc/host`, 선택적 `.link-preview-media`),
   맨몸 링크 마킹 `a.link-preview-target`, 투표 `div.dc-poll-card` 계열(기존 DOM).
 - API: `GET /embed/link-preview?url=` → 400(형식/비https) | 503+no-store(예산·동시
   상한) | 200 `{"ok":false}`+max-age=300 | 200 `{"ok":true,title,description,
-  site_name,host}`+max-age=86400. 썸네일 필드 없음(제품 결정).
-- X resize: `twttr.private.resize` `params[0].height`, origin
-  `https://platform.twitter.com` + `event.source` 검증(실측 확인).
+  site_name,host,image_url?}`+max-age=86400. `image_url`은 서명된 동일 출처
+  `/embed/link-preview-image` URL만 반환한다.
+- X 렌더링: 원문 `blockquote.twitter-tweet`을 공식 iframe으로 승격하고 원문 텍스트를
+  오류 폴백으로 보존한다. iframe `load`가 성공 신호이며, `twttr.private.resize`는
+  origin `https://platform.twitter.com` + `event.source` 검증 후 높이 보정에만 쓴다.
 
 ## Sol 보안 리뷰 반영 기록
 
@@ -20,7 +23,7 @@
   IP 고정. / 예산 실효성 → 예산 획득을 DNS보다 선행, 전역 동시 실행 상한(기본 4),
   전체 deadline(기본 8s)로 슬로우 전송 차단.
 - 중요: http 링크의 조회 슬롯 소진 → link_preview.js가 https만 선정. /
-  X 타임아웃 시 숨은 iframe 포커스 트랩 → `visibility: hidden`으로 탭 진입 차단.
+  이미지 프록시는 HMAC URL 결합, 래스터 allowlist, 5MiB 제한, hop별 공인 IP 재검증.
 - 사소: 실패 캐시 TTL 300s 정합, `MIRROR_LINK_PREVIEW_*` 환경변수 README·
   .env.example 문서화(워커 프로세스별 한도 명시).
 - 수용된 한계: 예산은 워커 프로세스별(기존 /embed/youtube-size와 동일 전례).

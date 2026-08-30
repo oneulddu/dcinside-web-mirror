@@ -18,8 +18,8 @@
     var TWITTER_SELECTOR = '.article-body iframe[src^="https://platform.twitter.com/embed/"]';
     var TWITTER_MIN_HEIGHT = 100;
     var TWITTER_MAX_HEIGHT = 3000;
-    var TWITTER_TIMEOUT_MS = 8000;
-    var TWITTER_ERROR_TEXT = "X 게시물을 불러오지 못했습니다";
+    var TWITTER_ERROR_TEXT = "X 미리보기를 불러오지 못했습니다";
+    var TWITTER_FALLBACK_TEXT = "X 미리보기 대신 원문 내용을 표시합니다";
     var MIN_RATIO = 0.2;
     var MAX_RATIO = 5;
     var ERROR_TITLE = "동영상을 불러오지 못했습니다";
@@ -56,7 +56,8 @@
     }
 
     function isFinitePositive(value) {
-        return typeof value === "number" && isFinite(value) && value > 0;
+        var numeric = Number(value);
+        return isFinite(numeric) && numeric > 0;
     }
 
     function applySize(iframe, width, height) {
@@ -190,10 +191,9 @@
 
     initYoutubeSizes();
 
-    // --- X(트위터) 임베드: 테마 일치, 실제 높이 적용, 무응답 폴백 ---
-    // platform.twitter.com은 성공 렌더링 시 twttr.private.resize 메시지를 보낸다(실측).
-    // 유효 resize 수신이 곧 성공 신호이고, 일정 시간 무응답이면 공통 오류 상태로
-    // 접는다. 늦게 신호가 오면 오류 상태를 되돌린다(복구 허용).
+    // --- X(트위터) 임베드: 테마 일치, load 성공 판정, 선택적 높이 보정 ---
+    // 현재 직접 iframe은 정상 렌더링해도 resize 메시지를 항상 보내지 않는다.
+    // load를 성공 신호로 쓰고, 검증된 resize 메시지는 높이 보정에만 사용한다.
 
     function twitterFrames() {
         return document.querySelectorAll(TWITTER_SELECTOR);
@@ -231,7 +231,7 @@
         if (!wrapper) {
             return;
         }
-        wrapper.classList.remove("is-embed-timeout");
+        wrapper.classList.remove("is-embed-failed");
         var status = wrapper.querySelector(".embed-card-status");
         if (status) {
             status.parentNode.removeChild(status);
@@ -240,41 +240,49 @@
 
     function markTwitterError(iframe) {
         var wrapper = twitterWrapper(iframe);
-        if (!wrapper || wrapper.classList.contains("is-embed-timeout")) {
+        if (!wrapper || wrapper.classList.contains("is-embed-failed")) {
             return;
         }
-        wrapper.classList.add("is-embed-timeout");
+        wrapper.classList.add("is-embed-failed");
+        wrapper.classList.remove("is-embed-ready");
         var status = document.createElement("p");
         status.className = "embed-card-status";
         status.setAttribute("aria-live", "polite");
-        status.textContent = TWITTER_ERROR_TEXT;
-        wrapper.appendChild(status);
-    }
-
-    function armTwitterWatchdog(iframe) {
-        if (iframe.__twitterWatchdog) {
-            clearTimeout(iframe.__twitterWatchdog);
-        }
-        iframe.__twitterWatchdog = setTimeout(function () {
-            if (iframe.dataset.twitterState !== "sized" && document.contains(iframe)) {
-                markTwitterError(iframe);
-            }
-        }, TWITTER_TIMEOUT_MS);
+        var fallback = wrapper.querySelector(".embed-card-fallback");
+        status.textContent = fallback
+            ? TWITTER_FALLBACK_TEXT
+            : TWITTER_ERROR_TEXT;
+        wrapper.insertBefore(status, fallback || null);
     }
 
     function resetTwitterState(iframe) {
         delete iframe.dataset.twitterState;
-        clearTwitterError(iframe);
-        if (iframe.__twitterWatchdog) {
-            clearTimeout(iframe.__twitterWatchdog);
-            iframe.__twitterWatchdog = null;
+        var wrapper = twitterWrapper(iframe);
+        if (wrapper) {
+            wrapper.classList.remove("is-embed-ready");
         }
+        clearTwitterError(iframe);
     }
 
     function applyTwitterHeight(iframe, height) {
         var clamped = Math.min(Math.max(Math.round(height), TWITTER_MIN_HEIGHT), TWITTER_MAX_HEIGHT);
         iframe.dataset.twitterState = "sized";
         iframe.style.height = clamped + "px";
+        var wrapper = twitterWrapper(iframe);
+        if (wrapper) {
+            wrapper.classList.add("is-embed-ready");
+        }
+        clearTwitterError(iframe);
+    }
+
+    function markTwitterLoaded(iframe) {
+        if (!iframe.dataset.twitterState) {
+            iframe.dataset.twitterState = "loaded";
+        }
+        var wrapper = twitterWrapper(iframe);
+        if (wrapper) {
+            wrapper.classList.add("is-embed-ready");
+        }
         clearTwitterError(iframe);
     }
 
@@ -308,13 +316,14 @@
         }
         var theme = currentTheme();
         for (var t = 0; t < frames.length; t += 1) {
-            // lazy 로딩 iframe은 뷰포트에 접근하기 전까지 로드되지 않으므로,
-            // 워치독은 실제 load 이후에만 무장한다(화면 밖 임베드 오탐 방지).
             (function (iframe) {
                 iframe.addEventListener("load", function () {
-                    if (iframe.dataset.twitterState !== "sized") {
-                        armTwitterWatchdog(iframe);
-                    }
+                    // 현재 X 직접 iframe은 콘텐츠를 정상 렌더링해도 resize 메시지를
+                    // 항상 보내지 않는다. load를 성공 신호로 쓰고 resize는 높이 보정에만 쓴다.
+                    markTwitterLoaded(iframe);
+                });
+                iframe.addEventListener("error", function () {
+                    markTwitterError(iframe);
                 });
             }(frames[t]));
             ensureTwitterTheme(frames[t], theme);

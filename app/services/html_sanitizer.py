@@ -3,10 +3,11 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
-from flask import url_for
+from flask import current_app, url_for
 
 from .dc_links import dcinside_internal_href
 from .highlight import highlight_soup_text
+from .link_preview import normalize_preview_image_url, preview_image_signature
 
 
 HTML_ALLOWED_TAGS = {
@@ -20,7 +21,10 @@ HTML_DROP_TAGS = {"script", "style", "object", "embed", "link", "meta", "base", 
 HTML_GLOBAL_ATTRS = {"class", "title"}
 HTML_TAG_ATTRS = {
     "a": {"href", "target", "rel"},
-    "iframe": {"src", "title", "loading", "width", "height", "frameborder", "scrolling", "allow", "allowfullscreen"},
+    "iframe": {
+        "src", "title", "loading", "width", "height", "frameborder", "scrolling",
+        "allow", "allowfullscreen", "referrerpolicy",
+    },
     "img": {
         "src", "alt", "loading", "decoding", "fetchpriority", "width", "height",
         "data-body-image-src", "data-dccon-src", "hidden",
@@ -230,7 +234,8 @@ def sanitize_html_tree(soup):
                     tag["rel"] = "noopener noreferrer"
             elif attr_name == "src":
                 if name == "img":
-                    if not str(value).startswith("/media?"):
+                    src = str(value)
+                    if not src.startswith(("/media?", "/embed/link-preview-image?")):
                         tag.decompose()
                         break
                 elif name == "video":
@@ -276,6 +281,7 @@ def sanitize_html_fragment(raw_html):
 
 def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
     soup = parse_html_fragment(raw_html)
+    normalize_twitter_blockquotes(soup)
     normalize_og_wraps(soup)
     rewrite_content_images(soup, images, board, pid, kind)
     rewrite_dcinside_links(soup)
@@ -315,23 +321,129 @@ def normalize_og_wraps(soup):
         preview["target"] = "_blank"
         preview["rel"] = "noopener noreferrer"
 
+        copy = soup.new_tag("span")
+        copy["class"] = ["link-preview-copy"]
+
         title_tag = soup.new_tag("span")
         title_tag["class"] = ["link-preview-title"]
         title_tag.string = title
-        preview.append(title_tag)
+        copy.append(title_tag)
 
         description = _find_og_text(anchor, {"og-desc", "og-description", "og-summary", "og-txt"})
         if description:
             description_tag = soup.new_tag("span")
             description_tag["class"] = ["link-preview-desc"]
             description_tag.string = description
-            preview.append(description_tag)
+            copy.append(description_tag)
 
         host_tag = soup.new_tag("span")
         host_tag["class"] = ["link-preview-host"]
         host_tag.string = host
-        preview.append(host_tag)
+        copy.append(host_tag)
+        preview.append(copy)
+
+        image = anchor.find("img")
+        raw_image_src = pick_soup_image_src(image) if image else None
+        image_url = normalize_preview_image_url(raw_image_src, base_url=href)
+        image_token = preview_image_signature(image_url, current_app.secret_key) if image_url else None
+        if image_url and image_token:
+            media = soup.new_tag("span")
+            media["class"] = ["link-preview-media"]
+            thumbnail = soup.new_tag("img")
+            thumbnail["class"] = ["link-preview-image"]
+            thumbnail["src"] = url_for(
+                "main.embed_link_preview_image",
+                url=image_url,
+                token=image_token,
+            )
+            thumbnail["alt"] = f"{title} 미리보기"
+            thumbnail["loading"] = "lazy"
+            thumbnail["decoding"] = "async"
+            media.append(thumbnail)
+            preview.append(media)
+            preview["class"].append("has-media")
         anchor.replace_with(preview)
+    return soup
+
+
+def _twitter_status_id_from_tag(tag):
+    anchors = tag.find_all("a", href=True) if tag else []
+    for anchor in reversed(anchors):
+        parsed = _safe_urlparse(anchor.get("href"))
+        if parsed is None or (parsed.netloc or "").lower() not in TWITTER_STATUS_HOSTS:
+            continue
+        tweet_id = tweet_id_from_status_path(parsed.path)
+        if tweet_id:
+            return tweet_id
+    return None
+
+
+def _twitter_figure(soup, tweet_id):
+    figure = soup.new_tag("figure")
+    figure["class"] = ["embed-card", "embed-card-twitter"]
+
+    head = soup.new_tag("figcaption")
+    head["class"] = ["embed-card-head"]
+    label = soup.new_tag("span")
+    label["class"] = ["embed-card-label"]
+    label.string = "X 게시물"
+    source = soup.new_tag("a", href=f"https://x.com/i/status/{tweet_id}")
+    source["class"] = ["embed-card-source"]
+    source["target"] = "_blank"
+    source["rel"] = "noopener noreferrer"
+    source.string = "X에서 열기"
+    head.extend([label, source])
+
+    iframe = soup.new_tag("iframe", src=TWITTER_EMBED_URL.format(tweet_id))
+    iframe["title"] = "X 게시물"
+    iframe["loading"] = "lazy"
+    iframe["referrerpolicy"] = "strict-origin-when-cross-origin"
+    figure.extend([head, iframe])
+    return figure, iframe
+
+
+def _remove_empty_anchor_wrappers(anchor):
+    parent = anchor.parent
+    anchor.decompose()
+    for _ in range(3):
+        if (
+            parent is None
+            or getattr(parent, "name", None) not in {"div", "p", "span"}
+            or parent.get_text("", strip=True)
+            or parent.find(True)
+        ):
+            break
+        next_parent = parent.parent
+        parent.decompose()
+        parent = next_parent
+
+
+def normalize_twitter_blockquotes(soup):
+    converted_ids = set()
+    for quote in list(soup.select("blockquote.twitter-tweet")):
+        tweet_id = _twitter_status_id_from_tag(quote)
+        if not tweet_id:
+            continue
+        figure, _ = _twitter_figure(soup, tweet_id)
+        quote.replace_with(figure)
+        quote["class"] = ["embed-card-fallback"]
+        figure.append(quote)
+        converted_ids.add(tweet_id)
+
+    if not converted_ids:
+        return soup
+
+    for anchor in list(soup.find_all("a", href=True)):
+        if anchor.find_parent("figure", class_="embed-card-twitter"):
+            continue
+        parsed = _safe_urlparse(anchor.get("href"))
+        if parsed is None or (parsed.netloc or "").lower() not in TWITTER_STATUS_HOSTS:
+            continue
+        tweet_id = tweet_id_from_status_path(parsed.path)
+        text = " ".join(anchor.stripped_strings).strip()
+        href = str(anchor.get("href") or "").strip()
+        if tweet_id in converted_ids and text in {href, href.split("?", 1)[0]}:
+            _remove_empty_anchor_wrappers(anchor)
     return soup
 
 
@@ -347,21 +459,12 @@ def wrap_twitter_iframes(soup):
             continue
         tweet_id = tweet_ids[0]
 
-        figure = soup.new_tag("figure")
-        figure["class"] = ["embed-card", "embed-card-twitter"]
-        head = soup.new_tag("figcaption")
-        head["class"] = ["embed-card-head"]
-        label = soup.new_tag("span")
-        label["class"] = ["embed-card-label"]
-        label.string = "X 게시물"
-        source = soup.new_tag("a", href=f"https://x.com/i/status/{tweet_id}")
-        source["class"] = ["embed-card-source"]
-        source["target"] = "_blank"
-        source["rel"] = "noopener noreferrer"
-        source.string = "X에서 열기"
-        head.extend([label, source])
+        figure, normalized_iframe = _twitter_figure(soup, tweet_id)
+        normalized_iframe.attrs.update(iframe.attrs)
+        normalized_iframe["src"] = TWITTER_EMBED_URL.format(tweet_id)
+        normalized_iframe["title"] = iframe.get("title") or "X 게시물"
+        normalized_iframe["loading"] = "lazy"
         iframe.replace_with(figure)
-        figure.extend([head, iframe])
     return soup
 
 
@@ -455,6 +558,11 @@ def rewrite_content_images(soup, images, board, pid, kind):
 
     image_index = 0
     for img in soup.find_all("img"):
+        if (
+            "link-preview-image" in (img.get("class") or [])
+            and str(img.get("src") or "").startswith("/embed/link-preview-image?")
+        ):
+            continue
         original_src = pick_soup_image_src(img)
         if not original_src or not image_urls[original_src]:
             img.decompose()

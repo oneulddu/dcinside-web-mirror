@@ -1,5 +1,6 @@
 import codecs
 import hashlib
+import hmac
 import html
 import http.client
 import re
@@ -17,6 +18,7 @@ from .media_proxy import PC_USER_AGENT, resolve_media_target
 
 
 PREVIEW_MAX_BYTES = 131072
+PREVIEW_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 PREVIEW_TIMEOUT = (5, 5)
 PREVIEW_CACHE_TTL = 24 * 3600
 PREVIEW_FAILURE_CACHE_TTL = 300
@@ -31,6 +33,13 @@ RATE_LIMITED = object()
 _CACHE_FAILURE = object()
 
 _CHARSET_PATTERN = re.compile(r"charset\s*=\s*[\"']?\s*([a-zA-Z0-9._:-]+)", re.IGNORECASE)
+_PREVIEW_IMAGE_CONTENT_TYPES = {
+    "image/avif",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
 
 _preview_cache = {}
 _preview_cache_lock = threading.Lock()
@@ -131,6 +140,32 @@ def is_valid_preview_url(value):
     return normalize_preview_url(value) is not None
 
 
+def normalize_preview_image_url(value, base_url=None):
+    """미리보기용 https 이미지 URL을 절대 주소로 정규화한다."""
+    raw_url = str(value or "").strip()
+    if not raw_url:
+        return None
+    if base_url:
+        raw_url = urljoin(base_url, raw_url)
+    elif raw_url.startswith("//"):
+        raw_url = "https:" + raw_url
+    return normalize_preview_url(raw_url)
+
+
+def preview_image_signature(url, secret_key):
+    normalized_url = normalize_preview_image_url(url)
+    secret = str(secret_key or "").encode("utf-8")
+    if not normalized_url or not secret:
+        return None
+    return hmac.new(secret, normalized_url.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def has_valid_preview_image_signature(url, token, secret_key):
+    expected = preview_image_signature(url, secret_key)
+    supplied = str(token or "").strip()
+    return bool(expected and supplied and hmac.compare_digest(expected, supplied))
+
+
 def _cache_key(url):
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
@@ -187,19 +222,26 @@ def _decode_preview_body(body, content_type=None):
     return body.decode("utf-8", errors="replace")
 
 
-def _parse_preview(body, host, content_type=None):
+def _parse_preview(body, host, base_url, content_type=None):
     soup = BeautifulSoup(_decode_preview_body(body, content_type), "lxml")
     title = _clean_text(_meta_content(soup, "og:title"), 150)
     if not title and soup.title:
         title = _clean_text(soup.title.get_text(" ", strip=True), 150)
     if not title:
         return None
-    return {
+    result = {
         "title": title,
         "description": _clean_text(_meta_content(soup, "og:description"), 200),
         "site_name": _clean_text(_meta_content(soup, "og:site_name"), 150),
         "host": host,
     }
+    image_url = normalize_preview_image_url(
+        _meta_content(soup, "og:image:secure_url") or _meta_content(soup, "og:image"),
+        base_url=base_url,
+    )
+    if image_url:
+        result["image_url"] = image_url
+    return result
 
 
 def _deadline_remaining(started_at):
@@ -254,6 +296,32 @@ def _read_limited_html(response, started_at):
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)
+
+
+def _read_limited_image(response, started_at):
+    _check_deadline(started_at)
+    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if content_type not in _PREVIEW_IMAGE_CONTENT_TYPES:
+        return None
+
+    raw_length = (response.headers.get("Content-Length") or "").strip()
+    if raw_length:
+        if not raw_length.isdigit() or int(raw_length) > PREVIEW_IMAGE_MAX_BYTES:
+            return None
+
+    chunks = []
+    total = 0
+    while total <= PREVIEW_IMAGE_MAX_BYTES:
+        _check_deadline(started_at)
+        chunk = response.read(min(65536, PREVIEW_IMAGE_MAX_BYTES + 1 - total))
+        _check_deadline(started_at)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if total > PREVIEW_IMAGE_MAX_BYTES:
+        return None
+    return b"".join(chunks), content_type
 
 
 def _connect_pinned_target(target, started_at, socket_guard):
@@ -344,6 +412,48 @@ def _request_preview_target(url, target, started_at, socket_guard):
             socket_guard.untrack(tls_socket)
 
 
+def _request_preview_image_target(url, target, started_at, socket_guard):
+    parsed = urlparse(url)
+    request_target = parsed.path or "/"
+    if parsed.query:
+        request_target = f"{request_target}?{parsed.query}"
+
+    tls_socket = _connect_pinned_target(target, started_at, socket_guard)
+    connection = http.client.HTTPConnection(
+        target.hostname,
+        target.port,
+        timeout=min(PREVIEW_TIMEOUT[1], _check_deadline(started_at)),
+    )
+    connection.sock = tls_socket
+    response = None
+    try:
+        tls_socket.settimeout(min(PREVIEW_TIMEOUT[1], _check_deadline(started_at)))
+        connection.request(
+            "GET",
+            request_target,
+            headers={
+                "Host": target.host_header,
+                "User-Agent": PC_USER_AGENT,
+                "Accept": "image/avif,image/webp,image/png,image/jpeg,image/gif;q=0.8",
+                "Accept-Encoding": "identity",
+                "Connection": "close",
+            },
+        )
+        response = connection.getresponse()
+        _check_deadline(started_at)
+        image = None
+        if 200 <= response.status < 300:
+            image = _read_limited_image(response, started_at)
+        return response.status, response.headers, image
+    finally:
+        try:
+            if response is not None:
+                response.close()
+        finally:
+            connection.close()
+            socket_guard.untrack(tls_socket)
+
+
 def _fetch_uncached(url):
     if not _preview_concurrency.acquire(blocking=False):
         return RATE_LIMITED
@@ -391,8 +501,70 @@ def _fetch_uncached(url):
             return _parse_preview(
                 body,
                 target.hostname,
+                current_url,
                 headers.get("Content-Type"),
             )
+    except (
+        OSError,
+        ssl.SSLError,
+        http.client.HTTPException,
+        UnicodeError,
+        ValueError,
+        _PreviewDeadlineExceeded,
+    ):
+        return None
+    finally:
+        deadline_timer.cancel()
+        socket_guard.close_current()
+        _preview_concurrency.release()
+
+
+def fetch_preview_image(url):
+    """서명 검증을 마친 외부 미리보기 이미지를 제한된 크기로 가져온다."""
+    normalized_url = normalize_preview_image_url(url)
+    if not normalized_url:
+        return None
+    if not _preview_concurrency.acquire(blocking=False):
+        return RATE_LIMITED
+
+    started_at = time.monotonic()
+    socket_guard = _DeadlineSocketGuard()
+    deadline_timer = threading.Timer(
+        max(_deadline_remaining(started_at), 0),
+        socket_guard.expire,
+    )
+    deadline_timer.daemon = True
+    deadline_timer.start()
+    try:
+        current_url = normalized_url
+        redirects = 0
+        while True:
+            current_url = normalize_preview_image_url(current_url)
+            if not current_url:
+                return None
+            _check_deadline(started_at)
+            if not _acquire_probe_slot():
+                return RATE_LIMITED
+
+            target = _resolve_target_with_deadline(current_url, started_at)
+            if target is None:
+                return None
+            status_code, headers, image = _request_preview_image_target(
+                current_url,
+                target,
+                started_at,
+                socket_guard,
+            )
+            location = headers.get("Location")
+            if status_code in {301, 302, 303, 307, 308} and location:
+                if redirects >= PREVIEW_MAX_REDIRECTS:
+                    return None
+                redirects += 1
+                current_url = urljoin(current_url, location)
+                continue
+            if not 200 <= status_code < 300 or image is None:
+                return None
+            return image
     except (
         OSError,
         ssl.SSLError,

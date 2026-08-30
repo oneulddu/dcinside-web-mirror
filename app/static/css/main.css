@@ -1137,12 +1137,12 @@ a.pager-btn:active {
 }
 
 /* X(트위터) 게시물 임베드. sanitizer가 .embed-card로 감싸고, 실제 높이는
-   embed_resizer.js가 platform.twitter.com의 resize 메시지로 적용한다.
-   420px는 메시지 수신 전/JS 미동작 폴백 높이다. */
+   embed_resizer.js가 platform.twitter.com의 resize 메시지가 있을 때 보정한다.
+   직접 iframe은 메시지 없이도 렌더링되므로 clamp 높이와 내부 스크롤을 폴백으로 쓴다. */
 .article-body iframe[src^="https://platform.twitter.com/embed/"] {
     aspect-ratio: auto;
     width: 100%;
-    height: 420px;
+    height: clamp(480px, 78vh, 640px);
     margin: 0;
     background: var(--surface);
 }
@@ -1157,12 +1157,26 @@ a.pager-btn:active {
 /* --- 임베드 카드 크롬 (X 게시물 래퍼) --- */
 
 .embed-card {
-    max-width: 550px;
     margin: var(--space-4) auto;
     border: var(--rule) solid var(--line);
     border-radius: var(--radius-s);
     overflow: hidden;
     background: var(--bg);
+}
+
+.embed-card-twitter {
+    max-width: 550px;
+}
+
+.embed-card:focus-within {
+    border-color: var(--accent);
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: 2px;
+}
+
+.article-body .embed-card iframe:focus-visible,
+.article-body .embed-card iframe:focus-within {
+    outline: 0;
 }
 
 .embed-card-head {
@@ -1177,6 +1191,11 @@ a.pager-btn:active {
     color: var(--muted);
 }
 
+.embed-card-label {
+    color: var(--fg);
+    font-weight: 700;
+}
+
 .article-body .embed-card-source {
     color: var(--accent);
     text-decoration: none;
@@ -1189,19 +1208,39 @@ a.pager-btn:active {
     text-underline-offset: 3px;
 }
 
-/* X 로드 실패(리사이즈 신호 미수신) 시 iframe을 접고 상태 문구만 남긴다.
-   늦게 신호가 오면 JS가 상태를 되돌린다. visibility로 탭 포커스 진입도 막는다. */
-.embed-card.is-embed-timeout iframe {
-    height: 0;
-    min-height: 0;
-    visibility: hidden;
+/* X iframe 자체의 load 오류가 확인되면 프레임을 접고 원문 blockquote를 보여준다.
+   이후 load 또는 유효한 resize 신호가 오면 공식 임베드로 복구한다. */
+.embed-card.is-embed-failed iframe {
+    display: none;
 }
 
 .embed-card-status {
     margin: 0;
-    padding: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: var(--rule) solid var(--line);
+    background: var(--surface);
     font: var(--type-meta);
     color: var(--muted);
+}
+
+.embed-card-fallback {
+    display: none;
+    margin: 0;
+    padding: var(--space-4);
+    border: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: var(--type-comment);
+    overflow-wrap: anywhere;
+}
+
+.embed-card.is-embed-failed .embed-card-fallback {
+    display: block;
+}
+
+.embed-card-fallback p:last-child,
+.embed-card-fallback > :last-child {
+    margin-bottom: 0;
 }
 
 /* --- DCInside 투표 요약 카드 (서버가 dc-poll-card DOM을 생성) --- */
@@ -1285,9 +1324,10 @@ a.pager-btn:active {
 /* --- 링크 미리보기 카드 (og-wrap 정규화 + link_preview.js 조회 결과 공용) --- */
 
 .article-body a.link-preview {
-    display: block;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     margin: var(--space-3) 0 var(--space-4);
-    padding: var(--space-3) var(--space-4);
+    padding: 0;
     border: var(--rule) solid var(--line);
     border-radius: var(--radius-s);
     background: var(--bg);
@@ -1296,9 +1336,55 @@ a.pager-btn:active {
     overflow: hidden;
 }
 
+.article-body a.link-preview.has-media {
+    grid-template-columns: minmax(0, 1fr) 104px;
+}
+
 .article-body a.link-preview:hover {
     background: var(--hover);
     color: var(--fg);
+}
+
+.article-body a.link-preview:focus-visible {
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: 2px;
+}
+
+.link-preview-copy {
+    display: flex;
+    min-width: 0;
+    padding: var(--space-3) var(--space-4);
+    flex-direction: column;
+    justify-content: center;
+}
+
+.link-preview-media {
+    display: block;
+    min-width: 0;
+    border-left: var(--rule) solid var(--line);
+    background: var(--surface);
+    overflow: hidden;
+}
+
+.article-body img.link-preview-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 104px;
+    max-height: 136px;
+    border-radius: 0;
+    outline: 0;
+    object-fit: cover;
+}
+
+html[data-media-block-mode="body"] .article-body a.link-preview.has-media,
+html[data-media-block-mode="all"] .article-body a.link-preview.has-media {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-media-block-mode="body"] .link-preview-media,
+html[data-media-block-mode="all"] .link-preview-media {
+    display: none;
 }
 
 .link-preview-title {
@@ -1630,6 +1716,10 @@ html[data-theme="dark"] .comment-main img.dccon {
     filter: brightness(0.85);
 }
 
+html[data-theme="dark"] .article-body img.link-preview-image {
+    filter: none;
+}
+
 html[data-theme="dark"] .article-body iframe[src*="youtube.com/embed"],
 html[data-theme="dark"] .article-body iframe[src*="youtube-nocookie.com/embed"],
 html[data-theme="dark"] .article-body iframe[src^="/movie"] {
@@ -1693,6 +1783,10 @@ html[data-theme="dark"] .article-body iframe:focus-within {
     .shell {
         padding-left: var(--space-6);
         padding-right: var(--space-6);
+    }
+
+    .article-body a.link-preview.has-media {
+        grid-template-columns: minmax(0, 1fr) 128px;
     }
 }
 
