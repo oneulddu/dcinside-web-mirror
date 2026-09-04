@@ -39,6 +39,7 @@ def clear_core_caches():
     core._READ_CACHE.clear()
     core._READ_STALE_CACHE.clear()
     core._READ_INFLIGHT.clear()
+    core._BOARD_INFLIGHT.clear()
     core._LATEST_ID_CACHE.clear()
     core._AUTHOR_CODE_CACHE.clear()
     core._CACHE_PRUNE_STATE.clear()
@@ -50,6 +51,7 @@ def clear_core_caches():
     core._READ_CACHE.clear()
     core._READ_STALE_CACHE.clear()
     core._READ_INFLIGHT.clear()
+    core._BOARD_INFLIGHT.clear()
     core._LATEST_ID_CACHE.clear()
     core._AUTHOR_CODE_CACHE.clear()
     core._CACHE_PRUNE_STATE.clear()
@@ -1351,3 +1353,310 @@ async def test_related_after_position_respects_zero_tail_pages():
     assert related == []
     assert has_more is False
     assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", ["index", "page", "times"])
+@pytest.mark.parametrize("ttl", [0, 20])
+async def test_board_lookups_coalesce_concurrent_misses_and_copy_results(monkeypatch, lookup, ttl):
+    calls = 0
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def board(self, headtexts_collector=None, pagination_collector=None, **kwargs):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            if headtexts_collector is not None:
+                headtexts_collector.append({"head_id": None, "label": "전체"})
+            if pagination_collector is not None:
+                pagination_collector.update({"current_page": 1, "has_next": True})
+            yield _index_item(123)
+
+        async def board_precise_times(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return {"123": "2026-09-05 12:30:00"}
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+    monkeypatch.setattr(core, "BOARD_PAGE_CACHE_TTL", ttl)
+    monkeypatch.setattr(core, "BOARD_TIME_CACHE_TTL", ttl)
+    collectors = [{} for _ in range(32)]
+
+    async def fetch(index):
+        if lookup == "index":
+            return await core.async_index_with_head_categories(1, "test", 0, pagination_collector=collectors[index])
+        if lookup == "page":
+            return await core._fetch_board_page(FakeAPI(), 1, "test", 0)
+        return await core.async_board_precise_times(1, "test", 0, target_ids=["123"])
+
+    owner = asyncio.create_task(fetch(0))
+    await asyncio.wait_for(started.wait(), 2)
+    waiters = [asyncio.create_task(fetch(i)) for i in range(1, 32)]
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(owner, *waiters)
+    assert calls == 1
+    assert all(result == results[0] for result in results)
+    if lookup == "index":
+        results[0][0][0]["title"] = "changed"
+        results[0][1][0]["label"] = "changed"
+        collectors[0]["current_page"] = 999
+        assert results[1][0][0]["title"] == "title 123"
+        assert results[1][1][0]["label"] == "전체"
+        assert collectors[1] == {"current_page": 1, "has_next": True}
+    elif lookup == "page":
+        results[0][0]["title"] = "changed"
+        assert results[1][0]["title"] == "title 123"
+    else:
+        results[0]["123"] = "changed"
+        assert results[1]["123"] == "2026-09-05 12:30"
+    await fetch(1)
+    assert calls == (2 if ttl == 0 else 1)
+    assert core._BOARD_INFLIGHT == {}
+
+
+@pytest.mark.asyncio
+async def test_board_different_filters_run_in_parallel(monkeypatch):
+    calls = []
+    release = asyncio.Event()
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def board(self, **kwargs):
+            calls.append((kwargs["search_keyword"], kwargs["head_id"]))
+            await release.wait()
+            yield _index_item(kwargs["head_id"])
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+    tasks = [asyncio.create_task(core.async_index_with_head_categories(
+        1, "test", 0, search_keyword=keyword, head_id=head_id,
+    )) for keyword, head_id in [("a", "1"), ("a", "2"), ("b", "1")]]
+    await asyncio.sleep(0)
+    assert calls == [("a", "1"), ("a", "2"), ("b", "1")]
+    release.set()
+    results = await asyncio.gather(*tasks)
+    assert [result[0][0]["id"] for result in results] == ["1", "2", "1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["error", "cancel"])
+async def test_board_owner_failure_releases_followers_for_retry(monkeypatch, failure):
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def board(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+                raise RuntimeError("upstream failed")
+            yield _index_item(123)
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+    owner = asyncio.create_task(core.async_index_with_head_categories(1, "test", 0))
+    await asyncio.wait_for(started.wait(), 2)
+    waiter = asyncio.create_task(core.async_index_with_head_categories(1, "test", 0))
+    await asyncio.sleep(0)
+    if failure == "cancel":
+        owner.cancel()
+    else:
+        release.set()
+    with pytest.raises(asyncio.CancelledError if failure == "cancel" else RuntimeError):
+        await owner
+    with pytest.raises(core.dc_api.DocumentUnavailableError):
+        await asyncio.wait_for(waiter, 2)
+    rows, _ = await core.async_index_with_head_categories(1, "test", 0)
+    assert rows[0]["id"] == "123"
+    assert calls == 2
+    assert core._BOARD_INFLIGHT == {}
+
+
+@pytest.mark.asyncio
+async def test_cold_force_refresh_coalesces_and_preserves_pagination(monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def board(self, pagination_collector=None, **kwargs):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            pagination_collector.update({"current_page": 1, "has_next": False})
+            yield _index_item(123)
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+    owner = asyncio.create_task(core.async_index_with_head_categories(1, "test", 0, force_refresh=True))
+    await asyncio.wait_for(started.wait(), 2)
+    collector = {}
+    waiter = asyncio.create_task(core.async_index_with_head_categories(
+        1, "test", 0, force_refresh=True, pagination_collector=collector,
+    ))
+    await asyncio.sleep(0)
+    release.set()
+    assert await owner == await waiter
+    assert calls == 1
+    assert collector == {"current_page": 1, "has_next": False}
+
+
+@pytest.mark.asyncio
+async def test_read_waiter_timeout_does_not_cancel_owner_or_other_waiters(monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def load(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return {"html": "body", "related_posts": [{"id": "99"}], "_comments_complete": True}, [], []
+
+    monkeypatch.setattr(core, "_load_read_payload", load)
+    monkeypatch.setattr(core, "READ_SINGLEFLIGHT_TIMEOUT", 0.01)
+    owner = asyncio.create_task(core.async_read("123", "test"))
+    await asyncio.wait_for(started.wait(), 2)
+    with pytest.raises(core.dc_api.DocumentUnavailableError, match="wait timed out"):
+        await core.async_read("123", "test")
+    monkeypatch.setattr(core, "READ_SINGLEFLIGHT_TIMEOUT", 2)
+    waiter = asyncio.create_task(core.async_read("123", "test"))
+    await asyncio.sleep(0)
+    release.set()
+    owner_result, waiter_result = await asyncio.gather(owner, waiter)
+    assert owner_result[0]["related_posts"] == [{"id": "99"}]
+    assert waiter_result[0]["related_posts"] == []
+    assert waiter_result[0]["html"] == "body"
+    assert core._READ_INFLIGHT == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", ["index", "page"])
+async def test_concurrent_empty_board_result_is_shared_but_not_cached(monkeypatch, lookup):
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def board(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            if False:
+                yield None
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+
+    def fetch():
+        if lookup == "index":
+            return core.async_index_with_head_categories(1, "test", 0)
+        return core._fetch_board_page(FakeAPI(), 1, "test", 0)
+
+    owner = asyncio.create_task(fetch())
+    await asyncio.wait_for(started.wait(), 2)
+    waiter = asyncio.create_task(fetch())
+    await asyncio.sleep(0)
+    release.set()
+    assert await owner == await waiter
+    assert calls == 1
+    await fetch()
+    assert calls == 2
+    assert core._BOARD_INFLIGHT == {}
+
+
+@pytest.mark.asyncio
+async def test_warm_board_cache_remains_available_during_force_refresh(monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def board(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                started.set()
+                await release.wait()
+            yield _index_item(100 + calls)
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+    await core.async_index_with_head_categories(1, "test", 0)
+    refresh = asyncio.create_task(core.async_index_with_head_categories(1, "test", 0, force_refresh=True))
+    await asyncio.wait_for(started.wait(), 2)
+    cached, _ = await asyncio.wait_for(core.async_index_with_head_categories(1, "test", 0), 2)
+    throttled, _ = await asyncio.wait_for(core.async_index_with_head_categories(1, "test", 0, force_refresh=True), 2)
+    assert cached[0]["id"] == throttled[0]["id"] == "101"
+    release.set()
+    fresh, _ = await refresh
+    assert fresh[0]["id"] == "102"
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_force_refresh_during_ordinary_fetch_keeps_empty_result_cache(monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    class FakeAPI:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def board(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            if False:
+                yield None
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+    ordinary = asyncio.create_task(core.async_index_with_head_categories(1, "test", 0))
+    await asyncio.wait_for(started.wait(), 2)
+    refresh = asyncio.create_task(core.async_index_with_head_categories(1, "test", 0, force_refresh=True))
+    await asyncio.sleep(0)
+    release.set()
+    assert await ordinary == await refresh == ([], [])
+    assert calls == 2
+    key = core._board_index_cache_key(1, "test", 0)
+    assert core._cache_get(core._BOARD_INDEX_CACHE, core._BOARD_INDEX_CACHE_LOCK, key) == ([], [], {})
+    await core.async_index_with_head_categories(1, "test", 0, force_refresh=True)
+    assert calls == 2
+    assert core._BOARD_INFLIGHT == {}
