@@ -282,12 +282,13 @@ def sanitize_html_fragment(raw_html):
 def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
     soup = parse_html_fragment(raw_html)
     normalize_twitter_blockquotes(soup)
-    normalize_twitter_status_links(soup)
     normalize_og_wraps(soup)
     rewrite_content_images(soup, images, board, pid, kind)
     rewrite_dcinside_links(soup)
     sanitize_html_tree(soup)
     wrap_twitter_iframes(soup)
+    # Decide duplicates only after discarded markup and OG previews are gone.
+    normalize_twitter_status_links(soup)
     mark_link_preview_targets(soup)
     highlight_soup_text(soup, search_keyword)
     return serialize_html_fragment(soup)
@@ -310,6 +311,10 @@ def _find_og_text(anchor, class_names):
 def normalize_og_wraps(soup):
     for anchor in list(soup.select("a.og-wrap")):
         href = str(anchor.get("href") or "").strip()
+        if _is_bare_twitter_status_link(anchor, href) and _is_standalone_twitter_link(anchor):
+            # Let the dedicated X converter handle a plain status URL after
+            # sanitization, even if DC supplied an incomplete OG wrapper.
+            continue
         title = _find_og_text(anchor, {"og-tit", "og-title"})
         if not is_safe_href(href) or not title:
             anchor.decompose()
@@ -415,24 +420,7 @@ def _twitter_figure(soup, tweet_id):
     return figure, iframe, fallback
 
 
-def _remove_empty_anchor_wrappers(anchor):
-    parent = anchor.parent
-    anchor.decompose()
-    for _ in range(3):
-        if (
-            parent is None
-            or getattr(parent, "name", None) not in {"div", "p", "span"}
-            or parent.get_text("", strip=True)
-            or parent.find(True)
-        ):
-            break
-        next_parent = parent.parent
-        parent.decompose()
-        parent = next_parent
-
-
 def normalize_twitter_blockquotes(soup):
-    converted_ids = set()
     for quote in list(soup.select("blockquote.twitter-tweet")):
         tweet_id = _twitter_status_id_from_tag(quote)
         if not tweet_id:
@@ -441,26 +429,15 @@ def normalize_twitter_blockquotes(soup):
         quote.replace_with(figure)
         quote["class"] = ["embed-card-fallback"]
         fallback.replace_with(quote)
-        converted_ids.add(tweet_id)
-
-    if not converted_ids:
-        return soup
-
-    for anchor in list(soup.find_all("a", href=True)):
-        if anchor.find_parent("figure", class_="embed-card-twitter"):
-            continue
-        parsed = _safe_urlparse(anchor.get("href"))
-        if parsed is None or (parsed.netloc or "").lower() not in TWITTER_STATUS_HOSTS:
-            continue
-        tweet_id = tweet_id_from_status_path(parsed.path)
-        text = " ".join(anchor.stripped_strings).strip()
-        href = str(anchor.get("href") or "").strip()
-        if tweet_id in converted_ids and text in {href, href.split("?", 1)[0]}:
-            _remove_empty_anchor_wrappers(anchor)
+    # Duplicate bare links are handled by normalize_twitter_status_links(),
+    # using the same content-preservation and retained-iframe checks.
     return soup
 
 
 def _is_bare_twitter_status_link(anchor, href):
+    text_tags = {"span", "b", "strong", "em", "i", "u", "s", "del"}
+    if any(tag.name not in text_tags for tag in anchor.find_all(True)):
+        return False
     parsed = _safe_urlparse(href)
     if (
         parsed is None
@@ -486,34 +463,73 @@ def _is_bare_twitter_status_link(anchor, href):
     }
 
 
-def _standalone_twitter_link_container(anchor):
-    """p/span 안의 단독 링크만 안전한 블록 컨테이너까지 끌어올린다."""
-    container = anchor
-    parent = anchor.parent
-    while getattr(parent, "name", None) in {"p", "span"}:
-        if any(
-            child is not container
-            and getattr(child, "name", None) != "br"
-            and str(child).strip()
-            for child in parent.contents
-        ):
-            return None
-        container = parent
-        parent = parent.parent
-    return container
+_TWITTER_BLOCK_TAGS = {
+    "body", "html", "[document]", "p", "div", "blockquote", "figure", "pre",
+    "ul", "ol", "li", "table", "tbody", "thead", "tr", "td", "th", "dl", "dt", "dd",
+    "h1", "h2", "h3", "h4", "h5", "h6", "hr",
+}
+
+
+def _is_standalone_twitter_link(anchor):
+    """Check the whole rendered line, including enclosing inline wrappers."""
+    if anchor.find_parent(["pre", "code", "video", "iframe"]):
+        return False
+    node = anchor
+    before_open = after_open = True
+    while node.parent is not None:
+        for before in (True, False):
+            if not (before_open if before else after_open):
+                continue
+            siblings = node.previous_siblings if before else node.next_siblings
+            for sibling in siblings:
+                if getattr(sibling, "name", None) in _TWITTER_BLOCK_TAGS | {"br"}:
+                    if before:
+                        before_open = False
+                    else:
+                        after_open = False
+                    break
+                if str(sibling).strip():
+                    return False
+        if node.parent.name in _TWITTER_BLOCK_TAGS:
+            return True
+        node = node.parent
+    return True
+
+
+def _replace_twitter_link_with_figure(soup, anchor, figure):
+    """Lift a card out of inline/paragraph wrappers without losing either side."""
+    anchor.replace_with(figure)
+    phrasing_blocks = {"p", "h1", "h2", "h3", "h4", "h5", "h6"}
+    while figure.parent is not None:
+        parent = figure.parent
+        if parent.name in _TWITTER_BLOCK_TAGS - phrasing_blocks:
+            break
+        before = soup.new_tag(parent.name, attrs=dict(parent.attrs))
+        after = soup.new_tag(parent.name, attrs=dict(parent.attrs))
+        destination = before
+        for child in list(parent.contents):
+            if child is figure:
+                destination = after
+            else:
+                destination.append(child.extract())
+        if before.get_text(strip=True) or before.find(True):
+            parent.insert_before(before)
+        parent.insert_before(figure.extract())
+        if after.get_text(strip=True) or after.find(True):
+            parent.insert_before(after)
+        parent.decompose()
 
 
 def _twitter_iframe_ids(soup):
     tweet_ids = set()
     for iframe in soup.find_all("iframe", src=True):
-        parsed = _safe_urlparse(iframe.get("src"))
-        if parsed is None:
+        if iframe.find_parent(list(HTML_DROP_TAGS)):
             continue
-        normalized_src = normalize_twitter_iframe_src(parsed)
-        if not normalized_src:
+        normalized_src = normalize_safe_iframe_src(iframe.get("src"))
+        normalized = _safe_urlparse(normalized_src) if normalized_src else None
+        if normalized is None or normalized.netloc not in TWITTER_PLATFORM_HOSTS:
             continue
-        normalized = _safe_urlparse(normalized_src)
-        values = parse_qs(normalized.query).get("id", []) if normalized else []
+        values = parse_qs(normalized.query).get("id", [])
         if values and values[0].isdigit():
             tweet_ids.add(values[0])
     return tweet_ids
@@ -528,16 +544,15 @@ def normalize_twitter_status_links(soup):
         href = str(anchor.get("href") or "").strip()
         if not _is_bare_twitter_status_link(anchor, href):
             continue
-        container = _standalone_twitter_link_container(anchor)
-        if container is None:
+        if not _is_standalone_twitter_link(anchor):
             continue
         parsed = _safe_urlparse(href)
         tweet_id = tweet_id_from_status_path(parsed.path)
         if tweet_id in embedded_ids:
-            container.decompose()
+            anchor.decompose()
             continue
         figure, _, _ = _twitter_figure(soup, tweet_id)
-        container.replace_with(figure)
+        _replace_twitter_link_with_figure(soup, anchor, figure)
         embedded_ids.add(tweet_id)
     return soup
 
