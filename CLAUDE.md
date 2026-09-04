@@ -91,13 +91,18 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
 When a user explicitly names a frontend skill or workflow, that named workflow takes priority over
 general visual QA helpers.
 
-- `$ux-first-fable`: first inspect the target screen, write or update `docs/ux-flow.md`, prepare
-  `docs/fable-handoff.md`, and run the Fable/Claude Code handoff before making or finalizing UI
-  changes when the CLI is available. If the handoff cannot run, report the exact blocker.
+- `$ux-first-fable`: for substantial UI work, inspect the target screen and update `docs/ux-flow.md`
+  with the UX contract. Select the installed skill's path from the actual primary model:
+  Astra owns planning, backend, integration, and browser acceptance on the Astra path;
+  Fable owns frontend and integration on the Fable path. Use Astra for former Sol roles.
+  Prepare `docs/fable-handoff.md` only for an actual Fable handoff. The historical skill name
+  does not require launching Claude Code or switching away from an Astra primary.
+  Use available delegation tools and the skill's bounded worker roles. Report a required
+  unavailable role precisely while continuing independent authorized work.
 - Superloopy: treat as opt-in visual QA, not an automatic frontend owner. Use it only when the user
   explicitly asks for Superloopy/loopy, strict visual evidence, anti-slop auditing, or a
   Superloopy evidence trail.
-- If both are explicitly requested, run the UX/Fable workflow first. Use Superloopy afterward as a
+- If both are explicitly requested, run the selected UX workflow first. Use Superloopy afterward as a
   verification gate for tokens, anti-slop checks, browser screenshots, and evidence files.
 - For ordinary UI edits without a named workflow, follow `DESIGN.md`, keep changes scoped, and run
   real browser checks when visual quality is part of the task.

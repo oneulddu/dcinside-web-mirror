@@ -122,9 +122,12 @@ Sol UX 플랜(ux-first-fable 워크플로) 기반. 원칙: 본문 흐름을 유�
 대행하지 않는다.
 
 - X 게시물: sanitizer가 `figure.embed-card.embed-card-twitter`(헤더: "X 게시물"
-  라벨 + "X에서 열기" 원본 링크)로 감싼다. 원문의 `blockquote.twitter-tweet`도
+  라벨 + "안 보이면 X에서 열기" 원본 링크)로 감싼다. 원문의 `blockquote.twitter-tweet`뿐
+  아니라 URL 자체가 본문에 노출된 맨몸 `x.com`/`twitter.com` status 링크도
   공식 iframe으로 승격해 사진·영상을 렌더링하고, 원래 blockquote는 로드 오류 때
-  보여줄 읽기 가능한 폴백으로 보존한다. embed_resizer.js는 현재 테마와 일치하는
+  보여줄 읽기 가능한 폴백으로 보존한다. 맨몸 링크와 직접 iframe에는 원문 이동
+  폴백을 생성한다. 원문 링크는 모바일에서도 40px 이상의 터치 높이를 갖는다.
+  embed_resizer.js는 현재 테마와 일치하는
   `theme` 파라미터를 적용하며, iframe `load`를 성공 신호로 사용한다. 현재 X 직접
   iframe은 정상 렌더링해도 resize 메시지를 항상 보내지 않으므로
   `twttr.private.resize`는 origin/source 검증 후 높이 보정에만 사용한다.
@@ -132,8 +135,9 @@ Sol UX 플랜(ux-first-fable 워크플로) 기반. 원칙: 본문 흐름을 유�
   카드(제목 1줄, 설명 2줄, 도메인, 썸네일)로 정규화한다. 브라우저가 제3자 이미지에
   직접 접속하지 않도록 썸네일은 HMAC 서명된 동일 출처
   `/embed/link-preview-image`에서만 가져온다.
-  맨몸 링크(앵커 텍스트==href, dcinside·유튜브·X 제외)는 `link-preview-target`으로
-  마킹되고 link_preview.js가 뷰포트 근처에서 `/embed/link-preview`로 조회한다
+  X status 링크는 위 전용 카드로 먼저 처리한다. 그 외 맨몸 링크(앵커 텍스트==href,
+  dcinside·유튜브·X 제외)는 `link-preview-target`으로 마킹되고 link_preview.js가
+  뷰포트 근처에서 `/embed/link-preview`로 조회한다
   (문서당 6개, https만, 문서 내 기존 카드와 URL 중복 제거, textContent만 주입).
   실패 시 원래 링크는 그대로 두고 작은 실패 문구만 남긴다. JS 비활성이면
   서버 정규화 카드만 보인다.
@@ -147,3 +151,24 @@ Sol UX 플랜(ux-first-fable 워크플로) 기반. 원칙: 본문 흐름을 유�
   만들지 않는다.
 - 공통: 토큰 색만, 그림자 금지, 괘선·surface 패널만. 다크모드에서 외부 라이트
   콘텐츠에 반전 필터를 적용하지 않고 카드 경계로 구분한다.
+
+## Current Task Addendum 3 - X 링크 변환과 미병합 변경 검토
+
+- 별도 문단이나 줄에 있는 텍스트 X URL만 카드로 변환한다. 문장 중간 링크,
+  코드 예제, 이미지·영상이 포함된 링크는 원래 내용과 이동 대상을 유지한다.
+- 동일한 X 게시물의 iframe과 단독 URL이 함께 있으면 한 번만 표시한다.
+  중복 여부는 sanitizer가 실제로 허용하는 iframe으로 판단한다. 허용하지 않는
+  프로토콜이나 제거될 form 등의 내부에 있는 iframe 때문에 정상 링크를 지우지 않는다.
+  이 판정은 OG 미리보기 변환과 HTML 정리를 마친 뒤에 수행한다.
+- blockquote와 iframe의 중복 URL 제거는 같은 판정 경로를 사용한다. 원문의
+  blockquote 내용과 링크 안 이미지는 오류 폴백 및 본문으로 보존한다.
+- 문단 내부의 `<br>`로 구분된 URL도 독립된 줄로 취급한다. 카드 앞뒤의 문장과
+  인라인 서식을 나누어 보존하며, 문단이나 인라인 태그 안에 figure를 중첩하지 않는다.
+- 원문 이동 링크는 iframe 상태와 관계없이 표시하며, JavaScript 비활성 상태에서도
+  사용할 수 있다. 모바일 터치 높이는 40px 이상이고 키보드 포커스가 보여야 한다.
+- 기존 iframe `load`·`error`·검증된 resize 처리와 테마 동작은 유지한다. 외부 iframe의
+  `load`만으로 실제 X 콘텐츠의 성공 여부까지 판별할 수 없으므로 원문 이동을 항상 제공한다.
+- 검증 대상은 실제 읽기 템플릿의 390px/1280px, 라이트/다크, 문장·이미지 링크 보존,
+  잘못된 iframe 제거, 오류 이벤트 후 폴백·load 복구, JavaScript 비활성 상태다.
+- 이번 검토는 Astra가 통합·서버 수정·브라우저 검증을 담당한다. 기존 Fable 문서는
+  이전 작업 기록이며, 이번 작업에서 새 Fable 구현이나 인계를 수행한 것으로 기록하지 않는다.

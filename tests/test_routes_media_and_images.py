@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
 from bs4 import BeautifulSoup
+import pytest
 from flask import Response, jsonify
 
 from app import create_app
@@ -1853,10 +1854,69 @@ def test_prepare_read_html_wraps_normalized_twitter_iframe_with_source_link():
     assert source["href"] == "https://x.com/i/status/1668868113725550592"
     assert source["target"] == "_blank"
     assert set(source["rel"]) == {"noopener", "noreferrer"}
+    assert source.get_text(strip=True) == "안 보이면 X에서 열기"
     assert figure.iframe["src"] == (
         "https://platform.twitter.com/embed/Tweet.html?id=1668868113725550592&dnt=true"
     )
     assert figure.iframe.has_attr("allowfullscreen")
+    fallback = figure.select_one("blockquote.embed-card-fallback")
+    assert fallback.get_text(" ", strip=True) == (
+        "X 미리보기를 표시할 수 없습니다. X에서 원문 열기"
+    )
+
+
+def test_prepare_read_html_promotes_bare_twitter_status_links_but_not_labeled_inline_links():
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            """
+            <p><a href="https://x.com/team/status/1961339385720320478?s=19">https://x.com/team/status/1961339385720320478?s=19</a><br></p>
+            <div><a href="https://twitter.com/team/statuses/1668868113725550592">twitter.com/team/statuses/1668868113725550592</a></div>
+            <p>참고: <a href="https://x.com/team/status/123">관련 X 게시물</a></p>
+            """,
+            [],
+            "test",
+            123,
+            None,
+        )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    figures = soup.select("figure.embed-card.embed-card-twitter")
+    assert [figure.iframe["src"] for figure in figures] == [
+        "https://platform.twitter.com/embed/Tweet.html?id=1961339385720320478&dnt=true",
+        "https://platform.twitter.com/embed/Tweet.html?id=1668868113725550592&dnt=true",
+    ]
+    assert all(figure.select_one("blockquote.embed-card-fallback") for figure in figures)
+    labeled = soup.find("a", string="관련 X 게시물")
+    assert labeled is not None
+    assert labeled["href"] == "https://x.com/team/status/123"
+    assert labeled.find_parent("figure") is None
+
+
+def test_prepare_read_html_deduplicates_bare_twitter_link_paired_with_iframe():
+    tweet_id = "1961339385720320478"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            f"""
+            <p><a href="https://x.com/team/status/{tweet_id}">https://x.com/team/status/{tweet_id}</a></p>
+            <iframe src="https://x.com/team/status/{tweet_id}"></iframe>
+            """,
+            [],
+            "test",
+            123,
+            None,
+        )
+    soup = BeautifulSoup(cleaned, "html.parser")
+
+    assert len(soup.select("figure.embed-card.embed-card-twitter")) == 1
+    assert soup.select_one("figure.embed-card-twitter iframe")["src"] == (
+        f"https://platform.twitter.com/embed/Tweet.html?id={tweet_id}&dnt=true"
+    )
+    assert not any(
+        anchor.get_text(strip=True).startswith("https://x.com/")
+        for anchor in soup.find_all("a")
+    )
 
 
 def test_prepare_read_html_promotes_twitter_blockquote_and_keeps_text_fallback():
@@ -1989,6 +2049,7 @@ def test_prepare_read_html_marks_bare_external_links_and_applies_exclusions():
         "https://twitter.com/user/status/1",
     ):
         assert "link-preview-target" not in links[text].get("class", [])
+    assert soup.select("figure.embed-card.embed-card-twitter") == []
 
 
 def test_prepare_read_html_skips_bare_link_when_matching_og_preview_follows_parent_block():
@@ -4355,3 +4416,174 @@ def test_decode_preview_body_tolerates_truncated_multibyte_tail():
     truncated = full[:-1]  # 마지막 UTF-8 시퀀스 절단
     decoded = link_preview._decode_preview_body(truncated, "text/html; charset=utf-8")
     assert "가가가" in decoded
+
+
+@pytest.mark.parametrize("discarded_embed", [
+    '<iframe src="http://platform.twitter.com/embed/Tweet.html?id=123"></iframe>',
+    '<iframe src="javascript://platform.twitter.com/embed/Tweet.html?id=123"></iframe>',
+    '<form><iframe src="https://platform.twitter.com/embed/Tweet.html?id=123"></iframe></form>',
+    '<form><blockquote class="twitter-tweet"><a href="https://x.com/team/status/123">source</a></blockquote></form>',
+])
+def test_twitter_link_survives_when_matching_embed_is_removed(discarded_embed):
+    href = "https://x.com/team/status/123"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'{discarded_embed}<p><a href="{href}">{href}</a></p>', [], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    frames = soup.select("figure.embed-card-twitter iframe")
+    assert len(frames) == 1
+    assert frames[0]["src"] == "https://platform.twitter.com/embed/Tweet.html?id=123&dnt=true"
+    assert soup.select_one("a.embed-card-source")["href"] == "https://x.com/i/status/123"
+    assert soup.select("form, script") == []
+
+
+@pytest.mark.parametrize("paired_embed", [
+    "",
+    '<iframe src="https://platform.twitter.com/embed/Tweet.html?id=123"></iframe>',
+    '<blockquote class="twitter-tweet"><a href="https://x.com/team/status/123">source</a></blockquote>',
+])
+def test_twitter_url_with_linked_image_is_preserved(paired_embed):
+    href = "https://x.com/team/status/123"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'{paired_embed}<p><a href="{href}"><img src="https://dcimg1.dcinside.com/example.jpg" alt="원본 이미지">{href}</a></p>',
+            ["https://dcimg1.dcinside.com/example.jpg"], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    image = soup.find("img", alt="원본 이미지")
+    assert image is not None
+    assert image.find_parent("a")["href"] == href
+    assert image.find_parent("a").get_text(strip=True) == href
+    assert len(soup.select("figure.embed-card-twitter")) == (1 if paired_embed else 0)
+
+
+@pytest.mark.parametrize("wrapper", ["div", "p", "span", "strong", "li", "pre", "code"])
+def test_twitter_url_inside_prose_is_not_replaced_by_card(wrapper):
+    href = "https://x.com/team/status/123"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'<{wrapper}>참고: <a href="{href}">{href}</a> 이어지는 설명</{wrapper}>',
+            [], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    assert soup.select("figure.embed-card-twitter") == []
+    assert soup.find("a", href=href).get_text(strip=True) == href
+    assert soup.get_text(" ", strip=True) == f"참고: {href} 이어지는 설명"
+
+
+def test_twitter_url_on_own_line_with_text_formatting_is_promoted():
+    href = "https://x.com/team/status/123"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'<div>앞 문장<br><strong><a href="{href}"><span>{href}</span></a></strong><br>뒤 문장</div>',
+            [], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    assert len(soup.select("figure.embed-card-twitter iframe")) == 1
+    assert "앞 문장" in soup.get_text()
+    assert "뒤 문장" in soup.get_text()
+    assert soup.select("strong figure, span figure") == []
+
+
+@pytest.mark.parametrize("discarded_content", [
+    '<form><a href="https://x.com/team/status/123">https://x.com/team/status/123</a></form>',
+    '<a class="og-wrap" href="https://example.com/post"><span class="og-tit">미리보기</span><iframe src="https://platform.twitter.com/embed/Tweet.html?id=123"></iframe></a>',
+])
+def test_twitter_deduplication_runs_after_discarded_content_is_removed(discarded_content):
+    href = "https://x.com/team/status/123"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'{discarded_content}<p><a href="{href}">{href}</a></p>', [], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    assert len(soup.select("figure.embed-card-twitter iframe")) == 1
+    assert soup.select_one("a.embed-card-source")["href"] == "https://x.com/i/status/123"
+
+
+@pytest.mark.parametrize("wrapper", ["abbr", "font", "sub", "sup"])
+@pytest.mark.parametrize("paired", [False, True])
+def test_twitter_link_in_inline_wrapper_keeps_surrounding_prose(wrapper, paired):
+    href = "https://x.com/team/status/123"
+    embed = '<iframe src="https://platform.twitter.com/embed/Tweet.html?id=123"></iframe>' if paired else ""
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'{embed}<p>참고: <{wrapper}><a href="{href}">{href}</a></{wrapper}> 설명</p>',
+            [], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    assert soup.find("a", href=href).get_text(strip=True) == href
+    assert f"참고: {href} 설명" in soup.get_text(" ", strip=True)
+    assert len(soup.select("figure.embed-card-twitter")) == int(paired)
+
+
+@pytest.mark.parametrize("wrapper", ["p", "strong", "abbr"])
+def test_twitter_url_on_separate_paragraph_line_preserves_both_sides(wrapper):
+    href = "https://x.com/team/status/123"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'<div><{wrapper}>앞 문장<br><a href="{href}">{href}</a><br>뒤 문장</{wrapper}></div>',
+            [], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    assert len(soup.select("figure.embed-card-twitter iframe")) == 1
+    assert soup.select("p figure, strong figure, abbr figure") == []
+    assert [
+        tag.get_text(" ", strip=True) for tag in soup.find_all(wrapper)
+        if not tag.find_parent("figure")
+    ] == ["앞 문장", "뒤 문장"]
+
+
+def test_twitter_urls_on_multiple_paragraph_lines_each_get_a_card():
+    first, second = "https://x.com/team/status/123", "https://x.com/team/status/456"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'<p><a href="{first}">{first}</a><br><a href="{second}">{second}</a></p>',
+            [], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    assert [iframe["src"] for iframe in soup.select("figure.embed-card-twitter iframe")] == [
+        "https://platform.twitter.com/embed/Tweet.html?id=123&dnt=true",
+        "https://platform.twitter.com/embed/Tweet.html?id=456&dnt=true",
+    ]
+    assert soup.select("p figure") == []
+
+
+def test_bare_twitter_link_in_incomplete_og_wrapper_keeps_dedicated_card():
+    href = "https://x.com/team/status/123"
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'<p><a class="og-wrap" href="{href}">{href}</a></p>', [], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    assert len(soup.select("figure.embed-card-twitter iframe")) == 1
+    assert soup.select("a.og-wrap, a.link-preview") == []
+
+
+@pytest.mark.parametrize("paired", [False, True])
+def test_twitter_fallback_link_inside_video_does_not_remove_video(paired):
+    href = "https://x.com/team/status/123"
+    video_src = "https://dcimg1.dcinside.com/example.mp4"
+    embed = '<iframe src="https://platform.twitter.com/embed/Tweet.html?id=123"></iframe>' if paired else ""
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        result = html_sanitizer.prepare_read_html(
+            f'{embed}<video controls src="{video_src}"><a href="{href}">{href}</a></video>',
+            [video_src], "test", 123, None,
+        )
+    soup = BeautifulSoup(result, "html.parser")
+    video = soup.find("video")
+    assert video is not None
+    assert video["src"].startswith("/media?")
+    assert video.has_attr("controls")
+    assert video.find("a", href=href).get_text(strip=True) == href
+    assert len(soup.select("figure.embed-card-twitter")) == int(paired)

@@ -14,7 +14,8 @@
   site_name,host,image_url?}`+max-age=86400. `image_url`은 서명된 동일 출처
   `/embed/link-preview-image` URL만 반환한다.
 - X 렌더링: 원문 `blockquote.twitter-tweet`을 공식 iframe으로 승격하고 원문 텍스트를
-  오류 폴백으로 보존한다. iframe `load`가 성공 신호이며, `twttr.private.resize`는
+  오류 폴백으로 보존한다. 맨몸 X status 링크도 카드로 승격하고, 직접 iframe과
+  맨몸 링크에는 원문 이동 폴백을 만든다. iframe `load`가 성공 신호이며, `twttr.private.resize`는
   origin `https://platform.twitter.com` + `event.source` 검증 후 높이 보정에만 쓴다.
 
 ## Sol 보안 리뷰 반영 기록

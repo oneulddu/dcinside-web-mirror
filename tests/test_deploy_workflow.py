@@ -22,3 +22,14 @@ def test_deploy_preserves_running_process_and_verifies_worktree_health():
     assert "reload ecosystem.config.js --only dc-mirror --update-env" in workflow
     assert workflow.count("git diff-index --quiet HEAD --") >= 3
     assert "--retry-connrefused" in workflow
+
+
+def test_deploy_uses_node24_actions_and_checks_configured_public_url():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "actions/checkout@v7" in workflow
+    assert "actions/setup-python@v7" in workflow
+    assert "scripts/public_smoke_url.py" in workflow
+    assert "--proto '=https'" in workflow
+    assert "--proto-redir '=https'" in workflow
+    assert "public smoke test skipped" in workflow
