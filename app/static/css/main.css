@@ -1076,12 +1076,16 @@ a.pager-btn:active {
     padding: var(--space-6) 0;
     border-bottom: var(--rule) solid var(--line);
     font: var(--type-body);
-    overflow-wrap: break-word;
+    overflow-wrap: anywhere;
     text-wrap: pretty;
 }
 
 .article-body p {
     margin: 0 0 var(--space-4);
+}
+
+.article-body pre {
+    white-space: pre-wrap;
 }
 
 .article-body img,
