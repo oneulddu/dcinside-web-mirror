@@ -151,6 +151,7 @@ def _comment_to_dict(comment):
     comment_author, comment_author_code = _normalize_author(comment.author, comment.author_id)
     is_reply = bool(getattr(comment, "is_reply", False)) or _is_reply_comment(comment.parent_id)
     return {
+        "id": str(getattr(comment, "id", "") or "").strip(),
         "time": format_display_time(comment.time),
         "contents": comment.contents,
         "author": comment_author,

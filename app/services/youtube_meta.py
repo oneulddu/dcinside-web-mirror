@@ -92,7 +92,16 @@ def parse_jpeg_dimensions(data):
     return None
 
 
-def _read_response_prefix(response, max_bytes):
+def _probe_timeout(deadline):
+    if deadline is None:
+        return SIZE_PROBE_TIMEOUT
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise requests.Timeout("YouTube metadata deadline exceeded")
+    return min(SIZE_PROBE_TIMEOUT, remaining)
+
+
+def _read_response_prefix(response, max_bytes, deadline=None):
     iter_content = getattr(response, "iter_content", None)
     if not callable(iter_content):
         return bytes(getattr(response, "content", b"") or b"")[:max_bytes]
@@ -100,6 +109,7 @@ def _read_response_prefix(response, max_bytes):
     chunks = []
     remaining = max_bytes
     for chunk in iter_content(chunk_size=min(8192, max_bytes)):
+        _probe_timeout(deadline)
         if not chunk:
             continue
         chunks.append(chunk[:remaining])
@@ -109,12 +119,12 @@ def _read_response_prefix(response, max_bytes):
     return b"".join(chunks)
 
 
-def probe_frame0_size(video_id):
+def probe_frame0_size(video_id, deadline=None):
     response = None
     try:
         response = requests.get(
             YOUTUBE_FRAME0_URL.format(video_id),
-            timeout=SIZE_PROBE_TIMEOUT,
+            timeout=_probe_timeout(deadline),
             stream=True,
             headers={
                 "User-Agent": PROBE_USER_AGENT,
@@ -124,7 +134,7 @@ def probe_frame0_size(video_id):
         # 존재하지 않는 영상은 404여도 120x90 플레이스홀더 JPEG 본문을 준다.
         if response.status_code not in (200, 206):
             return None
-        dimensions = parse_jpeg_dimensions(_read_response_prefix(response, FRAME0_READ_BYTES))
+        dimensions = parse_jpeg_dimensions(_read_response_prefix(response, FRAME0_READ_BYTES, deadline))
         if not dimensions:
             return None
         width, height = dimensions
@@ -137,20 +147,25 @@ def probe_frame0_size(video_id):
             close()
 
 
-def probe_shorts_orientation(video_id):
+def probe_shorts_orientation(video_id, deadline=None):
     """frame0 실패 시 폴백. 쇼츠(200)면 9:16 명목 크기, 그 외에는 None."""
+    response = None
     try:
         response = requests.head(
             YOUTUBE_SHORTS_PROBE_URL.format(video_id),
             allow_redirects=False,
-            timeout=SIZE_PROBE_TIMEOUT,
+            timeout=_probe_timeout(deadline),
             headers={"User-Agent": PROBE_USER_AGENT},
         )
+        if response.status_code == 200:
+            return {"width": 9, "height": 16}
+        return None
     except requests.RequestException:
         return None
-    if response.status_code == 200:
-        return {"width": 9, "height": 16}
-    return None
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
 
 
 def video_size(video_id, deadline=None):
@@ -168,11 +183,15 @@ def video_size(video_id, deadline=None):
         return None
     if not _acquire_probe_slot():
         return None
-    size = probe_frame0_size(video_id)
+    size = probe_frame0_size(video_id, deadline=deadline)
     if not size:
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
         if not _acquire_probe_slot():
             return None
-        size = probe_shorts_orientation(video_id)
+        size = probe_shorts_orientation(video_id, deadline=deadline)
+    if deadline is not None and time.monotonic() >= deadline:
+        return None
     ttl = SIZE_CACHE_TTL if size else SIZE_UNKNOWN_CACHE_TTL
     cache_set_after_insert(
         _size_cache,

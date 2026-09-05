@@ -79,9 +79,7 @@ class ParserMixin:
 
         return tabs
 
-    def __is_usable_board_page(self, parsed, text, url):
-        if "등록된 게시물이 없습니다." in text:
-            return True
+    def __has_board_rows(self, parsed):
         mobile_rows = parsed.xpath(
             "//ul[contains(@class, 'gall-detail-lst')]/li["
             "not(contains(concat(' ', normalize-space(@class), ' '), ' ad ')) and "
@@ -90,6 +88,9 @@ class ParserMixin:
         )
         pc_rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")
         return bool(mobile_rows or pc_rows)
+
+    def __is_usable_board_page(self, parsed, text, url):
+        return self.__has_board_rows(parsed) or "등록된 게시물이 없습니다." in text
 
     def __is_usable_document_page(self, parsed, text, url):
         doc_head_containers = parsed.xpath("//div[contains(@class, 'gallview-tit-box')]")

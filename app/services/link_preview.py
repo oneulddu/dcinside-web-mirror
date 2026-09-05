@@ -209,6 +209,8 @@ def _decode_preview_body(body, content_type=None):
     # 끊겼을 수 있으므로 incremental decoder(final=False)로 꼬리 불완전은 허용한다.
     for encoding in candidates + ["utf-8", "cp949"]:
         try:
+            # bytes.decode rejects binary transforms such as rot_13/zlib.
+            b" ".decode(encoding, errors="replace")
             decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
             return decoder.decode(body, False)
         except (LookupError, UnicodeDecodeError):
@@ -454,11 +456,12 @@ def _request_preview_image_target(url, target, started_at, socket_guard):
             socket_guard.untrack(tls_socket)
 
 
-def _fetch_uncached(url):
+def _fetch_uncached(url, started_at=None):
     if not _preview_concurrency.acquire(blocking=False):
         return RATE_LIMITED
 
-    started_at = time.monotonic()
+    if started_at is None:
+        started_at = time.monotonic()
     socket_guard = _DeadlineSocketGuard()
     deadline_timer = threading.Timer(
         max(_deadline_remaining(started_at), 0),
@@ -581,6 +584,7 @@ def fetch_preview_image(url):
 
 
 def fetch_preview(url):
+    started_at = time.monotonic()
     normalized_url = normalize_preview_url(url)
     if not normalized_url:
         return None
@@ -590,11 +594,15 @@ def fetch_preview(url):
         return cached
 
     lock = _url_locks[int(key[:8], 16) % len(_url_locks)]
-    with lock:
+    if not lock.acquire(timeout=max(_deadline_remaining(started_at), 0)):
+        return RATE_LIMITED
+    try:
         found, cached = _cached_result(key)
         if found:
             return cached
-        result = _fetch_uncached(normalized_url)
+        if _deadline_remaining(started_at) <= 0:
+            return RATE_LIMITED
+        result = _fetch_uncached(normalized_url, started_at=started_at)
         if result is RATE_LIMITED:
             return RATE_LIMITED
         cache_set_after_insert(
@@ -606,3 +614,5 @@ def fetch_preview(url):
             PREVIEW_CACHE_MAX_ITEMS,
         )
         return result
+    finally:
+        lock.release()

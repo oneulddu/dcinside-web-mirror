@@ -503,7 +503,7 @@ async def test_replace_poll_iframes_handles_relative_poll_src():
     doc_content = lxml.html.fromstring(
         """
         <div>
-          <iframe src="/poll?vote_id=123"></iframe>
+          <iframe src="/poll?vote_id=123"></iframe>투표 뒤의 본문
           <iframe src="//evil.com/poll"></iframe>
         </div>
         """
@@ -535,6 +535,23 @@ async def test_replace_poll_iframes_handles_relative_poll_src():
         "https://m.dcinside.com/poll?vote_id=123"
     ]
     assert doc_content.xpath(".//iframe/@src") == ["//evil.com/poll"]
+    assert "투표 뒤의 본문" in doc_content.text_content()
+
+
+@pytest.mark.asyncio
+async def test_placeholder_video_replacement_preserves_following_text():
+    api = API.__new__(API)
+    content = lxml.html.fromstring(
+        '<div>before<img src="https://nstatic.dcinside.com/dc/m/img/m_webp.png" data-fileno="1">after<p>end</p></div>'
+    )
+
+    async def sources(*args, **kwargs):
+        return [{"type": "video", "src": "https://dcimg7.dcinside.co.kr/movie.mp4"}]
+
+    api._API__pc_document_media_sources = sources
+    await api._API__repair_placeholder_images_from_pc(content, "test", "123")
+    assert content.xpath(".//video/source/@src") == ["https://dcimg7.dcinside.co.kr/movie.mp4"]
+    assert content.text_content() == "beforeafterend"
 
 
 class _DummyComment:

@@ -1042,6 +1042,65 @@ async def test_async_read_does_not_cache_incomplete_comments(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_async_read_retry_deduplicates_partial_cached_comments(monkeypatch):
+    first = Comment(
+        id="11", parent_id="0", author="익명", author_id=None,
+        contents="first", dccon=None, voice=None, time="-",
+    )
+    second = Comment(
+        id="12", parent_id="0", author="익명", author_id=None,
+        contents="second", dccon=None, voice=None, time="-",
+    )
+
+    class FakeDocument:
+        title = "title"
+        author = "익명"
+        author_id = None
+        time = "-"
+        voteup_count = 0
+        html = "<p>body</p>"
+        images = []
+        embedded_comments = [first]
+        embedded_comment_total = 2
+        comment_status = {"complete": False}
+
+        async def comments(self):
+            yield first
+
+    class FakeAPI:
+        document_calls = 0
+        comment_calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def document(self, **kwargs):
+            self.__class__.document_calls += 1
+            return FakeDocument()
+
+        async def comments(self, *args, status_collector, **kwargs):
+            self.__class__.comment_calls += 1
+            yield first
+            yield second
+            status_collector["complete"] = True
+
+    monkeypatch.setattr(core.dc_api, "API", FakeAPI)
+    initial = await core.async_read("123", "test")
+    refreshed = await core.async_read("123", "test")
+    cached = await core.async_read("123", "test")
+
+    assert [row["contents"] for row in initial[1]] == ["first"]
+    assert [row["contents"] for row in refreshed[1]] == ["first", "second"]
+    assert refreshed == cached
+    assert refreshed[0]["_comments_complete"] is True
+    assert FakeAPI.document_calls == 1
+    assert FakeAPI.comment_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_async_read_owner_timeout_is_bounded_and_cleans_flight(monkeypatch):
     monkeypatch.setattr(core, "READ_FETCH_TIMEOUT", 0.01)
 

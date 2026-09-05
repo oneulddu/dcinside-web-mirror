@@ -197,5 +197,8 @@
     var enteredWithRefreshMarker = hasRefreshMarker();
     removeRefreshMarker();
     document.addEventListener("click", rememberBoardReturn);
+    window.addEventListener("pagehide", function () {
+        returnRefreshHandled = false;
+    });
     window.addEventListener("pageshow", refreshAfterHistoryNavigation);
 })();

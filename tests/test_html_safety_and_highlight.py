@@ -7,6 +7,18 @@ from app.services import html_sanitizer
 from app.services.dc_links import dcinside_internal_href
 
 
+@pytest.mark.parametrize("value", ["²", "9" * 4301, "-1", "0"], ids=["non-decimal", "oversized", "negative", "zero"])
+@pytest.mark.parametrize("parameter", ["no", "page", "source_page"])
+def test_dc_link_invalid_numbers_do_not_break_body_rendering(value, parameter):
+    from urllib.parse import urlencode
+
+    query = {"id": "test", "no": "123", parameter: value}
+    href = "https://gall.dcinside.com/board/view/?" + urlencode(query)
+    with create_app().test_request_context():
+        output = html_sanitizer.prepare_read_html(f'<p>before<a href="{href}">link</a>after</p>', [], "test", "123", None)
+    assert "before" in output and "after" in output and "link" in output
+
+
 @pytest.mark.parametrize("drop_tag", ["form", "object", "button"])
 def test_sanitizer_skips_descendants_detached_by_dropped_parent(drop_tag):
     cleaned = html_sanitizer.sanitize_html_fragment(

@@ -134,6 +134,9 @@ function createHarness(options) {
         pageShow(persisted) {
             listeners.window.pageshow({ persisted: Boolean(persisted) });
         },
+        pageHide() {
+            listeners.window.pagehide({ persisted: true });
+        },
         pendingCount() {
             return pendingFetches.length;
         },
@@ -201,6 +204,15 @@ async function main() {
     await settle();
     await repeatPageShow(restored, 5);
     assert.equal(restored.fetchCount(), 2);
+
+    // Browser forward/back revisits do not dispatch another article click.
+    restored.pageHide();
+    restored.pageShow(true);
+    await repeatPageShow(restored, 5);
+    assert.equal(restored.fetchCount(), 3);
+    restored.resolveNext();
+    await settle();
+    assert.equal(restored.replacementCount(), 3);
 
     const raced = createHarness({
         href: "https://mir.rootios.com/board?board=test&page=1",
