@@ -120,6 +120,7 @@ from .parsers import ParserMixin, has_gallery_image_icon, has_gallery_video_icon
 class API(ParserMixin):
     __parse_mobile_headtext_tabs = ParserMixin._ParserMixin__parse_mobile_headtext_tabs
     __is_usable_board_page = ParserMixin._ParserMixin__is_usable_board_page
+    __has_board_rows = ParserMixin._ParserMixin__has_board_rows
     __is_usable_document_page = ParserMixin._ParserMixin__is_usable_document_page
     __compact_text = ParserMixin._ParserMixin__compact_text
     __mobile_document_id_from_href = ParserMixin._ParserMixin__mobile_document_id_from_href
@@ -779,6 +780,15 @@ class API(ParserMixin):
                         failure_outcomes.append((host, "empty", status))
                     continue
 
+                parsed = lxml.html.fromstring(text)
+                # Real pages contain dormant login/navigation functions too.
+                # A valid content payload takes precedence over script matches.
+                usable = validator is None or validator(parsed, text, url)
+                if validator and usable and (
+                    self.__has_board_rows(parsed)
+                    or self.__is_usable_document_page(parsed, text, url)
+                ):
+                    return parsed, text, url
                 redirect_url = self.__extract_top_level_redirect_url(text)
                 if redirect_url:
                     redirect_url = self.__normalize_redirect_url(url, redirect_url)
@@ -787,8 +797,7 @@ class API(ParserMixin):
                     if failure_outcomes is not None:
                         failure_outcomes.append((host, "redirect", status))
                     continue
-                parsed = lxml.html.fromstring(text)
-                if validator and not validator(parsed, text, url):
+                if not usable:
                     if failure_outcomes is not None:
                         outcome = "not_found" if classify_not_found and self.__is_explicit_not_found_response(status, text) else "unusable"
                         failure_outcomes.append((host, outcome, status))
@@ -920,8 +929,6 @@ class API(ParserMixin):
                 else:
                     self.last_board_headtexts = headtexts
                 headtexts_captured = True
-            if "등록된 게시물이 없습니다." in text:
-                break
             yielded_in_page = 0
             is_mobile_source = self.__is_mobile_request(used_url)
 
@@ -1103,7 +1110,9 @@ class API(ParserMixin):
                 parent = el.getparent()
                 if parent is None:
                     continue
-                parent.replace(el, self.__document_video_element(replacement["src"]))
+                video = self.__document_video_element(replacement["src"])
+                video.tail = el.tail
+                parent.replace(el, video)
 
         return doc_content
     async def __replace_poll_iframes(self, doc_content):
@@ -1121,7 +1130,9 @@ class API(ParserMixin):
                     poll = self.__parse_poll_summary(text) if status < 400 else None
                 except Exception:
                     poll = None
-            iframe.getparent().replace(iframe, self.__poll_card_element(poll_src, poll=poll))
+            card = self.__poll_card_element(poll_src, poll=poll)
+            card.tail = iframe.tail
+            iframe.getparent().replace(iframe, card)
         return doc_content
 
     async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None):
@@ -1348,6 +1359,7 @@ class API(ParserMixin):
         if num == 0:
             return
         url = "https://m.dcinside.com/ajax/response-comment"
+        seen_ids = set()
         for page in range(start_page, 999999):
             payload = {"id": board_id, "no": document_id, "cpage": page, "managerskill":"", "del_scope": "1", "csort": ""}
             try:
@@ -1381,11 +1393,23 @@ class API(ParserMixin):
                 if fail_fast:
                     raise RuntimeError("mobile comment page produced no comment rows")
                 break
+            yielded_in_page = 0
             for li in comment_rows:
-                yield self.__parse_mobile_comment_li(li)
+                comment = self.__parse_mobile_comment_li(li)
+                comment_id = self.__comment_id(comment)
+                if comment_id and comment_id in seen_ids:
+                    continue
+                if comment_id:
+                    seen_ids.add(comment_id)
+                yield comment
+                yielded_in_page += 1
                 num -= 1
                 if num == 0:
                     return
+            if yielded_in_page == 0:
+                if fail_fast:
+                    raise RuntimeError("mobile comment page produced no new comments")
+                break
             page_num_els = parsed.xpath(".//span[contains(concat(' ', normalize-space(@class), ' '), ' pgnum ')]")
             if page_num_els:
                 page_numbers = [

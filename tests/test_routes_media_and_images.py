@@ -240,6 +240,60 @@ def test_link_preview_sniffs_meta_charset_before_parsing(monkeypatch):
     assert result["title"] == "한글 제목"
 
 
+@pytest.mark.parametrize("charset", ["rot_13", "base64_codec", "hex_codec", "zlib_codec", "bz2_codec"])
+def test_preview_route_ignores_non_text_charset(monkeypatch, charset):
+    response = DummyPreviewResponse(
+        "<title>한글 title</title>".encode(),
+        headers={"Content-Type": f"text/html; charset={charset}"},
+    )
+    _install_preview_responses(monkeypatch, [response])
+    monkeypatch.setattr(link_preview, "resolve_media_target", lambda url, **kwargs: _preview_target(url))
+    _reset_link_preview_rate(monkeypatch)
+    result = create_app().test_client().get("/embed/link-preview", query_string={"url": f"https://codec-{charset}.test/"})
+    assert result.status_code == 200
+    assert result.get_json()["title"] == "한글 title"
+
+
+def test_preview_lock_timeout_does_not_fetch_or_cache(monkeypatch):
+    class BusyLock:
+        def acquire(self, timeout):
+            assert 0 < timeout <= link_preview.PREVIEW_DEADLINE_SECONDS
+            return False
+
+    monkeypatch.setattr(link_preview, "_url_locks", [BusyLock()])
+    monkeypatch.setattr(link_preview, "_fetch_uncached", lambda *args, **kwargs: pytest.fail("lock timeout must not fetch"))
+    _reset_link_preview_rate(monkeypatch)
+    url = "https://lock-timeout.test/"
+    assert link_preview.fetch_preview(url) is link_preview.RATE_LIMITED
+    assert link_preview._cache_key(url) not in link_preview._preview_cache
+
+
+def test_preview_lock_wait_uses_original_request_deadline(monkeypatch):
+    clock = [100.0]
+    released = []
+
+    class DelayedLock:
+        def acquire(self, timeout):
+            clock[0] += 0.75
+            return True
+
+        def release(self):
+            released.append(True)
+
+    def fetch(url, started_at=None):
+        assert started_at == 100.0
+        assert link_preview._deadline_remaining(started_at) == pytest.approx(0.25)
+        return {"title": "within budget"}
+
+    monkeypatch.setattr(link_preview.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(link_preview, "PREVIEW_DEADLINE_SECONDS", 1)
+    monkeypatch.setattr(link_preview, "_url_locks", [DelayedLock()])
+    monkeypatch.setattr(link_preview, "_fetch_uncached", fetch)
+    _reset_link_preview_rate(monkeypatch)
+    assert link_preview.fetch_preview("https://lock-deadline.test/")["title"] == "within budget"
+    assert released == [True]
+
+
 def test_link_preview_resolves_safe_og_image_against_final_url(monkeypatch):
     response = DummyPreviewResponse(
         b"""
@@ -4357,7 +4411,7 @@ def test_youtube_size_route_returns_sizes_and_rejects_garbage(monkeypatch):
 def test_video_size_skips_probe_when_budget_or_deadline_exhausted(monkeypatch):
     probe_calls = []
 
-    def fake_probe(video_id):
+    def fake_probe(video_id, deadline=None):
         probe_calls.append(video_id)
         return {"width": 480, "height": 268}
 
@@ -4378,6 +4432,48 @@ def test_video_size_skips_probe_when_budget_or_deadline_exhausted(monkeypatch):
     # 예산이 있으면 정상 프로브하고 캐시한다.
     assert youtube_meta.video_size("bbbbbbbbbb1") == {"width": 480, "height": 268}
     assert probe_calls == ["bbbbbbbbbb1"]
+
+
+def test_video_size_does_not_start_fallback_after_deadline(monkeypatch):
+    clock = [100.0]
+    timeout_values = []
+
+    def frame(*args, **kwargs):
+        timeout_values.append(kwargs["timeout"])
+        clock[0] = 107.0
+        return DummyProbeResponse(404)
+
+    monkeypatch.setattr(youtube_meta.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(youtube_meta, "_acquire_probe_slot", lambda: True)
+    monkeypatch.setattr(youtube_meta.requests, "get", frame)
+    monkeypatch.setattr(youtube_meta.requests, "head", lambda *args, **kwargs: pytest.fail("deadline exhausted"))
+    assert youtube_meta.video_size("deadline001", deadline=106.0) is None
+    assert timeout_values == [min(youtube_meta.SIZE_PROBE_TIMEOUT, 6.0)]
+    assert "deadline001" not in youtube_meta._size_cache
+
+
+def test_youtube_probes_use_remaining_timeout_and_close_responses(monkeypatch):
+    clock = [100.0]
+    timeouts = []
+    frame_response = DummyUpstream([], status_code=404)
+    shorts_response = DummyUpstream([], status_code=200)
+
+    def frame(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        clock[0] += 0.75
+        return frame_response
+
+    def shorts(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return shorts_response
+
+    monkeypatch.setattr(youtube_meta.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(youtube_meta, "_acquire_probe_slot", lambda: True)
+    monkeypatch.setattr(youtube_meta.requests, "get", frame)
+    monkeypatch.setattr(youtube_meta.requests, "head", shorts)
+    assert youtube_meta.video_size("deadline002", deadline=101.0) == {"width": 9, "height": 16}
+    assert timeouts == [1.0, 0.25]
+    assert frame_response.closed and shorts_response.closed
 
 
 def test_sanitize_html_fragment_rewrites_youtube_shorts_iframe_to_embed():

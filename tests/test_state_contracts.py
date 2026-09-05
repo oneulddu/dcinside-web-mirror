@@ -14,6 +14,33 @@ from app.services import core, recent
 FIXED_NOW = 1_725_000_000.25
 
 
+@pytest.mark.parametrize("bad_row", [
+    {"board": 123}, {"board": ["test"]}, {"board": "test", "name": 123},
+    {"board": "test", "kind": 123}, {"board": "test", "recommend": float("inf")},
+    {"board": "test", "recommend": float("nan")},
+    {"board": "test", "visited_at": 10 ** 400},
+])
+@pytest.mark.parametrize("path", ["/recent", "/board?board=test", "/read?board=test&pid=123"])
+def test_malformed_recent_rows_preserve_pages_and_valid_history(monkeypatch, bad_row, path):
+    async def board_payload(*args, **kwargs):
+        return [], []
+
+    async def read_payload(*args, **kwargs):
+        return {"title": "body", "html": "<p>body</p>", "related_posts": [], "author": "익명"}, [], []
+
+    monkeypatch.setattr(routes, "_load_board_payload", board_payload)
+    monkeypatch.setattr(routes, "async_read", read_payload)
+    valid = {"board": "valid", "name": "정상 갤러리", "visited_at": FIXED_NOW}
+    cookie = base64.urlsafe_b64encode(json.dumps([bad_row, valid]).encode()).decode()
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie(recent.RECENT_COOKIE_NAME, cookie)
+    response = client.get(path)
+    assert response.status_code == 200
+    history = client.get("/recent").get_data(as_text=True)
+    assert "정상 갤러리" in history
+
+
 @pytest.fixture(autouse=True)
 def isolate_state(monkeypatch):
     monkeypatch.setattr(recent.time, "time", lambda: FIXED_NOW)

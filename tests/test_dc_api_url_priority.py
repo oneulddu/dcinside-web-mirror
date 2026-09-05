@@ -60,6 +60,108 @@ def _clear_board_kind_cache():
         dc_api._BOARD_KIND_CACHE.clear()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("render", [_mobile_board_html, _pc_board_html_text])
+async def test_board_keeps_posts_with_empty_list_message_in_title(render):
+    api = API.__new__(API)
+    title = "등록된 게시물이 없습니다. 라는 안내"
+    api._API__request_text = _make_fake_request_text({
+        "https://m.dcinside.com/board/test?page=1": render(title=title),
+    })
+    posts = [post async for post in api.board("test", num=1)]
+    assert [(post.id, post.title) for post in posts] == [("123", title)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("placement", ["head", "body"])
+@pytest.mark.parametrize("script", [
+    "function login() { location.href='/auth/login'; }",
+    "if (false) { location.href='/auth/login'; }",
+    "const login = () => window.location.assign('/auth/login');",
+])
+async def test_fetch_valid_content_ignores_dormant_redirect(placement, script):
+    api = API.__new__(API)
+    url = "https://m.dcinside.com/board/test/123"
+    tag = f"<script>{script}</script>"
+    body = "<div class='gallview-tit-box'>title</div><div class='thum-txtin'>body</div>"
+    html = f"<html><head>{tag if placement == 'head' else ''}</head><body>{tag if placement == 'body' else ''}{body}</body></html>"
+    api._API__request_text = _make_fake_request_text({url: html})
+    parsed, _, used_url = await api._API__fetch_parsed_from_urls(
+        [url], validator=api._API__is_usable_document_page,
+    )
+    assert used_url == url
+    assert parsed.xpath("string(//div[@class='thum-txtin'])") == "body"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("empty_message", [
+    '<script>alert("등록된 게시물이 없습니다.");</script>',
+    '<p>등록된 게시물이 없습니다.</p>',
+])
+async def test_empty_board_redirect_is_followed_before_empty_result(empty_message):
+    api = API.__new__(API)
+    start = "https://m.dcinside.com/board/test?page=1"
+    target = "https://gall.dcinside.com/board/lists/?id=test&page=1"
+    responses = {
+        start: f'<html><head></head><body>{empty_message}<script>location.href="{target}";</script></body></html>',
+        target: _pc_board_html_text(),
+    }
+    calls = []
+
+    async def request_text(method, url, **kwargs):
+        calls.append(url)
+        return 200, {}, responses[url]
+
+    api._API__request_text = request_text
+    parsed, _, used = await api._API__fetch_parsed_from_urls([start], validator=api._API__board_page_validator)
+    assert calls == [start, target]
+    assert used == target
+    assert parsed.xpath("//tr/@data-no") == ["123"]
+
+
+@pytest.mark.asyncio
+async def test_empty_board_without_redirect_remains_usable():
+    api = API.__new__(API)
+    url = "https://m.dcinside.com/board/test?page=1"
+    api._API__request_text = _make_fake_request_text({url: "<p>등록된 게시물이 없습니다.</p>"})
+    parsed, _, used = await api._API__fetch_parsed_from_urls([url], validator=api._API__board_page_validator)
+    assert parsed is not None
+    assert used == url
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_ids", [["1", "2"], ["1"]])
+async def test_mobile_comment_overlap_preserves_unique_limit_and_fallback(second_ids):
+    api = API.__new__(API)
+    pages = []
+    pc_calls = []
+
+    async def request_text(method, url, **kwargs):
+        page = kwargs["data"]["cpage"]
+        pages.append(page)
+        ids = ["1", "1"] if page == 1 else second_ids
+        rows = "".join(
+            f'<li no="{cid}" m_no="0"><div><span>author</span></div><p>comment {cid}</p><span>04.16 12:00:00</span></li>'
+            for cid in ids
+        )
+        return 200, {}, f"<html><body><ul class='all-comment-lst'>{rows}</ul><span class='pgnum'>1 2</span></body></html>"
+
+    async def pc_comments(*args, **kwargs):
+        pc_calls.append(kwargs)
+        from types import SimpleNamespace
+        yield SimpleNamespace(id="1")
+        yield SimpleNamespace(id="2")
+
+    api._API__request_text = request_text
+    api._API__comments_from_pc = pc_comments
+    status = {}
+    comments = [row.id async for row in api.comments("test", "123", num=2, status_collector=status)]
+    assert comments == ["1", "2"]
+    assert pages == [1, 2]
+    assert bool(pc_calls) is (second_ids == ["1"])
+    assert status == {"complete": True, "source": "pc" if pc_calls else "mobile"}
+
+
 @pytest.fixture(autouse=True)
 def clear_rate_limit_state():
     with dc_api._RATE_LIMIT_LOCK:

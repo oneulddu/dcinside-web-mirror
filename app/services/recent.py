@@ -22,14 +22,14 @@ def _env_int(name, default):
 def _safe_int(value, default):
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
 def _safe_float(value, default):
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return parsed if math.isfinite(parsed) else default
 
@@ -81,6 +81,8 @@ def copy_recent_entries(entries):
 
 
 def normalize_recent_kind(value):
+    if not isinstance(value, str):
+        return None
     kind = (value or "").strip().lower()
     if kind == "normal" or kind not in RECENT_GALLERY_KINDS:
         return None
@@ -89,6 +91,11 @@ def normalize_recent_kind(value):
 
 def normalize_recent_entry(item):
     if not isinstance(item, dict):
+        return None
+
+    if not isinstance(item.get("board"), str):
+        return None
+    if any(not isinstance(item.get(key), (str, type(None))) for key in ("name", "kind")):
         return None
 
     board = (item.get("board") or "").strip()

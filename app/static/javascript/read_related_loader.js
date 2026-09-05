@@ -93,12 +93,16 @@
         if (!term) {
             return escapeHtml(text);
         }
-        return escapeHtml(text).replace(
-            new RegExp(escapeRegExp(escapeHtml(term)), "gi"),
-            function (matched) {
-                return '<mark class="search-highlight">' + matched + "</mark>";
-            }
-        );
+        var pattern = new RegExp(escapeRegExp(term), "gi");
+        var result = "";
+        var offset = 0;
+        var match;
+        while ((match = pattern.exec(text)) !== null) {
+            result += escapeHtml(text.slice(offset, match.index));
+            result += '<mark class="search-highlight">' + escapeHtml(match[0]) + "</mark>";
+            offset = match.index + match[0].length;
+        }
+        return result + escapeHtml(text.slice(offset));
     }
 
     function formatSubject(value) {

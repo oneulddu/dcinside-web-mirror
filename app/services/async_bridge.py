@@ -26,13 +26,21 @@ _SHARED_DC_API = None
 
 
 def _background_loop_worker():
-    global _BACKGROUND_LOOP, _BACKGROUND_STARTING
+    global _BACKGROUND_LOOP
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     with _BACKGROUND_LOCK:
         _BACKGROUND_LOOP = loop
-        _BACKGROUND_STARTING = False
-    _BACKGROUND_READY.set()
+
+    def mark_ready():
+        global _BACKGROUND_STARTING
+        with _BACKGROUND_LOCK:
+            _BACKGROUND_STARTING = False
+        _BACKGROUND_READY.set()
+
+    # Publish readiness from inside the running loop. Publishing before
+    # run_forever lets a concurrent caller start a second loop and session.
+    loop.call_soon(mark_ready)
     try:
         loop.run_forever()
     finally:

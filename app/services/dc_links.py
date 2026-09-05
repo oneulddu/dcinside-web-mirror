@@ -27,7 +27,8 @@ def _is_safe_board_id(value):
 
 
 def _is_positive_int(value):
-    return bool(value and str(value).isdigit() and int(value) > 0)
+    text = str(value or "")
+    return bool(re.fullmatch(r"[0-9]{1,20}", text) and int(text) > 0)
 
 
 def _append_fragment(url, fragment):
