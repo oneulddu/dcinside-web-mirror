@@ -10,6 +10,9 @@
     var DEFAULT_THEME = "dark";
     var readStore = null;
     var dcconFoldShowing = false;
+    var currentMediaBlockMode = null;
+    var mediaBlockModeUnsaved = false;
+    var bodyMediaShowing = { dccon: false, image: false };
 
     function safeParse(jsonText) {
         if (!jsonText) {
@@ -102,16 +105,21 @@
             }
             return window.localStorage.getItem(LEGACY_DCCON_BLOCK_STORAGE_KEY) === "1" ? "dccon" : "none";
         } catch (err) {
-            return "none";
+            return null;
         }
     }
 
     function saveMediaBlockMode(mode) {
         try {
             window.localStorage.setItem(MEDIA_BLOCK_STORAGE_KEY, normalizeMediaBlockMode(mode));
+        } catch (err) {
+            return false;
+        }
+        try {
             window.localStorage.removeItem(LEGACY_DCCON_BLOCK_STORAGE_KEY);
         } catch (err) {
         }
+        return true;
     }
 
 
@@ -206,6 +214,55 @@
 
     function hydrateBodyImages(root, isBlocked) {
         hydrateDeferredImages(root, "img.body-image[data-body-image-src]", "data-body-image-src", isBlocked);
+        hydrateDeferredImages(root, "img.link-preview-image[data-preview-image-src]", "data-preview-image-src", isBlocked);
+    }
+
+    function syncBodyMedia() {
+        var articleBody = document.querySelector(".article-body");
+        if (!articleBody || currentMediaBlockMode === null) {
+            return;
+        }
+        var imageBlocked = mediaModeBlocksBodyImages(currentMediaBlockMode);
+        var dcconBlocked = imageBlocked || mediaModeBlocksDccons(currentMediaBlockMode);
+        var effectiveImageBlocked = imageBlocked && !bodyMediaShowing.image;
+        var effectiveDcconBlocked = dcconBlocked && !bodyMediaShowing.dccon;
+        articleBody.dataset.bodyImagesBlocked = effectiveImageBlocked ? "true" : "false";
+        articleBody.dataset.bodyDcconsBlocked = effectiveDcconBlocked ? "true" : "false";
+        hydrateBodyImages(articleBody, effectiveImageBlocked);
+        hydrateDccons(articleBody, effectiveDcconBlocked);
+
+        var controls = document.querySelector(".body-media-controls");
+        if (!controls) {
+            return;
+        }
+        var groups = [
+            { key: "dccon", blocked: dcconBlocked, label: "이모티콘", selector: "img.dccon[data-dccon-src]" },
+            { key: "image", blocked: imageBlocked, label: "이미지", selector: "img.body-image[data-body-image-src], img.link-preview-image[data-preview-image-src]" }
+        ];
+        var anyVisible = false;
+        groups.forEach(function (group) {
+            var button = controls.querySelector('[data-body-media-group="' + group.key + '"]');
+            if (!button) {
+                return;
+            }
+            var count = articleBody.querySelectorAll(group.selector).length;
+            button.hidden = !group.blocked || !count;
+            button.setAttribute("aria-expanded", bodyMediaShowing[group.key] ? "true" : "false");
+            button.textContent = "차단된 " + group.label + (bodyMediaShowing[group.key] ? " 숨기기" : " 보기 (" + count + ")");
+            anyVisible = anyVisible || !button.hidden;
+        });
+        controls.hidden = !anyVisible;
+    }
+
+    function wireBodyMediaControls() {
+        var buttons = document.querySelectorAll(".body-media-toggle[data-body-media-group]");
+        for (var i = 0; i < buttons.length; i += 1) {
+            buttons[i].addEventListener("click", function () {
+                var group = this.getAttribute("data-body-media-group");
+                bodyMediaShowing[group] = !bodyMediaShowing[group];
+                syncBodyMedia();
+            });
+        }
     }
 
     function dcconCommentItems() {
@@ -284,8 +341,12 @@
 
     function applyMediaBlockMode(mode, shouldSave) {
         var normalized = normalizeMediaBlockMode(mode);
+        if (currentMediaBlockMode !== normalized) {
+            bodyMediaShowing.dccon = false;
+            bodyMediaShowing.image = false;
+        }
+        currentMediaBlockMode = normalized;
         var dcconBlocked = mediaModeBlocksDccons(normalized);
-        var bodyBlocked = mediaModeBlocksBodyImages(normalized);
         document.documentElement.dataset.mediaBlockMode = normalized;
         document.documentElement.dataset.dcconBlocked = dcconBlocked ? "true" : "false";
         if (document.body) {
@@ -295,15 +356,23 @@
         if (!dcconBlocked) {
             dcconFoldShowing = false;
         }
-        hydrateBodyImages(document, bodyBlocked);
-        var articleBody = document.querySelector(".article-body");
-        if (articleBody) {
-            hydrateDccons(articleBody, dcconBlocked || bodyBlocked);
-        }
+        syncBodyMedia();
         syncDcconCommentFold(dcconBlocked);
         updateMediaBlockControl(normalized);
         if (shouldSave) {
-            saveMediaBlockMode(normalized);
+            mediaBlockModeUnsaved = !saveMediaBlockMode(normalized);
+        }
+    }
+
+    function refreshMediaBlockMode(fromStorageEvent) {
+        // 쓰기 실패 뒤 남아 있는 예전 저장값으로 현재 탭의 선택을 되돌리지 않는다.
+        if (mediaBlockModeUnsaved && !fromStorageEvent) {
+            return;
+        }
+        var saved = loadMediaBlockMode();
+        if (saved !== null) {
+            mediaBlockModeUnsaved = false;
+            applyMediaBlockMode(saved, false);
         }
     }
 
@@ -495,6 +564,7 @@
         applyTheme(loadTheme(), false);
         wireThemeToggle();
         applyMediaBlockMode(loadMediaBlockMode(), false);
+        wireBodyMediaControls();
         wireMediaBlockControl();
         readStore = loadStore();
         markCurrentRead();
@@ -513,11 +583,15 @@
         applyReadState(event.detail && event.detail.root, readStore);
     });
 
+    // 카드는 src 없이 삽입된다. 초기화 전 카드는 boot의 본문 전체 검사에서 처리한다.
+    document.addEventListener("mirror:link-preview-added", syncBodyMedia);
+
     // 뒤로 가기로 bfcache에서 복원되면 스크립트가 다시 실행되지 않는다.
     // 그동안 다른 탭이나 상세 화면에서 늘어난 읽음 기록을 즉시 반영한다.
     window.addEventListener("pageshow", function (event) {
         if (event.persisted) {
             refreshReadState();
+            refreshMediaBlockMode(false);
         }
     });
 
@@ -526,11 +600,15 @@
         if (!event.key || event.key === STORAGE_KEY) {
             refreshReadState();
         }
+        if (!event.key || event.key === MEDIA_BLOCK_STORAGE_KEY || event.key === LEGACY_DCCON_BLOCK_STORAGE_KEY) {
+            refreshMediaBlockMode(true);
+        }
     });
 
     document.addEventListener("visibilitychange", function () {
         if (document.visibilityState === "visible") {
             refreshReadState();
+            refreshMediaBlockMode(false);
         }
     });
 
