@@ -12,7 +12,10 @@ const PREVIEW_URL = "/embed/link-preview-image?url=https%3A%2F%2Fexample.com%2Fi
 
 // Small DOM/event fixture, like the board-return harness: execute the actual scripts
 // and record every image src assignment, including assignments before insertion.
-function createHarness({ mode = "none", empty = false, boot = true, loading = false, readError = false } = {}) {
+function createHarness({
+    mode = "none", empty = false, boot = true, loading = false, readError = false,
+    imageCount = 2, dcconCount = 2, serverPreview = true,
+} = {}) {
     const requests = [];
     const pending = [];
     const writes = [];
@@ -85,18 +88,26 @@ function createHarness({ mode = "none", empty = false, boot = true, loading = fa
             return this.attributes.get(name) ?? null;
         }
         removeAttribute(name) { this.attributes.delete(name); }
+        set id(value) { this.setAttribute("id", value); }
+        get id() { return this.getAttribute("id") || ""; }
+        set type(value) { this.setAttribute("type", value); }
+        get type() { return this.getAttribute("type") || ""; }
         set src(value) { this.setAttribute("src", value); }
         get src() { return this.getAttribute("src"); }
         set href(value) { this.setAttribute("href", value); }
         get href() { return this.getAttribute("href"); }
         get protocol() { return new URL(this.href).protocol; }
         get nextSibling() { return this.parentNode.children[this.parentNode.children.indexOf(this) + 1] || null; }
-        appendChild(node) { node.parentNode = this; this.children.push(node); return node; }
-        prepend(node) { node.parentNode = this; this.children.unshift(node); }
+        appendChild(node) { node.remove(); node.parentNode = this; this.children.push(node); return node; }
+        prepend(node) { node.remove(); node.parentNode = this; this.children.unshift(node); }
         insertBefore(node, reference) {
             if (!reference) return this.appendChild(node);
+            assert.ok(this.children.includes(reference), "insertBefore reference must belong to parent");
+            if (node === reference) return node;
+            node.remove();
             node.parentNode = this;
             this.children.splice(this.children.indexOf(reference), 0, node);
+            return node;
         }
         insertAdjacentElement(position, node) {
             assert.equal(position, "afterend");
@@ -125,9 +136,20 @@ function createHarness({ mode = "none", empty = false, boot = true, loading = fa
         addEventListener(type, callback) { (this.listeners[type] ||= []).push(callback); }
         dispatchEvent(event) {
             event.target ||= this;
+            event.currentTarget = this;
+            event.defaultPrevented ??= false;
+            event.cancelBubble ??= false;
+            event.preventDefault ||= function () { if (this.cancelable) this.defaultPrevented = true; };
+            event.stopPropagation ||= function () { this.cancelBubble = true; };
             for (const callback of this.listeners[event.type] || []) callback.call(this, event);
+            if (event.bubbles && !event.cancelBubble && this.parentNode) this.parentNode.dispatchEvent(event);
+            return !event.defaultPrevented;
         }
-        click() { this.dispatchEvent({ type: "click" }); }
+        click() {
+            const event = { type: "click", bubbles: true, cancelable: true };
+            this.dispatchEvent(event);
+            return event;
+        }
         focus() { document.activeElement = this; }
     }
     document = new Element("document");
@@ -167,13 +189,19 @@ function createHarness({ mode = "none", empty = false, boot = true, loading = fa
         return image;
     }
     if (!empty) {
-        for (let i = 0; i < 2; i++) {
-            dccons.push(deferred(article, "dccon", "data-dccon-src", "/media?dccon=repeat"));
-            images.push(deferred(article, "body-image", "data-body-image-src", "/media?image=repeat"));
+        for (let i = 0; i < Math.max(dcconCount, imageCount); i++) {
+            if (i < dcconCount) {
+                dccons.push(deferred(article, "dccon", "data-dccon-src", "/media?dccon=repeat"));
+            }
+            if (i < imageCount) {
+                images.push(deferred(article, "body-image", "data-body-image-src", "/media?image=repeat"));
+            }
         }
-        const serverCard = add(article, "a", "link-preview has-media");
-        serverCard.href = "https://example.com/server";
-        images.push(deferred(add(serverCard, "span", "link-preview-media"), "link-preview-image", "data-preview-image-src", PREVIEW_URL));
+        if (serverPreview) {
+            const serverCard = add(article, "a", "link-preview has-media");
+            serverCard.href = "https://example.com/server";
+            images.push(deferred(add(serverCard, "span", "link-preview-media"), "link-preview-image", "data-preview-image-src", PREVIEW_URL));
+        }
     }
     const link = add(article, "a", "link-preview-target");
     link.href = "https://example.com/delayed";
@@ -204,10 +232,19 @@ function createHarness({ mode = "none", empty = false, boot = true, loading = fa
         CustomEvent: function (type, init) { this.type = type; this.detail = init.detail; },
     });
     function runRead() { vm.runInContext(readSource, context); }
+    const originalParents = new Map([...dccons, ...images].map(image => [image, image.parentNode]));
+    const originalOrder = article.querySelectorAll("img");
     if (boot) runRead();
     return {
         document, window, article, buttons, controls, dccons, images, comment, commentItem,
         storage, requests, writes, failures, link, video, iframe, runRead,
+        assertImagePositions() {
+            for (const [image, parent] of originalParents) {
+                assert.equal(image.parentNode, parent, "toggles must preserve each image's original parent");
+            }
+            assert.deepEqual(article.querySelectorAll("img").filter(image => originalParents.has(image)), originalOrder,
+                "inserted buttons must not change original image order");
+        },
         previews() { return article.querySelectorAll("img.link-preview-image"); },
         runPreview() { vm.runInContext(previewSource, context); },
         resolvePreview(imageUrl = PREVIEW_URL) {
@@ -232,7 +269,41 @@ function assertBlocked(images, blocked) {
     for (const image of images) {
         assert.equal(image.hidden, blocked);
         assert.equal(image.getAttribute("src") === null, blocked);
+        if (image.classList.contains("link-preview-image")) {
+            assert.equal(image.closest(".link-preview").dataset.previewImageBlocked, String(blocked),
+                "preview card state must follow its own image");
+        }
     }
+}
+
+function itemButton(h, image) {
+    const id = image.getAttribute("id");
+    assert.ok(id, "controlled images need an ID");
+    assert.equal(h.document.getElementById(id), image, "aria-controls must resolve to the actual image");
+    const buttons = h.article.querySelectorAll("button.body-media-item-toggle")
+        .filter(button => button.getAttribute("aria-controls") === id);
+    assert.equal(buttons.length, 1, "each image must have exactly one native toggle button");
+    const button = buttons[0];
+    assert.equal(button.type, "button");
+    const kind = image.classList.contains("dccon") ? "dccon" : "image";
+    assert.equal(button.getAttribute("data-body-media-kind"), kind);
+    const reference = image.closest("a") || image;
+    assert.equal(button.parentNode, reference.parentNode);
+    assert.equal(button.nextSibling, reference, "toggle must immediately precede the closest anchor or image");
+    assert.equal(button.closest("a"), null, "image toggles must stay outside links");
+    return button;
+}
+
+function assertItem(h, image, revealed, visible = true) {
+    const button = itemButton(h, image);
+    const label = image.classList.contains("dccon") ? "이모티콘" : "이미지";
+    assert.equal(button.hidden, !visible);
+    if (visible) {
+        assert.equal(button.getAttribute("aria-expanded"), String(revealed));
+        assert.equal(button.textContent, label + (revealed ? " 숨기기" : " 보기"));
+    }
+    assertBlocked([image], !revealed);
+    return button;
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -251,12 +322,12 @@ async function main() {
             ...(commentBlocked ? [h.comment] : []),
         ];
         assert.ok(h.requests.every(request => !blockedImages.includes(request.image)), "blocked images must never have received src");
-        const positions = [...h.dccons, ...h.images].map(image => [image, image.parentNode, image.parentNode.children.indexOf(image)]);
+        h.assertImagePositions();
         assert.equal(h.buttons.dccon.hidden, !dcconBlocked);
         assert.equal(h.buttons.image.hidden, !imageBlocked);
         assert.equal(h.controls.hidden, mode === "none");
-        assert.equal(h.buttons.dccon.textContent, "차단된 이모티콘 보기 (2)");
-        assert.equal(h.buttons.image.textContent, "차단된 이미지 보기 (3)");
+        if (dcconBlocked) assert.equal(h.buttons.dccon.textContent, "이모티콘 전체 보기 (2)");
+        if (imageBlocked) assert.equal(h.buttons.image.textContent, "이미지 전체 보기 (3)");
         assert.equal(h.article.dataset.bodyImagesBlocked, String(imageBlocked));
         assert.equal(h.buttons.image.getAttribute("aria-controls"), h.article.getAttribute("id"));
         assert.ok(h.commentItem.classList.contains("comment-spam-hidden"), "spam fold must survive media changes");
@@ -266,14 +337,14 @@ async function main() {
             assertBlocked(h.dccons, false);
             assertBlocked(h.images, imageBlocked);
             assertBlocked([h.comment], commentBlocked);
-            assert.equal(h.buttons.dccon.textContent, "차단된 이모티콘 숨기기");
+            assert.equal(h.buttons.dccon.textContent, "이모티콘 전체 숨기기");
             assert.equal(h.buttons.dccon.getAttribute("aria-expanded"), "true");
         }
         if (imageBlocked) {
             h.buttons.image.click();
             assertBlocked(h.images, false);
             assert.equal(h.article.dataset.bodyImagesBlocked, "false");
-            assert.equal(h.buttons.image.textContent, "차단된 이미지 숨기기");
+            assert.equal(h.buttons.image.textContent, "이미지 전체 숨기기");
             h.buttons.image.click();
             assertBlocked(h.images, true);
             assertBlocked(h.dccons, false);
@@ -288,13 +359,157 @@ async function main() {
             assert.ok(h.commentItem.classList.contains("comment-spam-hidden"));
         }
         assert.equal(h.writes.length, writes, "temporary reveals must not write storage");
-        for (const [image, parent, index] of positions) {
-            assert.equal(parent.children[index], image, "reveals must keep each original image in place");
-        }
+        h.assertImagePositions();
         assert.equal(h.video.src, "/movie?no=1");
         assert.equal(h.iframe.src, "https://www.youtube.com/embed/test");
         assert.equal(h.link.href, "https://example.com/delayed");
     }
+
+    for (const kind of ["image", "dccon"]) {
+        const label = kind === "image" ? "이미지" : "이모티콘";
+        for (const count of [1, 2]) {
+            const h = createHarness({
+                mode: "all", serverPreview: false,
+                imageCount: kind === "image" ? count : 0,
+                dcconCount: kind === "dccon" ? count : 0,
+            });
+            const images = kind === "image" ? h.images : h.dccons;
+            assert.equal(h.buttons[kind].hidden, count < 2);
+            assert.equal(h.controls.hidden, count < 2);
+            images.forEach(image => assertItem(h, image, false));
+            assert.equal(new Set(images.map(image => image.id)).size, count, "image IDs must be unique");
+            if (count === 2) assert.equal(h.buttons[kind].textContent, label + " 전체 보기 (2)");
+            itemButton(h, images[0]).click();
+            assertItem(h, images[0], true);
+            assertBlocked(images.slice(1), true);
+            assert.equal(h.requests.length, 1, "one click must assign src only to the selected image");
+            assert.equal(h.requests[0].image, images[0]);
+            assert.equal(h.requests[0].attached, true);
+            h.assertImagePositions();
+        }
+
+        const h = createHarness({ mode: "all" });
+        const images = kind === "image" ? h.images : h.dccons;
+        const other = kind === "image" ? h.dccons : h.images;
+        const group = h.buttons[kind];
+        const first = assertItem(h, images[0], false);
+        const second = assertItem(h, images[1], false);
+        const sourceAttribute = kind === "image" ? "data-body-image-src" : "data-dccon-src";
+        assert.equal(images[0].getAttribute(sourceAttribute), images[1].getAttribute(sourceAttribute));
+        assert.notEqual(first.getAttribute("aria-controls"), second.getAttribute("aria-controls"));
+        const writes = h.writes.length;
+        first.click();
+        assertItem(h, images[0], true);
+        assertItem(h, images[1], false);
+        assertBlocked(other, true);
+        assertBlocked([h.comment], true);
+        assert.equal(h.requests.length, 1, "same URL must not share individual reveal state");
+        assert.equal(group.getAttribute("aria-expanded"), "false");
+        assert.equal(group.textContent, label + " 전체 보기 (" + images.length + ")");
+
+        group.click(); // A partially revealed group must show every image.
+        images.forEach(image => assertItem(h, image, true));
+        assert.equal(group.getAttribute("aria-expanded"), "true");
+        assert.equal(group.textContent, label + " 전체 숨기기");
+        first.click(); // An individual hide overrides the group's revealed default.
+        assertItem(h, images[0], false);
+        images.slice(1).forEach(image => assertItem(h, image, true));
+        assert.equal(group.getAttribute("aria-expanded"), "false");
+        assert.equal(group.textContent, label + " 전체 보기 (" + images.length + ")");
+        group.click(); // Clears the explicit hide even though group default was already show.
+        images.forEach(image => assertItem(h, image, true));
+        group.click(); // Clears the earlier explicit reveal as well.
+        images.forEach(image => assertItem(h, image, false));
+        assert.equal(group.getAttribute("aria-expanded"), "false");
+        assertBlocked(other, true);
+        assertBlocked([h.comment], true);
+        assert.equal(h.writes.length, writes, "individual and group actions are temporary");
+        h.assertImagePositions();
+    }
+
+    const linked = createHarness({ mode: "all" });
+    const preview = linked.previews()[0];
+    const card = preview.closest("a");
+    const linkedButton = assertItem(linked, preview, false);
+    const ids = [...linked.dccons, ...linked.images].map(image => itemButton(linked, image).getAttribute("aria-controls"));
+    assert.equal(new Set(ids).size, ids.length, "IDs must be unique across both media kinds");
+    let anchorClicks = 0;
+    let articleClicks = 0;
+    card.addEventListener("click", () => { anchorClicks += 1; });
+    linked.article.addEventListener("click", () => { articleClicks += 1; });
+    for (const revealed of [true, false]) {
+        const event = linkedButton.click();
+        assert.equal(event.defaultPrevented, true, "toggle click must cancel default link navigation");
+        assert.equal(event.cancelBubble, true, "toggle click must stop propagation");
+        assert.equal(anchorClicks, 0);
+        assert.equal(articleClicks, 0);
+        assertItem(linked, preview, revealed);
+        assertBlocked(linked.images.filter(image => image !== preview), true);
+    }
+    card.click();
+    assert.equal(anchorClicks, 1, "the original preview link must remain clickable");
+    assert.equal(articleClicks, 1, "the fixture must bubble ordinary link clicks");
+    linked.assertImagePositions();
+
+    // All individually revealed images count as expanded, but do not change
+    // the default that a later preview inherits.
+    const individuallyRevealed = createHarness({ mode: "all", imageCount: 1, dcconCount: 0, serverPreview: false });
+    assertItem(individuallyRevealed, individuallyRevealed.images[0], false).click();
+    individuallyRevealed.runPreview();
+    const singleRequests = individuallyRevealed.requests.length;
+    individuallyRevealed.resolvePreview();
+    await settle();
+    assert.equal(individuallyRevealed.requests.length, singleRequests, "an individual reveal must not hydrate a delayed image");
+    assertItem(individuallyRevealed, individuallyRevealed.images[0], true);
+    assertItem(individuallyRevealed, individuallyRevealed.previews()[0], false);
+    assert.equal(individuallyRevealed.buttons.image.hidden, false, "the second image enables the group action");
+    assert.equal(individuallyRevealed.buttons.image.textContent, "이미지 전체 보기 (2)");
+    assert.equal(individuallyRevealed.buttons.image.getAttribute("aria-expanded"), "false");
+    itemButton(individuallyRevealed, individuallyRevealed.previews()[0]).click();
+    assert.equal(individuallyRevealed.buttons.image.getAttribute("aria-expanded"), "true");
+    assert.equal(individuallyRevealed.buttons.image.textContent, "이미지 전체 숨기기");
+    individuallyRevealed.buttons.image.click();
+    assertBlocked([...individuallyRevealed.images, ...individuallyRevealed.previews()], true);
+
+    const defaultShown = createHarness({ mode: "all" });
+    defaultShown.buttons.image.click();
+    itemButton(defaultShown, defaultShown.images[0]).click();
+    defaultShown.runPreview();
+    const globalRequests = defaultShown.requests.length;
+    defaultShown.resolvePreview();
+    await settle();
+    assert.equal(defaultShown.requests.length, globalRequests + 1);
+    assertItem(defaultShown, defaultShown.images[0], false);
+    assertItem(defaultShown, defaultShown.previews().at(-1), true);
+    assert.equal(defaultShown.buttons.image.getAttribute("aria-expanded"), "false");
+    assert.equal(defaultShown.buttons.image.textContent, "이미지 전체 보기 (4)");
+    defaultShown.buttons.image.click();
+    assertBlocked([...defaultShown.images, ...defaultShown.previews()], false);
+
+    const individualModes = createHarness({ mode: "all" });
+    individualModes.buttons.image.click();
+    itemButton(individualModes, individualModes.images[0]).click();
+    itemButton(individualModes, individualModes.dccons[0]).click();
+    individualModes.select("all");
+    individualModes.restore();
+    individualModes.visible();
+    individualModes.external(MEDIA_KEY, "all");
+    individualModes.external(LEGACY_KEY, "1");
+    assertItem(individualModes, individualModes.images[0], false);
+    assertBlocked(individualModes.images.slice(1), false);
+    assertItem(individualModes, individualModes.dccons[0], true);
+    assertItem(individualModes, individualModes.dccons[1], false);
+    individualModes.select("body");
+    [...individualModes.images, ...individualModes.dccons].forEach(image => assertItem(individualModes, image, false));
+    itemButton(individualModes, individualModes.images[0]).click();
+    individualModes.select("none");
+    [...individualModes.images, ...individualModes.dccons].forEach(image => assertItem(individualModes, image, true, false));
+    individualModes.select("dccon");
+    individualModes.images.forEach(image => assertItem(individualModes, image, true, false));
+    individualModes.dccons.forEach(image => assertItem(individualModes, image, false));
+    individualModes.select("all");
+    [...individualModes.images, ...individualModes.dccons].forEach(image => assertItem(individualModes, image, false));
+    individualModes.assertImagePositions();
 
     const empty = createHarness({ mode: "all", empty: true });
     assert.equal(empty.controls.hidden, true);
@@ -303,17 +518,18 @@ async function main() {
     empty.runPreview();
     empty.resolvePreview();
     await settle();
-    assert.equal(empty.buttons.image.hidden, false);
-    assert.equal(empty.buttons.image.textContent, "차단된 이미지 보기 (1)");
+    assert.equal(empty.controls.hidden, true);
+    assert.equal(empty.buttons.image.hidden, true);
     assert.equal(empty.requests.length, 0, "blocked delayed cards must never receive src");
-    empty.buttons.image.click();
+    const delayedButton = assertItem(empty, empty.previews()[0], false);
+    delayedButton.click();
     assertBlocked(empty.previews(), false);
     assert.equal(empty.requests.length, 1);
     assert.ok(empty.requests[0].attached, "read_state must hydrate only after card insertion");
     empty.previews()[0].dispatchEvent({ type: "error" });
-    empty.buttons.image.click();
+    delayedButton.click();
     assertBlocked(empty.previews(), true);
-    empty.buttons.image.click();
+    delayedButton.click();
     assertBlocked(empty.previews(), false);
 
     const pendingChange = createHarness({ mode: "none", empty: true });
@@ -333,7 +549,7 @@ async function main() {
     assertBlocked(revealed.previews(), false);
     assert.ok(revealed.requests.every(request => request.attached), "link_preview must never eagerly assign src");
     revealed.buttons.image.click();
-    assert.equal(revealed.buttons.image.textContent, "차단된 이미지 보기 (4)");
+    assert.equal(revealed.buttons.image.textContent, "이미지 전체 보기 (4)");
 
     const changedReveal = createHarness({ mode: "all" });
     changedReveal.buttons.image.click();
@@ -351,7 +567,8 @@ async function main() {
         assert.equal(early.requests.length, 0, "cards arriving before boot must stay deferred");
         if (beforeReadScript) early.runRead();
         early.finishBoot();
-        assert.equal(early.buttons.image.textContent, "차단된 이미지 보기 (1)");
+        assert.equal(early.buttons.image.hidden, true);
+        assertItem(early, early.previews()[0], false);
         assertBlocked(early.previews(), true);
         early.select("none");
         assertBlocked(early.previews(), false);

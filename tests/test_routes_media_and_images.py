@@ -3312,7 +3312,7 @@ def test_media_block_menu_defers_comment_dccon_and_body_images(monkeypatch):
     controls = soup.select_one(".body-media-controls")
     assert controls.has_attr("hidden")
     buttons = controls.select("button")
-    assert [button["data-body-media-group"] for button in buttons] == ["dccon", "image"]
+    assert [button["data-body-media-group"] for button in buttons] == ["image", "dccon"]
     for button in buttons:
         assert button["type"] == "button"
         assert button["aria-expanded"] == "false"
