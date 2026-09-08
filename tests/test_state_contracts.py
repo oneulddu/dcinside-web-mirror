@@ -89,6 +89,8 @@ class FakeBoardAPI:
 
     async def board(self, **kwargs):
         self.calls.append(kwargs)
+        if not self.pages.get(kwargs["start_page"]):
+            kwargs["pagination_collector"].update({"has_next": False})
         for doc_id in self.pages.get(kwargs["start_page"], []):
             yield _index_item(doc_id)
 

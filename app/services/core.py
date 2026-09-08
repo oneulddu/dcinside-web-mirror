@@ -25,8 +25,11 @@ def _env_bool(name, default=False):
 
 MAX_PAGE = 31
 RELATED_LIMIT = 12
+RELATED_FETCH_TIMEOUT = 12  # Finish before the browser's 15-second request deadline.
 DOCS_PER_PAGE_ESTIMATE = max(int(getattr(dc_api, "BOARD_LIST_PAGE_SIZE", 30)), 1)
-RELATED_PAGE_FETCH_SIZE = DOCS_PER_PAGE_ESTIMATE
+# PC fallbacks can contain more than the mobile page-size estimate. Consume
+# the entire page; max_scan_pages=1 in _fetch_board_page bounds the request.
+RELATED_PAGE_FETCH_SIZE = -1
 RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1)
 RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
 BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)
@@ -57,6 +60,7 @@ _BOARD_REFRESH_CACHE = {}
 _BOARD_TIME_CACHE = {}
 _READ_CACHE = {}
 _READ_STALE_CACHE = {}
+_INITIAL_RELATED_CACHE = {}
 _READ_INFLIGHT = {}
 _BOARD_INFLIGHT = {}
 _LATEST_ID_CACHE = {}
@@ -66,6 +70,7 @@ _BOARD_INDEX_CACHE_LOCK = threading.Lock()
 _BOARD_TIME_CACHE_LOCK = threading.Lock()
 _READ_CACHE_LOCK = threading.Lock()
 _READ_STALE_CACHE_LOCK = threading.Lock()
+_INITIAL_RELATED_CACHE_LOCK = threading.Lock()
 _READ_INFLIGHT_LOCK = threading.Lock()
 _BOARD_INFLIGHT_LOCK = threading.Lock()
 _LATEST_ID_CACHE_LOCK = threading.Lock()
@@ -277,6 +282,7 @@ def _copy_read_payload(payload):
 def _copy_read_payload_for_cache(payload):
     copied_data, copied_comments, copied_images = _copy_read_payload(payload)
     copied_data["related_posts"] = []
+    copied_data.pop("_related_has_more", None)
     return copied_data, copied_comments, copied_images
 
 
@@ -310,6 +316,8 @@ async def _load_board_once(key, load):
         if not is_owner:
             payload, error = await flight.wait()
             if error is not None:
+                if isinstance(error, dc_api.BoardUnavailableError):
+                    raise dc_api.BoardUnavailableError(str(error)) from error
                 raise dc_api.DocumentUnavailableError("concurrent board fetch failed") from error
             return payload
         flight.value = await load()
@@ -348,6 +356,39 @@ def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, sea
     return board, kind or "", str(api_id)
 
 
+class RelatedPositionUnavailableError(RuntimeError):
+    """The cursor was not found within the bounded list search."""
+
+
+def _initial_related_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+    keyword = (search_keyword or "").strip()
+    return (
+        board, kind or "", str(api_id), int(bool(_safe_int(recommend, 0))),
+        (search_type or "subject_m").strip() if keyword else "", keyword,
+        "" if head_id is None else str(head_id).strip(),
+    )
+
+
+def _store_initial_related(key, rows, has_more=None):
+    # A missing embedded list or an inconclusive empty search is not an end.
+    if not rows and has_more is not False:
+        return
+    ttl = max(READ_CACHE_TTL, READ_STALE_TTL)
+    if ttl > 0:
+        _cache_set(
+            _INITIAL_RELATED_CACHE, _INITIAL_RELATED_CACHE_LOCK, key,
+            (_copy_rows(rows), has_more), ttl, READ_CACHE_MAX_ITEMS,
+        )
+
+
+def _copy_board_page(payload, pagination_collector=None):
+    rows, pagination = payload
+    if pagination_collector is not None:
+        pagination_collector.clear()
+        pagination_collector.update(pagination)
+    return _copy_rows(rows)
+
+
 def _author_code_cache_key(board, kind, doc_id):
     return (board, kind or "", str(doc_id))
 
@@ -379,6 +420,7 @@ async def _fetch_board_page(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    pagination_collector=None,
 ):
     cache_key = (
         board,
@@ -392,7 +434,7 @@ async def _fetch_board_page(
     )
     cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
-        return _copy_rows(cached)
+        return _copy_board_page(cached, pagination_collector)
 
     async def load():
         cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
@@ -400,6 +442,7 @@ async def _fetch_board_page(
             return cached
 
         posts = []
+        pagination = {}
         async for item in api.board(
             board_id=board,
             num=page_size,
@@ -411,6 +454,8 @@ async def _fetch_board_page(
             search_keyword=search_keyword,
             head_id=head_id,
             headtexts_collector=[],
+            pagination_collector=pagination,
+            raise_on_failure=True,
         ):
             row = _index_item_to_dict(item)
             row["source_page"] = _safe_int(page, 1)
@@ -420,13 +465,13 @@ async def _fetch_board_page(
                 _BOARD_PAGE_CACHE,
                 _BOARD_PAGE_CACHE_LOCK,
                 cache_key,
-                _copy_rows(posts),
+                (_copy_rows(posts), dict(pagination)),
                 BOARD_PAGE_CACHE_TTL,
                 BOARD_PAGE_CACHE_MAX_ITEMS,
             )
-        return posts
+        return posts, pagination
 
-    return _copy_rows(await _load_board_once(("page", cache_key), load))
+    return _copy_board_page(await _load_board_once(("page", cache_key), load), pagination_collector)
 
 
 def _normalize_target_ids(target_ids):
@@ -715,6 +760,20 @@ async def _load_read_payload(
 
 
 async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+    payload = await _async_read_body(
+        api_id, board, kind=kind, recommend=recommend, search_type=search_type,
+        search_keyword=search_keyword, head_id=head_id,
+    )
+    key = _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id)
+    snapshot = _cache_get(_INITIAL_RELATED_CACHE, _INITIAL_RELATED_CACHE_LOCK, key)
+    data, comments, images = _copy_read_payload(payload)
+    if snapshot is not None:
+        data["related_posts"] = _copy_rows(snapshot[0])
+        data["_related_has_more"] = snapshot[1]
+    return data, comments, images
+
+
+async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
     cache_key = _read_cache_key(
         api_id,
         board,
@@ -754,6 +813,11 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
                 timeout=READ_FETCH_TIMEOUT,
             )
             body_from_cache = bool(payload[0].pop("_body_from_cache", False))
+            if not body_from_cache:
+                _store_initial_related(
+                    _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id),
+                    payload[0].get("related_posts", []),
+                )
             body_cache_payload = _copy_read_payload_for_cache(payload)
             if _is_read_payload_cacheable(payload):
                 cache_payload = body_cache_payload
@@ -941,9 +1005,11 @@ async def _related_after_position_with_api(
         return [], False
 
     board_key = (board, kind or "", recommend_value, search_type_value, search_keyword_value, head_id_value)
+    page_metadata = {}
+    upstream_errors = []
 
     async def estimate_page_from_latest_id():
-        if recommend_value:
+        if recommend_value or search_keyword_value or head_id_value:
             return 1
 
         latest_id = _cache_get(_LATEST_ID_CACHE, _LATEST_ID_CACHE_LOCK, board_key)
@@ -983,16 +1049,23 @@ async def _related_after_position_with_api(
             checked.add(page)
             steps += 1
 
-            page_posts = await _fetch_board_page(
-                api,
-                page,
-                board,
-                recommend_value,
-                kind=kind,
-                search_type=search_type_value,
-                search_keyword=search_keyword_value,
-                head_id=head_id_value or None,
-            )
+            metadata = {}
+            try:
+                page_posts = await _fetch_board_page(
+                    api,
+                    page,
+                    board,
+                    recommend_value,
+                    kind=kind,
+                    search_type=search_type_value,
+                    search_keyword=search_keyword_value,
+                    head_id=head_id_value or None,
+                    pagination_collector=metadata,
+                )
+            except dc_api.BoardUnavailableError as exc:
+                upstream_errors.append(exc)
+                break
+            page_metadata[page] = metadata
             if not page_posts:
                 break
 
@@ -1035,7 +1108,11 @@ async def _related_after_position_with_api(
 
     if found_page is None:
         fallback_pages = []
-        estimated_page = await estimate_page_from_latest_id()
+        try:
+            estimated_page = await estimate_page_from_latest_id()
+        except dc_api.BoardUnavailableError as exc:
+            upstream_errors.append(exc)
+            estimated_page = None
         if estimated_page:
             fallback_pages.append(estimated_page)
         if recommend_value:
@@ -1053,7 +1130,9 @@ async def _related_after_position_with_api(
                 break
 
     if found_page is None:
-        return [], False
+        if upstream_errors:
+            raise dc_api.BoardUnavailableError("related list lookup failed") from upstream_errors[-1]
+        raise RelatedPositionUnavailableError("related cursor not found within search bounds")
 
     collect_limit = fetch_limit + 1
     related = []
@@ -1081,7 +1160,9 @@ async def _related_after_position_with_api(
 
     next_page = found_page + 1
     loaded_tail = 0
-    while len(related) < collect_limit and loaded_tail < max_tail:
+    end_confirmed = page_metadata[found_page].get("has_next") is False
+    while len(related) < collect_limit and loaded_tail < max_tail and not end_confirmed:
+        metadata = {}
         page_posts = await _fetch_board_page(
             api,
             next_page,
@@ -1091,14 +1172,17 @@ async def _related_after_position_with_api(
             search_type=search_type_value,
             search_keyword=search_keyword_value,
             head_id=head_id_value or None,
+            pagination_collector=metadata,
         )
+        end_confirmed = metadata.get("has_next") is False
         if not page_posts:
             break
         append_rows(page_posts)
         next_page += 1
         loaded_tail += 1
 
-    return related[:fetch_limit], len(related) > fetch_limit
+    has_more = True if len(related) > fetch_limit else (False if end_confirmed else None)
+    return related[:fetch_limit], has_more
 
 
 async def async_related_after_position(
@@ -1116,7 +1200,7 @@ async def async_related_after_position(
     head_id=None,
 ):
     async with dc_api_context() as api:
-        return await _related_after_position_with_api(
+        posts, has_more = await asyncio.wait_for(_related_after_position_with_api(
             api,
             api_id,
             after_id,
@@ -1130,4 +1214,10 @@ async def async_related_after_position(
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+        ), timeout=RELATED_FETCH_TIMEOUT)
+    if _safe_int(after_id, 0) == 0 and _safe_int(limit, RELATED_LIMIT) == RELATED_LIMIT:
+        _store_initial_related(
+            _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id),
+            posts, has_more,
         )
+    return posts, has_more

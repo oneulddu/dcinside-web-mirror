@@ -1,6 +1,10 @@
 (function () {
     "use strict";
 
+    var REQUEST_TIMEOUT_MS = 15000;
+    var END_MESSAGE = "더 불러올 게시글이 없습니다.";
+    var LOADING_MESSAGE = "다른 게시글을 불러오는 중...";
+
     function removeStatusRows(list) {
         var rows = list.querySelectorAll("[data-related-loader-status='1'], .empty-row");
         for (var i = 0; i < rows.length; i += 1) {
@@ -13,8 +17,26 @@
         var li = document.createElement("li");
         li.className = "empty-row";
         li.dataset.relatedLoaderStatus = "1";
+        li.setAttribute("aria-hidden", "true");
         li.textContent = text;
         list.appendChild(li);
+    }
+
+    function announce(state, message) {
+        if (state && state.statusRegion) {
+            state.statusRegion.textContent = message || "";
+        }
+    }
+
+    function showStatus(state, message) {
+        appendStatusRow(state.list, message);
+        announce(state, message);
+    }
+
+    function setListBusy(state, busy) {
+        if (state && state.list) {
+            state.list.setAttribute("aria-busy", busy ? "true" : "false");
+        }
     }
 
     function normalizePostId(value) {
@@ -350,7 +372,7 @@
         if (value === true || value === 1 || value === "1" || value === "true") {
             return true;
         }
-        if (value === false || value === 0 || value === "0" || value === "false" || value === null) {
+        if (value === false || value === 0 || value === "0" || value === "false") {
             return false;
         }
         return null;
@@ -375,30 +397,34 @@
         return null;
     }
 
-    function applyLoadedItems(context, button, items, payload) {
+    function applyLoadedItems(context, state, items, payload) {
+        var button = state.button;
         removeStatusRows(context.list);
 
         var appended = appendItems(context, items);
         var hasMore = responseHasMore(payload || {});
+        var loaded = appended > 0 ? "게시글 " + String(appended) + "개를 더 불러왔습니다." : "";
 
         if (hasMore === false) {
-            appendStatusRow(context.list, "더 불러올 게시글이 없습니다.");
+            appendStatusRow(context.list, END_MESSAGE);
+            announce(state, loaded ? loaded + " " + END_MESSAGE : END_MESSAGE);
             setButtonState(button, "no-more");
             return { appended: appended, hasMore: false };
         }
 
         if (appended > 0) {
+            announce(state, loaded);
             setButtonState(button, "idle");
             return { appended: appended, hasMore: hasMore };
         }
 
         if (hasMore === true) {
-            appendStatusRow(context.list, "새로 추가된 게시글은 아직 없습니다. 다시 더보기를 누를 수 있어요.");
+            showStatus(state, "새로 추가된 게시글은 아직 없습니다. 다시 더보기를 누를 수 있어요.");
             setButtonState(button, "idle");
             return { appended: appended, hasMore: true };
         }
 
-        appendStatusRow(context.list, "새로 추가된 게시글은 아직 없습니다. 다시 확인할 수 있어요.");
+        showStatus(state, "새로 추가된 게시글은 아직 없습니다. 다시 확인할 수 있어요.");
         setButtonState(button, "refresh");
         return { appended: appended, hasMore: hasMore };
     }
@@ -424,7 +450,7 @@
 
         if (!board || !pid) {
             if (!list.querySelector("a.feed-item")) {
-                appendStatusRow(list, "다른 게시글이 없습니다.");
+                showStatus(state, "다른 게시글이 없습니다.");
             }
             return null;
         }
@@ -471,37 +497,107 @@
         };
     }
 
+    function createError(code) {
+        var err = new Error(code || "related_fetch_failed");
+        err.code = code || "related_fetch_failed";
+        return err;
+    }
+
+    function failureMessage(err) {
+        var code = (err && err.code) || "";
+        if (code === "related_request_timeout") {
+            return "다른 게시글을 불러오는 데 시간이 너무 오래 걸렸습니다. 다시 시도할 수 있어요.";
+        }
+        if (code === "related_position_unavailable") {
+            return "이 위치에서 다음 게시글을 찾지 못했습니다. 다시 시도할 수 있어요.";
+        }
+        return "다른 게시글을 불러오지 못했습니다. 다시 시도할 수 있어요.";
+    }
+
+    async function readPayload(url, signal) {
+        var response = await fetch(url, {
+            method: "GET",
+            credentials: "same-origin",
+            headers: {
+                "Accept": "application/json"
+            },
+            signal: signal
+        });
+        var payload = null;
+        try {
+            payload = await response.json();
+        } catch (err) {
+            payload = null;
+        }
+        if (!payload || typeof payload !== "object") {
+            throw createError("related_fetch_failed");
+        }
+        if (!response.ok || payload.ok === false) {
+            throw createError(payload.error || "related_fetch_failed");
+        }
+        if (!Array.isArray(payload.items)) {
+            throw createError("related_fetch_failed");
+        }
+        return payload;
+    }
+
     async function loadRelated(state) {
+        if (state.loading || state.terminal) {
+            return;
+        }
         var button = state.button;
         var context = buildRequestContext(state);
         if (!context) {
             return;
         }
 
+        var requestId = state.requestId + 1;
+        state.requestId = requestId;
+        state.loading = true;
         setButtonState(button, "loading");
-        appendStatusRow(context.list, "다른 게시글을 불러오는 중...");
+        setListBusy(state, true);
+        showStatus(state, LOADING_MESSAGE);
+
+        var controller = typeof AbortController === "function" ? new AbortController() : null;
+        var timer = null;
+        var timeout = new Promise(function (resolve, reject) {
+            timer = setTimeout(function () {
+                if (controller) {
+                    try {
+                        controller.abort();
+                    } catch (err) {
+                        // 중단을 지원하지 않는 환경에서는 타임아웃 처리만 이어간다.
+                    }
+                }
+                reject(createError("related_request_timeout"));
+            }, REQUEST_TIMEOUT_MS);
+        });
 
         try {
-            var response = await fetch("/read/related?" + context.params.toString(), {
-                method: "GET",
-                credentials: "same-origin",
-                headers: {
-                    "Accept": "application/json"
-                }
-            });
-            if (!response.ok) {
-                throw new Error("Failed to fetch related posts");
+            var payload = await Promise.race([
+                readPayload("/read/related?" + context.params.toString(), controller ? controller.signal : undefined),
+                timeout
+            ]);
+            if (requestId !== state.requestId) {
+                return;
             }
-            var payload = await response.json();
-            if (payload && payload.ok === false) {
-                throw new Error(payload.error || "Failed to fetch related posts");
-            }
-            var items = Array.isArray(payload.items) ? payload.items : [];
-            applyLoadedItems(context, button, items, payload);
+            var result = applyLoadedItems(context, state, payload.items, payload);
             state.lastPostId = context.lastPostId || state.lastPostId;
+            if (result.hasMore === false) {
+                state.terminal = true;
+            }
         } catch (err) {
-            appendStatusRow(context.list, "다른 게시글을 불러오지 못했습니다. 다시 시도할 수 있어요.");
+            if (requestId !== state.requestId) {
+                return;
+            }
+            showStatus(state, failureMessage(err));
             setButtonState(button, "retry");
+        } finally {
+            clearTimeout(timer);
+            if (requestId === state.requestId) {
+                state.loading = false;
+                setListBusy(state, false);
+            }
         }
     }
 
@@ -513,20 +609,41 @@
             return;
         }
         var renderedState = getRenderedPostState(list);
+        var hasMoreAttr = String(section.dataset.hasMore || "").toLowerCase();
         var state = {
             button: button,
             section: section,
             list: list,
+            statusRegion: document.getElementById("related-status"),
             renderedIds: renderedState.ids,
-            lastPostId: renderedState.lastPostId
+            lastPostId: renderedState.lastPostId,
+            loading: false,
+            terminal: hasMoreAttr === "false",
+            autoLoaded: false,
+            requestId: 0
         };
         if (!button.dataset.defaultLabel) {
             button.dataset.defaultLabel = "더보기";
         }
-        setButtonState(button, "idle");
         button.addEventListener("click", function () {
             loadRelated(state);
         });
+        setListBusy(state, false);
+
+        var hasRenderedPosts = !!list.querySelector("a.feed-item");
+        if (state.terminal) {
+            setButtonState(button, "no-more");
+            if (!hasRenderedPosts) {
+                showStatus(state, END_MESSAGE);
+            }
+            return;
+        }
+
+        setButtonState(button, "idle");
+        if (!hasRenderedPosts && !state.autoLoaded) {
+            state.autoLoaded = true;
+            loadRelated(state);
+        }
     }
 
     if (document.readyState === "loading") {
