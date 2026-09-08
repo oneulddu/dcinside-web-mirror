@@ -1677,6 +1677,16 @@ html[data-media-block-mode="all"] .article-body:not([data-body-media-ready="true
     border-bottom: var(--rule) solid var(--fg);
 }
 
+/* 목록 전체가 아니라 상태 문구만 보조기기에 전달하는 라이브 영역 */
+.related-status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
 .related-more-wrap {
     margin-top: var(--space-4);
 }

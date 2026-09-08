@@ -51,15 +51,15 @@
         </ul>
     </section>
 
-    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}" data-gallery-name="{{ gallery_name or '' }}">
+    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}" data-gallery-name="{{ gallery_name or '' }}" data-has-more="{% if related_has_more is sameas false %}false{% elif related_has_more is sameas true %}true{% else %}unknown{% endif %}">
         <div class="board-head related-head">
             <h2>{% if search_keyword %}다른 검색 결과{% elif recommend == 1 %}다른 개념글{% else %}다른 게시글{% endif %}</h2>
         </div>
-        <ul id="related-list">
+        <ul id="related-list" aria-busy="false">
             {% if embedded_related_posts %}
             {% for item in embedded_related_posts %}
             <li data-post-id="{{ item.id }}">
-                <a class="feed-item" data-post-id="{{ item.id }}" href="{{ read_url(board, item.id, recommend=recommend, source_page=source_page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">
+                <a class="feed-item" data-post-id="{{ item.id }}" href="{{ read_url(board, item.id, recommend=recommend, source_page=item.source_page or source_page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">
                     <div class="feed-title-wrap">
                         {{ feed_status_icon(item) }}
                         <span class="feed-title">{{ item.title|highlight_search(search_keyword) }}</span>
@@ -79,19 +79,19 @@
                 </a>
             </li>
             {% endfor %}
-            {% else %}
-            {% if search_keyword %}
-            <li class="empty-row">다른 검색 결과는 더보기를 누르면 불러옵니다.</li>
-            {% elif recommend == 1 %}
-            <li class="empty-row">다른 개념글은 더보기를 누르면 불러옵니다.</li>
-            {% else %}
-            <li class="empty-row">다른 게시글은 더보기를 누르면 불러옵니다.</li>
             {% endif %}
+            {% if related_has_more is sameas false %}
+            <li class="empty-row">더 불러올 게시글이 없습니다.</li>
+            {% elif not embedded_related_posts %}
+            <noscript>
+                <li class="empty-row">{% if search_keyword %}다른 검색 결과는{% elif recommend == 1 %}다른 개념글은{% else %}다른 게시글은{% endif %} 자바스크립트를 켜야 불러올 수 있습니다.</li>
+            </noscript>
             {% endif %}
         </ul>
+        <p id="related-status" class="related-status" role="status" aria-live="polite"></p>
         <div class="related-more-wrap">
-            <button class="related-more-btn" id="related-load-button" type="button" aria-controls="related-list" data-default-label="더보기">
-                <span class="related-more-label" data-related-more-label>더보기</span>
+            <button class="related-more-btn{% if related_has_more is sameas false %} is-terminal{% endif %}" id="related-load-button" type="button" aria-controls="related-list" data-default-label="더보기"{% if related_has_more is sameas false %} data-state="no-more" disabled{% endif %}>
+                <span class="related-more-label" data-related-more-label>{% if related_has_more is sameas false %}더 없음{% else %}더보기{% endif %}</span>
                 <span class="sp-arrow arrow-down-lg related-more-arrow" aria-hidden="true"></span>
             </button>
         </div>

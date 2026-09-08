@@ -32,6 +32,7 @@ def _index_item(doc_id, *, author_id=None, is_mobile_source=False):
 
 @pytest.fixture(autouse=True)
 def clear_core_caches():
+    core._INITIAL_RELATED_CACHE.clear()
     core._BOARD_PAGE_CACHE.clear()
     core._BOARD_INDEX_CACHE.clear()
     core._BOARD_REFRESH_CACHE.clear()
@@ -44,6 +45,7 @@ def clear_core_caches():
     core._AUTHOR_CODE_CACHE.clear()
     core._CACHE_PRUNE_STATE.clear()
     yield
+    core._INITIAL_RELATED_CACHE.clear()
     core._BOARD_PAGE_CACHE.clear()
     core._BOARD_INDEX_CACHE.clear()
     core._BOARD_REFRESH_CACHE.clear()
@@ -782,7 +784,8 @@ async def test_async_read_cache_returns_mutation_safe_copies(monkeypatch):
 
     assert FakeAPI.calls == 1
     assert cached_data["html"] == "<p>body</p>"
-    assert cached_data["related_posts"] == []
+    assert cached_data["related_posts"][0]["id"] == "456"
+    assert cached_data["related_posts"][0]["title"] == "title 456"
     assert cached_comments[0]["dccon"] == "https://dccon.dcinside.com/original.png"
     assert cached_images == ["https://img.dcinside.com/original.jpg"]
 
@@ -1338,7 +1341,7 @@ async def test_related_after_position_recommend_keeps_following_higher_ids(monke
     )
 
     assert [row["id"] for row in related] == ["105", "99"]
-    assert has_more is False
+    assert has_more is None  # No pagination evidence and tail probing was disabled.
     assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
 
 
@@ -1410,7 +1413,7 @@ async def test_related_after_position_respects_zero_tail_pages():
     )
 
     assert related == []
-    assert has_more is False
+    assert has_more is None  # A configured probe limit cannot establish the end.
     assert api.calls == [(1, core.RELATED_PAGE_FETCH_SIZE, 1)]
 
 
@@ -1608,7 +1611,7 @@ async def test_read_waiter_timeout_does_not_cancel_owner_or_other_waiters(monkey
     release.set()
     owner_result, waiter_result = await asyncio.gather(owner, waiter)
     assert owner_result[0]["related_posts"] == [{"id": "99"}]
-    assert waiter_result[0]["related_posts"] == []
+    assert waiter_result[0]["related_posts"] == [{"id": "99"}]
     assert waiter_result[0]["html"] == "body"
     assert core._READ_INFLIGHT == {}
 

@@ -14,6 +14,7 @@ from .services.core import (
     async_index_with_head_categories,
     async_read,
     async_related_after_position,
+    RelatedPositionUnavailableError,
     format_display_time,
 )
 from .services.heung import get_heung_galleries, search_galleries
@@ -928,6 +929,7 @@ def read():
     data.pop("_comment_prefer_mobile", None)
     _format_read_payload_times(data, comments)
     embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
+    related_has_more = data.pop("_related_has_more", None)
 
     for comment in comments:
         if comment.get("dccon"):
@@ -952,6 +954,7 @@ def read():
             search_type=search_type,
             search_keyword=search_keyword,
             embedded_related_posts=embedded_related_posts,
+            related_has_more=related_has_more,
             social_meta=_read_social_meta(
                 data,
                 images,
@@ -1010,9 +1013,20 @@ def read_related():
                     **_search_call_kwargs(search_type, search_keyword),
                 )
             )
+        except RelatedPositionUnavailableError:
+            current_app.logger.info("related position_unavailable board=%s pid=%s after_pid=%s", board, pid, after_pid)
+            response = jsonify({"ok": False, "items": [], "error": "related_position_unavailable"})
+            response.status_code = 502
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Retry-After"] = "3"
+            return response
         except Exception:
             current_app.logger.exception("Failed to fetch related posts")
-            return jsonify({"ok": False, "items": [], "error": "related_fetch_failed"}), 502
+            response = jsonify({"ok": False, "items": [], "error": "related_fetch_failed"})
+            response.status_code = 502
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Retry-After"] = "3"
+            return response
 
     return jsonify(
         {
