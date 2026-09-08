@@ -352,3 +352,36 @@ async def test_filtered_search_without_page_hint_does_not_estimate_from_sparse_i
     assert [row['id'] for row in rows] == ['99']
     assert more is False
     assert [page for page, _ in api.calls] == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('anchor', [75, 65])
+async def test_pc_last_page_larger_than_mobile_estimate_keeps_all_following_rows(monkeypatch, anchor):
+    # Exercise the real API parser: a PC page has 50 rows, unlike the mobile
+    # 30-row estimate. Neither truncation nor the first cache hit may end it.
+    markup = '<table>' + ''.join(
+        f'<tr class="ub-content us-post" data-no="{pid}">'
+        f'<td class="gall_tit"><a href="/board/view/?id=test&no={pid}">post {pid}</a></td>'
+        '<td class="gall_writer" data-nick="test"></td>'
+        '<td class="gall_date" title="2026.09.09 07:00:00"></td>'
+        '<td class="gall_count">1</td><td class="gall_recommend">0</td></tr>'
+        for pid in range(100, 50, -1)
+    ) + '</table><div class="bottom_paging_box"><em>1</em></div>'
+    api = API.__new__(API)
+    calls = []
+    async def pc_page(*args, **kwargs):
+        calls.append(1)
+        return lxml.html.fromstring(markup), markup, 'https://gall.dcinside.com/board/lists/?id=test&page=1'
+    api._API__fetch_parsed_from_urls = pc_page
+    use_api(monkeypatch, api)
+    rows, more = await core.async_related_after_position(str(anchor), 0, 'test', source_page=1)
+    all_ids = [int(row['id']) for row in rows]
+    assert len(rows) == 12 and more is True
+    key = core._initial_related_key(str(anchor), 'test')
+    assert core._INITIAL_RELATED_CACHE[key]['value'][1] is True
+    next_rows, more = await core.async_related_after_position(str(anchor), rows[-1]['id'], 'test', source_page=1)
+    all_ids.extend(int(row['id']) for row in next_rows)
+    assert all_ids == list(range(anchor - 1, 50, -1))
+    assert more is False
+    assert len(calls) == 1
+    assert core._INITIAL_RELATED_CACHE[key]['value'][1] is True  # more does not overwrite initial

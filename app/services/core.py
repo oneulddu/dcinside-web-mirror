@@ -27,7 +27,9 @@ MAX_PAGE = 31
 RELATED_LIMIT = 12
 RELATED_FETCH_TIMEOUT = 12  # Finish before the browser's 15-second request deadline.
 DOCS_PER_PAGE_ESTIMATE = max(int(getattr(dc_api, "BOARD_LIST_PAGE_SIZE", 30)), 1)
-RELATED_PAGE_FETCH_SIZE = DOCS_PER_PAGE_ESTIMATE
+# PC fallbacks can contain more than the mobile page-size estimate. Consume
+# the entire page; max_scan_pages=1 in _fetch_board_page bounds the request.
+RELATED_PAGE_FETCH_SIZE = -1
 RELATED_PAGE_PROBE_STEPS = max(_env_int("MIRROR_RELATED_PAGE_PROBE_STEPS", 4), 1)
 RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
 BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)

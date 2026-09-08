@@ -114,7 +114,6 @@ def test_board_time_cache_has_dedicated_max_items_constant():
 
 def test_related_page_estimate_matches_board_list_page_size():
     assert core.DOCS_PER_PAGE_ESTIMATE == core.dc_api.BOARD_LIST_PAGE_SIZE
-    assert core.RELATED_PAGE_FETCH_SIZE == core.dc_api.BOARD_LIST_PAGE_SIZE
 
 
 def test_normalize_author_preserves_existing_name_and_code_rules():
