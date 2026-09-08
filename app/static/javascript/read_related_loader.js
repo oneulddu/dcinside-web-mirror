@@ -80,17 +80,29 @@
         var ids = {};
         var links = list.querySelectorAll("a.feed-item");
         var lastPostId = "";
+        var lastSourcePage = "";
         for (var i = 0; i < links.length; i += 1) {
             var postId = getPostIdFromLink(links[i]);
             if (postId) {
                 ids[postId] = true;
                 lastPostId = postId;
+                try {
+                    lastSourcePage = normalizeSourcePage(new URL(links[i].getAttribute("href"), window.location.href).searchParams.get("source_page"));
+                } catch (err) {
+                    lastSourcePage = "";
+                }
             }
         }
         return {
             ids: ids,
-            lastPostId: lastPostId
+            lastPostId: lastPostId,
+            lastSourcePage: lastSourcePage
         };
+    }
+
+    function normalizeSourcePage(value) {
+        var page = String(value || "").trim();
+        return /^[1-9]\d*$/.test(page) ? page : "";
     }
 
     function escapeHtml(value) {
@@ -314,6 +326,7 @@
             ));
             renderedIds[postId] = true;
             context.lastPostId = postId;
+            context.lastSourcePage = normalizeSourcePage(item.source_page) || context.sourcePage;
             appended += 1;
         }
         return appended;
@@ -441,7 +454,7 @@
         var kind = section.dataset.kind || "";
         var recommend = section.dataset.recommend || "";
         var limit = section.dataset.limit || "12";
-        var sourcePage = section.dataset.sourcePage || "";
+        var sourcePage = state.lastSourcePage || normalizeSourcePage(section.dataset.sourcePage);
         var headId = section.dataset.headId || "";
         var searchType = section.dataset.searchType || "";
         var searchKeyword = section.dataset.searchKeyword || "";
@@ -582,7 +595,10 @@
                 return;
             }
             var result = applyLoadedItems(context, state, payload.items, payload);
-            state.lastPostId = context.lastPostId || state.lastPostId;
+            if (context.lastPostId) {
+                state.lastPostId = context.lastPostId;
+                state.lastSourcePage = context.lastSourcePage;
+            }
             if (result.hasMore === false) {
                 state.terminal = true;
             }
@@ -617,6 +633,7 @@
             statusRegion: document.getElementById("related-status"),
             renderedIds: renderedState.ids,
             lastPostId: renderedState.lastPostId,
+            lastSourcePage: renderedState.lastSourcePage,
             loading: false,
             terminal: hasMoreAttr === "false",
             autoLoaded: false,

@@ -1014,14 +1014,22 @@ def read_related():
                 )
             )
         except RelatedPositionUnavailableError:
-            current_app.logger.info("related position_unavailable board=%s pid=%s after_pid=%s", board, pid, after_pid)
+            current_app.logger.info(
+                "related position_unavailable board=%r pid=%s after_pid=%s source_page=%s "
+                "kind=%r recommend=%s head_id=%r search_type=%r has_search=%s",
+                board, pid, after_pid, source_page, kind, recommend, head_id, search_type, bool(search_keyword),
+            )
             response = jsonify({"ok": False, "items": [], "error": "related_position_unavailable"})
             response.status_code = 502
             response.headers["Cache-Control"] = "no-store"
             response.headers["Retry-After"] = "3"
             return response
         except Exception:
-            current_app.logger.exception("Failed to fetch related posts")
+            current_app.logger.exception(
+                "Failed to fetch related posts board=%r pid=%s after_pid=%s source_page=%s "
+                "kind=%r recommend=%s head_id=%r search_type=%r has_search=%s",
+                board, pid, after_pid, source_page, kind, recommend, head_id, search_type, bool(search_keyword),
+            )
             response = jsonify({"ok": False, "items": [], "error": "related_fetch_failed"})
             response.status_code = 502
             response.headers["Cache-Control"] = "no-store"
