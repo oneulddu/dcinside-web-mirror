@@ -56,7 +56,8 @@
             media.className = "link-preview-media";
             var image = document.createElement("img");
             image.className = "link-preview-image";
-            image.src = data.image_url;
+            image.setAttribute("data-preview-image-src", data.image_url);
+            image.hidden = true;
             image.alt = data.title + " 미리보기";
             image.loading = "lazy";
             image.decoding = "async";
@@ -98,7 +99,9 @@
             })
             .then(function (data) {
                 if (data && data.ok && data.title) {
-                    placeholder.parentNode.replaceChild(buildCard(href, data), placeholder);
+                    var card = buildCard(href, data);
+                    placeholder.parentNode.replaceChild(card, placeholder);
+                    document.dispatchEvent(new CustomEvent("mirror:link-preview-added", { detail: { root: card } }));
                 } else {
                     removePlaceholder(placeholder);
                 }

@@ -27,7 +27,7 @@ HTML_TAG_ATTRS = {
     },
     "img": {
         "src", "alt", "loading", "decoding", "fetchpriority", "width", "height",
-        "data-body-image-src", "data-dccon-src", "hidden",
+        "data-body-image-src", "data-dccon-src", "data-preview-image-src", "hidden",
     },
     "source": {"src", "type"},
     "td": {"colspan", "rowspan"},
@@ -266,6 +266,9 @@ def sanitize_html_tree(soup):
             elif attr_name in {"data-body-image-src", "data-dccon-src"}:
                 if name != "img" or not str(value).startswith("/media?"):
                     del tag.attrs[attr]
+            elif attr_name == "data-preview-image-src":
+                if name != "img" or not str(value).startswith("/embed/link-preview-image?"):
+                    del tag.attrs[attr]
     return soup
 
 
@@ -281,6 +284,11 @@ def sanitize_html_fragment(raw_html):
 
 def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
     soup = parse_html_fragment(raw_html)
+    # Deferred sources belong to the mirror, never to upstream markup. Clear
+    # them before generating the trusted, signed preview thumbnails below.
+    for img in soup.find_all("img"):
+        for attr in ("data-body-image-src", "data-dccon-src", "data-preview-image-src"):
+            img.attrs.pop(attr, None)
     normalize_twitter_blockquotes(soup)
     normalize_og_wraps(soup)
     rewrite_content_images(soup, images, board, pid, kind)
@@ -357,11 +365,12 @@ def normalize_og_wraps(soup):
             media["class"] = ["link-preview-media"]
             thumbnail = soup.new_tag("img")
             thumbnail["class"] = ["link-preview-image"]
-            thumbnail["src"] = url_for(
+            thumbnail["data-preview-image-src"] = url_for(
                 "main.embed_link_preview_image",
                 url=image_url,
                 token=image_token,
             )
+            thumbnail["hidden"] = ""
             thumbnail["alt"] = f"{title} 미리보기"
             thumbnail["loading"] = "lazy"
             thumbnail["decoding"] = "async"
@@ -670,7 +679,7 @@ def rewrite_content_images(soup, images, board, pid, kind):
     for img in soup.find_all("img"):
         if (
             "link-preview-image" in (img.get("class") or [])
-            and str(img.get("src") or "").startswith("/embed/link-preview-image?")
+            and str(img.get("data-preview-image-src") or "").startswith("/embed/link-preview-image?")
         ):
             continue
         original_src = pick_soup_image_src(img)
@@ -678,7 +687,10 @@ def rewrite_content_images(soup, images, board, pid, kind):
             img.decompose()
             continue
         proxied_src = image_urls[original_src].popleft()
-        classes = list(img.get("class") or [])
+        classes = [
+            value for value in (img.get("class") or [])
+            if value.lower() not in {"body-image", "body-dccon", "link-preview-image"}
+        ]
         if is_dccon_image(img, original_src):
             img["class"] = list(dict.fromkeys(classes + ["dccon", "body-dccon"]))
             img["data-dccon-src"] = proxied_src

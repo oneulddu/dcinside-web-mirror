@@ -2037,7 +2037,9 @@ def test_prepare_read_html_normalizes_og_wrap_with_signed_thumbnail_and_no_neste
     assert preview.select_one(".link-preview-desc").get_text(strip=True) == "뉴스 설명"
     assert preview.select_one(".link-preview-host").get_text(strip=True) == "n.news.naver.com"
     thumbnail = preview.select_one("img.link-preview-image")
-    thumbnail_url = urlparse(thumbnail["src"])
+    assert not thumbnail.has_attr("src")
+    assert thumbnail.has_attr("hidden")
+    thumbnail_url = urlparse(thumbnail["data-preview-image-src"])
     thumbnail_query = parse_qs(thumbnail_url.query)
     assert "has-media" in preview.get("class", [])
     assert thumbnail_url.path == "/embed/link-preview-image"
@@ -2050,6 +2052,74 @@ def test_prepare_read_html_normalizes_og_wrap_with_signed_thumbnail_and_no_neste
     assert thumbnail["alt"] == "뉴스 제목 미리보기"
     assert preview.find("a") is None
     assert len(soup.find_all("a")) == 1
+
+
+@pytest.mark.parametrize("source", [
+    "https://evil.example/image.png",
+    "//evil.example/image.png",
+    "javascript:alert(1)",
+    "/media?src=https://images.dcinside.com/photo.jpg",
+    "/embed/link-preview-image.evil?url=x",
+    "/embed/link-preview-image/../other?url=x",
+])
+def test_sanitizer_rejects_non_preview_deferred_thumbnail_sources(source):
+    soup = html_sanitizer.parse_html_fragment("<img class='link-preview-image' hidden>")
+    soup.img["data-preview-image-src"] = source
+
+    html_sanitizer.sanitize_html_tree(soup)
+
+    assert not soup.img.has_attr("data-preview-image-src")
+    assert not soup.img.has_attr("src")
+
+
+def test_sanitizer_keeps_preview_deferred_source_separate_from_media_sources():
+    source = "/embed/link-preview-image?url=https%3A%2F%2Fexample.com%2Fimage.png&token=signed"
+    soup = html_sanitizer.parse_html_fragment("<img class='link-preview-image' hidden>")
+    for attribute in ("data-preview-image-src", "data-body-image-src", "data-dccon-src"):
+        soup.img[attribute] = source
+
+    html_sanitizer.sanitize_html_tree(soup)
+
+    assert soup.img["data-preview-image-src"] == source
+    assert not soup.img.has_attr("data-body-image-src")
+    assert not soup.img.has_attr("data-dccon-src")
+    assert not soup.img.has_attr("src")
+    assert soup.img.has_attr("hidden")
+
+
+def test_prepare_read_html_removes_forged_deferred_preview_with_eager_source():
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            '<img class="link-preview-image" src="/media?src=https://images.dcinside.com/leak.jpg" '
+            'data-preview-image-src="/embed/link-preview-image?url=forged&token=invalid">',
+            [], "test", 123, None,
+        )
+
+    assert BeautifulSoup(cleaned, "html.parser").find("img") is None
+
+
+@pytest.mark.parametrize("source,original_classes,expected_class,expected_attribute", [
+    ("https://dccon.dcinside.com/icon.png", "body-image link-preview-image", "body-dccon", "data-dccon-src"),
+    ("https://images.dcinside.com/icon.png", "body-image dccon link-preview-image", "body-dccon", "data-dccon-src"),
+    ("https://images.dcinside.com/photo.jpg", "body-dccon link-preview-image", "body-image", "data-body-image-src"),
+])
+def test_prepare_read_html_assigns_one_media_category(source, original_classes, expected_class, expected_attribute):
+    app = create_app()
+    with app.test_request_context("/read?board=test&pid=123"):
+        cleaned = html_sanitizer.prepare_read_html(
+            f'<img class="{original_classes}" src="{source}" '
+            'data-dccon-src="/media?src=forged-dccon" data-body-image-src="/media?src=forged-image" '
+            'data-preview-image-src="/embed/link-preview-image?url=forged&token=invalid">',
+            [source], "test", 123, None,
+        )
+
+    img = BeautifulSoup(cleaned, "html.parser").find("img")
+    assert set(img["class"]) & {"body-image", "body-dccon", "link-preview-image"} == {expected_class}
+    assert {attr for attr in img.attrs if attr.startswith("data-")} == {expected_attribute}
+    assert parse_qs(urlparse(img[expected_attribute]).query)["src"] == [source]
+    assert img.has_attr("hidden")
+    assert not img.has_attr("src")
 
 
 def test_prepare_read_html_removes_unsafe_or_titleless_og_wrap():
@@ -3239,8 +3309,15 @@ def test_media_block_menu_defers_comment_dccon_and_body_images(monkeypatch):
     assert 'MEDIA_BLOCK_STORAGE_KEY = "mirror_media_block_mode_v1"' in script
     assert 'LEGACY_DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1"' in script
     assert 'image.removeAttribute("src")' in script
-    assert "hydrateBodyImages(document, bodyBlocked)" in script
-    assert "hydrateDccons(articleBody, dcconBlocked || bodyBlocked)" in script
+    controls = soup.select_one(".body-media-controls")
+    assert controls.has_attr("hidden")
+    buttons = controls.select("button")
+    assert [button["data-body-media-group"] for button in buttons] == ["dccon", "image"]
+    for button in buttons:
+        assert button["type"] == "button"
+        assert button["aria-expanded"] == "false"
+        assert button.has_attr("hidden")
+        assert soup.find(id=button["aria-controls"]) == soup.select_one(".article-body")
     assert "차단된 이모티콘 보기" in script
     assert "comment-dccon-block-hidden" in script
     assert ".comment-dccon-block-hidden" in style
