@@ -13,6 +13,9 @@
     var currentMediaBlockMode = null;
     var mediaBlockModeUnsaved = false;
     var bodyMediaShowing = { dccon: false, image: false };
+    var bodyMediaOverrides = new WeakMap();
+    var bodyMediaButtons = new WeakMap();
+    var bodyMediaId = 0;
 
     function safeParse(jsonText) {
         if (!jsonText) {
@@ -196,25 +199,65 @@
         var i;
         for (i = 0; i < images.length; i += 1) {
             var image = images[i];
-            if (isBlocked) {
-                image.removeAttribute("src");
-                image.hidden = true;
-                continue;
-            }
-            if (!image.getAttribute("src")) {
-                image.setAttribute("src", image.getAttribute(sourceAttribute));
-            }
-            image.hidden = false;
+            hydrateDeferredImage(image, sourceAttribute, isBlocked);
         }
+    }
+
+    function hydrateDeferredImage(image, sourceAttribute, isBlocked) {
+        if (isBlocked) {
+            image.removeAttribute("src");
+        } else if (!image.getAttribute("src")) {
+            image.setAttribute("src", image.getAttribute(sourceAttribute));
+        }
+        image.hidden = isBlocked;
     }
 
     function hydrateDccons(root, isBlocked) {
         hydrateDeferredImages(root, "img.dccon[data-dccon-src]", "data-dccon-src", isBlocked);
     }
 
-    function hydrateBodyImages(root, isBlocked) {
-        hydrateDeferredImages(root, "img.body-image[data-body-image-src]", "data-body-image-src", isBlocked);
-        hydrateDeferredImages(root, "img.link-preview-image[data-preview-image-src]", "data-preview-image-src", isBlocked);
+    function bodyMediaGroups() {
+        return [
+            { key: "dccon", label: "이모티콘", selector: "img.dccon[data-dccon-src]" },
+            { key: "image", label: "이미지", selector: "img.body-image[data-body-image-src], img.link-preview-image[data-preview-image-src]" }
+        ];
+    }
+
+    function isBodyMediaShowing(image, group) {
+        return bodyMediaOverrides.has(image) ? bodyMediaOverrides.get(image) : bodyMediaShowing[group];
+    }
+
+    function ensureBodyMediaButton(image, group) {
+        var button = bodyMediaButtons.get(image);
+        if (button) {
+            return button;
+        }
+        var id = image.getAttribute("id");
+        while (!id || document.getElementById(id) !== image) {
+            bodyMediaId += 1;
+            id = "body-media-image-" + bodyMediaId;
+            if (!document.getElementById(id)) {
+                break;
+            }
+        }
+        image.setAttribute("id", id);
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "body-media-item-toggle";
+        button.setAttribute("data-body-media-kind", group.key);
+        button.setAttribute("aria-controls", id);
+        // Keep native buttons outside links, including linked preview thumbnails.
+        var anchor = image.closest("a");
+        var position = anchor || image;
+        position.parentNode.insertBefore(button, position);
+        button.addEventListener("click", function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            bodyMediaOverrides.set(image, !isBodyMediaShowing(image, group.key));
+            syncBodyMedia();
+        });
+        bodyMediaButtons.set(image, button);
+        return button;
     }
 
     function syncBodyMedia() {
@@ -228,30 +271,46 @@
         var effectiveDcconBlocked = dcconBlocked && !bodyMediaShowing.dccon;
         articleBody.dataset.bodyImagesBlocked = effectiveImageBlocked ? "true" : "false";
         articleBody.dataset.bodyDcconsBlocked = effectiveDcconBlocked ? "true" : "false";
-        hydrateBodyImages(articleBody, effectiveImageBlocked);
-        hydrateDccons(articleBody, effectiveDcconBlocked);
-
         var controls = document.querySelector(".body-media-controls");
-        if (!controls) {
-            return;
-        }
-        var groups = [
-            { key: "dccon", blocked: dcconBlocked, label: "이모티콘", selector: "img.dccon[data-dccon-src]" },
-            { key: "image", blocked: imageBlocked, label: "이미지", selector: "img.body-image[data-body-image-src], img.link-preview-image[data-preview-image-src]" }
-        ];
         var anyVisible = false;
-        groups.forEach(function (group) {
-            var button = controls.querySelector('[data-body-media-group="' + group.key + '"]');
+        bodyMediaGroups().forEach(function (group) {
+            var blocked = group.key === "image" ? imageBlocked : dcconBlocked;
+            var images = articleBody.querySelectorAll(group.selector);
+            var allShowing = images.length > 0;
+            for (var i = 0; i < images.length; i += 1) {
+                var image = images[i];
+                var showing = isBodyMediaShowing(image, group.key);
+                allShowing = allShowing && showing;
+                var button = bodyMediaButtons.get(image);
+                if (blocked) {
+                    button = ensureBodyMediaButton(image, group);
+                }
+                if (button) {
+                    button.hidden = !blocked;
+                    button.textContent = group.label + (showing ? " 숨기기" : " 보기");
+                    button.setAttribute("aria-expanded", showing ? "true" : "false");
+                }
+                var source = group.key === "dccon" ? "data-dccon-src" :
+                    (image.getAttribute("data-preview-image-src") !== null ? "data-preview-image-src" : "data-body-image-src");
+                hydrateDeferredImage(image, source, blocked && !showing);
+                var card = image.closest("a.link-preview");
+                if (card) {
+                    card.dataset.previewImageBlocked = blocked && !showing ? "true" : "false";
+                }
+            }
+            var button = controls && controls.querySelector('[data-body-media-group="' + group.key + '"]');
             if (!button) {
                 return;
             }
-            var count = articleBody.querySelectorAll(group.selector).length;
-            button.hidden = !group.blocked || !count;
-            button.setAttribute("aria-expanded", bodyMediaShowing[group.key] ? "true" : "false");
-            button.textContent = "차단된 " + group.label + (bodyMediaShowing[group.key] ? " 숨기기" : " 보기 (" + count + ")");
+            button.hidden = !blocked || images.length < 2;
+            button.setAttribute("aria-expanded", allShowing ? "true" : "false");
+            button.textContent = group.label + (allShowing ? " 전체 숨기기" : " 전체 보기 (" + images.length + ")");
             anyVisible = anyVisible || !button.hidden;
         });
-        controls.hidden = !anyVisible;
+        articleBody.dataset.bodyMediaReady = "true";
+        if (controls) {
+            controls.hidden = !anyVisible;
+        }
     }
 
     function wireBodyMediaControls() {
@@ -259,7 +318,12 @@
         for (var i = 0; i < buttons.length; i += 1) {
             buttons[i].addEventListener("click", function () {
                 var group = this.getAttribute("data-body-media-group");
-                bodyMediaShowing[group] = !bodyMediaShowing[group];
+                bodyMediaShowing[group] = this.getAttribute("aria-expanded") !== "true";
+                var definition = bodyMediaGroups().filter(function (item) { return item.key === group; })[0];
+                var images = document.querySelector(".article-body").querySelectorAll(definition.selector);
+                for (var j = 0; j < images.length; j += 1) {
+                    bodyMediaOverrides.delete(images[j]);
+                }
                 syncBodyMedia();
             });
         }
@@ -344,6 +408,7 @@
         if (currentMediaBlockMode !== normalized) {
             bodyMediaShowing.dccon = false;
             bodyMediaShowing.image = false;
+            bodyMediaOverrides = new WeakMap();
         }
         currentMediaBlockMode = normalized;
         var dcconBlocked = mediaModeBlocksDccons(normalized);
