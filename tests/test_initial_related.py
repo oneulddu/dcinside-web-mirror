@@ -306,15 +306,39 @@ async def test_related_server_deadline_leaves_no_poisoned_snapshot(monkeypatch):
     (BoardUnavailableError('upstream'), 'related_fetch_failed'),
     (core.RelatedPositionUnavailableError('not found'), 'related_position_unavailable'),
 ])
-def test_related_route_errors_are_retryable_and_never_terminal(monkeypatch, error, code):
+def test_related_route_errors_are_retryable_and_never_terminal(monkeypatch, caplog, error, code):
     async def fail(*args, **kwargs):
         raise error
     monkeypatch.setattr(routes, 'async_related_after_position', fail)
-    response = create_app().test_client().get('/read/related?board=test&pid=100')
+    with caplog.at_level('INFO'):
+        response = create_app().test_client().get(
+            '/read/related?board=test&pid=100&after_pid=90&source_page=5'
+            '&kind=minor&recommend=1&headid=7&s_type=subject_m&serval=private-search-text'
+        )
     assert response.status_code == 502
     assert response.json == {'ok': False, 'items': [], 'error': code}
     assert response.headers['Cache-Control'] == 'no-store'
     assert response.headers['Retry-After'] == '3'
+    assert "board='test' pid=100 after_pid=90 source_page=5" in caplog.text
+    assert "kind='minor' recommend=1 head_id='7' search_type='subject_m' has_search=True" in caplog.text
+    assert 'private-search-text' not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_related_continuation_crosses_probe_window_with_last_row_page():
+    api = Pages({page: list(range(630 - page * 30, 600 - page * 30, -1)) for page in range(1, 8)})
+    kwargs = dict(api=api, api_id='600', board='test', recommend=1, limit=12)
+    rows, more = await core._related_after_position_with_api(after_id='490', source_page=1, **kwargs)
+    assert len(rows) == 12
+    assert rows[-1]['id'] == '478'
+    assert rows[-1]['source_page'] == 5
+    with pytest.raises(core.RelatedPositionUnavailableError):
+        await core._related_after_position_with_api(after_id='478', source_page=1, **kwargs)
+    following, more = await core._related_after_position_with_api(
+        after_id=rows[-1]['id'], source_page=rows[-1]['source_page'], **kwargs,
+    )
+    assert [row['id'] for row in following] == [str(pid) for pid in range(477, 465, -1)]
+    assert more is True
 
 
 def test_related_route_preserves_unknown_more(monkeypatch):

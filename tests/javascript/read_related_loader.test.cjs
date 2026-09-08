@@ -210,6 +210,7 @@ function createHarness(options) {
         link.className = "feed-item";
         link.dataset.postId = row.id;
         link.href = "/read?board=airforce&pid=" + row.id;
+        if (row.source_page) link.href += "&source_page=" + row.source_page;
         li.appendChild(link);
         list.appendChild(li);
     });
@@ -391,6 +392,70 @@ test("서버가 이미 목록을 그렸으면 자동으로 불러오지 않고 �
     harness.click();
     assert.equal(harness.fetchCalls.length, 2);
     assert.equal(harness.requestUrl(1).searchParams.get("after_pid"), "303");
+});
+
+test("초기 목록의 마지막 페이지부터 여러 페이지를 이어 읽고 실패한 위치를 재시도한다", async () => {
+    const harness = createHarness({
+        rows: [{ id: "490", source_page: 4 }],
+        dataset: { sourcePage: "1", recommend: "1", headId: "7", searchType: "subject_m", searchKeyword: "검색" },
+    });
+    harness.click();
+    assert.equal(harness.requestUrl(0).searchParams.get("source_page"), "4");
+    assert.equal(harness.requestUrl(0).searchParams.get("after_pid"), "490");
+
+    for (let page = 5; page <= 8; page += 1) {
+        const index = page - 5;
+        const id = String(630 - page * 30);
+        harness.fetchCalls[index].resolve(jsonResponse({
+            ok: true, items: [item(id, { source_page: page })], has_more: true,
+        }));
+        await flush();
+        harness.click();
+        const params = harness.requestUrl(index + 1).searchParams;
+        assert.equal(params.get("after_pid"), id);
+        assert.equal(params.get("source_page"), String(page));
+        assert.equal(params.get("recommend"), "1");
+        assert.equal(params.get("headid"), "7");
+        assert.equal(params.get("serval"), "검색");
+    }
+
+    const failedUrl = harness.requestUrl(4).href;
+    harness.fetchCalls[4].resolve(jsonResponse({ ok: false, error: "related_fetch_failed" }, 502));
+    await flush();
+    harness.click();
+    assert.equal(harness.requestUrl(5).href, failedUrl);
+    harness.fetchCalls[5].resolve(jsonResponse({ ok: true, items: [item("389", { source_page: 9 })], has_more: true }));
+    await flush();
+    harness.click();
+    assert.equal(harness.requestUrl(6).searchParams.get("source_page"), "9");
+    assert.equal(harness.requestUrl(6).searchParams.get("after_pid"), "389");
+});
+
+test("자동 조회도 마지막 새 행의 페이지를 이어 쓰고 빈 응답과 중복은 커서를 바꾸지 않는다", async () => {
+    const harness = createHarness({ dataset: { sourcePage: "1" } });
+    harness.fetchCalls[0].resolve(jsonResponse({
+        ok: true, items: [item("100", { source_page: 4 }), item("99", { source_page: 5 })], has_more: true,
+    }));
+    await flush();
+    harness.click();
+    const cursorUrl = harness.requestUrl(1).href;
+    assert.equal(harness.requestUrl(1).searchParams.get("source_page"), "5");
+    assert.equal(harness.requestUrl(1).searchParams.get("after_pid"), "99");
+
+    for (const [index, items] of [[1, []], [2, [item("100", { source_page: 8 })]]]) {
+        harness.fetchCalls[index].resolve(jsonResponse({ ok: true, items, has_more: null }));
+        await flush();
+        harness.click();
+        assert.equal(harness.requestUrl(index + 1).href, cursorUrl);
+    }
+    harness.fetchCalls[3].resolve(jsonResponse({
+        ok: true, items: [item("98", { source_page: 6 }), item("97"), item("100", { source_page: 8 })], has_more: true,
+    }));
+    await flush();
+    harness.click();
+    assert.equal(harness.requestUrl(4).searchParams.get("after_pid"), "97");
+    assert.equal(harness.requestUrl(4).searchParams.get("source_page"), "5");
+    assert.deepEqual(harness.postIds(), ["100", "99", "98", "97"]);
 });
 
 test("has_more=false 로 렌더된 빈 목록은 자동 로드 없이 종료 문구만 남긴다", async () => {
