@@ -64,11 +64,18 @@ def use_api(monkeypatch, api):
 @pytest.mark.asyncio
 async def test_snapshot_survives_body_cache_and_comment_refresh_without_extra_scrape(monkeypatch):
     calls = []
+    comment_calls = []
+    class CommentsAPI:
+        async def comments(self, *args, status_collector, **kwargs):
+            comment_calls.append(args)
+            status_collector["complete"] = True
+            if False:
+                yield
     async def fresh(*args, **kwargs):
         calls.append(kwargs)
         return payload()
     monkeypatch.setattr(core, '_read_document_with_api', fresh)
-    use_api(monkeypatch, object())
+    use_api(monkeypatch, CommentsAPI())
     first = await core.async_read('100', 'test')
     first[0]['related_posts'][0]['title'] = 'mutated'
     key = core._initial_related_key('100', 'test')
@@ -79,6 +86,8 @@ async def test_snapshot_survives_body_cache_and_comment_refresh_without_extra_sc
     retained = await core.async_read('100', 'test')
     assert cached[0]['related_posts'] == retained[0]['related_posts'] == payload()[0]['related_posts']
     assert len(calls) == 1
+    assert len(comment_calls) == 1
+    assert retained[0]['_comments_complete'] is True
     assert core._INITIAL_RELATED_CACHE[key]['expires_at'] == expiry
     assert next(iter(core._READ_STALE_CACHE.values()))['value'][0]['related_posts'] == []
 

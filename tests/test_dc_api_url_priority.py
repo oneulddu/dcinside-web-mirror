@@ -1511,21 +1511,26 @@ async def test_board_ignores_invalid_document_id_limits_instead_of_crashing():
 
 
 @pytest.mark.asyncio
-async def test_comments_fallback_to_mobile_when_pc_yields_nothing():
+async def test_comments_accept_validated_empty_pc_snapshot_without_mobile_fallback():
     api = API.__new__(API)
+    mobile_calls = []
 
     async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
         if False:
             yield None
 
     async def fake_mobile(board_id, document_id, num=-1, start_page=1, fail_fast=False):
+        mobile_calls.append(document_id)
         yield "mobile-comment"
 
     api._API__comments_from_pc = fake_pc
     api._API__comments_from_mobile = fake_mobile
 
-    comments = [item async for item in api.comments("aoegame", "30150503", kind="minor", prefer_mobile=False)]
-    assert comments == ["mobile-comment"]
+    status = {}
+    comments = [item async for item in api.comments("aoegame", "30150503", kind="minor", prefer_mobile=False, status_collector=status)]
+    assert comments == []
+    assert status == {"complete": True, "source": "pc"}
+    assert mobile_calls == []
 
 
 @pytest.mark.asyncio

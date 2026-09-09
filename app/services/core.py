@@ -696,14 +696,8 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
 
 async def _refresh_cached_comments(payload, api_id, board, kind=None):
     data, comments, images = _copy_read_payload(payload)
-    if data.get("_comments_complete"):
-        return data, comments, images
-
-    seen_comment_ids = {
-        str(comment.get("id") or "").strip()
-        for comment in comments
-        if str(comment.get("id") or "").strip()
-    }
+    fresh_comments = []
+    seen_comment_ids = set()
     status = {}
     try:
         async with dc_api_context() as api:
@@ -719,8 +713,9 @@ async def _refresh_cached_comments(payload, api_id, board, kind=None):
                     continue
                 if comment_id:
                     seen_comment_ids.add(comment_id)
-                comments.append(_comment_to_dict(comment))
+                fresh_comments.append(_comment_to_dict(comment))
     except Exception as exc:
+        status["complete"] = False
         logger.info(
             "cached comment refresh failed: board=%s document=%s reason=%s",
             board,
@@ -728,6 +723,18 @@ async def _refresh_cached_comments(payload, api_id, board, kind=None):
             type(exc).__name__,
         )
     data["_comments_complete"] = bool(status.get("complete"))
+    if data["_comments_complete"]:
+        # A complete response is authoritative, including edits and deletions.
+        comments = fresh_comments
+    else:
+        # Partial failures must not erase comments missing from the response.
+        positions = {row["id"]: index for index, row in enumerate(comments) if row.get("id")}
+        for row in fresh_comments:
+            position = positions.get(row["id"]) if row["id"] else None
+            if position is not None:
+                comments[position] = row
+            elif row not in comments:
+                comments.append(row)
     return data, comments, images
 
 
@@ -833,7 +840,14 @@ async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=No
                     READ_CACHE_TTL,
                     READ_CACHE_MAX_ITEMS,
                 )
-            if READ_STALE_TTL > 0 and not body_from_cache:
+            if READ_STALE_TTL > 0 and body_from_cache:
+                # Retain the latest comment snapshot without extending the
+                # original body lifetime or resurrecting an evicted entry.
+                with _READ_STALE_CACHE_LOCK:
+                    entry = _READ_STALE_CACHE.get(cache_key)
+                    if entry is not None and entry["expires_at"] > time.time():
+                        entry["value"] = body_cache_payload
+            elif READ_STALE_TTL > 0:
                 _cache_set(
                     _READ_STALE_CACHE,
                     _READ_STALE_CACHE_LOCK,
