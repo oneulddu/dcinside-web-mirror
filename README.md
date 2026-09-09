@@ -308,6 +308,11 @@ JPEG·PNG·GIF·WebP·AVIF만 최대 5MiB까지 허용합니다.
 | `MIRROR_MEDIA_REDIRECT_LIMIT` | `3` | 허용 리다이렉트 횟수 |
 | `MIRROR_MEDIA_ALLOWED_HOST_SUFFIXES` | `dcinside.com,dcinside.co.kr` | 허용 도메인 접미사 |
 
+디시 이미지 서버(`dcimg*.dcinside.co.kr/viewimage.php`)가 일시적으로 HTML 등 미디어가
+아닌 응답을 반환하면 같은 요청을 한 번만 재시도합니다. `404`, `429`, `Retry-After`가
+있는 응답은 재시도하지 않습니다. 실패 응답은 캐시하지 않으며, 원본 상태 코드·콘텐츠
+타입·시도 횟수를 서버 로그에 남깁니다. 원본 URL의 쿼리와 오류 본문은 기록하지 않습니다.
+
 </details>
 
 <details>
