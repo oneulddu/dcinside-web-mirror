@@ -1,6 +1,6 @@
 import re
 from datetime import datetime, timedelta
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
 import lxml.etree
 import lxml.html
@@ -43,6 +43,32 @@ def has_gallery_video_icon(value):
 
 
 class ParserMixin:
+    def __parse_gallery_name(self, parsed, board_id):
+        # Use the gallery's own list link, never a post title or related gallery.
+        links = parsed.xpath(
+            "//h1//a[@href] | //h2//a[@href] | "
+            "//a[contains(concat(' ', normalize-space(@class), ' '), ' gall-tit-lnk ')]"
+        )
+        for link in links:
+            url = urlparse(link.get("href") or "")
+            if url.netloc and url.hostname not in {"m.dcinside.com", "gall.dcinside.com"}:
+                continue
+            path = url.path.rstrip("/")
+            mobile_match = path in {f"/board/{board_id}", f"/mini/{board_id}", f"/person/{board_id}"}
+            pc_match = path.endswith("/board/lists") and parse_qs(url.query).get("id") == [board_id]
+            if not (mobile_match or pc_match):
+                continue
+            texts = link.xpath(
+                ".//text()[not(ancestor::*["
+                "contains(concat(' ', normalize-space(@class), ' '), ' pagehead_titicon ') or "
+                "contains(concat(' ', normalize-space(@class), ' '), ' blind ')])]"
+            )
+            name = " ".join(" ".join(texts).split())
+            name = re.sub(r"\s+(?:(?:마이너|미니|인물)\s+)?갤러리$", "", name).strip()
+            if name and name != board_id:
+                return name[:80]
+        return None
+
     def __parse_mobile_headtext_tabs(self, parsed):
         tabs = []
         seen = set()
