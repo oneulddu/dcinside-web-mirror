@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import ipaddress
+import logging
 import os
 import re
 import socket
@@ -52,6 +53,7 @@ _PUBLIC_HOST_CACHE = {}
 _PUBLIC_HOST_CACHE_LOCK = threading.Lock()
 _MEDIA_SPOOL_MEMORY_BYTES = 1024 * 1024
 _PINNED_ADDRESS_ATTEMPT_LIMIT = 2
+_LOGGER = logging.getLogger(__name__)
 
 
 class UnsafeMediaAddress(requests.RequestException):
@@ -581,6 +583,44 @@ def parse_media_content_length(headers):
     return parsed_values.pop(), None
 
 
+def _retryable_image_response(src, upstream):
+    parsed = urlparse(src)
+    return (
+        re.fullmatch(r"dcimg\d*\.dcinside\.co\.kr", parsed.hostname or "") is not None
+        and parsed.path == "/viewimage.php"
+        and upstream.status_code in {200, 403, 500, 502, 503, 504}
+        and not is_allowed_media_content_type(upstream.headers.get("Content-Type"))
+        and not upstream.headers.get("Retry-After")
+    )
+
+
+def _media_error_response(status, upstream=None):
+    response = Response(status=status)
+    response.headers["Cache-Control"] = "no-store"
+    if upstream is not None:
+        retry_after = upstream.headers.get("Retry-After")
+        if retry_after and status in {429, 503}:
+            response.headers["Retry-After"] = retry_after
+        if status == 416:
+            for header in ("Content-Range", "Accept-Ranges"):
+                value = upstream.headers.get(header)
+                if value:
+                    response.headers[header] = value
+        upstream.close()
+    return response
+
+
+def _log_media_rejection(src, upstream, attempt):
+    # Do not log the signed source query or the upstream error body.
+    _LOGGER.warning(
+        "media origin rejected host=%r status=%s content_type=%r attempt=%s",
+        (urlparse(src).hostname or "")[:253],
+        upstream.status_code,
+        str(upstream.headers.get("Content-Type", "application/octet-stream"))[:128],
+        attempt,
+    )
+
+
 def build_media_response(src, board, pid, kind=None, range_header=None, head_only=False):
     headers = {
         "Accept-Encoding": "identity",
@@ -596,25 +636,40 @@ def build_media_response(src, board, pid, kind=None, range_header=None, head_onl
     else:
         upstream, error_status = fetch_media_response(src, headers, cookies)
     if error_status:
-        return "", error_status
+        return _media_error_response(error_status)
+
+    attempt = 1
+    if _retryable_image_response(src, upstream):
+        _log_media_rejection(src, upstream, attempt)
+        upstream.close()
+        attempt = 2
+        # Retry the same request once: a temporary HTML response is not an image.
+        # Re-enter the fetch path so redirects and DNS addresses are checked again.
+        if head_only:
+            upstream, error_status = fetch_media_response(src, headers, cookies, method="HEAD")
+        else:
+            upstream, error_status = fetch_media_response(src, headers, cookies)
+        if error_status:
+            return _media_error_response(error_status)
+
+    if upstream.status_code >= 400:
+        _log_media_rejection(src, upstream, attempt)
+        return _media_error_response(upstream.status_code, upstream)
 
     content_type = upstream.headers.get("Content-Type", "application/octet-stream")
     if not is_allowed_media_content_type(content_type):
-        upstream.close()
-        return "", 415
+        _log_media_rejection(src, upstream, attempt)
+        return _media_error_response(415, upstream)
 
     content_encoding = upstream.headers.get("Content-Encoding")
     can_stream_decoded_body = is_identity_content_encoding(content_encoding)
     content_length, length_error = parse_media_content_length(upstream.headers)
     if length_error:
-        upstream.close()
-        return "", length_error
+        return _media_error_response(length_error, upstream)
     if content_length is not None and content_length > MEDIA_MAX_BYTES:
-        upstream.close()
-        return "", 413
+        return _media_error_response(413, upstream)
     if not can_stream_decoded_body and upstream.status_code == 206:
-        upstream.close()
-        return "", 502
+        return _media_error_response(502, upstream)
     if head_only:
         verified_length = content_length if can_stream_decoded_body else None
         return build_head_media_response(upstream, content_type, content_length=verified_length)
@@ -623,7 +678,7 @@ def build_media_response(src, board, pid, kind=None, range_header=None, head_onl
             return build_streaming_media_response(upstream, content_type, content_length=content_length)
         spool, verified_length, error_status = read_limited_media_spool(upstream)
         if error_status:
-            return "", error_status
+            return _media_error_response(error_status)
         return build_spooled_media_response(spool, verified_length, upstream, content_type)
     if (
         content_length is not None
@@ -634,7 +689,7 @@ def build_media_response(src, board, pid, kind=None, range_header=None, head_onl
 
     body, error_status = read_limited_media_body(upstream)
     if error_status:
-        return "", error_status
+        return _media_error_response(error_status)
 
     response = Response(body or b"", status=upstream.status_code)
     response.headers["Content-Type"] = content_type
