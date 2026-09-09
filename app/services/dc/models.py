@@ -30,8 +30,8 @@ class DocumentIndex:
         return f"{self.subject or ''}\t|{self.id}\t|{time_text}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count}"
 
 class Document:
-    __slots__ = ["id", "board_id", "title", "author", "author_id", "author_role", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "comment_status", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total"]
-    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=0, author_role=None, comment_status=None):
+    __slots__ = ["id", "board_id", "title", "author", "author_id", "author_role", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "comment_status", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total", "gallery_name"]
+    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=0, author_role=None, comment_status=None, gallery_name=None):
         self.id = id
         self.board_id = board_id
         self.title = title
@@ -53,6 +53,7 @@ class Document:
         self.related_posts = list(related_posts or [])
         self.embedded_comments = list(embedded_comments or [])
         self.embedded_comment_total = embedded_comment_total
+        self.gallery_name = gallery_name
     def __str__(self):
         time_text = self.time.isoformat() if hasattr(self.time, "isoformat") else str(self.time or "-")
         return f"{self.subject or ''}\t|{self.id}\t|{time_text}\t|{self.author}\t|{self.title} +{self.voteup_count} -{self.votedown_count}\n{self.contents}"

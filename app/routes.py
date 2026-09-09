@@ -696,7 +696,6 @@ def board():
     recommend = _normalize_recommend()
     kind = _normalize_gallery_kind(request.args.get("kind"))
     gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
-    gallery_display_name = _gallery_display_name(board, gallery_name)
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
@@ -714,6 +713,8 @@ def board():
     ret, head_categories = run_async(
         _load_board_payload(page, board, recommend, **board_payload_kwargs)
     )
+    gallery_name = _clean_gallery_name(pagination.get("gallery_name")) or gallery_name
+    gallery_display_name = _gallery_display_name(board, gallery_name)
 
     current_page = _safe_int(pagination.get("current_page"), 0)
     if current_page > 0 and current_page < page and pagination.get("has_next") is False:
@@ -898,7 +899,6 @@ def read():
     board = _normalize_board_id(request.args.get("board", "airforce"))
     kind = _normalize_gallery_kind(request.args.get("kind"))
     gallery_name = _clean_gallery_name(request.args.get("gallery_name"))
-    gallery_display_name = _gallery_display_name(board, gallery_name)
     recommend = _normalize_recommend()
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
@@ -925,6 +925,8 @@ def read():
         response.headers["Cache-Control"] = "no-store"
         return response
     served_stale = bool(data.pop("_served_stale", False))
+    gallery_name = _clean_gallery_name(data.get("gallery_name")) or gallery_name
+    gallery_display_name = _gallery_display_name(board, gallery_name)
     data.pop("_comments_complete", None)
     data.pop("_comment_prefer_mobile", None)
     _format_read_payload_times(data, comments)

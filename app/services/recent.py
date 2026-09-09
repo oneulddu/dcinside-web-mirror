@@ -505,11 +505,18 @@ def _fit_recent_cookie_value(rows):
     if len(encoded.encode("ascii")) <= max_bytes:
         return encoded
 
-    compact_rows = []
-    for row in rows:
-        compact = dict(row)
+    compact_rows = [dict(row) for row in rows]
+    # Keep newly resolved names in the cookie even when the next request reaches
+    # another worker. Drop older names first without mutating the helper cache.
+    for compact in reversed(compact_rows[1:]):
         compact.pop("name", None)
-        compact_rows.append(compact)
+        encoded = _encode_recent_rows(compact_rows)
+        if len(encoded.encode("ascii")) <= max_bytes:
+            return encoded
+
+    # Only an unusually small budget may discard the newest gallery's name.
+    if compact_rows and len(_encode_recent_rows(compact_rows[:1]).encode("ascii")) > max_bytes:
+        compact_rows[0].pop("name", None)
 
     encoded = _encode_recent_rows(compact_rows)
     if len(encoded.encode("ascii")) <= max_bytes:

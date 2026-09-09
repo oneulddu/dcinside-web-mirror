@@ -652,6 +652,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
     _cache_author_code(board, kind, api_id, author, author_code, author_role)
     data = {
         "title": doc.title,
+        "gallery_name": getattr(doc, "gallery_name", None),
         "author": author,
         "author_code": author_code,
         "author_role": author_role,

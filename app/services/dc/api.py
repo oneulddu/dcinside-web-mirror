@@ -122,6 +122,7 @@ from .parsers import ParserMixin, has_gallery_image_icon, has_gallery_video_icon
 
 
 class API(ParserMixin):
+    __parse_gallery_name = ParserMixin._ParserMixin__parse_gallery_name
     __parse_mobile_headtext_tabs = ParserMixin._ParserMixin__parse_mobile_headtext_tabs
     __is_usable_board_page = ParserMixin._ParserMixin__is_usable_board_page
     __has_board_rows = ParserMixin._ParserMixin__has_board_rows
@@ -928,6 +929,9 @@ class API(ParserMixin):
             pagination = self.__parse_board_pagination(parsed, used_url)
             if pagination_collector is not None and not pagination_collector:
                 pagination_collector.update(dict(pagination))
+                gallery_name = self.__parse_gallery_name(parsed, board_id)
+                if gallery_name:
+                    pagination_collector["gallery_name"] = gallery_name
             if not headtexts_captured:
                 headtexts = self.__parse_mobile_headtext_tabs(parsed)
                 if headtexts_collector is not None:
@@ -1231,6 +1235,7 @@ class API(ParserMixin):
             return Document(
                     id = document_id,
                     board_id = board_id,
+                    gallery_name=self.__parse_gallery_name(parsed, board_id),
                     title= title,
                     author= author,
                     author_id =author_id,
