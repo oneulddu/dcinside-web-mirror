@@ -1335,9 +1335,16 @@ class API(ParserMixin):
                 data = json.loads(body)
             except Exception as exc:
                 raise RuntimeError("pc comment fetch returned invalid json") from exc
-            comments = data.get("comments") or []
+            if not isinstance(data, dict) or "comments" not in data:
+                raise RuntimeError("pc comment fetch returned an invalid payload")
+            comments = data["comments"]
+            total_count = to_optional_int(data.get("total_cnt"))
+            if comments is None and total_count == 0:
+                comments = []
+            if not isinstance(comments, list):
+                raise RuntimeError("pc comment fetch returned an invalid comment list")
             if not comments:
-                if seen_ids:
+                if seen_ids or (total_count is not None and total_count > 0):
                     raise RuntimeError("pc comment fetch ended early")
                 break
 
@@ -1354,9 +1361,7 @@ class API(ParserMixin):
                     return
 
             if yielded_in_page == 0:
-                if seen_ids:
-                    raise RuntimeError("pc comment page produced no new comments")
-                break
+                raise RuntimeError("pc comment page produced no new comments")
 
             pagination = str(data.get("pagination") or "")
             max_page = 1
@@ -1529,7 +1534,9 @@ class API(ParserMixin):
                 yield comment
             if status_collector is not None:
                 status_collector.update({"complete": True, "source": "pc"})
-            if pc_stats["seen"] and (remaining_state["value"] == -1 or remaining_state["value"] <= 0):
+            # The PC parser validates empty snapshots too; do not turn a
+            # confirmed zero-comment result into a mobile fallback failure.
+            if not pc_stats["seen"] or remaining_state["value"] == -1 or remaining_state["value"] <= 0:
                 return
         except Exception as exc:
             logger.info(

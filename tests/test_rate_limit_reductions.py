@@ -946,6 +946,7 @@ async def test_async_read_reuses_recent_body_without_refetching_document(monkeyp
     monkeypatch.setattr(core, "READ_CACHE_TTL", 0)
     monkeypatch.setattr(core, "READ_STALE_TTL", 30)
     document_calls = 0
+    comment_calls = 0
 
     class FakeDocument:
         title = "title"
@@ -975,6 +976,13 @@ async def test_async_read_reuses_recent_body_without_refetching_document(monkeyp
             document_calls += 1
             return FakeDocument()
 
+        async def comments(self, *args, status_collector, **kwargs):
+            nonlocal comment_calls
+            comment_calls += 1
+            status_collector["complete"] = True
+            if False:
+                yield
+
     monkeypatch.setattr(core.dc_api, "API", FakeAPI)
 
     first, _comments, _images = await core.async_read("123", "test")
@@ -985,6 +993,8 @@ async def test_async_read_reuses_recent_body_without_refetching_document(monkeyp
     assert first["html"] == "<p>stable</p>"
     assert cached_body["html"] == "<p>stable</p>"
     assert document_calls == 1
+    assert comment_calls == 1
+    assert cached_body["_comments_complete"] is True
     assert core._READ_STALE_CACHE[cache_key]["expires_at"] == first_expiry
 
 
