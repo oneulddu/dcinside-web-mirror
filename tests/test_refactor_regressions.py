@@ -113,7 +113,8 @@ def test_index_list_and_search_make_one_external_call(monkeypatch, mode, raises,
     response = app.test_client().get(path)
 
     assert response.status_code == 200
-    assert expected_text in response.get_data(as_text=True)
+    rendered_text = BeautifulSoup(response.data, "html.parser").get_text(" ", strip=True)
+    assert expected_text in rendered_text
     assert calls == {
         "list": [()] if mode == "list" else [],
         "search": ["검색어"] if mode == "search" else [],
