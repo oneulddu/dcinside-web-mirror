@@ -226,14 +226,81 @@ async def test_failed_source_hint_can_recover_from_another_candidate():
 async def test_tail_failure_is_retryable_without_caching_partial_initial_list(monkeypatch):
     api = Pages({1: [100, 99], 2: BoardUnavailableError('tail failed')}, {1: True})
     use_api(monkeypatch, api)
-    with pytest.raises(BoardUnavailableError):
-        await core.async_related_after_position('100', 0, 'test', source_page=1)
+    rows, more = await core.async_related_after_position('100', 0, 'test', source_page=1)
+    assert [row['id'] for row in rows] == ['99']
+    assert more is None
     assert core._INITIAL_RELATED_CACHE == {}
     api.pages[2] = [98]
     api.ends[2] = False
-    rows, more = await core.async_related_after_position('100', 0, 'test', source_page=1)
+    rows, more = await core.async_related_after_position('100', '99', 'test', source_page=1)
+    assert [row['id'] for row in rows] == ['98']
+    assert more is False
+
+
+@pytest.mark.asyncio
+async def test_latest_id_estimate_reuses_first_page_for_cursor_lookup():
+    api = Pages({1: [100, 99, 98]}, {1: False})
+    rows, more = await core._related_after_position_with_api(api, '100', 0, 'test')
     assert [row['id'] for row in rows] == ['99', '98']
     assert more is False
+    assert [page for page, _ in api.calls] == [1]
+
+
+@pytest.mark.asyncio
+async def test_tail_failure_without_rows_keeps_continuation_unknown(monkeypatch):
+    api = Pages({1: [100], 2: BoardUnavailableError('tail failed')}, {1: True})
+    use_api(monkeypatch, api)
+    assert await core.async_related_after_position('100', 0, 'test', source_page=1) == ([], None)
+    assert core._INITIAL_RELATED_CACHE == {}
+
+
+@pytest.mark.asyncio
+async def test_unknown_partial_list_does_not_replace_existing_initial_snapshot(monkeypatch):
+    api = Pages({1: [100, 99], 2: BoardUnavailableError('tail failed')}, {1: True})
+    use_api(monkeypatch, api)
+    key = core._initial_related_key('100', 'test')
+    core._store_initial_related(key, [{'id': '99'}, {'id': '98'}], False)
+    before = core._INITIAL_RELATED_CACHE[key]
+    rows, more = await core.async_related_after_position('100', 0, 'test', source_page=1)
+    assert [row['id'] for row in rows] == ['99']
+    assert more is None
+    assert core._INITIAL_RELATED_CACHE[key] == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel_request', [False, True])
+async def test_slow_tail_preserves_rows_but_external_cancellation_propagates(monkeypatch, cancel_request):
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    class SlowTail(Pages):
+        async def board(self, start_page=1, **kwargs):
+            if start_page == 1:
+                await asyncio.sleep(0.03)  # The tail must use the remaining budget.
+            if start_page == 2:
+                started.set()
+                try:
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+            async for row in super().board(start_page=start_page, **kwargs):
+                yield row
+
+    api = SlowTail({1: [100, 99], 2: [98]}, {1: True, 2: False})
+    use_api(monkeypatch, api)
+    monkeypatch.setattr(core, 'RELATED_FETCH_TIMEOUT', 0.1)
+    task = asyncio.create_task(core.async_related_after_position('100', 0, 'test', source_page=1))
+    await asyncio.wait_for(started.wait(), 1)
+    if cancel_request:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        rows, more = await task
+        assert [row['id'] for row in rows] == ['99']
+        assert more is None
+    assert cancelled.is_set()
+    assert core._BOARD_INFLIGHT == core._INITIAL_RELATED_CACHE == {}
 
 
 @pytest.mark.asyncio

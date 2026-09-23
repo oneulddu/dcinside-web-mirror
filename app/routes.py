@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlparse
 from flask import Blueprint, abort, current_app, jsonify, make_response, redirect, render_template, request, url_for
 
 from .services.async_bridge import run_async
-from .services.dc.api import DocumentNotFoundError, DocumentUnavailableError
+from .services.dc.api import BoardUnavailableError, DocumentNotFoundError, DocumentUnavailableError
 from .services.core import (
     async_board_precise_times,
     async_index_with_head_categories,
@@ -710,9 +710,17 @@ def board():
     }
     if force_refresh:
         board_payload_kwargs["force_refresh"] = True
-    ret, head_categories = run_async(
-        _load_board_payload(page, board, recommend, **board_payload_kwargs)
-    )
+    try:
+        ret, head_categories = run_async(
+            _load_board_payload(page, board, recommend, **board_payload_kwargs)
+        )
+    except BoardUnavailableError:
+        current_app.logger.warning("board upstream_unavailable board=%s page=%s", board, page)
+        response = make_response("게시판을 일시적으로 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.\n", 503)
+        response.headers["Content-Type"] = "text/plain; charset=utf-8"
+        response.headers["Retry-After"] = "3"
+        response.headers["Cache-Control"] = "no-store"
+        return response
     gallery_name = _clean_gallery_name(pagination.get("gallery_name")) or gallery_name
     gallery_display_name = _gallery_display_name(board, gallery_name)
 

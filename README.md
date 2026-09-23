@@ -263,6 +263,7 @@ mirror/
 | `MIRROR_HEUNG_CACHE_TTL` | `3600` | 흥한 갤러리 캐시 유지 시간 |
 | `MIRROR_HEUNG_CACHE_FILE` | `instance/heung_gallery_cache.json` | 캐시 파일 경로 |
 | `MIRROR_BOARD_PAGE_CACHE_TTL` | `20` | 게시판 페이지 짧은 캐시 |
+| `MIRROR_BOARD_FETCH_TIMEOUT` | `25` | 게시판 목록·작성 시간 조회와 동시 조회 대기의 전체 제한 시간(초) |
 | `MIRROR_BOARD_FORCE_REFRESH_COOLDOWN` | `5` | 같은 목록의 강제 새로고침 최소 간격(초) |
 | `MIRROR_BOARD_FILL_AUTHOR_CODES` | `0` | 게시판 목록에서 캐시된 작성자 코드 보강 |
 | `MIRROR_BOARD_KIND_CACHE_TTL` | `21600` | 게시판 URL 후보 성공 패턴 캐시 |
