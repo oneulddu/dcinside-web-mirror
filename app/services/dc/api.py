@@ -867,7 +867,7 @@ class API(ParserMixin):
         if preserved_head_id is not None and not head_added:
             query_items.append((target_head_key, preserved_head_id))
         return parsed._replace(query=urlencode(query_items)).geturl()
-    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, pagination_collector=None, raise_on_failure=False):
+    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, pagination_collector=None, raise_on_failure=False, raise_on_unavailable=False):
         page = start_page
         scanned_pages = 0
         if pagination_collector is not None:
@@ -923,7 +923,7 @@ class API(ParserMixin):
                 self.__cache_list_url_pattern(cache_key, used_url)
             scanned_pages += 1
             if parsed is None:
-                if raise_on_failure:
+                if raise_on_failure or raise_on_unavailable:
                     raise BoardUnavailableError("list page upstream unavailable")
                 break
             pagination = self.__parse_board_pagination(parsed, used_url)

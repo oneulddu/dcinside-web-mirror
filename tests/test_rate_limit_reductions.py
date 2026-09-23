@@ -1254,7 +1254,7 @@ async def test_related_after_position_uses_source_page_before_latest_lookup_with
 
         async def board(self, **kwargs):
             self.calls.append((kwargs["start_page"], kwargs["num"]))
-            if kwargs["start_page"] == 1 and kwargs["num"] == 1:
+            if kwargs["start_page"] == 1:
                 yield _index_item(500)
             elif kwargs["start_page"] == 2:
                 yield _index_item(100)
@@ -1367,7 +1367,7 @@ async def test_related_after_position_falls_back_to_estimate_when_source_page_hi
 
         async def board(self, **kwargs):
             self.calls.append((kwargs["start_page"], kwargs["num"]))
-            if kwargs["start_page"] == 1 and kwargs["num"] == 1:
+            if kwargs["start_page"] == 1:
                 yield _index_item(160)
             elif kwargs["start_page"] == 3:
                 yield _index_item(100)
@@ -1389,7 +1389,7 @@ async def test_related_after_position_falls_back_to_estimate_when_source_page_hi
     assert has_more is True
     assert api.calls == [
         (9, core.RELATED_PAGE_FETCH_SIZE),
-        (1, 1),
+        (1, core.RELATED_PAGE_FETCH_SIZE),
         (3, core.RELATED_PAGE_FETCH_SIZE),
     ]
 
@@ -1557,7 +1557,7 @@ async def test_board_owner_failure_releases_followers_for_retry(monkeypatch, fai
         release.set()
     with pytest.raises(asyncio.CancelledError if failure == "cancel" else RuntimeError):
         await owner
-    with pytest.raises(core.dc_api.DocumentUnavailableError):
+    with pytest.raises(core.dc_api.BoardUnavailableError):
         await asyncio.wait_for(waiter, 2)
     rows, _ = await core.async_index_with_head_categories(1, "test", 0)
     assert rows[0]["id"] == "123"

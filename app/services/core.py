@@ -35,6 +35,7 @@ RELATED_TAIL_PAGES = max(_env_int("MIRROR_RELATED_TAIL_PAGES", 1), 0)
 BOARD_PAGE_CACHE_TTL = max(_env_int("MIRROR_BOARD_PAGE_CACHE_TTL", 20), 0)
 BOARD_FORCE_REFRESH_COOLDOWN = max(_env_int("MIRROR_BOARD_FORCE_REFRESH_COOLDOWN", 5), 0)
 BOARD_TIME_CACHE_TTL = max(_env_int("MIRROR_BOARD_TIME_CACHE_TTL", BOARD_PAGE_CACHE_TTL), 0)
+BOARD_FETCH_TIMEOUT = max(_env_int("MIRROR_BOARD_FETCH_TIMEOUT", 25), 1)
 READ_CACHE_TTL = max(_env_int("MIRROR_READ_CACHE_TTL", 30), 0)
 READ_STALE_TTL = max(_env_int("MIRROR_READ_STALE_TTL", 300), 0)
 READ_FETCH_TIMEOUT = max(_env_int("MIRROR_READ_FETCH_TIMEOUT", 50), 1)
@@ -311,17 +312,20 @@ async def _wait_for_read_flight(flight):
     return _copy_read_payload(payload)
 
 
-async def _load_board_once(key, load):
+async def _load_board_once(key, load, timeout=None):
     with claim_flight(_BOARD_INFLIGHT, _BOARD_INFLIGHT_LOCK, key) as (flight, is_owner):
-        if not is_owner:
-            payload, error = await flight.wait()
-            if error is not None:
-                if isinstance(error, dc_api.BoardUnavailableError):
-                    raise dc_api.BoardUnavailableError(str(error)) from error
-                raise dc_api.DocumentUnavailableError("concurrent board fetch failed") from error
-            return payload
-        flight.value = await load()
-        return flight.value
+        try:
+            if not is_owner:
+                payload, error = await flight.wait(timeout)
+                if error is not None:
+                    if isinstance(error, dc_api.BoardUnavailableError):
+                        raise dc_api.BoardUnavailableError(str(error)) from error
+                    raise dc_api.BoardUnavailableError("concurrent board fetch failed") from error
+                return payload
+            flight.value = await asyncio.wait_for(load(), timeout)
+            return flight.value
+        except asyncio.TimeoutError as exc:
+            raise dc_api.BoardUnavailableError("board fetch timed out") from exc
 
 
 def _board_index_cache_key(
@@ -544,7 +548,7 @@ async def async_board_precise_times(
         )
         return result
 
-    return dict(await _load_board_once(("times", cache_key), load))
+    return dict(await _load_board_once(("times", cache_key), load, timeout=BOARD_FETCH_TIMEOUT))
 
 
 def _normalize_head_category(row):
@@ -966,6 +970,7 @@ async def async_index_with_head_categories(
                 head_id=head_id,
                 headtexts_collector=headtexts,
                 pagination_collector=pagination,
+                raise_on_unavailable=True,
             ):
                 data.append(_index_item_to_dict(item))
             await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
@@ -986,7 +991,16 @@ async def async_index_with_head_categories(
 
     # An explicit refresh owns a different empty-result policy. Keep it apart
     # from ordinary fetches, including when it joins during a cold-cache miss.
-    payload = await _load_board_once(("index", cache_key, force_refresh_requested), load)
+    try:
+        payload = await _load_board_once(
+            ("index", cache_key, force_refresh_requested), load, timeout=BOARD_FETCH_TIMEOUT,
+        )
+    except dc_api.BoardUnavailableError:
+        # A failed refresh must not replace a still-valid list with an empty
+        # success or extend its original cache lifetime.
+        payload = _cache_get(_BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK, cache_key)
+        if payload is None:
+            raise
     return _copy_board_payload(payload, pagination_collector)
 
 
@@ -1005,6 +1019,10 @@ async def _related_after_position_with_api(
     search_keyword=None,
     head_id=None,
 ):
+    loop = asyncio.get_running_loop()
+    # Finish a slow tail before the outer request deadline so partial rows can
+    # still be returned. Lookup time is part of the same budget.
+    tail_deadline = loop.time() + RELATED_FETCH_TIMEOUT - min(0.1, RELATED_FETCH_TIMEOUT / 10)
     current_id = _safe_int(api_id, 0)
     target_id = _safe_int(after_id, 0) or current_id
     fetch_limit = max(_safe_int(limit, RELATED_LIMIT), 0)
@@ -1035,7 +1053,6 @@ async def _related_after_position_with_api(
                 board,
                 recommend_value,
                 kind=kind,
-                page_size=1,
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
                 head_id=head_id_value or None,
@@ -1178,17 +1195,22 @@ async def _related_after_position_with_api(
     end_confirmed = page_metadata[found_page].get("has_next") is False
     while len(related) < collect_limit and loaded_tail < max_tail and not end_confirmed:
         metadata = {}
-        page_posts = await _fetch_board_page(
-            api,
-            next_page,
-            board,
-            recommend_value,
-            kind=kind,
-            search_type=search_type_value,
-            search_keyword=search_keyword_value,
-            head_id=head_id_value or None,
-            pagination_collector=metadata,
-        )
+        try:
+            page_posts = await asyncio.wait_for(_fetch_board_page(
+                api,
+                next_page,
+                board,
+                recommend_value,
+                kind=kind,
+                search_type=search_type_value,
+                search_keyword=search_keyword_value,
+                head_id=head_id_value or None,
+                pagination_collector=metadata,
+            ), timeout=max(0, tail_deadline - loop.time()))
+        except (dc_api.BoardUnavailableError, asyncio.TimeoutError):
+            # Keep the rows already found, but leave continuation unknown so
+            # the next request can retry from the last successful cursor.
+            break
         end_confirmed = metadata.get("has_next") is False
         if not page_posts:
             break
@@ -1230,7 +1252,13 @@ async def async_related_after_position(
             search_keyword=search_keyword,
             head_id=head_id,
         ), timeout=RELATED_FETCH_TIMEOUT)
-    if _safe_int(after_id, 0) == 0 and _safe_int(limit, RELATED_LIMIT) == RELATED_LIMIT:
+    # An unknown continuation may reflect a failed tail fetch. Do not replace
+    # the initial snapshot with that incomplete result.
+    if (
+        has_more is not None
+        and _safe_int(after_id, 0) == 0
+        and _safe_int(limit, RELATED_LIMIT) == RELATED_LIMIT
+    ):
         _store_initial_related(
             _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id),
             posts, has_more,
