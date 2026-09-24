@@ -9,7 +9,7 @@ import ssl
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -162,8 +162,10 @@ def preview_image_signature(url, secret_key):
 
 def has_valid_preview_image_signature(url, token, secret_key):
     expected = preview_image_signature(url, secret_key)
-    supplied = str(token or "").strip()
-    return bool(expected and supplied and hmac.compare_digest(expected, supplied))
+    supplied = str(token or "")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", supplied):
+        return False
+    return bool(expected and hmac.compare_digest(expected, supplied))
 
 
 def _cache_key(url):
@@ -372,11 +374,16 @@ def _is_ipv4_address(address):
     return True
 
 
-def _request_preview_target(url, target, started_at, socket_guard):
-    parsed = urlparse(url)
+def _preview_request_target(url):
+    parsed = urlsplit(url)
     request_target = parsed.path or "/"
     if parsed.query:
         request_target = f"{request_target}?{parsed.query}"
+    return quote(request_target, safe="/%:?!$&'()*+,;=@[]")
+
+
+def _request_preview_target(url, target, started_at, socket_guard):
+    request_target = _preview_request_target(url)
 
     tls_socket = _connect_pinned_target(target, started_at, socket_guard)
     connection = http.client.HTTPConnection(
@@ -415,10 +422,7 @@ def _request_preview_target(url, target, started_at, socket_guard):
 
 
 def _request_preview_image_target(url, target, started_at, socket_guard):
-    parsed = urlparse(url)
-    request_target = parsed.path or "/"
-    if parsed.query:
-        request_target = f"{request_target}?{parsed.query}"
+    request_target = _preview_request_target(url)
 
     tls_socket = _connect_pinned_target(target, started_at, socket_guard)
     connection = http.client.HTTPConnection(

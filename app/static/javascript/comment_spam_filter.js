@@ -7,11 +7,13 @@
   const NORMAL_REPEAT_THRESHOLD = 3;
   const SHORT_REACTION_PATTERN = /^(?:[ㅋㅎㅠㅜㅇㄴㄹㄷㄱㅅㅂㅈㅊㅌㅍㅁ]+|ㄹㅇ|ㅇㅇ|ㄴㄴ|ㄱㄱ|ㄷㄷ+|굿|헐)$/;
 
-  const normalizeText = (text) =>
-    (text || "")
-      .replace(/[^\w\sㄱ-ㅎㅏ-ㅣ가-힣.?!]/g, "")
+  const normalizeText = (text) => {
+    const value = text || "";
+    return (typeof value.normalize === "function" ? value.normalize("NFC") : value)
+      .replace(/[^\p{L}\p{M}\p{N}\s.?!_]/gu, "")
       .replace(/\s+/g, " ")
       .trim();
+  };
 
   const compactText = (text) => normalizeText(text).replace(/\s+/g, "");
 

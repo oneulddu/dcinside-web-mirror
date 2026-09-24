@@ -655,6 +655,7 @@
     // 그동안 다른 탭이나 상세 화면에서 늘어난 읽음 기록을 즉시 반영한다.
     window.addEventListener("pageshow", function (event) {
         if (event.persisted) {
+            applyTheme(loadTheme(), false);
             refreshReadState();
             refreshMediaBlockMode(false);
         }
@@ -662,6 +663,9 @@
 
     // 다른 탭에서 글을 읽은 경우 저장소 변경을 즉시 반영한다.
     window.addEventListener("storage", function (event) {
+        if (!event.key || event.key === THEME_STORAGE_KEY) {
+            applyTheme(loadTheme(), false);
+        }
         if (!event.key || event.key === STORAGE_KEY) {
             refreshReadState();
         }

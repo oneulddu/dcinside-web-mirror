@@ -262,6 +262,7 @@ mirror/
 | `MIRROR_DC_RATE_LIMIT_MAX_COOLDOWN` | `3600` | `Retry-After` 적용 시 댓글 cooldown 최대 시간(초) |
 | `MIRROR_HEUNG_CACHE_TTL` | `3600` | 흥한 갤러리 캐시 유지 시간 |
 | `MIRROR_HEUNG_CACHE_FILE` | `instance/heung_gallery_cache.json` | 캐시 파일 경로 |
+| `MIRROR_HEUNG_REFRESH_RETRY_SECONDS` | `30` | 흥한 갤러리 갱신 실패 뒤 원본을 다시 조회하기까지 기다리는 시간(초), `0`이면 끔 |
 | `MIRROR_BOARD_PAGE_CACHE_TTL` | `20` | 게시판 페이지 짧은 캐시 |
 | `MIRROR_BOARD_FETCH_TIMEOUT` | `25` | 게시판 목록·작성 시간 조회와 동시 조회 대기의 전체 제한 시간(초) |
 | `MIRROR_BOARD_FORCE_REFRESH_COOLDOWN` | `5` | 같은 목록의 강제 새로고침 최소 간격(초) |

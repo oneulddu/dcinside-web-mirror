@@ -525,6 +525,7 @@ async def async_board_precise_times(
         if cached is not None:
             return cached
 
+        status = {}
         async with dc_api_context() as api:
             precise_times = await api.board_precise_times(
                 board_id=board,
@@ -535,17 +536,19 @@ async def async_board_precise_times(
                 search_keyword=search_keyword,
                 head_id=head_id,
                 target_ids=normalized_target_ids,
+                status_collector=status,
             )
 
         result = {str(doc_id): format_display_time(value) for doc_id, value in (precise_times or {}).items()}
-        _cache_set(
-            _BOARD_TIME_CACHE,
-            _BOARD_TIME_CACHE_LOCK,
-            cache_key,
-            dict(result),
-            BOARD_TIME_CACHE_TTL,
-            BOARD_TIME_CACHE_MAX_ITEMS,
-        )
+        if status.get("complete", True):
+            _cache_set(
+                _BOARD_TIME_CACHE,
+                _BOARD_TIME_CACHE_LOCK,
+                cache_key,
+                dict(result),
+                BOARD_TIME_CACHE_TTL,
+                BOARD_TIME_CACHE_MAX_ITEMS,
+            )
         return result
 
     return dict(await _load_board_once(("times", cache_key), load, timeout=BOARD_FETCH_TIMEOUT))

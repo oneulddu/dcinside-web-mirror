@@ -16,6 +16,9 @@ function createHarness(options) {
     const storage = new Map();
     const pendingFetches = [];
     const requestedUrls = [];
+    const timers = new Map();
+    const signals = [];
+    let timerId = 0;
     let replacementCount = 0;
     const location = {};
 
@@ -47,8 +50,12 @@ function createHarness(options) {
     const context = {
         URL,
         Promise,
-        setTimeout,
-        clearTimeout,
+        AbortController: options.noAbort ? undefined : AbortController,
+        setTimeout(callback, delay) {
+            timers.set(++timerId, { callback, delay });
+            return timerId;
+        },
+        clearTimeout(id) { timers.delete(id); },
         CustomEvent: function CustomEvent(type, init) {
             this.type = type;
             this.detail = init.detail;
@@ -58,7 +65,8 @@ function createHarness(options) {
                 return { getElementById: () => boardNode };
             };
         },
-        fetch(url) {
+        fetch(url, init) {
+            signals.push(init.signal);
             requestedUrls.push(url);
             return new Promise((resolve, reject) => {
                 pendingFetches.push({ reject, resolve, url });
@@ -106,6 +114,24 @@ function createHarness(options) {
     vm.runInNewContext(source, context);
 
     return {
+        timers,
+        signals,
+        expire() {
+            for (const [id, timer] of [...timers]) {
+                assert.equal(timer.delay, 30000);
+                timers.delete(id);
+                timer.callback();
+            }
+        },
+        stallBody() {
+            const pending = pendingFetches.shift();
+            let resolveBody;
+            pending.resolve({
+                ok: true, url: pending.url,
+                text: () => new Promise(resolve => { resolveBody = resolve; }),
+            });
+            return () => resolveBody('<section id="board-list"></section>');
+        },
         clickRead(pid) {
             listeners.document.click({
                 altKey: false,
@@ -291,6 +317,48 @@ async function main() {
     failedWithPending.resolveNext();
     await settle();
     assert.equal(failedWithPending.replacementCount(), 1);
+
+    for (const noAbort of [false, true]) {
+        for (const stallBody of [false, true]) {
+            const timed = createHarness({ href: "https://mir.rootios.com/board?board=test", noAbort });
+            timed.pageShow(true);
+            let finishBody;
+            if (stallBody) { finishBody = timed.stallBody(); await settle(); }
+            timed.expire();
+            await settle();
+            if (!noAbort) assert.equal(timed.signals[0]?.aborted, true, "deadline must abort the request");
+            timed.pageHide();
+            timed.pageShow(true);
+            assert.equal(timed.fetchCount(), 2, "a stalled refresh must allow a later return to retry");
+            if (stallBody) finishBody(); else timed.resolveNext();
+            await settle();
+            assert.equal(timed.replacementCount(), 0, "late response must not replace the list");
+            timed.pageHide();
+            timed.pageShow(true);
+            assert.equal(timed.fetchCount(), 2, "late completion must not release the newer request");
+            timed.resolveNext();
+            await settle();
+            assert.equal(timed.fetchCount(), 3, "pending return must replay after the newer request");
+            timed.resolveNext();
+            await settle();
+            assert.equal(timed.replacementCount(), 2);
+            assert.equal(timed.timers.size, 0, "completion must clear the deadline");
+        }
+    }
+    const timeoutPending = createHarness({ href: "https://mir.rootios.com/board?board=test" });
+    timeoutPending.pageShow(true);
+    timeoutPending.pageHide();
+    timeoutPending.pageShow(true);
+    timeoutPending.expire();
+    await settle();
+    assert.equal(timeoutPending.fetchCount(), 2, "timeout must replay an already pending return");
+    timeoutPending.resolveNext();
+    timeoutPending.resolveNext();
+    await settle();
+    assert.equal(timeoutPending.replacementCount(), 1);
+    assert.equal(timeoutPending.timers.size, 0);
+    assert.equal(restored.timers.size, 0);
+    assert.equal(failed.timers.size, 0);
 
     process.stdout.write("board_return_refresh_state_machine=passed\n");
 }

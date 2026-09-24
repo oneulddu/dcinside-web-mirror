@@ -141,7 +141,18 @@
         url.searchParams.set(REFRESH_PARAM, "1");
         removeRefreshMarker();
         refreshInFlight = true;
-        fetch(url.toString(), {
+        var controller = typeof AbortController === "function" ? new AbortController() : null;
+        var timeoutId;
+        var deadline = new Promise(function (resolve, reject) {
+            timeoutId = setTimeout(function () {
+                reject(new Error("board refresh timed out"));
+                if (controller) {
+                    controller.abort();
+                }
+            }, 30000);
+        });
+        var request = fetch(url.toString(), {
+            signal: controller ? controller.signal : undefined,
             credentials: "same-origin",
             headers: {
                 "Accept": "text/html"
@@ -157,7 +168,9 @@
                         url: response.url
                     };
                 });
-            })
+            });
+        // Race the entire body read so late results cannot replace a newer list.
+        Promise.race([request, deadline])
             .then(function (payload) {
                 canonicalizeBoardUrl(payload.url);
                 replaceBoardList(payload.html);
@@ -165,6 +178,7 @@
             .catch(function () {
             })
             .finally(function () {
+                clearTimeout(timeoutId);
                 refreshInFlight = false;
                 if (refreshPending) {
                     refreshPending = false;
