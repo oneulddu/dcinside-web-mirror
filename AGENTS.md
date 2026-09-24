@@ -116,7 +116,7 @@ Environment variables use the `MIRROR_` prefix:
 - `MIRROR_BIND`: Gunicorn bind (default: `[::]:6100`)
 - `MIRROR_WORKERS`, `MIRROR_THREADS`, `MIRROR_TIMEOUT`: Gunicorn process/thread/timeout settings
 - `MIRROR_HTTP_TIMEOUT`: DCinside request timeout (default: 20s)
-- `MIRROR_HEUNG_CACHE_TTL`, `MIRROR_HEUNG_CACHE_FILE`: Heung gallery cache settings
+- `MIRROR_HEUNG_CACHE_TTL`, `MIRROR_HEUNG_CACHE_FILE`, `MIRROR_HEUNG_REFRESH_RETRY_SECONDS`: Heung gallery cache and refresh-failure backoff settings
 - `MIRROR_BOARD_PAGE_CACHE_TTL`: Short board-page cache TTL
 - `MIRROR_BOARD_FILL_AUTHOR_CODES`: Enable cached board-list author code backfill
 - `MIRROR_RELATED_PAGE_PROBE_STEPS`, `MIRROR_RELATED_TAIL_PAGES`: Related-post probing limits

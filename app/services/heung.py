@@ -25,6 +25,8 @@ def _env_int(name, default):
 
 
 HTTP_TIMEOUT = _env_int("MIRROR_HTTP_TIMEOUT", 20)
+HEUNG_REFRESH_RETRY_SECONDS = max(_env_int("MIRROR_HEUNG_REFRESH_RETRY_SECONDS", 30), 0)
+HEUNG_NEXT_RETRY_AT = 0.0
 HEUNG_CACHE_TTL = _env_int("MIRROR_HEUNG_CACHE_TTL", 3600)
 HEUNG_CACHE_FILE = os.getenv("MIRROR_HEUNG_CACHE_FILE", os.path.join(INSTANCE_DIR, "heung_gallery_cache.json"))
 SEARCH_CACHE_TTL = max(_env_int("MIRROR_HEUNG_SEARCH_CACHE_TTL", 60), 0)
@@ -164,10 +166,23 @@ def _is_heung_cache_fresh(items, updated_at, now=None):
     return bool(items) and (now - float(updated_at or 0.0)) < HEUNG_CACHE_TTL
 
 
+def _heung_refresh_in_backoff():
+    with HEUNG_CACHE_LOCK:
+        return HEUNG_REFRESH_RETRY_SECONDS > 0 and time.time() < HEUNG_NEXT_RETRY_AT
+
+
 def _refresh_heung_galleries():
-    fresh_items = _fetch_heung_galleries()
-    if not fresh_items:
-        raise RuntimeError("empty heung gallery result")
+    global HEUNG_NEXT_RETRY_AT
+    try:
+        fresh_items = _fetch_heung_galleries()
+        if not fresh_items:
+            raise RuntimeError("empty heung gallery result")
+    except Exception:
+        with HEUNG_CACHE_LOCK:
+            HEUNG_NEXT_RETRY_AT = time.time() + HEUNG_REFRESH_RETRY_SECONDS
+        raise
+    with HEUNG_CACHE_LOCK:
+        HEUNG_NEXT_RETRY_AT = 0.0
     fetched_at = time.time()
     fresh_items, fetched_at = _replace_heung_cache(fetched_at, fresh_items)
     try:
@@ -191,6 +206,9 @@ def _start_heung_refresh_background():
     if not acquired:
         return False
     try:
+        if _heung_refresh_in_backoff():
+            HEUNG_REFRESH_LOCK.release()
+            return False
         thread = threading.Thread(target=_refresh_heung_galleries_in_background, daemon=True)
         thread.start()
         return True
@@ -229,6 +247,8 @@ def get_heung_galleries():
             return cached_items, cached_updated_at
 
         try:
+            if _heung_refresh_in_backoff():
+                raise RuntimeError("heung gallery refresh is in backoff")
             return _refresh_heung_galleries()
         except Exception:
             fallback_items, fallback_updated_at = _heung_cache_snapshot()

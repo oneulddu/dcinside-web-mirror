@@ -308,6 +308,33 @@ function assertItem(h, image, revealed, visible = true) {
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 async function main() {
+    const theme = createHarness();
+    const themeKey = "mirror_theme_v1";
+    const toggle = theme.document.createElement("button");
+    toggle.className = "theme-toggle";
+    theme.document.body.appendChild(toggle);
+    function assertTheme(value) {
+        assert.equal(theme.document.documentElement.dataset.theme, value);
+        assert.equal(theme.document.documentElement.style.colorScheme, value);
+        assert.equal(theme.document.body.dataset.theme, value);
+        assert.equal(theme.document.body.classList.contains("theme-light"), value === "light");
+        assert.equal(theme.document.body.classList.contains("theme-dark"), value === "dark");
+        assert.equal(toggle.getAttribute("aria-label"), value === "light" ? "어두운 테마로 전환" : "밝은 테마로 전환");
+    }
+    theme.storage.set(themeKey, "light");
+    theme.restore();
+    assertTheme("light");
+    theme.external(themeKey, "dark");
+    assertTheme("dark");
+    theme.external(themeKey, "light");
+    assertTheme("light");
+    theme.external(null, null);
+    assertTheme("dark");
+    theme.storage.set(themeKey, "light");
+    theme.external("unrelated", "value");
+    assertTheme("dark");
+    assert.equal(theme.writes.includes(themeKey), false, "theme sync must not write back to storage");
+
     for (const mode of ["none", "dccon", "body", "all"]) {
         const h = createHarness({ mode });
         const dcconBlocked = mode !== "none";

@@ -1005,8 +1005,10 @@ class API(ParserMixin):
                 break
             page += 1
 
-    async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None):
+    async def board_precise_times(self, board_id, page=1, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, target_ids=None, status_collector=None):
         precise_times = {}
+        if status_collector is not None:
+            status_collector["complete"] = True
         requested_ids = {str(value).strip() for value in (target_ids or []) if str(value).strip()}
         remaining_ids = set(requested_ids)
         page_count = 1 + (BOARD_TIME_LOOKAHEAD_PAGES if requested_ids else 0)
@@ -1032,6 +1034,10 @@ class API(ParserMixin):
                 cooldown_namespace="board",
             )
             if parsed is None:
+                if status_collector is not None:
+                    status_collector["complete"] = False
+                if current_page == start_page:
+                    raise BoardUnavailableError("precise-time list page is unavailable")
                 continue
 
             rows = parsed.xpath("//tr[contains(@class, 'ub-content') and contains(@class, 'us-post')]")

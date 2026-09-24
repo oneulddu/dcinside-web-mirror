@@ -10,6 +10,7 @@ from app.services import heung
 
 
 def test_empty_heung_refresh_preserves_stale_memory_and_file_cache(monkeypatch):
+    monkeypatch.setattr(heung, "HEUNG_NEXT_RETRY_AT", 0.0)
     stale_items = [{"rank": 1, "name": "기존 목록", "board_id": "stale"}]
     writes = []
 
