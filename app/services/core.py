@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 from .dc import api as dc_api
 from .async_bridge import dc_api_context
@@ -82,6 +83,7 @@ _AUTHOR_CODE_SUFFIX_RE = re.compile(r"\(([^()\s]{1,64})\)\s*$")
 _AUTHOR_CODE_OPEN_RE = re.compile(r"\(([^()\s]{1,64})$")
 _ANON_NAME_RE = re.compile(r"ㅇㅇ(\d*)")
 _TIME_SECONDS_RE = re.compile(r"(\b\d{1,2}:\d{2}):\d{2}(?:\.\d+)?")
+_KST = timezone(timedelta(hours=9))
 
 
 def _clean_author_code(code):
@@ -142,6 +144,13 @@ def _is_reply_comment(parent_id):
 
 
 def format_display_time(value):
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(_KST).replace(tzinfo=None)
+        if (value.hour, value.minute, value.second, value.microsecond) == (23, 59, 59, 0):
+            # 파서는 날짜만 있는 원문에 23:59:59를 붙인다. 화면에는 시각을 지어내지 않는다.
+            return value.strftime("%Y-%m-%d")
+        return value.strftime("%Y-%m-%d %H:%M")
     if hasattr(value, "strftime") and not isinstance(value, str):
         try:
             return value.strftime("%Y-%m-%d %H:%M")

@@ -49,8 +49,8 @@ def test_document_str_does_not_require_comment_count():
 def test_parse_time_rolls_future_month_day_back_to_previous_year(monkeypatch):
     class FrozenDatetime(datetime):
         @classmethod
-        def now(cls):
-            return cls(2026, 1, 1, 12, 0, 0)
+        def now(cls, tz=None):
+            return cls(2026, 1, 1, 12, 0, 0, tzinfo=tz)
 
     monkeypatch.setattr(parsers, "datetime", FrozenDatetime)
     api = API.__new__(API)
@@ -63,8 +63,8 @@ def test_parse_time_rolls_future_month_day_back_to_previous_year(monkeypatch):
 def test_parse_time_preserves_two_digit_year(monkeypatch):
     class FrozenDatetime(datetime):
         @classmethod
-        def now(cls):
-            return cls(2026, 7, 10, 12, 0, 0)
+        def now(cls, tz=None):
+            return cls(2026, 7, 10, 12, 0, 0, tzinfo=tz)
 
     monkeypatch.setattr(parsers, "datetime", FrozenDatetime)
     api = API.__new__(API)

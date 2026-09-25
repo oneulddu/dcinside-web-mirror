@@ -30,6 +30,7 @@ from .services.recent import (
     remove_recent_gallery,
     touch_recent_gallery,
 )
+from .services.time_labels import post_time_info
 
 bp = Blueprint("main", __name__)
 
@@ -268,7 +269,7 @@ def _serialize_related_posts(posts):
                 "author": item.get("author", "익명"),
                 "author_code": item.get("author_code"),
                 "author_role": _safe_author_role(item.get("author_role")),
-                "time": format_display_time(item.get("time_display") or item.get("time")),
+                **_related_time_fields(item.get("time_display") or item.get("time")),
                 "comment_count": _safe_int(item.get("comment_count", 0), 0),
                 "voteup_count": _safe_int(item.get("voteup_count", 0), 0),
                 "source_page": _safe_int(item.get("source_page", 0), 0),
@@ -278,6 +279,11 @@ def _serialize_related_posts(posts):
             }
         )
     return rows
+
+
+def _related_time_fields(value):
+    info = post_time_info(format_display_time(value))
+    return {"time": info["label"], "time_title": info["title"], "time_iso": info["iso"]}
 
 
 def _format_read_payload_times(data, comments):
@@ -593,7 +599,6 @@ def _build_recent_items(rows):
                 "gallery_name": saved_name or looked_up_name,
                 "kind": kind,
                 "kind_label": GALLERY_KIND_LABELS.get(kind, kind or "일반"),
-                "recommend": 1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
                 "visited_at_label": format_relative_day_time(row.get("visited_at")),
                 "visited_at_str": format_recent_time(row.get("visited_at")),
             }
@@ -646,7 +651,6 @@ def recent_remove():
         response,
         request.form.get("board"),
         request.form.get("kind"),
-        recommend=_safe_int(request.form.get("recommend", 0), 0),
     )
     return response
 
@@ -770,7 +774,7 @@ def board():
             board_has_next=pagination.get("has_next"),
         )
     )
-    touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
+    touch_recent_gallery(response, board, kind, name=gallery_name)
     return response
 
 
@@ -807,7 +811,16 @@ def board_times():
         current_app.logger.exception("Failed to fetch board precise times")
         return jsonify({"ok": False, "times": {}, "error": "board_time_fetch_failed"}), 502
 
-    return jsonify({"ok": True, "times": {str(key): format_display_time(value) for key, value in (times or {}).items()}})
+    labels = {}
+    titles = {}
+    datetimes = {}
+    for key, value in (times or {}).items():
+        info = post_time_info(format_display_time(value))
+        labels[str(key)] = info["label"]
+        if info["iso"]:
+            titles[str(key)] = info["title"]
+            datetimes[str(key)] = info["iso"]
+    return jsonify({"ok": True, "times": labels, "titles": titles, "datetimes": datetimes})
 
 
 @bp.route("/media")
@@ -991,7 +1004,7 @@ def read():
     if served_stale:
         response.headers["Warning"] = '110 - "Response is stale"'
         response.headers["Cache-Control"] = "no-store"
-    touch_recent_gallery(response, board, kind, recommend=recommend, name=gallery_name)
+    touch_recent_gallery(response, board, kind, name=gallery_name)
     return response
 
 

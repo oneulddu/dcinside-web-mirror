@@ -222,7 +222,6 @@ def test_board_and_read_recent_cookie_payload_and_attributes(monkeypatch, path, 
             "board": board,
             "name": "계약 갤러리",
             "kind": "minor",
-            "recommend": 1,
             "visited_at": FIXED_NOW,
         }
     ]

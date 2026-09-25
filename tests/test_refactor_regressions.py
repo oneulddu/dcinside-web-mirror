@@ -160,16 +160,15 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
         )
         return _read_payload()
 
-    def spy_touch_recent(response, board, kind, recommend=0, name=None):
+    def spy_touch_recent(response, board, kind, name=None):
         recent_calls.append(
             {
                 "board": board,
                 "kind": kind,
-                "recommend": recommend,
                 "name": name,
             }
         )
-        return original_touch_recent(response, board, kind, recommend=recommend, name=name)
+        return original_touch_recent(response, board, kind, name=name)
 
     monkeypatch.setattr(routes, "_load_board_payload", fake_board)
     monkeypatch.setattr(routes, "async_read", fake_read)
@@ -222,7 +221,6 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
         {
             "board": "test",
             "kind": expected_kind,
-            "recommend": 1,
             "name": "테스트 갤러리",
         }
     ]
@@ -230,7 +228,6 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
         "board": "test",
         "name": "테스트 갤러리",
         "kind": expected_kind,
-        "recommend": 1,
         "visited_at": None,
     }
 
@@ -272,13 +269,11 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
         {
             "board": "test",
             "kind": expected_kind,
-            "recommend": 1,
             "name": "테스트 갤러리",
         },
         {
             "board": "test",
             "kind": expected_kind,
-            "recommend": 1,
             "name": "테스트 갤러리",
         },
     ]

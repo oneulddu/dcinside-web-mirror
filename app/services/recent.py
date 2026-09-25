@@ -141,24 +141,18 @@ def normalize_recent_entry(item):
         "board": board,
         "name": name[:80] or None,
         "kind": normalize_recent_kind(item.get("kind")),
-        "recommend": 1 if _safe_int(item.get("recommend", 0), 0) == 1 else 0,
         "visited_at": _safe_float(item.get("visited_at", 0), 0.0),
     }
 
 
 def recent_entry_identity(row):
-    return (
-        row.get("board"),
-        row.get("kind"),
-        1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
-    )
+    # 추천글 목록과 전체 목록은 같은 게시판이라 한 줄로 합친다.
+    # 예전 쿠키의 recommend 값은 읽을 때 무시한다.
+    return (row.get("board"), row.get("kind"))
 
 
 def recent_entry_visit_identity(row):
-    return (
-        row.get("board"),
-        1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
-    )
+    return row.get("board")
 
 
 def recent_entries_may_be_same_gallery(left, right):
@@ -172,7 +166,7 @@ def recent_entries_may_be_same_gallery(left, right):
 def recent_removal_matches(target, row):
     """비대칭 삭제 매칭.
 
-    저장된 행의 kind가 비어 있으면(레거시 쿠키·압축 항목) 같은 board/recommend를
+    저장된 행의 kind가 비어 있으면(레거시 쿠키·압축 항목) 같은 board를
     같은 갤러리로 보고 지우지만, 삭제 대상의 kind가 비어 있다고 해서 kind가 있는
     다른 종류의 갤러리 항목까지 지우지는 않는다.
     """
@@ -186,8 +180,6 @@ def recent_removal_matches(target, row):
 
 def tombstone_matches_row(item, row):
     if item["board_hash"] != _tombstone_board_digest(row.get("board")):
-        return False
-    if item["recommend"] != (1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0):
         return False
     row_kind = normalize_recent_kind(row.get("kind"))
     if not row_kind:
@@ -223,7 +215,6 @@ def normalize_recent_tombstones(value):
         items.append({
             "board_hash": board_hash,
             "kind": normalize_recent_kind(raw_kind),
-            "recommend": 1 if _safe_int(item.get("recommend", 0), 0) == 1 else 0,
             "deleted_at": deleted_at,
         })
 
@@ -234,14 +225,13 @@ def normalize_recent_tombstones(value):
 
 
 def _pack_tombstone_wire(cleared_at, items):
-    # 쿠키 크기를 줄이기 위해 전송 형식은 압축 키(b/k/r/d)를 쓴다.
+    # 쿠키 크기를 줄이기 위해 전송 형식은 압축 키(b/k/d)를 쓴다.
     return {
         "cleared_at": cleared_at,
         "items": [
             {
                 "b": item["board_hash"],
                 "k": item["kind"],
-                "r": item["recommend"],
                 "d": item["deleted_at"],
             }
             for item in items
@@ -261,7 +251,6 @@ def _unpack_tombstone_wire(parsed):
             {
                 "board_hash": item.get("b"),
                 "kind": item.get("k"),
-                "recommend": item.get("r"),
                 "deleted_at": item.get("d"),
             }
             for item in raw_items
@@ -310,6 +299,10 @@ def merge_recent_entry_detail(primary, secondary):
         primary["kind"] = secondary_kind
     if not primary.get("name") and secondary.get("name"):
         primary["name"] = secondary.get("name")
+    # 예전 쿠키의 전체·추천글 행이 합쳐질 때 더 최근 방문 시각을 남긴다.
+    secondary_visited = _safe_float(secondary.get("visited_at", 0), 0.0)
+    if secondary_visited > _safe_float(primary.get("visited_at", 0), 0.0):
+        primary["visited_at"] = secondary_visited
     return primary
 
 
@@ -642,7 +635,7 @@ def save_recent_cache_key_cookie(response, key):
     )
 
 
-def touch_recent_gallery(response, board, kind, recommend=0, name=None):
+def touch_recent_gallery(response, board, kind, name=None):
     board_id = (board or "").strip()
     if not board_id:
         return
@@ -654,7 +647,6 @@ def touch_recent_gallery(response, board, kind, recommend=0, name=None):
         "board": board_id,
         "name": name,
         "kind": (kind or "").strip().lower() or None,
-        "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
         "visited_at": time.time(),
     })
     deduped = merge_recent_entries(new_row, rows)
@@ -664,7 +656,7 @@ def touch_recent_gallery(response, board, kind, recommend=0, name=None):
     save_recent_cookie(response, deduped)
 
 
-def remove_recent_gallery(response, board, kind, recommend=0):
+def remove_recent_gallery(response, board, kind):
     board_id = (board or "").strip()
     if not board_id:
         return False
@@ -672,7 +664,6 @@ def remove_recent_gallery(response, board, kind, recommend=0):
     target = normalize_recent_entry({
         "board": board_id,
         "kind": (kind or "").strip().lower() or None,
-        "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
     })
     rows = load_recent_entries()
     remaining = [row for row in rows if not recent_removal_matches(target, row)]
@@ -683,20 +674,14 @@ def remove_recent_gallery(response, board, kind, recommend=0):
     target_tombstone_identity = (
         _tombstone_board_digest(target["board"]),
         target["kind"],
-        target["recommend"],
     )
     tombstone_items = [
         item for item in tombstones["items"]
-        if (
-            item["board_hash"],
-            item["kind"],
-            item["recommend"],
-        ) != target_tombstone_identity
+        if (item["board_hash"], item["kind"]) != target_tombstone_identity
     ]
     tombstone_items.insert(0, {
         "board_hash": target_tombstone_identity[0],
         "kind": target["kind"],
-        "recommend": target["recommend"],
         "deleted_at": deleted_at,
     })
     tombstones["items"] = tombstone_items

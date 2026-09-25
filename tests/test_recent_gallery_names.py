@@ -110,7 +110,8 @@ def test_revisit_repairs_name_from_upstream_and_survives_worker_change(monkeypat
     assert links[0].select_one(".feed-title").get_text(strip=True) == "클라우드 게임"
     params = parse_qs(urlparse(links[0]["href"]).query)
     assert params["board"] == ["cloudgame"]
-    assert params["recommend"] == [str(recommend)]
+    # 추천글 목록에서 방문해도 최근 게시판은 전체 목록으로 연다.
+    assert params["recommend"] == ["0"]
     assert params["kind"] == ["minor"]
     assert params["gallery_name"] == ["클라우드 게임"]
     if path == "/board":

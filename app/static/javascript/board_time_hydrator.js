@@ -48,16 +48,36 @@
         return byId;
     }
 
-    function applyTimes(targets, times) {
+    function applyTimes(targets, times, titles, datetimes) {
+        titles = titles || {};
+        datetimes = datetimes || {};
         Object.keys(times || {}).forEach(function (postId) {
             var value = trim(times[postId]);
             var nodes = targets[postId];
             if (!value || !nodes) {
                 return;
             }
+            var title = trim(titles[postId]);
+            var datetime = trim(datetimes[postId]);
             for (var i = 0; i < nodes.length; i += 1) {
-                nodes[i].textContent = value;
-                delete nodes[i].dataset.needsTimeHydrate;
+                var node = nodes[i];
+                if (datetime && node.tagName !== "TIME" && node.parentNode) {
+                    var replacement = document.createElement("time");
+                    for (var j = 0; j < node.attributes.length; j += 1) {
+                        replacement.setAttribute(node.attributes[j].name, node.attributes[j].value);
+                    }
+                    node.parentNode.replaceChild(replacement, node);
+                    node = replacement;
+                    nodes[i] = replacement;
+                }
+                node.textContent = value;
+                if (title) {
+                    node.title = title;
+                }
+                if (datetime) {
+                    node.setAttribute("datetime", datetime);
+                }
+                delete node.dataset.needsTimeHydrate;
             }
         });
     }
@@ -90,7 +110,7 @@
                 if (!payload || payload.ok === false) {
                     return;
                 }
-                applyTimes(targets, payload.times || {});
+                applyTimes(targets, payload.times || {}, payload.titles, payload.datetimes);
             })
             .catch(function () {
             });
