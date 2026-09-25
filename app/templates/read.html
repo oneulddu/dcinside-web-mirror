@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_bits.html" import author_text, feed_status_icon, feed_subject, reply_count, number, back_link, board_search_form %}
+{% from "_bits.html" import author_text, feed_status_icon, feed_subject, reply_count, number, back_link, board_search_form, post_time %}
 
 {% block body_class %}read-view{% endblock %}
 
@@ -11,7 +11,7 @@
         <h1>{{ data.title }}</h1>
         <div class="article-meta">
             {{ author_text(data) }}
-            <span>{{ data.time }}</span>
+            {{ post_time(data.time, "full") }}
             {% if data.view_count is number %}<span>조회 {{ number(data.view_count) }}</span>{% endif %}
             <span>추천 {{ number(data.voteup_count) }}</span>
         </div>
@@ -49,7 +49,7 @@
                 </div>
                 <div class="comment-meta">
                     {{ author_text(comment) }}
-                    <span>{{ comment.time }}</span>
+                    {{ post_time(comment.time) }}
                 </div>
             </li>
             {% else %}
@@ -78,7 +78,7 @@
                         <div class="feed-meta-left">
                             {{ feed_subject(item) }}
                             {{ author_text(item) }}
-                            <span>{{ item.time }}</span>
+                            {% if item.time_iso %}<time datetime="{{ item.time_iso }}" title="{{ item.time_title }}">{{ item.time }}</time>{% else %}<span>{{ item.time }}</span>{% endif %}
                             <span class="feed-vote">추천 {{ item.voteup_count }}</span>
                         </div>
                     </div>

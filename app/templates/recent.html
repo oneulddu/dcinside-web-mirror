@@ -23,11 +23,10 @@
     <ul>
         {% for item in recent_items %}
         <li class="recent-row">
-            <a class="feed-item" href="{{ board_url(item.board, recommend=item.recommend or 0, page=1, kind=item.kind, gallery_name=item.gallery_name) }}">
+            <a class="feed-item" href="{{ board_url(item.board, recommend=0, page=1, kind=item.kind, gallery_name=item.gallery_name) }}">
                 <div class="feed-title-wrap">
                     <span class="feed-title">{{ item.display_name }}</span>
                     {% if item.kind_label and item.kind_label != "일반" %}<span class="gallery-badge">{{ item.kind_label }}</span>{% endif %}
-                    {% if item.recommend == 1 %}<span class="gallery-badge is-hot">추천글</span>{% endif %}
                 </div>
                 <div class="feed-meta-row">
                     <div class="feed-meta-left">
@@ -39,7 +38,6 @@
             <form class="recent-remove-form" method="post" action="{{ url_for('main.recent_remove') }}">
                 <input type="hidden" name="board" value="{{ item.board }}">
                 {% if item.kind %}<input type="hidden" name="kind" value="{{ item.kind }}">{% endif %}
-                <input type="hidden" name="recommend" value="{{ item.recommend or 0 }}">
                 <button type="submit" class="recent-remove-btn" aria-label="{{ item.display_name }} 삭제">삭제</button>
             </form>
         </li>

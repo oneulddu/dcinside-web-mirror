@@ -20,6 +20,7 @@ from app.services import html_sanitizer
 from app.services import link_preview
 from app.services import media_proxy
 from app.services import recent
+from app.services import time_labels
 from app.services import youtube_meta
 
 
@@ -2601,7 +2602,13 @@ def test_board_visit_stores_gallery_name_for_recent(monkeypatch):
     assert query["gallery_name"] == ["특이점이 온다"]
 
 
+def _freeze_post_time_now(monkeypatch, *args):
+    frozen = datetime(*args, tzinfo=time_labels.KST)
+    monkeypatch.setattr(time_labels, "now_kst", lambda: frozen)
+
+
 def test_board_renders_date_only_time_for_async_hydration(monkeypatch):
+    _freeze_post_time_now(monkeypatch, 2026, 4, 17, 9, 0)
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [
             {
@@ -2625,9 +2632,11 @@ def test_board_renders_date_only_time_for_async_hydration(monkeypatch):
     soup = BeautifulSoup(response.data, "html.parser")
     time_node = soup.select_one("[data-board-time][data-post-id='123']")
 
-    assert time_node.get_text(strip=True) == "04.16"
+    assert time_node.get_text(strip=True) == "어제"
+    assert time_node["datetime"] == "2026-04-16"
+    assert time_node["title"] == "2026년 4월 16일"
     assert time_node["data-needs-time-hydrate"] == "1"
-    assert "2026-04-16 23:59:59" not in response.get_data(as_text=True)
+    assert "23:59" not in response.get_data(as_text=True)
     assert soup.select_one("script[src*='board_time_hydrator.js']") is not None
 
 
@@ -2693,6 +2702,7 @@ def test_board_times_endpoint_returns_precise_times(monkeypatch):
         return {"123": "2026-04-16 12:00:00"}
 
     monkeypatch.setattr(routes, "async_board_precise_times", fake_precise_times)
+    _freeze_post_time_now(monkeypatch, 2026, 4, 16, 15, 0)
     app = create_app()
 
     response = app.test_client().get(
@@ -2700,7 +2710,12 @@ def test_board_times_endpoint_returns_precise_times(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {"ok": True, "times": {"123": "2026-04-16 12:00"}}
+    assert response.get_json() == {
+        "ok": True,
+        "times": {"123": "12:00"},
+        "titles": {"123": "2026년 4월 16일 오후 12:00"},
+        "datetimes": {"123": "2026-04-16T12:00+09:00"},
+    }
     assert seen == {
         "page": 2,
         "board": "test",
@@ -3374,7 +3389,7 @@ def test_read_omits_seconds_from_post_comment_and_related_times(monkeypatch):
                         "title": "related title",
                         "author": "작성자",
                         "author_code": None,
-                        "time": "2026-04-16 12:36:58",
+                        "time": "2026-04-15 12:36:58",
                         "comment_count": 0,
                         "voteup_count": 2,
                         "source_page": 0,
@@ -3396,6 +3411,7 @@ def test_read_omits_seconds_from_post_comment_and_related_times(monkeypatch):
         )
 
     monkeypatch.setattr(routes, "async_read", fake_async_read)
+    _freeze_post_time_now(monkeypatch, 2026, 4, 16, 13, 0)
     app = create_app()
 
     response = app.test_client().get("/read?board=test&pid=123")
@@ -3403,9 +3419,14 @@ def test_read_omits_seconds_from_post_comment_and_related_times(monkeypatch):
     soup = BeautifulSoup(response.data, "html.parser")
 
     assert response.status_code == 200
-    assert "2026-04-16 12:34" in soup.select_one(".article-meta").get_text(" ", strip=True)
-    assert "04.16 12:35" in soup.select_one(".comment-meta").get_text(" ", strip=True)
-    assert "2026-04-16 12:36" in soup.select_one("#related-list").get_text(" ", strip=True)
+    article_time = soup.select_one(".article-meta time")
+    assert article_time.get_text(strip=True) == "오늘 오후 12:34"
+    assert article_time["datetime"] == "2026-04-16T12:34+09:00"
+    assert soup.select_one(".comment-meta time").get_text(strip=True) == "12:35"
+    related_time = soup.select_one("#related-list time")
+    assert related_time.get_text(strip=True) == "어제 12:36"
+    assert related_time["datetime"] == "2026-04-15T12:36+09:00"
+    assert related_time["title"] == "2026년 4월 15일 오후 12:36"
     assert "12:34:56" not in text
     assert "12:35:57" not in text
     assert "12:36:58" not in text
@@ -3480,7 +3501,7 @@ def _encode_recent_cookie(rows):
     return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
 
 
-def test_recent_gallery_preserves_recommend_context_from_board(monkeypatch):
+def test_recent_gallery_opens_full_list_after_recommend_visit(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [], []
 
@@ -3495,12 +3516,12 @@ def test_recent_gallery_preserves_recommend_context_from_board(monkeypatch):
     query = parse_qs(urlparse(link["href"]).query)
 
     assert query["board"] == ["test"]
-    assert query["recommend"] == ["1"]
+    assert query["recommend"] == ["0"]
     assert query["kind"] == ["minor"]
-    assert "추천글" in link.get_text(" ", strip=True)
+    assert "추천글" not in link.get_text(" ", strip=True)
 
 
-def test_recent_gallery_dedupes_by_recommend_context(monkeypatch):
+def test_recent_gallery_keeps_one_row_for_full_and_recommend_lists(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [], []
 
@@ -3514,7 +3535,7 @@ def test_recent_gallery_dedupes_by_recommend_context(monkeypatch):
     soup = BeautifulSoup(response.data, "html.parser")
     recommends = [parse_qs(urlparse(link["href"]).query)["recommend"][0] for link in soup.select("a.feed-item")]
 
-    assert recommends[:2] == ["0", "1"]
+    assert recommends == ["0"]
 
 
 def test_recent_gallery_dedupes_missing_kind_against_specific_kind(monkeypatch):
@@ -3654,7 +3675,7 @@ def test_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
     assert "dcbest" in rows[1].select_one(".feed-meta-left").get_text(" ", strip=True)
 
 
-def test_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
+def test_recent_gallery_merges_legacy_recommend_row_into_board_row(monkeypatch):
     monkeypatch.setattr(routes, "get_heung_galleries", lambda: ([], 1))
     monkeypatch.setattr(routes, "search_galleries", lambda query: [])
     app = create_app()
@@ -3668,14 +3689,14 @@ def test_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
                     "name": "특이점이 온다",
                     "kind": "minor",
                     "recommend": 0,
-                    "visited_at": 2,
+                    "visited_at": 100,
                 },
                 {
                     "board": "thesingularity",
                     "name": "thesingularity",
                     "kind": "minor",
                     "recommend": 1,
-                    "visited_at": 1,
+                    "visited_at": 200,
                 },
             ]
         ),
@@ -3684,13 +3705,28 @@ def test_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
     response = client.get("/recent")
     soup = BeautifulSoup(response.data, "html.parser")
     rows = soup.select("a.feed-item")
-    recommend_query = parse_qs(urlparse(rows[1]["href"]).query)
+    query = parse_qs(urlparse(rows[0]["href"]).query)
 
     assert response.status_code == 200
-    assert rows[1].select_one(".feed-title").get_text(strip=True) == "특이점이 온다"
-    assert "추천글" in rows[1].get_text(" ", strip=True)
-    assert recommend_query["recommend"] == ["1"]
-    assert recommend_query["gallery_name"] == ["특이점이 온다"]
+    assert len(rows) == 1
+    assert rows[0].select_one(".feed-title").get_text(strip=True) == "특이점이 온다"
+    assert "추천글" not in rows[0].get_text(" ", strip=True)
+    assert query["recommend"] == ["0"]
+    assert query["gallery_name"] == ["특이점이 온다"]
+
+
+def test_recent_legacy_rows_keep_newest_visit_time():
+    cookie = _encode_recent_cookie(
+        [
+            {"board": "legacy", "kind": "minor", "recommend": 0, "visited_at": 100},
+            {"board": "legacy", "kind": "minor", "recommend": 1, "visited_at": 200},
+        ]
+    )
+    app = create_app()
+    with app.test_request_context("/recent", headers={"Cookie": f"{recent.RECENT_COOKIE_NAME}={cookie}"}):
+        rows = recent.load_recent_entries()
+
+    assert [(row["board"], row["visited_at"]) for row in rows] == [("legacy", 200.0)]
 
 
 def test_recent_route_tolerates_non_finite_cookie_timestamp():

@@ -280,8 +280,14 @@
         author.textContent = (item.author || "익명") + (item.author_code ? "(" + String(item.author_code) + ")" : "");
         metaLeft.appendChild(author);
 
-        var time = document.createElement("span");
+        var time = document.createElement(item.time_iso ? "time" : "span");
         time.textContent = item.time || "-";
+        if (item.time_iso) {
+            time.setAttribute("datetime", String(item.time_iso));
+            if (item.time_title) {
+                time.title = String(item.time_title);
+            }
+        }
         metaLeft.appendChild(time);
 
         var vote = document.createElement("span");

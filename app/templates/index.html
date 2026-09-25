@@ -32,7 +32,7 @@
         <ul class="recent-tiles">
             {% for item in recent_items %}
             <li>
-                <a class="recent-tile" href="{{ board_url(item.board, recommend=item.recommend or 0, page=1, kind=item.kind, gallery_name=item.gallery_name) }}" aria-label="{{ item.display_name }}{% if item.recommend == 1 %} 추천글{% endif %}">
+                <a class="recent-tile" href="{{ board_url(item.board, recommend=0, page=1, kind=item.kind, gallery_name=item.gallery_name) }}" aria-label="{{ item.display_name }}">
                     <span class="recent-tile-mark" aria-hidden="true">{{ item.display_name[:1] }}</span>
                     <span class="recent-tile-name" aria-hidden="true">{{ item.display_name }}</span>
                 </a>

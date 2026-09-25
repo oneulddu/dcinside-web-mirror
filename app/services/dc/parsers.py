@@ -1,11 +1,13 @@
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
 import lxml.etree
 import lxml.html
 
 from .models import Comment, DocumentIndex, Image
+
+_KST = timezone(timedelta(hours=9))
 
 
 def to_int(value, default=0):
@@ -1157,7 +1159,8 @@ class ParserMixin:
             return value
 
         try:
-            today = datetime.now() 
+            # DC 시각은 KST 벽시계라 서버 시간대와 관계없이 KST 날짜로 채운다.
+            today = datetime.now(_KST).replace(tzinfo=None)
             if len(time) <= 5: 
                 if time.find(":") > 0:
                     return datetime.strptime(time, "%H:%M").replace(year=today.year, month=today.month, day=today.day)

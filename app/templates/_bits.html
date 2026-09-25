@@ -1,3 +1,9 @@
+{% macro post_time(value, style="list", post_id=None, needs_hydrate=False) -%}
+    {%- set info = post_time_info(value, style) -%}
+    {%- set tag = "time" if info.iso else "span" -%}
+    <{{ tag }}{% if info.iso %} datetime="{{ info.iso }}" title="{{ info.title }}"{% endif %}{% if post_id %} data-board-time data-post-id="{{ post_id }}"{% if needs_hydrate %} data-needs-time-hydrate="1"{% endif %}{% endif %}>{{ info.label }}</{{ tag }}>
+{%- endmacro %}
+
 {% macro feed_status_icon(item) -%}
     {%- set has_image = item.has_image or item.isimage -%}
     {%- set has_video = item.has_video or item.isvideo -%}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_bits.html" import author_text, feed_status_icon, feed_subject, reply_count, back_link, icon_search, icon_chevron, board_search_form %}
+{% from "_bits.html" import author_text, feed_status_icon, feed_subject, reply_count, back_link, icon_search, icon_chevron, board_search_form, post_time %}
 
 {% block body_class %}board-view{% endblock %}
 
@@ -53,7 +53,7 @@
                     <div class="feed-meta-left">
                         {{ feed_subject(index) }}
                         {{ author_text(index) }}
-                        <span data-board-time data-post-id="{{ index.id }}" {% if index.needs_time_hydrate %}data-needs-time-hydrate="1"{% endif %}>{{ index.time_display or index.time }}</span>
+                        {{ post_time(index.time_display or index.time, post_id=index.id, needs_hydrate=index.needs_time_hydrate) }}
                         <span class="feed-vote">추천 {{ index.voteup_count }}</span>
                     </div>
                 </div>
