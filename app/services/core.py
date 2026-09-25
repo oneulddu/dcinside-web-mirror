@@ -275,6 +275,7 @@ def _copy_board_payload(payload, pagination_collector=None):
 def _copy_read_payload(payload):
     data, comments, images = payload
     copied_data = dict(data or {})
+    copied_data.setdefault("view_count", None)
     if "related_posts" in copied_data:
         copied_data["related_posts"] = _copy_rows(copied_data.get("related_posts"))
     return copied_data, _copy_rows(comments), list(images or [])
@@ -657,8 +658,13 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
     author, author_code = _normalize_author(doc.author, doc.author_id)
     author_role = _normalize_author_role(getattr(doc, "author_role", None))
     _cache_author_code(board, kind, api_id, author, author_code, author_role)
+    try:
+        view_count = int(getattr(doc, "view_count", None))
+    except (TypeError, ValueError, OverflowError):
+        view_count = None
     data = {
         "title": doc.title,
+        "view_count": view_count,
         "gallery_name": getattr(doc, "gallery_name", None),
         "author": author,
         "author_code": author_code,

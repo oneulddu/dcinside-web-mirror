@@ -132,7 +132,7 @@ def test_screen_status_redirect_cookie_and_html_contract(monkeypatch):
         read_response.status_code,
         recent_response.status_code,
     ] == [200, 200, 200, 200]
-    assert BeautifulSoup(index_response.data, "html.parser").title.get_text(strip=True) == "테스트 갤러리 검색 - 숨터"
+    assert BeautifulSoup(index_response.data, "html.parser").title.get_text(strip=True) == "테스트 게시판 검색 - 숨터"
     assert BeautifulSoup(board_response.data, "html.parser").select_one("a.feed-item") is not None
     assert BeautifulSoup(read_response.data, "html.parser").title.get_text(strip=True) == "fixture read - 숨터"
     assert {"recent_galleries", "recent_galleries_key"} <= _cookie_names(board_response)

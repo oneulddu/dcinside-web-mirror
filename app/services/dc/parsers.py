@@ -808,14 +808,14 @@ class ParserMixin:
 
     def __parse_document_counts(self, parsed, document_id, meta_text):
         # Some boards use different markup and omit legacy ids/classes.
-        view_count = to_int(self.__first_text(parsed, "//ul[@class='ginfo2']/li[contains(., '조회')]"), default=-1)
+        view_count = to_int(self.__first_text(parsed, "//ul[@class='ginfo2']/li[contains(., '조회')]"), default=None)
         voteup_count = to_int(self.__first_text(parsed, "//span[@id='recomm_btn']"), default=-1)
         votedown_count = to_int(self.__first_text(parsed, "//span[@id='nonrecomm_btn']"), default=-1)
         logined_voteup_count = to_int(self.__first_text(parsed, "//span[@id='recomm_btn_member']"), default=0)
 
-        if view_count < 0:
+        if view_count is None or view_count < 0:
             m = re.search(r"조회\s*([0-9,]+)", meta_text)
-            view_count = to_int(m.group(1), 0) if m else 0
+            view_count = to_int(m.group(1), None) if m else None
         if voteup_count < 0:
             # Newer pages expose up count as recommend_view_up_{document_id}
             voteup_count = to_int(self.__first_text(parsed, f"//*[@id='recommend_view_up_{document_id}']"), default=-1)

@@ -183,7 +183,7 @@ def test_read_page_renders_new_comments_while_reusing_body(cached_post, monkeypa
     response = client.get("/read?board=test&pid=123")
     soup = BeautifulSoup(response.data, "html.parser")
     assert response.status_code == 200
-    assert soup.select_one(".comment-shell h2").get_text(strip=True) == "댓글 2"
+    assert soup.select_one(".comment-shell h2").get_text(" ", strip=True) == "댓글 2"
     assert [node.get_text(strip=True) for node in soup.select(".comment-main p")] == ["기존 댓글", "새로 달린 댓글"]
     assert state["body_calls"] == state["comment_calls"] == 1
 

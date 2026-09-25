@@ -1,15 +1,22 @@
 {% extends "base.html" %}
-{% from "_bits.html" import author_text, feed_status_icon, feed_subject %}
+{% from "_bits.html" import author_text, feed_status_icon, feed_subject, reply_count, back_link, icon_search, icon_chevron, board_search_form %}
+
+{% block body_class %}board-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link("/", aria_label="홈으로") }}{% endblock %}
+
+{% block masthead_actions %}
+<button class="icon-btn board-search-jump" type="button" aria-label="이 게시판에서 검색" aria-controls="board-search-input" data-search-target="board-search-input">{{ icon_search() }}</button>
+{% endblock %}
 
 {% block masthead_context %}
 <div class="board-head masthead-board-head">
-    <h1>{{ gallery_display_name }} 게시판</h1>
-    {% if recommend == 1 %}
-    <a href="{{ board_url(board, recommend=0, page=page, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">전체 보기</a>
-    {% else %}
-    <a href="{{ board_url(board, recommend=1, page=page, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">추천 보기</a>
-    {% endif %}
+    <h1>{{ gallery_display_name }}</h1>
 </div>
+<nav class="board-tabs" aria-label="게시글 범위">
+    <a class="tab-item{% if recommend != 1 %} active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}"{% if recommend != 1 %} aria-current="page"{% endif %}>전체</a>
+    <a class="tab-item{% if recommend == 1 %} active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}"{% if recommend == 1 %} aria-current="page"{% endif %}>추천글</a>
+</nav>
 {% endblock %}
 
 {% block page_class %} board-page{% endblock %}
@@ -29,7 +36,8 @@
     {% endif %}
     {% if search_keyword %}
     <div class="board-search-summary">
-        <b>{{ search_keyword }}</b> 검색 결과
+        <span><b>‘{{ search_keyword }}’</b> 검색 결과</span>
+        <a class="board-search-summary-clear" href="{{ board_url(board, recommend=recommend, page=1, kind=kind, nav=nav_mode, head_id=head_id, gallery_name=gallery_name) }}">검색 해제</a>
     </div>
     {% endif %}
     <ul>
@@ -38,71 +46,43 @@
             <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}" data-post-id="{{ index.id }}">
                 <div class="feed-title-wrap">
                     {{ feed_status_icon(index) }}
-                    <span class="feed-title">
-                        {{ index.title|highlight_search(search_keyword) }}
-                    </span>
-                    {% if index.comment_count > 0 %}
-                    <span class="reply-count">[{{ index.comment_count }}]</span>
-                    {% endif %}
+                    <span class="feed-title">{{ index.title|highlight_search(search_keyword) }}</span>
+                    {{ reply_count(index.comment_count) }}
                 </div>
                 <div class="feed-meta-row">
                     <div class="feed-meta-left">
                         {{ feed_subject(index) }}
                         {{ author_text(index) }}
-                        <span class="sep">|</span>
                         <span data-board-time data-post-id="{{ index.id }}" {% if index.needs_time_hydrate %}data-needs-time-hydrate="1"{% endif %}>{{ index.time_display or index.time }}</span>
-                    </div>
-                    <div class="feed-meta-right">
-                        <div class="score-box">
-                            <span>추천</span>
-                            <b>{{ index.voteup_count }}</b>
-                        </div>
+                        <span class="feed-vote">추천 {{ index.voteup_count }}</span>
                     </div>
                 </div>
             </a>
         </li>
         {% else %}
-        <li class="empty-row">게시글이 없습니다.</li>
+        <li class="empty-row">
+            <b>게시글이 없어요</b>
+            <span>{% if search_keyword %}다른 검색어로 찾아보세요.{% else %}다른 분류나 전체 글을 확인해 보세요.{% endif %}</span>
+        </li>
         {% endfor %}
     </ul>
-    <form class="board-search-form" method="get" action="/board" role="search">
-        <input type="hidden" name="board" value="{{ board }}">
-        <input type="hidden" name="recommend" value="{{ recommend }}">
-        <input type="hidden" name="page" value="1">
-        {% if gallery_name %}<input type="hidden" name="gallery_name" value="{{ gallery_name }}">{% endif %}
-        {% if kind %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
-        {% if nav_mode %}<input type="hidden" name="nav" value="{{ nav_mode }}">{% endif %}
-        {% if head_id is not none %}<input type="hidden" name="headid" value="{{ head_id }}">{% endif %}
-        <label class="board-search-label" for="board-search-type">검색</label>
-        <select class="board-search-select" id="board-search-type" name="s_type" aria-label="검색 범위">
-            <option value="subject_m" {% if search_type == 'subject_m' %}selected{% endif %}>제목+내용</option>
-            <option value="subject" {% if search_type == 'subject' %}selected{% endif %}>제목</option>
-            <option value="memo" {% if search_type == 'memo' %}selected{% endif %}>내용</option>
-            <option value="name" {% if search_type == 'name' %}selected{% endif %}>글쓴이</option>
-            <option value="comment" {% if search_type == 'comment' %}selected{% endif %}>댓글</option>
-        </select>
-        <input class="board-search-input" type="search" name="serval" value="{{ search_keyword or '' }}" placeholder="검색어를 입력하세요." autocomplete="off" required>
-        {% if search_keyword %}
-        <a class="board-search-clear" href="{{ board_url(board, recommend=recommend, page=1, kind=kind, nav=nav_mode, head_id=head_id, gallery_name=gallery_name) }}" aria-label="검색 해제">×</a>
-        {% endif %}
-        <button class="board-search-submit" type="submit" aria-label="검색">검색</button>
-    </form>
-    <div class="pager-row board-pager">
-        <a class="pager-btn pager-home" href="/">갤러리</a>
+    {{ board_search_form(board, recommend, search_type, search_keyword, kind=kind, nav_mode=nav_mode, head_id=head_id, gallery_name=gallery_name) }}
+    <nav class="pager-row board-pager" aria-label="페이지 이동">
+        <a class="pager-btn pager-home" href="/">홈</a>
         <div class="pager-center">
             {% if page > 1 %}
-            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page - 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">이전</a>
+            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page - 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">{{ icon_chevron("left") }}이전</a>
             {% else %}
-            <span class="pager-btn off">이전</span>
+            <span class="pager-btn off">{{ icon_chevron("left") }}이전</span>
             {% endif %}
             <span class="pager-current">{{ page }}</span>
             {% if board_has_next is sameas false %}
-            <span class="pager-btn off">다음</span>
+            <span class="pager-btn off">다음{{ icon_chevron("right") }}</span>
             {% else %}
-            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page + 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">다음</a>
+            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page + 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">다음{{ icon_chevron("right") }}</a>
             {% endif %}
         </div>
-    </div>
+    </nav>
 </section>
 <script src="{{ static_url('javascript/board_time_hydrator.js') }}"></script>
 <script src="{{ static_url('javascript/board_return_refresh.js') }}"></script>

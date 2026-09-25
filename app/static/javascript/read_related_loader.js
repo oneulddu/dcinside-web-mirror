@@ -145,9 +145,9 @@
             return "";
         }
         if (subject.charAt(0) === "[" && subject.charAt(subject.length - 1) === "]") {
-            return subject;
+            return subject.slice(1, -1).trim();
         }
-        return "[" + subject + "]";
+        return subject;
     }
 
     function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName) {
@@ -195,7 +195,7 @@
         var span = document.createElement("span");
 
         if (isRecommend) {
-            var recommendLabel = hasVideo ? "개념글 · 동영상 첨부" : (hasImage ? "개념글 · 사진 첨부" : "개념글");
+            var recommendLabel = hasVideo ? "추천글 · 동영상 첨부" : (hasImage ? "추천글 · 사진 첨부" : "추천글");
             span.className = "feed-recommend-icon" + (hasVideo ? " is-video" : (hasImage ? " is-hot" : " is-plain"));
             span.setAttribute("aria-label", recommendLabel);
             span.setAttribute("title", recommendLabel);
@@ -256,7 +256,8 @@
         if ((item.comment_count || 0) > 0) {
             var reply = document.createElement("span");
             reply.className = "reply-count";
-            reply.textContent = "[" + String(item.comment_count) + "]";
+            reply.setAttribute("aria-label", "댓글 " + String(item.comment_count) + "개");
+            reply.textContent = String(item.comment_count);
             titleWrap.appendChild(reply);
         }
 
@@ -266,10 +267,11 @@
         var metaLeft = document.createElement("div");
         metaLeft.className = "feed-meta-left";
 
-        if (item.subject) {
+        var subjectText = formatSubject(item.subject);
+        if (subjectText) {
             var subject = document.createElement("span");
             subject.className = "post-subject";
-            subject.textContent = formatSubject(item.subject);
+            subject.textContent = subjectText;
             metaLeft.appendChild(subject);
         }
 
@@ -278,21 +280,16 @@
         author.textContent = (item.author || "익명") + (item.author_code ? "(" + String(item.author_code) + ")" : "");
         metaLeft.appendChild(author);
 
-        var sep = document.createElement("span");
-        sep.className = "sep";
-        sep.textContent = "|";
-        metaLeft.appendChild(sep);
-
         var time = document.createElement("span");
         time.textContent = item.time || "-";
         metaLeft.appendChild(time);
 
-        var metaRight = document.createElement("div");
-        metaRight.className = "feed-meta-right";
-        metaRight.textContent = "추천 " + String(item.voteup_count || 0);
+        var vote = document.createElement("span");
+        vote.className = "feed-vote";
+        vote.textContent = "추천 " + String(item.voteup_count || 0);
+        metaLeft.appendChild(vote);
 
         metaRow.appendChild(metaLeft);
-        metaRow.appendChild(metaRight);
 
         link.appendChild(titleWrap);
         link.appendChild(metaRow);
