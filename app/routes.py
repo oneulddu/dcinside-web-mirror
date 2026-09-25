@@ -25,6 +25,7 @@ from .services.recent import (
     RECENT_MAX_ITEMS,
     clear_recent_galleries,
     format_recent_time,
+    format_relative_day_time,
     load_recent_entries,
     remove_recent_gallery,
     touch_recent_gallery,
@@ -498,13 +499,13 @@ def _heung_index_context(page, heung_q, get_heung_func=None, search_func=None, n
             heung_updated_at = now_func()
         except Exception:
             current_app.logger.exception("Failed to search DCinside galleries")
-            heung_error = "갤러리 검색 결과를 가져오지 못했습니다."
+            heung_error = "게시판 검색 결과를 가져오지 못했습니다."
     else:
         try:
             heung_items, heung_updated_at = get_heung_func()
         except Exception:
             current_app.logger.exception("Failed to load heung galleries")
-            heung_error = "흥한 갤러리 목록을 가져오지 못했습니다."
+            heung_error = "지금 뜨는 게시판 목록을 가져오지 못했습니다."
 
     total_items = len(heung_items)
     total_pages = max(1, (total_items + 19) // 20)
@@ -523,6 +524,7 @@ def _heung_index_context(page, heung_q, get_heung_func=None, search_func=None, n
         "heung_end_rank": end,
         "heung_error": heung_error,
         "heung_q": heung_q,
+        "heung_updated_label": format_relative_day_time(heung_updated_at, with_period=True),
         "heung_updated_at_str": _format_cache_time(heung_updated_at) if heung_updated_at else "-",
     }
 
@@ -559,28 +561,7 @@ def _recent_gallery_name_lookup(rows):
     }
 
 
-@bp.route("/")
-def index():
-    page = _safe_int(request.args.get("heung_page", 1), 1)
-    heung_q = (request.args.get("heung_q") or "").strip()[:SEARCH_QUERY_MAX_LENGTH]
-    context = _heung_index_context(page, heung_q)
-
-    return render_template(
-        "index.html",
-        title=("%s 갤러리 검색 - 숨터" % heung_q) if heung_q else "숨터 - 가볍게 읽는 공간",
-        **context,
-    )
-
-
-@bp.route("/v2/")
-@bp.route("/legacy/")
-def index_compat_redirect():
-    return _redirect_compat("main.index")
-
-
-@bp.route("/recent")
-def recent():
-    rows = load_recent_entries()
+def _build_recent_items(rows):
     recent_items = []
     recent_rows = rows[:RECENT_MAX_ITEMS]
     stored_names = {}
@@ -613,14 +594,41 @@ def recent():
                 "kind": kind,
                 "kind_label": GALLERY_KIND_LABELS.get(kind, kind or "일반"),
                 "recommend": 1 if _safe_int(row.get("recommend", 0), 0) == 1 else 0,
+                "visited_at_label": format_relative_day_time(row.get("visited_at")),
                 "visited_at_str": format_recent_time(row.get("visited_at")),
             }
         )
+    return recent_items
+
+
+@bp.route("/")
+def index():
+    page = _safe_int(request.args.get("heung_page", 1), 1)
+    heung_q = (request.args.get("heung_q") or "").strip()[:SEARCH_QUERY_MAX_LENGTH]
+    context = _heung_index_context(page, heung_q)
+    context["recent_items"] = _build_recent_items(load_recent_entries())[:8]
+
+    return render_template(
+        "index.html",
+        title=("%s 게시판 검색 - 숨터" % heung_q) if heung_q else "숨터 - 가볍게 읽는 공간",
+        **context,
+    )
+
+
+@bp.route("/v2/")
+@bp.route("/legacy/")
+def index_compat_redirect():
+    return _redirect_compat("main.index")
+
+
+@bp.route("/recent")
+def recent():
     return render_template(
         "recent.html",
-        title="최근 방문 갤러리 - 숨터",
+        title="최근 본 게시판 - 숨터",
         nav_tab="recent",
-        recent_items=recent_items,
+        recent_items=_build_recent_items(load_recent_entries()),
+        recent_max_items=RECENT_MAX_ITEMS,
     )
 
 

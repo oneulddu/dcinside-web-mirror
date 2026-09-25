@@ -84,10 +84,10 @@ def _recent_cookie_rows(response):
 @pytest.mark.parametrize(
     ("mode", "raises", "expected_text"),
     [
-        ("list", False, "흥한 갤러리 1~1위"),
-        ("list", True, "흥한 갤러리 목록을 가져오지 못했습니다."),
+        ("list", False, "지금 뜨는 게시판 1~1위"),
+        ("list", True, "지금 뜨는 게시판 목록을 가져오지 못했습니다."),
         ("search", False, "검색 결과 1건"),
-        ("search", True, "갤러리 검색 결과를 가져오지 못했습니다."),
+        ("search", True, "게시판 검색 결과를 가져오지 못했습니다."),
     ],
 )
 def test_index_list_and_search_make_one_external_call(monkeypatch, mode, raises, expected_text):
@@ -209,7 +209,7 @@ def test_board_and_read_forward_full_context_once_and_keep_html_cookie_contract(
     assert board_section["data-head-id"] == "17"
     assert board_section["data-search-type"] == "comment"
     assert board_section["data-search-keyword"] == "검색어"
-    assert board_soup.select_one(".masthead-board-head h1").get_text(strip=True) == "테스트 갤러리 게시판"
+    assert board_soup.select_one(".masthead-board-head h1").get_text(strip=True) == "테스트 갤러리"
     assert read_link_query["recommend"] == ["1"]
     assert read_link_query["source_page"] == ["3"]
     assert read_link_query["headid"] == ["17"]

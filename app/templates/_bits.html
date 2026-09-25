@@ -3,7 +3,7 @@
     {%- set has_video = item.has_video or item.isvideo -%}
     {%- set has_media = has_image or has_video -%}
     {%- if item.isrecommend -%}
-    {%- set recommend_label = "개념글 · 동영상 첨부" if has_video else ("개념글 · 사진 첨부" if has_media else "개념글") -%}
+    {%- set recommend_label = "추천글 · 동영상 첨부" if has_video else ("추천글 · 사진 첨부" if has_media else "추천글") -%}
     <span class="feed-recommend-icon{% if has_video %} is-video{% elif has_media %} is-hot{% else %} is-plain{% endif %}" aria-label="{{ recommend_label }}" title="{{ recommend_label }}">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path class="flame-outer" d="M12 22c4.4 0 7.5-3.2 7.5-7.7 0-3.2-1.7-6-4.6-8.5-.4 2.3-1.5 3.7-3.1 4.7.2-3.1-.9-5.8-3.3-8.1.2 3.4-1.2 5.1-2.6 6.9-1.1 1.4-2.1 2.8-2.1 5C3.8 18.8 7 22 12 22z"></path>
@@ -31,11 +31,64 @@
 {% macro feed_subject(item) -%}
     {%- if item.subject -%}
     {%- set subject_text = item.subject|string|trim -%}
-    <span class="post-subject">{% if subject_text[:1] == "[" and subject_text[-1:] == "]" %}{{ subject_text }}{% else %}[{{ subject_text }}]{% endif %}</span>
+    {%- if subject_text[:1] == "[" and subject_text[-1:] == "]" -%}{%- set subject_text = subject_text[1:-1]|trim -%}{%- endif -%}
+    {%- if subject_text -%}<span class="post-subject">{{ subject_text }}</span>{%- endif -%}
     {%- endif -%}
 {%- endmacro %}
 
 {% macro author_text(item) -%}
     {%- set role = item.author_role if item.author_role in ["manager", "submanager"] else None -%}
     <span class="author-text{% if role %} author-role-{{ role }}{% endif %}">{{ item.author }}{% if item.author_code %}({{ item.author_code }}){% endif %}</span>
+{%- endmacro %}
+
+{% macro reply_count(count) -%}
+    {%- if count and count > 0 -%}
+    <span class="reply-count" aria-label="댓글 {{ count }}개">{{ count }}</span>
+    {%- endif -%}
+{%- endmacro %}
+
+{% macro number(value) -%}{{ "{:,}".format(value) if value is number else value }}{%- endmacro %}
+
+{% macro icon_back() -%}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7"/></svg>
+{%- endmacro %}
+
+{% macro icon_search() -%}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+{%- endmacro %}
+
+{% macro icon_chevron(direction="right") -%}
+<svg class="ui-icon ui-chevron is-{{ direction }}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">{% if direction == "left" %}<path d="M14.5 6l-6 6 6 6"/>{% elif direction == "down" %}<path d="M6 9.5l6 6 6-6"/>{% else %}<path d="M9.5 6l6 6-6 6"/>{% endif %}</svg>
+{%- endmacro %}
+
+{% macro back_link(href, label=None, aria_label=None, extra_class="") -%}
+<a class="back-link{% if extra_class %} {{ extra_class }}{% endif %}" href="{{ href }}"{% if aria_label %} aria-label="{{ aria_label }}"{% endif %}>{{ icon_back() }}{% if label %}<span class="back-link-label">{{ label }}</span>{% endif %}</a>
+{%- endmacro %}
+
+{% macro board_search_form(board, recommend, search_type, search_keyword, kind=None, nav_mode=None, head_id=None, gallery_name=None, form_id="board-search", select_id="board-search-type", input_id="board-search-input") -%}
+<form class="board-search-form" id="{{ form_id }}" method="get" action="/board" role="search" aria-label="게시판 안에서 검색">
+    <input type="hidden" name="board" value="{{ board }}">
+    <input type="hidden" name="recommend" value="{{ recommend or 0 }}">
+    <input type="hidden" name="page" value="1">
+    {% if gallery_name %}<input type="hidden" name="gallery_name" value="{{ gallery_name }}">{% endif %}
+    {% if kind %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
+    {% if nav_mode %}<input type="hidden" name="nav" value="{{ nav_mode }}">{% endif %}
+    {% if head_id is not none %}<input type="hidden" name="headid" value="{{ head_id }}">{% endif %}
+    <label class="board-search-label" for="{{ select_id }}">검색 범위</label>
+    <span class="board-search-select-wrap">
+        <select class="board-search-select" id="{{ select_id }}" name="s_type" aria-label="검색 범위">
+            <option value="subject_m" {% if search_type == 'subject_m' %}selected{% endif %}>제목+내용</option>
+            <option value="subject" {% if search_type == 'subject' %}selected{% endif %}>제목</option>
+            <option value="memo" {% if search_type == 'memo' %}selected{% endif %}>내용</option>
+            <option value="name" {% if search_type == 'name' %}selected{% endif %}>글쓴이</option>
+            <option value="comment" {% if search_type == 'comment' %}selected{% endif %}>댓글</option>
+        </select>
+        {{ icon_chevron("down") }}
+    </span>
+    <input class="board-search-input" id="{{ input_id }}" type="search" name="serval" value="{{ search_keyword or '' }}" placeholder="검색어를 입력하세요" aria-label="검색어" autocomplete="off" enterkeyhint="search" required>
+    {% if search_keyword %}
+    <a class="board-search-clear" href="{{ board_url(board, recommend=recommend or 0, page=1, kind=kind, nav=nav_mode, head_id=head_id, gallery_name=gallery_name) }}" aria-label="검색 해제"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 7l10 10M17 7L7 17"/></svg></a>
+    {% endif %}
+    <button class="board-search-submit" type="submit">검색</button>
+</form>
 {%- endmacro %}

@@ -57,27 +57,25 @@
     <div class="shell">
         <header class="masthead">
             <div class="masthead-row">
-                <a class="brand" href="/">
-                    {# favicon.svg와 같은 브랜드 표식. 테마 색을 따르도록 인라인으로 넣는다. #}
-                    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-                        <rect width="32" height="32" rx="6"/>
-                        <circle cx="23" cy="9" r="4"/>
-                        <path d="M7.2 10.4h11.2v2.4H9.9v3.3h7.7v2.3H9.9v3.4h8.8v2.4H7.2z"/>
-                    </svg>
-                    <span class="brand-name">숨터</span>
-                    <span class="brand-note">가볍게 읽는 공간</span>
-                </a>
+                <div class="masthead-lead">
+                    {% block masthead_lead %}
+                    <a class="brand" href="/">
+                        <span class="brand-name">숨터</span>
+                    </a>
+                    {% endblock %}
+                </div>
                 <div class="header-actions">
+                    {% block masthead_actions %}{% endblock %}
                     <div class="media-block-control">
                         <button class="dccon-toggle" type="button" aria-label="이미지 차단 설정: 차단 없음" aria-haspopup="menu" aria-expanded="false" aria-controls="media-block-menu" title="이미지 차단 설정: 차단 없음">
                             <svg class="dccon-icon dccon-icon-show" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <rect x="3.5" y="5" width="17" height="14" rx="2.5"/>
-                                <circle cx="8.2" cy="9.2" r="1.4"/>
-                                <path d="M5.8 16.4l4.2-4.2 3.1 3.1 1.8-1.8 3.4 3.4"/>
+                                <rect x="3.5" y="4.5" width="17" height="15" rx="3"/>
+                                <circle cx="9" cy="10" r="1.6"/>
+                                <path d="M20.5 16l-4.5-4.5L7 19.5"/>
                             </svg>
                             <svg class="dccon-icon dccon-icon-block" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <rect x="3.5" y="5" width="17" height="14" rx="2.5"/>
-                                <path d="M5 5l14 14"/>
+                                <rect x="3.5" y="4.5" width="17" height="15" rx="3"/>
+                                <path d="M4.5 5.5l15 13"/>
                             </svg>
                         </button>
                         <div class="media-block-menu" id="media-block-menu" role="menu" aria-label="이미지 차단 범위" hidden>
@@ -87,41 +85,31 @@
                                 <span class="media-block-option-desc">모든 이미지 표시</span>
                             </button>
                             <button class="media-block-option" type="button" role="menuitemradio" aria-checked="false" data-media-block-mode="dccon">
-                                <span class="media-block-option-name">디시콘만</span>
-                                <span class="media-block-option-desc">댓글·본문 디시콘 차단</span>
+                                <span class="media-block-option-name">이모티콘만</span>
+                                <span class="media-block-option-desc">댓글·본문 이모티콘 차단</span>
                             </button>
                             <button class="media-block-option" type="button" role="menuitemradio" aria-checked="false" data-media-block-mode="body">
                                 <span class="media-block-option-name">본문 이미지만</span>
-                                <span class="media-block-option-desc">본문 이미지를 차단하고 댓글 디시콘은 표시</span>
+                                <span class="media-block-option-desc">본문 이미지를 차단하고 댓글 이모티콘은 표시</span>
                             </button>
                             <button class="media-block-option" type="button" role="menuitemradio" aria-checked="false" data-media-block-mode="all">
                                 <span class="media-block-option-name">본문 이미지까지</span>
-                                <span class="media-block-option-desc">디시콘과 본문 이미지 모두 차단</span>
+                                <span class="media-block-option-desc">이모티콘과 본문 이미지 모두 차단</span>
                             </button>
                         </div>
                     </div>
                     <button class="theme-toggle" type="button" aria-label="테마 전환" title="테마 전환">
                         <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <circle cx="12" cy="12" r="4.2"/>
-                            <path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/>
+                            <circle cx="12" cy="12" r="4"/>
+                            <path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/>
                         </svg>
                         <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <path d="M20.2 13.6A8.2 8.2 0 1 1 10.4 3.8a6.6 6.6 0 0 0 9.8 9.8z"/>
+                            <path d="M20.2 14.6A8.2 8.2 0 0 1 9.4 3.8a8.6 8.6 0 1 0 10.8 10.8z"/>
                         </svg>
                     </button>
                 </div>
             </div>
             {% block masthead_context %}{% endblock %}
-            <nav class="top-tabs">
-                {% if board is defined and board %}
-                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind, head_id=head_id|default(none), gallery_name=gallery_name|default(none)) }}">전체</a>
-                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind, head_id=head_id|default(none), gallery_name=gallery_name|default(none)) }}">베스트</a>
-                {% else %}
-                <a class="tab-item {% if nav_tab == 'all' %}active{% endif %}" href="/">전체</a>
-                <a class="tab-item {% if nav_tab == 'best' %}active{% endif %}" href="{{ board_url('dcbest', recommend=0, page=1) }}">베스트</a>
-                {% endif %}
-                <a class="tab-item {% if nav_tab == 'recent' %}active{% endif %}" href="/recent">최근</a>
-            </nav>
         </header>
 
         <main class="page{% block page_class %}{% endblock %}" id="content">

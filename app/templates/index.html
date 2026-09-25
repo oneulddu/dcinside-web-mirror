@@ -1,56 +1,92 @@
 {% extends "base.html" %}
+{% from "_bits.html" import icon_search, icon_chevron %}
 
 {% block body_class %}home-view{% endblock %}
+
+{% block masthead_actions %}
+<a class="header-text-link" href="{{ board_url('dcbest', recommend=0, page=1) }}">베스트</a>
+{% endblock %}
+
+{% macro jump_form(input_id, value, aria_label="게시판 검색") -%}
+<form class="jump-form" action="/" method="get" role="search" aria-label="{{ aria_label }}">
+    {{ icon_search() }}
+    <input id="{{ input_id }}" name="heung_q" type="search" value="{{ value }}" placeholder="게시판 이름이나 ID로 검색" aria-label="게시판 검색어" autocomplete="off" enterkeyhint="search">
+    <button type="submit">검색</button>
+</form>
+{%- endmacro %}
 
 {% block content %}
 <section class="feed-list home-galleries">
     <div class="jump-panel">
-        <h2 class="jump-panel-title">갤러리 검색</h2>
-        <form class="jump-form" action="/" method="get" role="search" aria-label="갤러리 검색">
-            <input id="heung_q" name="heung_q" type="search" value="{{ heung_q }}" placeholder="갤러리 이름 또는 ID 검색" aria-label="갤러리 검색어">
-            <button type="submit">검색</button>
-        </form>
-        {% if heung_q %}
-        <div class="jump-reset-row"><a class="pager-btn" href="/">검색 초기화</a></div>
-        {% endif %}
+        <h2 class="jump-panel-title">게시판 검색</h2>
+        {{ jump_form("heung_q", heung_q) }}
     </div>
 
-    <div class="board-head">
-        <h1>
-            {% if heung_q %}
-            검색 결과 {{ heung_total_items }}건
-            {% else %}
-            흥한 갤러리 <span class="home-rank-range">{{ heung_start_rank }}~{{ heung_end_rank }}위</span>
+    {% if not heung_q %}
+    <section class="home-recent" aria-labelledby="home-recent-title">
+        <div class="section-head">
+            <h2 id="home-recent-title">최근 본 게시판</h2>
+            {% if recent_items %}<a class="section-link" href="/recent">모두 보기</a>{% endif %}
+        </div>
+        {% if recent_items %}
+        <ul class="recent-tiles">
+            {% for item in recent_items %}
+            <li>
+                <a class="recent-tile" href="{{ board_url(item.board, recommend=item.recommend or 0, page=1, kind=item.kind, gallery_name=item.gallery_name) }}" aria-label="{{ item.display_name }}{% if item.recommend == 1 %} 추천글{% endif %}">
+                    <span class="recent-tile-mark" aria-hidden="true">{{ item.display_name[:1] }}</span>
+                    <span class="recent-tile-name" aria-hidden="true">{{ item.display_name }}</span>
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="empty-note">
+            <b>아직 둘러본 게시판이 없어요</b>
+            <span>게시판을 열면 여기에 모아 둘게요.</span>
+        </div>
+        {% endif %}
+    </section>
+    <div class="section-band" aria-hidden="true"></div>
+    {% endif %}
+
+    <div class="board-head home-head">
+        <div class="home-head-copy">
+            <h1>{% if heung_q %}검색 결과 {{ heung_total_items }}건{% else %}지금 뜨는 게시판{% endif %}</h1>
+            {% if not heung_q %}
+            <p class="board-head-note"><span class="home-rank-range">{{ heung_start_rank }}~{{ heung_end_rank }}위</span> · {{ heung_updated_label or heung_updated_at_str }} 기준</p>
             {% endif %}
-        </h1>
-        <span class="board-head-note">갱신 {{ heung_updated_at_str }}</span>
+        </div>
+        {% if heung_q %}<a class="section-link jump-reset" href="/">검색 초기화</a>{% endif %}
     </div>
     <ul>
         {% for item in heung_items %}
+        {% set external = item.internal_supported is defined and not item.internal_supported %}
         <li>
-            <a class="feed-item home-gallery{% if item.rank %} is-ranked-gallery{% endif %}" href="{% if item.internal_supported is defined and not item.internal_supported %}{{ item.source_url }}{% else %}{{ board_url(item.board_id, recommend=0, page=1, kind=item.board_kind|default(none), gallery_name=item.name) }}{% endif %}"{% if item.internal_supported is defined and not item.internal_supported %} target="_blank" rel="noopener"{% endif %}>
+            <a class="feed-item home-gallery{% if item.rank %} is-ranked-gallery{% endif %}" href="{% if external %}{{ item.source_url }}{% else %}{{ board_url(item.board_id, recommend=0, page=1, kind=item.board_kind|default(none), gallery_name=item.name) }}{% endif %}"{% if external %} target="_blank" rel="noopener"{% endif %}>
                 {% if item.rank %}
-                <span class="rank-no{% if item.rank <= 20 %} is-top{% endif %}">{{ item.rank }}</span>
+                <span class="rank-no{% if item.rank <= 3 %} is-top{% endif %}">{{ item.rank }}</span>
                 {% endif %}
                 <div class="home-gallery-copy">
                     <span class="feed-title">{{ item.name }}</span>
+                    {% if not item.rank %}
                     <div class="feed-meta-row">
                         <span class="home-gallery-id">{{ item.board_id }}</span>
                         {% if item.extra %}<span>{{ item.extra }}</span>{% endif %}
                     </div>
+                    {% endif %}
                 </div>
                 <div class="home-gallery-status">
                     {% if item.rank %}
-                    <span class="gallery-badge{% if item.rank <= 20 %} is-hot{% endif %}">{% if item.rank <= 20 %}대흥갤{% else %}흥한갤{% endif %}</span>
+                    <span class="home-gallery-id">{{ item.board_id }}</span>
                     {% else %}
-                    <span class="gallery-badge">{{ item.kind }}</span>
+                    {% if item.kind and item.kind != "일반" %}<span class="gallery-badge">{{ item.kind }}</span>{% endif %}
                     {% endif %}
-                    {% if item.internal_supported is defined and not item.internal_supported %}<span class="home-external">새 탭 이동</span>{% endif %}
+                    {% if external %}<span class="home-external">새 탭에서 열려요</span>{% endif %}
                 </div>
             </a>
         </li>
         {% else %}
-        <li class="empty-row">{% if heung_q %}검색 결과가 없습니다.{% else %}표시할 흥한 갤러리가 없습니다.{% endif %}</li>
+        <li class="empty-row">{% if heung_q %}검색 결과가 없어요.{% else %}표시할 게시판이 없어요.{% endif %}</li>
         {% endfor %}
     </ul>
 
@@ -58,27 +94,24 @@
     <div class="empty-row">{{ heung_error }}</div>
     {% endif %}
 
-    <div class="pager-row">
+    <nav class="pager-row" aria-label="페이지 이동">
         {% if heung_page > 1 %}
-        <a class="pager-btn" href="?heung_page={{ heung_page - 1 }}{% if heung_q %}&heung_q={{ heung_q|urlencode }}{% endif %}">이전</a>
+        <a class="pager-btn" href="?heung_page={{ heung_page - 1 }}{% if heung_q %}&heung_q={{ heung_q|urlencode }}{% endif %}">{{ icon_chevron("left") }}이전</a>
         {% else %}
-        <span class="pager-btn off">이전</span>
+        <span class="pager-btn off">{{ icon_chevron("left") }}이전</span>
         {% endif %}
-        <span class="pager-current">{{ heung_page }}/{{ heung_total_pages }}</span>
+        <span class="pager-current">{{ heung_page }} / {{ heung_total_pages }}</span>
         {% if heung_page < heung_total_pages %}
-        <a class="pager-btn" href="?heung_page={{ heung_page + 1 }}{% if heung_q %}&heung_q={{ heung_q|urlencode }}{% endif %}">다음</a>
+        <a class="pager-btn" href="?heung_page={{ heung_page + 1 }}{% if heung_q %}&heung_q={{ heung_q|urlencode }}{% endif %}">다음{{ icon_chevron("right") }}</a>
         {% else %}
-        <span class="pager-btn off">다음</span>
+        <span class="pager-btn off">다음{{ icon_chevron("right") }}</span>
         {% endif %}
-    </div>
+    </nav>
     {% if heung_q %}
     <div class="jump-panel jump-panel-bottom">
-        <h2 class="jump-panel-title">갤러리 다시 검색</h2>
-        <form class="jump-form" action="/" method="get" role="search">
-            <input id="heung_q_bottom" name="heung_q" type="search" value="{{ heung_q }}" placeholder="갤러리 이름 또는 ID 검색" aria-label="갤러리 검색어">
-            <button type="submit">검색</button>
-        </form>
-        <div class="jump-reset-row"><a class="pager-btn" href="/">검색 초기화</a></div>
+        <h2 class="jump-panel-title">게시판 다시 검색</h2>
+        {{ jump_form("heung_q_bottom", heung_q, "게시판 다시 검색") }}
+        <div class="jump-reset-row"><a class="section-link" href="/">검색 초기화</a></div>
     </div>
     {% endif %}
 </section>

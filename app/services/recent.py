@@ -67,6 +67,38 @@ def format_recent_time(ts):
         return "-"
 
 
+def format_relative_day_time(ts, now=None, with_period=False):
+    """Format a timestamp by KST calendar day; naive injected datetimes are KST."""
+    if not ts:
+        return "-"
+    kst = timezone(timedelta(hours=9))
+    try:
+        parsed = float(ts)
+        if not math.isfinite(parsed):
+            return "-"
+        value = datetime.fromtimestamp(parsed, tz=kst)
+        if now is None:
+            current = datetime.now(kst)
+        elif isinstance(now, datetime):
+            current = now.replace(tzinfo=kst) if now.tzinfo is None else now.astimezone(kst)
+        else:
+            current = datetime.fromtimestamp(float(now), tz=kst)
+        days = (current.date() - value.date()).days
+        if days in (0, 1):
+            day_label = "오늘" if days == 0 else "어제"
+            if with_period:
+                period = "오전" if value.hour < 12 else "오후"
+                clock = f"{period} {value.hour % 12 or 12}:{value.minute:02d}"
+            else:
+                clock = value.strftime("%H:%M")
+            return f"{day_label} {clock}"
+        if value.year == current.year:
+            return f"{value.month}월 {value.day}일"
+        return f"{value.year}. {value.month}. {value.day}."
+    except (OSError, OverflowError, TypeError, ValueError):
+        return "-"
+
+
 def recent_cache_key(create=False):
     raw = (request.cookies.get(RECENT_CACHE_KEY_COOKIE_NAME) or "").strip()
     if RECENT_CACHE_KEY_RE.fullmatch(raw):

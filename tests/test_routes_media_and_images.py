@@ -2529,12 +2529,12 @@ def test_board_renders_current_assets_and_links(monkeypatch):
     assert response.status_code == 200
     assert soup.select_one("link[href*='/static/css/main.css']") is not None
     assert soup.select_one("script[src*='/static/javascript/read_state.js']") is not None
-    assert soup.select_one(".board-head h1").get_text(strip=True) == "테스트 갤러리 게시판"
+    assert soup.select_one(".board-head h1").get_text(strip=True) == "테스트 갤러리"
     assert urlparse(read_link["href"]).path == "/read"
     assert read_query["source_page"] == ["3"]
     assert read_query["gallery_name"] == ["테스트 갤러리"]
     assert soup.select_one(".board-category-tab.active").get_text(strip=True) == "말머리"
-    assert soup.select_one(".post-subject").get_text(strip=True) == "[잡갤]"
+    assert soup.select_one(".post-subject").get_text(strip=True) == "잡갤"
     assert "[[잡갤]]" not in response.get_data(as_text=True)
     assert soup.select_one(".feed-recommend-icon.is-hot") is not None
     assert soup.select_one(".author-text.author-role-manager") is not None
@@ -2667,7 +2667,7 @@ def test_read_social_meta_uses_canonical_url(monkeypatch):
 
     assert response.status_code == 200
     assert og_url == "https://mirror.example/read?board=test&pid=123&recommend=1&source_page=2&kind=minor&headid=10"
-    assert soup.select_one(".crumb-link").get_text(strip=True) == "← 테스트 갤러리 게시판"
+    assert soup.select_one(".crumb-link").get_text(strip=True) == "테스트 갤러리"
     assert soup.select_one("script[src*='/static/javascript/read_related_loader.js']") is not None
     assert related_section["data-head-id"] == "10"
     assert related_section["data-recommend"] == "1"
@@ -2744,7 +2744,7 @@ def test_board_head_category_tabs_filter_and_preserve_links(monkeypatch):
     read_query = parse_qs(urlparse(soup.select_one("a.feed-item")["href"]).query)
     main_tab_queries = [
         parse_qs(urlparse(link["href"]).query)
-        for link in soup.select(".top-tabs a.tab-item")[:2]
+        for link in soup.select(".board-tabs a.tab-item")[:2]
     ]
 
     assert seen["head_id"] == "10"
@@ -2954,8 +2954,9 @@ def test_read_renders_embedded_related_post_icons_and_subject(monkeypatch):
     assert len(items) == 5
     assert items[0].select_one(".feed-image-icon") is not None
     assert items[0].select_one(".feed-image-icon + .feed-title") is not None
-    assert items[0].select_one(".post-subject").text == "[말머리]"
-    assert items[0].select_one(".reply-count").text == "[3]"
+    assert items[0].select_one(".post-subject").text == "말머리"
+    assert items[0].select_one(".reply-count").text == "3"
+    assert items[0].select_one(".reply-count")["aria-label"] == "댓글 3개"
     assert items[1].select_one(".feed-play-icon") is not None
     assert items[1].select_one(".feed-image-icon") is None
     assert items[2].select_one(".feed-recommend-icon.is-plain") is not None
@@ -3286,9 +3287,9 @@ def test_media_block_menu_defers_comment_dccon_and_body_images(monkeypatch):
     assert soup.select_one(".dccon-toggle") is not None
     assert [option.get_text(" ", strip=True) for option in soup.select(".media-block-option")] == [
         "차단 없음 모든 이미지 표시",
-        "디시콘만 댓글·본문 디시콘 차단",
-        "본문 이미지만 본문 이미지를 차단하고 댓글 디시콘은 표시",
-        "본문 이미지까지 디시콘과 본문 이미지 모두 차단",
+        "이모티콘만 댓글·본문 이모티콘 차단",
+        "본문 이미지만 본문 이미지를 차단하고 댓글 이모티콘은 표시",
+        "본문 이미지까지 이모티콘과 본문 이미지 모두 차단",
     ]
     assert comment_dccon is not None
     assert not comment_dccon.has_attr("src")
@@ -3465,12 +3466,13 @@ def test_comment_spam_filter_keeps_summary_even_when_every_comment_is_filtered()
     assert 'li.classList.add("comment-spam-hidden")' in script
 
 
-def test_related_loader_does_not_double_wrap_bracketed_subject():
+def test_related_loader_strips_subject_brackets_like_server_rows():
     script = (PROJECT_ROOT / "app/static/javascript/read_related_loader.js").read_text()
 
     assert "function formatSubject" in script
     assert 'subject.charAt(0) === "["' in script
-    assert 'subject.textContent = formatSubject(item.subject);' in script
+    assert "return subject.slice(1, -1).trim();" in script
+    assert "subject.textContent = subjectText;" in script
 
 
 def _encode_recent_cookie(rows):
@@ -3495,7 +3497,7 @@ def test_recent_gallery_preserves_recommend_context_from_board(monkeypatch):
     assert query["board"] == ["test"]
     assert query["recommend"] == ["1"]
     assert query["kind"] == ["minor"]
-    assert "개념글" in link.get_text(" ", strip=True)
+    assert "추천글" in link.get_text(" ", strip=True)
 
 
 def test_recent_gallery_dedupes_by_recommend_context(monkeypatch):
@@ -3611,7 +3613,7 @@ def test_recent_gallery_renders_kind_labels_in_korean(monkeypatch):
     badges = [node.get_text(strip=True) for node in soup.select(".gallery-badge")]
 
     assert response.status_code == 200
-    assert badges == ["마이너", "미니", "일반"]
+    assert badges == ["마이너", "미니"]
 
 
 def test_recent_gallery_prefers_korean_name_and_keeps_board_id(monkeypatch):
@@ -3686,7 +3688,7 @@ def test_recent_gallery_applies_korean_name_to_recommend_row(monkeypatch):
 
     assert response.status_code == 200
     assert rows[1].select_one(".feed-title").get_text(strip=True) == "특이점이 온다"
-    assert "개념글" in rows[1].get_text(" ", strip=True)
+    assert "추천글" in rows[1].get_text(" ", strip=True)
     assert recommend_query["recommend"] == ["1"]
     assert recommend_query["gallery_name"] == ["특이점이 온다"]
 

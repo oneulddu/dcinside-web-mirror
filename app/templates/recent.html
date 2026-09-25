@@ -1,17 +1,24 @@
 {% extends "base.html" %}
+{% from "_bits.html" import back_link %}
+
+{% block body_class %}recent-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link("/", aria_label="홈으로") }}{% endblock %}
 
 {% block content %}
-<section class="feed-list">
-    <div class="board-head">
-        <h1>최근 방문 갤러리</h1>
-        <div class="board-head-actions">
-            <span class="board-head-note">최대 30개</span>
-            {% if recent_items %}
-            <form method="post" action="{{ url_for('main.recent_clear') }}">
-                <button type="submit" class="recent-remove-btn">전체 삭제</button>
-            </form>
-            {% endif %}
+<section class="feed-list recent-list">
+    <div class="board-head page-head">
+        <div class="page-head-copy">
+            <h1>최근 본 게시판</h1>
+            <p class="board-head-note">최대 {{ recent_max_items or 30 }}개까지 보관해요</p>
         </div>
+        {% if recent_items %}
+        <div class="board-head-actions">
+            <form method="post" action="{{ url_for('main.recent_clear') }}">
+                <button type="submit" class="recent-remove-btn recent-clear-btn">전체 삭제</button>
+            </form>
+        </div>
+        {% endif %}
     </div>
     <ul>
         {% for item in recent_items %}
@@ -19,18 +26,13 @@
             <a class="feed-item" href="{{ board_url(item.board, recommend=item.recommend or 0, page=1, kind=item.kind, gallery_name=item.gallery_name) }}">
                 <div class="feed-title-wrap">
                     <span class="feed-title">{{ item.display_name }}</span>
-                    <span class="gallery-badge">{{ item.kind_label }}</span>
-                    {% if item.recommend == 1 %}
-                    <span class="gallery-badge is-hot">개념글</span>
-                    {% endif %}
+                    {% if item.kind_label and item.kind_label != "일반" %}<span class="gallery-badge">{{ item.kind_label }}</span>{% endif %}
+                    {% if item.recommend == 1 %}<span class="gallery-badge is-hot">추천글</span>{% endif %}
                 </div>
                 <div class="feed-meta-row">
                     <div class="feed-meta-left">
                         <span>{{ item.board }}</span>
-                        <span class="sep">|</span>
-                        <span>최근 방문</span>
-                        <span class="sep">|</span>
-                        <span>{{ item.visited_at_str }}</span>
+                        <span><span class="sr-only">최근 방문 </span>{{ item.visited_at_label or item.visited_at_str }}</span>
                     </div>
                 </div>
             </a>
@@ -42,7 +44,10 @@
             </form>
         </li>
         {% else %}
-        <li class="empty-row">최근 방문한 갤러리가 없습니다.</li>
+        <li class="empty-row empty-note">
+            <b>아직 둘러본 게시판이 없어요</b>
+            <span>게시판을 열면 여기에 모아 둘게요.</span>
+        </li>
         {% endfor %}
     </ul>
 </section>

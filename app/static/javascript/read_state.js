@@ -168,7 +168,7 @@
     function mediaBlockModeLabel(mode) {
         var labels = {
             none: "차단 없음",
-            dccon: "디시콘만",
+            dccon: "이모티콘만",
             body: "본문 이미지만",
             all: "본문 이미지까지"
         };
@@ -678,6 +678,32 @@
         if (document.visibilityState === "visible") {
             refreshReadState();
             refreshMediaBlockMode(false);
+        }
+    });
+
+    // 게시판 머리의 검색 아이콘은 목록 아래 검색 입력으로 이동한다.
+    // 목록 새로고침이 #board-list를 교체해도 동작하도록 문서에 위임한다.
+    document.addEventListener("click", function (event) {
+        var trigger = event.target && event.target.closest ? event.target.closest("[data-search-target]") : null;
+        if (!trigger) {
+            return;
+        }
+        var input = document.getElementById(trigger.getAttribute("data-search-target"));
+        if (!input) {
+            return;
+        }
+        event.preventDefault();
+        var reduceMotion = false;
+        try {
+            reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        } catch (err) {
+            reduceMotion = false;
+        }
+        input.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+        try {
+            input.focus({ preventScroll: true });
+        } catch (err) {
+            input.focus();
         }
     });
 

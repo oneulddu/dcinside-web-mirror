@@ -29,13 +29,14 @@ def test_no_external_render_blocking_stylesheet():
     assert external == [], f"외부 렌더 차단 스타일시트가 추가됐다: {external}"
 
 
-def test_suit_font_declared_locally_with_swap():
-    """폰트는 로컬 CSS의 @font-face로 선언하고 font-display: swap을 쓴다."""
+def test_pretendard_font_declared_locally_with_swap():
+    """폰트는 로컬 CSS의 글자 범위별 @font-face로 선언하고 font-display: swap을 쓴다."""
     css = MAIN_CSS.read_text(encoding="utf-8")
 
     assert "@font-face" in css
-    assert "SUIT Variable" in css
-    assert "SUIT-Variable.woff2" in css
+    assert "Pretendard Variable" in css
+    assert "woff2-dynamic-subset/PretendardVariable.subset.0.woff2" in css
+    assert "unicode-range" in css
     assert "font-display: swap" in css
 
 
