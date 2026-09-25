@@ -687,14 +687,15 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
     }
     seen_comment_ids = set()
     embedded_comments = list(getattr(doc, "embedded_comments", []) or [])
-    embedded_total = _safe_int(getattr(doc, "embedded_comment_total", 0), 0)
+    embedded_total = _safe_int(getattr(doc, "embedded_comment_total", None), -1)
     for com in embedded_comments:
         comment_id = str(getattr(com, "id", "") or "").strip()
         if comment_id:
             seen_comment_ids.add(comment_id)
         comments.append(_comment_to_dict(com))
 
-    should_fetch_comments = (
+    confirmed_empty = embedded_total == 0 and not embedded_comments
+    should_fetch_comments = not confirmed_empty and (
         not embedded_comments
         or embedded_total <= 0
         or embedded_total > len(embedded_comments)

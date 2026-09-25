@@ -31,7 +31,7 @@ class DocumentIndex:
 
 class Document:
     __slots__ = ["id", "board_id", "title", "author", "author_id", "author_role", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "comment_status", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total", "gallery_name"]
-    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=0, author_role=None, comment_status=None, gallery_name=None):
+    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=None, author_role=None, comment_status=None, gallery_name=None):
         self.id = id
         self.board_id = board_id
         self.title = title
