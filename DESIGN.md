@@ -33,7 +33,7 @@ Design Read: 읽기 전용 게시판 미러를 자주 쓰는 사용자를 위한
 | `--accent-wash` | `rgba(49, 130, 246, 0.09)` | 하이라이트 배경 |
 | `--on-accent` | `#FFFFFF` | 악센트 위 텍스트 |
 | `--hot` | `#F04452` | 개념글 강조 |
-| `--hot-video` | `#F04452` | 동영상 개념글 강조 |
+| `--hot-video` | `#DB2777` | 동영상 개념글 강조 |
 | `--role-manager` | `#FF6B00` | 관리자 이름 |
 | `--role-submanager` | `#3182F6` | 부매니저 이름 |
 

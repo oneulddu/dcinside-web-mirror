@@ -23,7 +23,7 @@
     --accent-wash: rgba(49, 130, 246, 0.09);
     --on-accent: #FFFFFF;
     --hot: #F04452;
-    --hot-video: #F04452;
+    --hot-video: #DB2777;
     --role-manager: #FF6B00;
     --role-submanager: #3182F6;
 
@@ -733,15 +733,33 @@ html:not([data-theme="dark"]) .theme-icon-moon {
 }
 
 .feed-recommend-icon svg {
-    fill: var(--hot);
+    fill: currentColor;
 }
 
-.feed-recommend-icon.is-video svg {
-    fill: var(--hot-video);
+.feed-recommend-icon {
+    color: var(--hot);
+}
+
+.feed-recommend-icon.is-video {
+    color: var(--hot-video);
 }
 
 .feed-recommend-icon .flame-inner {
     fill: var(--bg);
+}
+
+/* 사진·동영상이 없는 개념글은 속을 비운 불꽃으로 구분한다. */
+.feed-recommend-icon.is-plain svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.feed-recommend-icon.is-plain .flame-inner {
+    fill: none;
+    stroke-width: 1.5;
 }
 
 .feed-image-icon svg,
