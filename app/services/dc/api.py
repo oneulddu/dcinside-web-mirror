@@ -1232,7 +1232,7 @@ class API(ParserMixin):
             await self.__replace_poll_iframes(doc_content)
             related_posts = []
             embedded_comments = []
-            embedded_comment_total = 0
+            embedded_comment_total = None
             if is_mobile_source:
                 related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind, recommend=recommend)
                 embedded_comments, embedded_comment_total = self.__parse_embedded_mobile_comments(parsed)

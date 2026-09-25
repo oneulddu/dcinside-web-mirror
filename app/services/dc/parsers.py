@@ -488,19 +488,25 @@ class ParserMixin:
                 seen_ids.add(comment_id)
             comments.append(comment)
 
-        total = 0
-        def parse_count_text(value):
-            digits = re.sub(r"[^0-9]", "", value or "")
-            return int(digits) if digits else 0
-
-        total_nodes = parsed.xpath("string((//input[@id='reple_totalCnt'])[1]/@value)")
-        if total_nodes:
-            total = parse_count_text(total_nodes)
-        if total <= 0:
-            title_text = " ".join(
-                parsed.xpath("//div[contains(@class, 'all-comment-tit')]//*[contains(@class, 'ct')]/text()")
+        # Missing, malformed or contradictory counts are unknown, never zero.
+        # Only an explicit zero can safely avoid the separate comment requests.
+        markers = [node.get("value", "") for node in parsed.xpath("//input[@id='reple_totalCnt']")]
+        markers.extend(
+            node.text_content()
+            for node in parsed.xpath(
+                "//div[contains(concat(' ', normalize-space(@class), ' '), ' all-comment-tit ')]"
+                "//*[contains(concat(' ', normalize-space(@class), ' '), ' ct ')]"
             )
-            total = parse_count_text(title_text)
+        )
+        counts = []
+        for marker in markers:
+            text = marker.strip()
+            if text.startswith("[") and text.endswith("]"):
+                text = text[1:-1].strip()
+            if not re.fullmatch(r"[0-9]+(?:,[0-9]{3})*", text):
+                return comments, None
+            counts.append(int(text.replace(",", "")))
+        total = counts[0] if counts and len(set(counts)) == 1 else None
         return comments, total
 
     def __extract_top_level_redirect_url(self, text):
