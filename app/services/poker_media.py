@@ -11,6 +11,7 @@ from flask import Response, current_app, url_for
 import requests
 
 from .html_sanitizer import sanitize_html_tree
+from .poker_boards import BASE_URL, poker_link
 from .media_proxy import PinnedMediaAdapter, resolve_media_target
 
 MEDIA_HOSTS = frozenset({'www.ipokergosu.com', 'ipokergosu.com'})
@@ -39,7 +40,7 @@ def signature(src):
     return hmac.new(key, ('poker-media\n' + src).encode(), hashlib.sha256).hexdigest()
 
 
-def prepare_html(raw):
+def prepare_html(raw, *, base_url=BASE_URL + '/'):
     soup = BeautifulSoup(raw, 'lxml')
     for node in list(soup.find_all(True)):
         if node.parent is None:
@@ -62,11 +63,17 @@ def prepare_html(raw):
             node.unwrap()
         elif node.name == 'a' and node.get('href'):
             try:
-                href = urljoin('https://www.pokergosu.com/', node['href'])
-                parsed = urlsplit(href)
-                match = re.fullmatch(r'/free/(\d+)', parsed.path)
-                if parsed.scheme in ('http', 'https') and parsed.hostname in {'pokergosu.com', 'www.pokergosu.com'} and match:
-                    href = url_for('poker.read', pid=int(match.group(1)))
+                href = urljoin(base_url, node['href'])
+                link = poker_link(href)
+                if link:
+                    params = {'board_id': link['board_id']}
+                    if link['page'] is not None:
+                        params['page'] = link['page']
+                    if link['pid'] is not None:
+                        params['pid'] = link['pid']
+                    if link['fragment']:
+                        params['_anchor'] = link['fragment']
+                    href = url_for('poker.read' if link['pid'] else 'poker.board', **params)
             except ValueError:
                 href = ''
             node['href'] = href

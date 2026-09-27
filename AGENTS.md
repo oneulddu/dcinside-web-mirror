@@ -59,9 +59,9 @@ pm2 logs dc-mirror
 - `recent.py`: Cookie-based recent gallery tracking with server-side helper cache
 - `async_bridge.py`: `run_async(coro)` bridge from Flask sync routes to async scraping
 
-**Routes** (`app/routes.py`):
+**Routes** (`app/routes.py` and `app/poker_routes.py`):
 
-- Single Blueprint (`bp`) with all routes
+- `main` Blueprint owns DC routes; `poker` Blueprint owns the isolated Pokergosu routes
 - Key routes:
   - `/`: Home, heung gallery list, gallery search
   - `/recent`: Recently visited galleries
@@ -71,6 +71,20 @@ pm2 logs dc-mirror
   - `/media`: Image/webp/dccon proxy
   - `/movie`: Video proxy
 - Recent galleries are tracked through cookies, capped by `MIRROR_RECENT_MAX_ITEMS`
+
+### Pokergosu Mirror
+
+- `/poker` opens the board reader; `/poker/<board_id>` lists posts and
+  `/poker/<board_id>/<pid>` reads a post with the source page preserved.
+- `app/services/poker_boards.py` defines the ten-board allowlist and validates upstream links.
+- `app/services/pokergosu.py` uses synchronous request-owned `curl_cffi` sessions and `lxml`.
+  Keep these calls outside the shared DC async loop. Cache and in-flight keys include the board.
+- Eight boards are public; `groupbuy` and `qna` currently redirect to upstream login and show
+  a 403 explanation. Login redirects do not trigger the Cloudflare cooldown.
+- `app/services/poker_media.py` sanitizes content and serves signed, allowlisted images through
+  the pinned media transport. Do not expand the DC media allowlist for Pokergosu.
+- Templates live in `app/templates/poker/` with scoped `app/static/css/poker.css`.
+  News uses a separate grid parser; missing metadata stays absent. Comments may be partial.
 
 ### Async Bridge Pattern
 

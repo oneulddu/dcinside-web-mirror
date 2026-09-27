@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_bits.html" import back_link, number, post_time %}
-{% set board_name = "포커고수 자유게시판" %}
-{% set board_href = url_for('poker.board', page=page) %}
+{% from "poker/_nav.html" import board_nav %}
+{% set board_href = url_for('poker.board', board_id=board_id, page=page) %}
 {% set source_base = (source_url or "").split("#")[0] %}
 
 {% block body_class %}read-view poker-view{% endblock %}
@@ -10,18 +10,23 @@
 
 {% block masthead_context %}
 <link rel="stylesheet" href="{{ static_url('css/poker.css') }}">
+{{ board_nav(boards, board_id, "location") }}
 {% endblock %}
 
 {% block content %}
 <section class="read-shell poker-read">
     <div class="article-head">
         <h1>{{ data.title }}</h1>
+        {% set has_view = data.view_count is number %}
+        {% set has_vote = data.voteup_count is number %}
+        {% if data.author or data.time or has_view or has_vote %}
         <div class="article-meta">
-            <span class="author-text">{{ data.author }}</span>
-            {{ post_time(data.time, "full") }}
-            {% if data.view_count is number %}<span>조회 {{ number(data.view_count) }}</span>{% endif %}
-            {% if data.voteup_count is number %}<span>추천 {{ number(data.voteup_count) }}</span>{% endif %}
+            {% if data.author %}<span class="author-text">{{ data.author }}</span>{% endif %}
+            {% if data.time %}{{ post_time(data.time, "full") }}{% endif %}
+            {% if has_view %}<span>조회 {{ number(data.view_count) }}</span>{% endif %}
+            {% if has_vote %}<span>추천 {{ number(data.voteup_count) }}</span>{% endif %}
         </div>
+        {% endif %}
     </div>
 
     <div class="body-media-controls" hidden>
@@ -48,7 +53,7 @@
     <div class="section-band" aria-hidden="true"></div>
 
     {% set shown_count = data.comments|length %}
-    <section class="comment-shell poker-comments" aria-labelledby="comment-title">
+    <section class="comment-shell poker-comments" id="comment" aria-labelledby="comment-title">
         <h2 id="comment-title">댓글 <span class="comment-count">{{ number(data.comment_count if data.comment_count is number else shown_count) }}</span></h2>
         {% if data.comments_partial %}
         <div class="poker-notice" role="note">
@@ -66,10 +71,12 @@
                     {% if comment.is_reply %}<span class="sr-only">답글:</span>{% endif %}
                     <div class="poker-comment-body">{{ comment.html | safe }}</div>
                 </div>
+                {% if comment.author or comment.time %}
                 <div class="comment-meta">
-                    <span class="author-text">{{ comment.author }}</span>
-                    {{ post_time(comment.time) }}
+                    {% if comment.author %}<span class="author-text">{{ comment.author }}</span>{% endif %}
+                    {% if comment.time %}{{ post_time(comment.time) }}{% endif %}
                 </div>
+                {% endif %}
             </li>
             {% else %}
             <li class="empty-row">{% if data.comments_partial %}여기서 가져온 댓글이 없어요.{% else %}아직 댓글이 없어요.{% endif %}</li>

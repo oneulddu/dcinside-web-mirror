@@ -5,14 +5,12 @@ import re
 import logging
 import threading
 import time
-from urllib.parse import urlsplit
 
 from curl_cffi import requests
 from curl_cffi.curl import CURL_WRITEFUNC_ERROR
 from lxml import etree, html
 
-BASE_URL = "https://www.pokergosu.com"
-MAX_PAGE = 10000
+from .poker_boards import BASE_URL, MAX_PAGE, BOARDS, poker_link, is_login_redirect
 MAX_HTML_BYTES = 4 * 1024 * 1024
 CACHE_LIMIT = 256
 TIMEOUT = 20
@@ -49,31 +47,71 @@ def _tree(raw):
         raise PokerError("원본 페이지 구조를 확인하지 못했어요.") from exc
 
 
-def parse_board(raw, page):
+def _board_spec(board_id):
+    if board_id not in BOARDS:
+        raise PokerError("지원하지 않는 게시판이에요.", 404)
+    return BOARDS[board_id]
+
+
+def _next_page(tree, page, posts):
+    pages = [int(v.rsplit(' ', 1)[1]) for v in tree.xpath('//button/@aria-label')
+             if re.fullmatch(r'Go to page [0-9]{1,8}', v)]
+    return bool(posts) and page < MAX_PAGE and any(p > page for p in pages)
+
+
+def _row_link(links, board_id):
+    for link in links:
+        parsed = poker_link(link.get('href'))
+        if parsed and parsed['board_id'] == board_id and parsed['pid'] and _text(link):
+            return link, parsed['pid']
+    return None, None
+
+
+def _comments_count(links):
+    return next((_number(_text(a)) for a in links if re.fullmatch(r'\[[0-9]+\]', _text(a))), 0)
+
+
+def parse_board(raw, page, board_id='free'):
+    spec = _board_spec(board_id)
     tree = _tree(raw)
-    tables = [table for table in tree.xpath('//table[.//tr]')
-              if all(label in _text(_first(table.xpath('.//tr'))) for label in ('제목', '글쓴이', '날짜'))]
-    if not tables or "자유 게시판" not in tree.xpath('string(//title)'):
+    if spec['label'] not in tree.xpath('string(//title)'):
         raise PokerError("게시판 목록 구조를 확인하지 못했어요.")
     posts, seen = [], set()
-    for row in tables[0].xpath('.//tr'):
-        cells = row.xpath('./td')
-        if len(cells) < 3:
-            continue
-        links = cells[0].xpath('.//a[@href]')
-        link = next((a for a in links if re.fullmatch(r'/free/\d+', urlsplit(a.get('href')).path)), None)
-        if link is None:
-            continue
-        pid = int(urlsplit(link.get('href')).path.rsplit('/', 1)[1])
-        if pid in seen:
-            continue
-        seen.add(pid)
-        comment = next((_text(a) for a in links if re.fullmatch(r'\[\d+\]', _text(a))), '')
-        posts.append(dict(id=pid, title=_text(link), author=_text(cells[1]), time=_text(cells[2]),
-                          comment_count=_number(comment), view_count=_number(_text(cells[3])) if len(cells) > 3 else 0,
-                          voteup_count=_number(_text(cells[4])) if len(cells) > 4 else 0))
-    pages = [int(v.rsplit(' ', 1)[1]) for v in tree.xpath('//button/@aria-label') if re.fullmatch(r'Go to page \d+', v)]
-    return dict(posts=posts, has_next=bool(posts) and page < MAX_PAGE and any(p > page for p in pages))
+    if board_id == 'news':
+        grids = tree.xpath(f'//div[{_class("grid-cols-2")} and {_class("gap-y-4")}]')
+        if len(grids) != 1:
+            raise PokerError("뉴스 목록 구조를 확인하지 못했어요.")
+        cards = grids[0].xpath('./div')
+        for card in cards:
+            links = card.xpath('./p/a[@href]')
+            link, pid = _row_link(links, board_id)
+            if link is None or pid in seen:
+                continue
+            seen.add(pid)
+            posts.append(dict(board_id=board_id, id=pid, title=_text(link),
+                              comment_count=_comments_count(links), author=None, time=None,
+                              view_count=None, voteup_count=None))
+        if cards and not posts:
+            raise PokerError("뉴스 목록 구조를 확인하지 못했어요.")
+    else:
+        tables = [table for table in tree.xpath('//table[.//tr]')
+                  if all(label in _text(_first(table.xpath('.//tr'))) for label in ('제목', '글쓴이', '날짜'))]
+        if not tables:
+            raise PokerError("게시판 목록 구조를 확인하지 못했어요.")
+        for row in tables[0].xpath('.//tr'):
+            cells = row.xpath('./td')
+            if len(cells) < 3:
+                continue
+            links = cells[0].xpath('.//a[@href]')
+            link, pid = _row_link(links, board_id)
+            if link is None or pid in seen:
+                continue
+            seen.add(pid)
+            posts.append(dict(board_id=board_id, id=pid, title=_text(link), author=_text(cells[1]) or None,
+                              time=_text(cells[2]) or None, comment_count=_comments_count(links),
+                              view_count=_number(_text(cells[3])) if len(cells) > 3 else None,
+                              voteup_count=_number(_text(cells[4])) if len(cells) > 4 else None))
+    return dict(posts=posts, has_next=_next_page(tree, page, posts))
 
 
 def _inner(node):
@@ -86,10 +124,16 @@ def parse_post(raw, pid):
     if document is None:
         raise PokerError("본문을 확인하지 못했어요. 원문에서 접근 가능 여부를 확인해 주세요.")
     body = _first(document.xpath(f'.//*[{_class("edboard")}]'))
-    title = _text(_first(document.xpath('.//a[@aria-labelledby="title"]')))
-    if body is None or not title:
+    if body is None:
         raise PokerError("본문 구조가 달라 내용을 표시하지 못했어요.")
-    meta = document.xpath(f'.//p[{_class("numbertime")}]')
+    # Some boarddocument wrappers also contain comments. Only inspect the blocks
+    # before the body, otherwise a missing article author becomes a comment author.
+    headers = body.getparent().xpath('preceding-sibling::*')
+    title = _text(_first([node for block in headers for node in block.xpath('.//a[@aria-labelledby="title"]')]))
+    if not title:
+        raise PokerError("본문 구조가 달라 내용을 표시하지 못했어요.")
+    author = _text(_first([node for block in headers for node in block.xpath('.//button[not(@title)]//p')])) or None
+    meta = [node for block in headers for node in block.xpath(f'.//p[{_class("numbertime")}]')]
     stamp = next((_text(e) for e in meta if re.fullmatch(r'\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}', _text(e))), '')
     comments, seen = [], set()
     for node in tree.xpath(f'//*[@id and {_class("comment")}]'):
@@ -103,14 +147,14 @@ def parse_post(raw, pid):
         parents = node.xpath(f'ancestor::*[{_class("child-comments")}]')
         parent = _first(parents[-1].xpath(f'preceding-sibling::*[{_class("comment")}]')) if parents else None
         comments.append(dict(id=cid, parent_id=parent.get('id') if parent is not None else None,
-                             is_reply=bool(parents), author=_text(_first(node.xpath('.//button//p'))),
+                             is_reply=bool(parents), author=_text(_first(node.xpath('.//button[not(@title)]//p'))) or None,
                              time=_text(_first(node.xpath(f'.//*[{_class("numbertime")}]'))), html=_inner(content)))
     total_node = _first(tree.xpath('//*[@id="comment"]'))
-    total_text = _text(total_node)
+    total_text = ' '.join(total_node.itertext()) if total_node is not None else ''
     total = _number(total_text) if re.search(r'댓글\s*수\s*\d', total_text) else None
-    return dict(id=pid, title=title, author=_text(_first(document.xpath('.//button//p'))), time=stamp,
-                view_count=next((_number(_text(e)) for e in meta if '조회 수' in _text(e)), 0),
-                voteup_count=next((_number(_text(e)) for e in meta if '추천 수' in _text(e)), 0),
+    return dict(id=pid, title=title, author=author, time=stamp,
+                view_count=next((_number(_text(e)) for e in meta if '조회 수' in _text(e)), None),
+                voteup_count=next((_number(_text(e)) for e in meta if '추천 수' in _text(e)), None),
                 html=_inner(body), comments=comments, comment_count=total,
                 comments_partial=total is None or total > len(comments),
                 unsupported_media=bool(body.xpath('.//iframe | .//video | .//audio | .//object | .//embed')))
@@ -159,6 +203,8 @@ class Reader:
                 with self.lock:
                     self.cooldown_until = time.monotonic() + 60
                 raise PokerError("원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요.", 503)
+            if response.status_code in (301, 302, 303, 307, 308) and is_login_redirect(response.headers.get('location')):
+                raise PokerError("원본 로그인이 필요한 게시판이에요. 원문에서 확인해 주세요.", 403)
             if response.status_code in (404, 410):
                 raise PokerError("글을 찾을 수 없어요. 삭제되었거나 주소가 바뀌었을 수 있어요.", 404)
             if response.status_code != 200:
@@ -209,11 +255,14 @@ class Reader:
             raise PokerError(*error)
         return deepcopy(value)
 
-    def board(self, page):
-        return self.get(('board', page), f'/free?page={page}', lambda raw: parse_board(raw, page), 20)
+    def board(self, page, board_id='free'):
+        _board_spec(board_id)
+        return self.get(('board', board_id, page), f'/{board_id}?page={page}',
+                        lambda raw: parse_board(raw, page, board_id), 20)
 
-    def post(self, pid):
-        return self.get(('post', pid), f'/free/{pid}', lambda raw: parse_post(raw, pid), 30)
+    def post(self, pid, board_id='free'):
+        _board_spec(board_id)
+        return self.get(('post', board_id, pid), f'/{board_id}/{pid}', lambda raw: parse_post(raw, pid), 30)
 
 
 reader = Reader()

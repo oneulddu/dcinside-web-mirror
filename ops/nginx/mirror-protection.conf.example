@@ -42,7 +42,7 @@ location = /read {
 
 # Pokergosu document requests have the same per-IP budget as DC reads.
 # Keep the image endpoint outside this block so one image-heavy post can render.
-location ~ ^/poker/free(?:/|$) {
+location ~ ^/poker/(?:notice|free|groupbuy|hand|best|grinding|strategy|buyboard|qna|news)(?:/|$) {
     limit_req zone=mirror_read_per_ip burst=10 nodelay;
     limit_req_status 429;
     proxy_pass http://127.0.0.1:6100;

@@ -1,0 +1,36 @@
+{# 포커고수 게시판 전환 줄. 목록은 aria-current="page", 글·오류는 "location"으로 현재 게시판을 알린다. #}
+{% macro board_nav(boards, board_id, current="page") -%}
+{%- if boards %}
+<nav class="poker-board-nav" aria-label="포커고수 게시판">
+    <ul class="poker-board-nav-scroll" id="poker-board-nav-scroll">
+        {% for item in boards %}
+        {% set active = item.id == board_id %}
+        <li>
+            <a class="poker-board-nav-item{% if active %} active{% endif %}" href="{{ url_for('poker.board', board_id=item.id, page=1) }}"{% if active %} aria-current="{{ current }}"{% endif %}{% if item.login_required %} title="로그인이 필요한 게시판"{% endif %}>
+                {#- 줄 안에서는 "게시판" 꼬리를 떼어 짧게 보인다. 전체 이름은 제목과 nav 이름이 알려 준다. -#}
+                {{- item.label | replace(" 게시판", "") -}}
+                {%- if item.login_required -%}
+                <svg class="poker-board-nav-lock" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5.5" y="10.5" width="13" height="9" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg><span class="sr-only"> (로그인 필요)</span>
+                {%- endif -%}
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+</nav>
+<script>
+    // 좁은 화면에서 현재 게시판이 가로 줄 밖에 있으면 보이도록 줄만 옮긴다(페이지 스크롤은 건드리지 않음).
+    (function () {
+        "use strict";
+        var row = document.getElementById("poker-board-nav-scroll");
+        var active = row && row.querySelector(".poker-board-nav-item.active");
+        if (!active || row.scrollWidth <= row.clientWidth) {
+            return;
+        }
+        var right = active.offsetLeft + active.offsetWidth;
+        if (right > row.clientWidth - 28) {
+            row.scrollLeft = active.offsetLeft - 20;
+        }
+    })();
+</script>
+{%- endif %}
+{%- endmacro %}

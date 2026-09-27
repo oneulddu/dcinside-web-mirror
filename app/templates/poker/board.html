@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_bits.html" import back_link, icon_chevron, reply_count, number, post_time %}
-{% set board_name = "포커고수 자유게시판" %}
+{% from "poker/_nav.html" import board_nav %}
 
 {% block body_class %}board-view poker-view{% endblock %}
 
@@ -14,6 +14,7 @@
     <a class="poker-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문 보기<span class="sr-only"> (새 창)</span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/></svg></a>
     {% endif %}
 </div>
+{{ board_nav(boards, board_id, "page") }}
 {% endblock %}
 
 {% block page_class %} board-page poker-board-page{% endblock %}
@@ -22,27 +23,33 @@
 <section class="feed-list poker-feed" aria-label="{{ board_name }} 글 목록">
     <ul>
         {% for post in data.posts %}
+        {# 뉴스처럼 원본 목록에 없는 값은 비워 두고, 표시할 값이 하나도 없으면 메타 줄 자체를 그리지 않는다. #}
+        {% set has_view = post.view_count is number %}
+        {% set has_vote = post.voteup_count is number %}
+        {% set has_meta = post.author or post.time or has_view or has_vote %}
         <li>
-            <a class="feed-item" href="{{ url_for('poker.read', pid=post.id, page=page) }}">
+            <a class="feed-item" href="{{ url_for('poker.read', board_id=post.board_id or board_id, pid=post.id, page=page) }}">
                 <div class="feed-title-wrap">
                     <span class="feed-title">{{ post.title }}</span>
                     {{ reply_count(post.comment_count) }}
                 </div>
+                {% if has_meta %}
                 <div class="feed-meta-row">
                     <div class="feed-meta-left">
-                        <span class="author-text">{{ post.author }}</span>
-                        {{ post_time(post.time) }}
-                        {% if post.view_count is number %}<span>조회 {{ number(post.view_count) }}</span>{% endif %}
-                        <span class="feed-vote">추천 {{ number(post.voteup_count) }}</span>
+                        {% if post.author %}<span class="author-text">{{ post.author }}</span>{% endif %}
+                        {% if post.time %}{{ post_time(post.time) }}{% endif %}
+                        {% if has_view %}<span>조회 {{ number(post.view_count) }}</span>{% endif %}
+                        {% if has_vote %}<span class="feed-vote">추천 {{ number(post.voteup_count) }}</span>{% endif %}
                     </div>
                 </div>
+                {% endif %}
             </a>
         </li>
         {% else %}
         <li class="empty-row">
             <b>게시글이 없어요</b>
             {% if page > 1 %}
-            <span>이 페이지에는 글이 없어요. <a class="poker-inline-link" href="{{ url_for('poker.board', page=1) }}">첫 페이지로</a></span>
+            <span>이 페이지에는 글이 없어요. <a class="poker-inline-link" href="{{ url_for('poker.board', board_id=board_id, page=1) }}">첫 페이지로</a></span>
             {% else %}
             <span>잠시 후 다시 확인해 보세요.</span>
             {% endif %}
@@ -53,13 +60,13 @@
         <a class="pager-btn pager-home" href="/">홈</a>
         <div class="pager-center">
             {% if page > 1 %}
-            <a class="pager-btn" href="{{ url_for('poker.board', page=page - 1) }}" rel="prev">{{ icon_chevron("left") }}이전</a>
+            <a class="pager-btn" href="{{ url_for('poker.board', board_id=board_id, page=page - 1) }}" rel="prev">{{ icon_chevron("left") }}이전</a>
             {% else %}
             <span class="pager-btn off" aria-disabled="true">{{ icon_chevron("left") }}이전</span>
             {% endif %}
             <span class="pager-current" aria-current="page"><span class="sr-only">현재 </span>{{ page }}<span class="sr-only"> 페이지</span></span>
             {% if data.has_next %}
-            <a class="pager-btn" href="{{ url_for('poker.board', page=page + 1) }}" rel="next">다음{{ icon_chevron("right") }}</a>
+            <a class="pager-btn" href="{{ url_for('poker.board', board_id=board_id, page=page + 1) }}" rel="next">다음{{ icon_chevron("right") }}</a>
             {% else %}
             <span class="pager-btn off" aria-disabled="true">다음{{ icon_chevron("right") }}</span>
             {% endif %}

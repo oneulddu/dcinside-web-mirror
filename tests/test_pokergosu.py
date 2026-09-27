@@ -60,7 +60,7 @@ def test_cache_copy_expiry_and_bounded_capacity(monkeypatch):
     data['posts'].clear()
     assert len(r.board(1)['posts']) == 2
     assert len(calls) == 1
-    r.cache[('board', 1)] = (0, {}, None)
+    r.cache[('board', 'free', 1)] = (0, {}, None)
     assert len(r.board(1)['posts']) == 2
     assert len(calls) == 2
     monkeypatch.setattr(pg, 'CACHE_LIMIT', 2)
@@ -164,7 +164,7 @@ def test_sanitizer_strips_active_content_and_signs_only_approved_images():
         q = parse_qs(urlsplit(img['data-body-image-src']).query)
         assert q['sig'][0] == media.signature(q['src'][0])
         assert soup.find('a', string='내부 글')['href'] == '/poker/free/123'
-        assert soup.find('a', string='다른 게시판')['href'] == 'https://www.pokergosu.com/strategy/123'
+        assert soup.find('a', string='다른 게시판')['href'] == '/poker/strategy/123'
         assert not soup.find('a', string='bad').has_attr('href')
         assert not BeautifulSoup(sanitize_html_fragment('<img src="/poker/media?src=x">'), 'html.parser').img
 
@@ -228,8 +228,8 @@ def test_routes_validate_before_fetch(monkeypatch, path):
 
 
 def test_routes_render_and_return_to_source_page(monkeypatch):
-    monkeypatch.setattr(poker_routes.reader, 'board', lambda page: pg.parse_board(fixture('board'), page))
-    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid: pg.parse_post(fixture('post'), pid))
+    monkeypatch.setattr(poker_routes.reader, 'board', lambda page, board_id='free': pg.parse_board(fixture('board'), page))
+    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid, board_id='free': pg.parse_post(fixture('post'), pid))
     client = create_app().test_client()
     board = client.get('/poker/free?page=2')
     assert board.status_code == 200
@@ -245,7 +245,7 @@ def test_routes_render_and_return_to_source_page(monkeypatch):
 
 def test_route_errors_and_partial_comments(monkeypatch):
     client = create_app().test_client()
-    def fail(page): raise pg.PokerError('잠시 제한됐어요', 503)
+    def fail(page, board_id='free'): raise pg.PokerError('잠시 제한됐어요', 503)
     monkeypatch.setattr(poker_routes.reader, 'board', fail)
     response = client.get('/poker/free')
     assert response.status_code == 503
@@ -255,7 +255,7 @@ def test_route_errors_and_partial_comments(monkeypatch):
     assert soup.find('a', string='돌아가기')['href'] == '/poker/free?page=1'
     data = pg.parse_post(fixture('post'), 123)
     data['comments_partial'] = True; data['comment_count'] = 100
-    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid: data)
+    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid, board_id='free': data)
     response = client.get('/poker/free/123')
     assert response.status_code == 200
     assert '일부'.encode() in response.data
@@ -292,7 +292,7 @@ def test_real_curl_callback_aborts_oversize_without_caching_success(monkeypatch)
     try:
         with pytest.raises(pg.PokerError):
             reader.board(1)
-        assert reader.cache[('board', 1)][1] is None
+        assert reader.cache[('board', 'free', 1)][1] is None
     finally:
         server.shutdown()
         server.server_close()
@@ -303,7 +303,7 @@ def test_malformed_body_and_comment_links_keep_text(monkeypatch):
     data = pg.parse_post(fixture('post'), 123)
     data['html'] = '<p>안전한 본문 <a href="https://[">잘못된 링크</a></p>'
     data['comments'][0]['html'] = '<a href="https://[">댓글 링크</a>'
-    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid: data)
+    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid, board_id='free': data)
     response = create_app().test_client().get('/poker/free/123')
     assert response.status_code == 200
     soup = BeautifulSoup(response.data, 'html.parser')

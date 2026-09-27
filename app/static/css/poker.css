@@ -1,4 +1,4 @@
-/* 포커고수 자유게시판 전용 스타일. main.css 토큰만 쓰고 .poker-view 안으로 제한한다. */
+/* 포커고수 게시판 전용 스타일. main.css 토큰만 쓰고 .poker-view 안으로 제한한다. */
 
 .poker-view .poker-board-head {
     align-items: center;
@@ -222,4 +222,86 @@
     display: block;
     max-width: 100%;
     overflow-x: auto;
+}
+
+/* ===== 게시판 전환 =====
+   기존 글자 탭과 같은 말투로, 10개 게시판을 한 줄 가로 스크롤에 둔다.
+   활성은 --fg 글자와 2px 밑줄, 줄 전체는 탭 구분선처럼 화면 끝까지 그린다. */
+
+.poker-view .poker-board-nav {
+    margin: 10px calc(-1 * var(--gutter)) 0;
+    border-bottom: var(--rule) solid var(--line);
+}
+
+.poker-view .poker-board-nav-scroll {
+    display: flex;
+    gap: var(--space-5);
+    margin: 0;
+    padding: 0 var(--gutter);
+    list-style: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+}
+
+.poker-view .poker-board-nav-scroll::-webkit-scrollbar {
+    display: none;
+}
+
+.poker-view .poker-board-nav-scroll > li {
+    flex: none;
+    display: flex;
+}
+
+/* 마지막 항목이 흐려지는 오른쪽 가장자리에 가려지지 않게 여유를 둔다. */
+.poker-view .poker-board-nav-scroll > li:last-child {
+    padding-right: 28px;
+}
+
+.poker-view .poker-board-nav-item {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-height: 44px;
+    border-bottom: var(--rule-bold) solid transparent;
+    color: var(--muted);
+    font: var(--type-tab);
+    white-space: nowrap;
+    transition: color var(--dur) ease-out, border-color var(--dur) ease-out;
+}
+
+/* 스크롤 줄 안에서 포커스 테두리가 잘리지 않게 안쪽으로 그린다. */
+.poker-view .poker-board-nav-item:focus-visible {
+    outline-offset: -2px;
+    border-radius: var(--radius-xs);
+}
+
+.poker-view .poker-board-nav-item:hover {
+    color: var(--fg);
+}
+
+.poker-view .poker-board-nav-item.active {
+    color: var(--fg);
+    border-bottom-color: var(--fg);
+}
+
+.poker-view .poker-board-nav-lock {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .poker-view .poker-board-nav-item {
+        transition: none;
+    }
 }
