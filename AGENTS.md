@@ -77,8 +77,21 @@ pm2 logs dc-mirror
 - `/poker` opens the board reader; `/poker/<board_id>` lists posts and
   `/poker/<board_id>/<pid>` reads a post with the source page preserved.
 - `app/services/poker_boards.py` defines the ten-board allowlist and validates upstream links.
-- `app/services/pokergosu.py` uses synchronous request-owned `curl_cffi` sessions and `lxml`.
+- `app/services/pokergosu.py` uses synchronous `curl_cffi` sessions and `lxml`.
   Keep these calls outside the shared DC async loop. Cache and in-flight keys include the board.
+  Sessions are thread-local and discarded on transport errors, oversize bodies, or challenges.
+  Cooldown and start pacing are shared across Gunicorn workers through an `fcntl`-locked state
+  file (`MIRROR_POKER_STATE_FILE`); keep the same inode and fall back to process-local state on OSError.
+  Transient 502/503 failures may return expired successes with `stale: True` within
+  `MIRROR_POKER_STALE_SECONDS`; 400/403/404 never do. Templates and JSON surface that as a notice.
+  Routes pass `prepare` callables so sanitized HTML is cached; body and comment preparers differ
+  (only the body keeps exact YouTube embeds, normalized to `youtube-nocookie.com`).
+- Search is `/poker/<board_id>/search?s=1..5&v=` (news excludes 5, 2-20 chars) and validated
+  in `poker_boards.validate_search` before any fetch. Search context (`search`) follows read,
+  footer list, back links, and error retry URLs. Cache keys include board, s, v, and page.
+- Successful Poker HTML views record recent rows as `board="poker:<id>", kind="poker"` through
+  `touch_recent_poker_board`; keep them isolated from DC rows with the same board id.
+- `scripts/poker_smoke.py` checks every public board against the live source.
 - Eight boards are public; `groupbuy` and `qna` currently redirect to upstream login and show
   a 403 explanation. Login redirects do not trigger the Cloudflare cooldown.
 - `app/services/poker_media.py` sanitizes content and serves signed, allowlisted images through

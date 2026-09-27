@@ -21,6 +21,7 @@ from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
 from .services import link_preview, youtube_meta
+from .services.poker_boards import BOARDS as POKER_BOARDS
 from .services.recent import (
     RECENT_MAX_ITEMS,
     clear_recent_galleries,
@@ -539,7 +540,8 @@ def _recent_gallery_name_lookup(rows):
     need_lookup = {
         ((row.get("board") or "").strip(), row.get("kind"))
         for row in rows or []
-        if (row.get("board") or "").strip() and not _stored_gallery_name(row)
+        if row.get("kind") != "poker"
+        and (row.get("board") or "").strip() and not _stored_gallery_name(row)
     }
     if not need_lookup:
         return {}
@@ -592,13 +594,26 @@ def _build_recent_items(rows):
             or gallery_names.get((board, kind))
             or gallery_names.get((board, None))
         )
+        is_poker = kind == "poker"
+        display_id = board.removeprefix("poker:") if is_poker else board
+        gallery_name = saved_name or looked_up_name
+        if is_poker and not gallery_name:
+            gallery_name = f"포커고수 {POKER_BOARDS[display_id]['label']}"
+        href = (
+            url_for("poker.board", board_id=display_id, page=1)
+            if is_poker else board_url(
+                board, recommend=0, page=1, kind=kind, gallery_name=gallery_name,
+            )
+        )
         recent_items.append(
             {
                 "board": board,
-                "display_name": saved_name or looked_up_name or board,
-                "gallery_name": saved_name or looked_up_name,
+                "display_id": display_id,
+                "href": href,
+                "display_name": gallery_name or board,
+                "gallery_name": gallery_name,
                 "kind": kind,
-                "kind_label": GALLERY_KIND_LABELS.get(kind, kind or "일반"),
+                "kind_label": "포커고수" if is_poker else GALLERY_KIND_LABELS.get(kind, kind or "일반"),
                 "visited_at_label": format_relative_day_time(row.get("visited_at")),
                 "visited_at_str": format_recent_time(row.get("visited_at")),
             }

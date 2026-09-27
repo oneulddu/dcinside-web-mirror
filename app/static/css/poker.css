@@ -78,6 +78,34 @@
     margin: var(--space-2) 0 var(--space-1);
 }
 
+/* 지난 캐시 안내와 동적으로 붙는 안내는 숨김 속성을 확실히 따른다. */
+.poker-view .poker-stale-notice[hidden] {
+    display: none;
+}
+
+.poker-view .poker-read .poker-stale-notice {
+    margin: var(--space-4) 0 0;
+}
+
+.poker-view .poker-post-list .poker-stale-notice {
+    margin: var(--space-2) 0 var(--space-3);
+}
+
+/* 검색 결과 요약은 목록 위, 검색 폼은 목록과 페이지 이동 사이에 둔다. */
+.poker-view .poker-feed > .board-search-summary {
+    padding: 0 0 var(--space-2);
+}
+
+.poker-view .poker-search-form {
+    margin: var(--space-5) 0 0;
+}
+
+.poker-view .poker-search-error {
+    margin: var(--space-2) var(--space-1) 0;
+    color: var(--hot);
+    font: var(--type-note);
+}
+
 /* 댓글 본문은 서버에서 정리한 HTML이라 문단 없이 글자만 올 수도 있다. */
 .poker-view .poker-comment-body {
     max-width: 100%;

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_bits.html" import back_link %}
 {% from "poker/_nav.html" import board_nav %}
+{% from "poker/_search.html" import poker_search_form, poker_search_summary, stale_notice %}
 
 {% block body_class %}board-view poker-view{% endblock %}
 
@@ -21,6 +22,9 @@
 
 {% block content %}
 <section class="feed-list poker-feed" aria-label="{{ board_name }} 글 목록">
+    {% if data.stale %}{{ stale_notice() }}{% endif %}
+    {{ poker_search_summary(board_id, search, data.posts | length) }}
     {% include "poker/_post_list.html" %}
+    {{ poker_search_form(board_id, search_types, search, search_error) }}
 </section>
 {% endblock %}

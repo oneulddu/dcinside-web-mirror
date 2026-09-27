@@ -18,6 +18,23 @@ BOARDS = {
 }
 
 
+def search_types(board_id):
+    labels = ('제목+내용', '제목', '내용', '댓글', '작성자')
+    return [dict(value=i, label=label) for i, label in enumerate(labels, 1)
+            if board_id != 'news' or i != 5]
+
+
+def validate_search(board_id, s, v):
+    """Validate decoded query values once, before fetching or building cache keys."""
+    choices = {str(item['value']): item for item in search_types(board_id)}
+    if str(s) not in choices:
+        raise ValueError('검색 범위를 확인해 주세요.')
+    v = str(v or '').strip()
+    if not 2 <= len(v) <= 20:
+        raise ValueError('검색어는 2~20자로 입력해 주세요.')
+    return dict(s=choices[str(s)]['value'], v=v, label=choices[str(s)]['label'])
+
+
 def poker_link(value, base_url=BASE_URL + '/'):
     """Return a validated board, optional post/page, and supported fragment."""
     try:

@@ -107,14 +107,17 @@ def test_comment_requests_coalesce(monkeypatch):
 def test_comment_endpoint_sanitizes_every_row_and_preserves_cursor(monkeypatch):
     calls = []
 
-    def fetch(pid, page, board_id='free'):
-        calls.append((pid, page, board_id))
-        return pg.parse_post(page_fixture(page), pid)
+    reader = pg.Reader()
 
-    monkeypatch.setattr(poker_routes.reader, 'comment_page', fetch)
+    def fetch(path):
+        calls.append(path)
+        return page_fixture(1)
+
+    monkeypatch.setattr(reader, '_fetch', fetch)
+    monkeypatch.setattr(poker_routes, 'reader', reader)
     response = create_app().test_client().get('/poker/hand/123/comments?cpage=1')
     assert response.status_code == 200
-    assert calls == [(123, 1, 'hand')]
+    assert calls == ['/hand/123?cpage=1']
     assert response.headers['Cache-Control'] == 'no-store'
     assert response.headers['X-Content-Type-Options'] == 'nosniff'
     data = response.get_json()

@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% from "_bits.html" import back_link, number, post_time %}
 {% from "poker/_nav.html" import board_nav %}
-{% set board_href = url_for('poker.board', board_id=board_id, page=page) %}
+{% from "poker/_search.html" import stale_notice %}
+{#- 검색 결과에서 들어왔으면 돌아가는 곳도 같은 검색 결과 페이지다. -#}
+{% set q = search if search is defined and search else none %}
+{% set board_href = url_for('poker.search', board_id=board_id, s=q.s, v=q.v, page=page) if q else url_for('poker.board', board_id=board_id, page=page) %}
 {% set source_base = (source_url or "").split("#")[0] %}
 
 {% block body_class %}read-view poker-view{% endblock %}
@@ -28,6 +31,7 @@
         </div>
         {% endif %}
     </div>
+    {% if data.stale %}{{ stale_notice() }}{% endif %}
 
     <div class="body-media-controls" hidden>
         <button class="body-media-toggle" type="button" data-body-media-group="image" aria-expanded="false" aria-controls="article-body" hidden>이미지 전체 보기</button>
@@ -39,7 +43,7 @@
 
     {% if data.unsupported_media %}
     <aside class="poker-notice" aria-label="원문 확인 안내">
-        <p>동영상이나 첨부 파일 일부는 여기서 보이지 않아요.</p>
+        <p>일부 동영상·첨부 파일은 원문에서 확인해 주세요.</p>
         {% if source_url %}<a class="poker-notice-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문에서 보기<span class="sr-only"> (새 창)</span></a>{% endif %}
     </aside>
     {% endif %}
@@ -56,6 +60,7 @@
     {% set comments_next = data.comments_next_page if data.comments_next_page is number else "" %}
     <section class="comment-shell poker-comments" id="comment" aria-labelledby="comment-title" data-comments-url="{{ url_for('poker.comments', board_id=board_id, pid=data.id) }}" data-next-page="{{ comments_next }}" data-total="{{ data.comment_count if data.comment_count is number else '' }}">
         <h2 id="comment-title" tabindex="-1">댓글 <span class="comment-count">{{ number(data.comment_count if data.comment_count is number else shown_count) }}</span></h2>
+        {{ stale_notice(' data-poker-comments-stale' ~ ('' if data.stale else ' hidden')) }}
         {% if data.comments_partial %}
         <div class="poker-notice" role="note" data-poker-comments-notice>
             <p data-poker-comments-notice-text>댓글 일부만 보여요.{% if data.comment_count is number %} 전체 {{ number(data.comment_count) }}개 중 {{ number(shown_count) }}개예요.{% endif %}</p>
@@ -82,11 +87,12 @@
     <div class="section-band" aria-hidden="true"></div>
 
     {# 같은 게시판의 출발 페이지 목록. 본문과 따로 불러오고, 실패해도 본문은 그대로 둔다. #}
-    {% set list_title = board_name | replace("포커고수 ", "") %}
-    <section class="feed-list poker-post-list" id="poker-post-list" aria-labelledby="poker-post-list-title" data-list-url="{{ url_for('poker.post_list', board_id=board_id) }}" data-page="{{ page }}" data-current-pid="{{ data.id }}">
+    {% set list_title = (board_name | replace("포커고수 ", "")) ~ (" 검색 결과" if q else "") %}
+    <section class="feed-list poker-post-list" id="poker-post-list" aria-labelledby="poker-post-list-title" data-list-url="{{ url_for('poker.post_list', board_id=board_id) }}" data-page="{{ page }}" data-current-pid="{{ data.id }}"{% if q %} data-search-s="{{ q.s }}" data-search-v="{{ q.v }}"{% endif %}>
         <div class="board-head">
             <h2 id="poker-post-list-title" tabindex="-1" data-poker-list-heading>{{ list_title }}</h2>
         </div>
+        {{ stale_notice(' data-poker-list-stale hidden') }}
         <div class="poker-post-list-status">
             <p class="poker-post-list-message" role="status" aria-live="polite" data-poker-list-message></p>
             <div class="poker-post-list-actions" data-poker-list-actions hidden>
@@ -192,5 +198,6 @@
 </script>
 <script defer src="{{ static_url('javascript/poker_post_list.js') }}"></script>
 <script defer src="{{ static_url('javascript/poker_comments.js') }}"></script>
+<script defer src="{{ static_url('javascript/comment_spam_filter.js') }}"></script>
 <script src="{{ static_url('javascript/back_to_top.js') }}"></script>
 {% endblock %}

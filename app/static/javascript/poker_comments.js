@@ -90,7 +90,7 @@
             }
             rows.push({ id: payload.comments[i].id, item: item });
         }
-        return { rows: rows, next: next, total: total };
+        return { rows: rows, next: next, total: total, stale: payload.stale === true };
     }
 
     function dispatchAdded(count) {
@@ -123,6 +123,8 @@
         var live = section.querySelector("[data-poker-comments-live]");
         var noticeText = section.querySelector("[data-poker-comments-notice-text]");
         var notice = section.querySelector("[data-poker-comments-notice]");
+        // 지난 캐시로 받은 댓글 페이지가 하나라도 붙어 있으면 안내를 계속 보여 준다.
+        var staleNotice = section.querySelector("[data-poker-comments-stale]");
         var heading = document.getElementById("comment-title");
         var countNode = heading ? heading.querySelector(".comment-count") : null;
 
@@ -351,6 +353,9 @@
                 total = null;
             }
             insert(fresh);
+            if (data.stale && staleNotice) {
+                staleNotice.hidden = false;
+            }
             hideRetry();
             successes += 1;
             cursor = data.next;

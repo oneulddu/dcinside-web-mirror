@@ -16,6 +16,109 @@ from app.services.link_preview import preview_image_signature
 FIXTURES = Path(__file__).parent / 'fixtures' / 'pokergosu'
 
 
+@pytest.mark.parametrize('host', ['youtube.com', 'www.youtube.com', 'youtube-nocookie.com',
+                                  'www.youtube-nocookie.com'])
+@pytest.mark.parametrize('scheme', ['https:', ''])
+def test_youtube_body_normalization_and_comment_exclusion(host, scheme):
+    raw = (f'<iframe src="{scheme}//{host}/embed/Abcdef_12-3?autoplay=1&amp;list=x#fragment" '
+           'srcdoc="evil" allow="autoplay" onload="evil()" style="display:none" width="1000" '
+           'class="bad" data-secret="bad"></iframe>')
+    with create_app().test_request_context('/'):
+        soup = BeautifulSoup(media.prepare_html(raw, allow_youtube=True), 'html.parser')
+        assert soup.iframe.attrs == {
+            'src': 'https://www.youtube-nocookie.com/embed/Abcdef_12-3', 'loading': 'lazy',
+            'title': 'YouTube 동영상', 'referrerpolicy': 'strict-origin-when-cross-origin',
+            'allowfullscreen': '',
+        }
+        assert not BeautifulSoup(media.prepare_html(raw), 'html.parser').iframe
+
+
+@pytest.mark.parametrize('src', [
+    'http://www.youtube.com/embed/Abcdef_12-3', 'https://www.youtube.com:443/embed/Abcdef_12-3',
+    'https://www.youtube.com:/embed/Abcdef_12-3', 'https://u:p@www.youtube.com/embed/Abcdef_12-3',
+    'https://www.youtube.com.evil.test/embed/Abcdef_12-3', 'https://www.youtube.com./embed/Abcdef_12-3',
+    'https://youtu.be/Abcdef_12-3', 'https://www.youtube.com/shorts/Abcdef_12-3',
+    'https://www.youtube.com/embed/short', 'https://www.youtube.com/embed/Abcdef_12-3/',
+    'https://www.youtube.com/embed/Abcdef_12-3/extra', 'https://www.youtube.com/embed/Abcdef_12-3%2f',
+    '/embed/Abcdef_12-3', 'https://www.you\ntube.com/embed/Abcdef_12-3',
+    'https://www.youtube.com\\@evil.test/embed/Abcdef_12-3',
+    'https://www.youtube.com/embed/Abcdef_12-3?x=\x7f', 'https://[',
+    'https://m.dcinside.com/poll?id=1', 'https://platform.twitter.com/embed/Tweet.html?id=1',
+])
+def test_poker_youtube_rejects_unsafe_or_non_embed_urls(src):
+    from html import escape
+    assert media.youtube_iframe_src(src) is None
+    raw = '<iframe src="' + escape(src, quote=True) + '"></iframe>'
+    with create_app().test_request_context('/'):
+        assert not BeautifulSoup(media.prepare_html(raw, allow_youtube=True), 'html.parser').iframe
+    raw_post = fixture('post').decode().replace('<p>첫 문단</p>', raw)
+    assert pg.parse_post(raw_post, 123)['unsupported_media'] is True
+
+
+@pytest.mark.parametrize('other,unsupported', [
+    ('', False), ('<a href="https://example.org/read">일반 외부 링크</a>', False),
+    ('<video src="https://example.org/a.mp4"></video>', True), ('<audio></audio>', True),
+    ('<object data="x"></object>', True), ('<embed src="x">', True),
+    ('<iframe src="https://evil.test/embed/Abcdef_12-3"></iframe>', True),
+    ('<a download href="https://example.org/file.pdf">첨부</a>', True),
+    ('<a href="/file"><img alt="file" src="https://www.ipokergosu.com/files/pg/util/file.gif"></a>', True),
+])
+def test_post_unsupported_media_uses_same_youtube_policy(other, unsupported):
+    youtube = '<iframe src="//www.youtube.com/embed/Abcdef_12-3"></iframe>'
+    raw = fixture('post').decode().replace('<p>첫 문단</p>', youtube + other)
+    assert pg.parse_post(raw, 123)['unsupported_media'] is unsupported
+
+
+def test_prepared_body_comment_and_raw_caches_remain_separate(monkeypatch):
+    from functools import partial
+    youtube = '<iframe src="https://www.youtube.com/embed/Abcdef_12-3"></iframe>'
+    raw = fixture('post').decode().replace('<p>첫 문단</p>', youtube).replace('<p>첫 댓글</p>', youtube)
+    reader, calls = pg.Reader(), []
+    monkeypatch.setattr(reader, '_fetch', lambda path: calls.append(path) or raw.encode())
+    app = create_app()
+    with app.test_request_context('/'):
+        unprepared = reader.post(123)
+        blocked = reader.post(123, prepare=media.prepare_html)
+        split = (partial(media.prepare_html, allow_youtube=True), media.prepare_html)
+        prepared = reader.post(123, prepare=split)
+        again = reader.post(123, prepare=split)
+    assert len(calls) == 3
+    assert 'www.youtube.com/embed/' in unprepared['html']
+    assert not BeautifulSoup(blocked['html'], 'html.parser').iframe
+    assert 'www.youtube-nocookie.com/embed/' in prepared['html']
+    assert prepared == again
+    assert not any(BeautifulSoup(comment['html'], 'html.parser').iframe for comment in prepared['comments'])
+
+
+def test_routes_keep_youtube_only_in_body_and_never_fetch_auxiliary_media(monkeypatch):
+    from flask import template_rendered
+    youtube = '<iframe src="https://www.youtube.com/embed/Abcdef_12-3?autoplay=1"></iframe>'
+    raw = fixture('post').decode().replace('<p>첫 문단</p>', youtube).replace('<p>첫 댓글</p>', youtube)
+    reader, calls, contexts = pg.Reader(), [], []
+    monkeypatch.setattr(reader, '_fetch', lambda path: calls.append(path) or raw.encode())
+    monkeypatch.setattr(poker_routes, 'reader', reader)
+    monkeypatch.setattr(media, 'resolve_media_target', lambda *a, **k: pytest.fail('auxiliary media request'))
+    app = create_app()
+    def record(sender, template, context, **extra):
+        contexts.append((template.name, context))
+    with template_rendered.connected_to(record, app):
+        client = app.test_client()
+        assert client.get('/poker/free/123').status_code == 200
+        data = contexts[-1][1]['data']
+        assert BeautifulSoup(data['html'], 'html.parser').iframe
+        assert data['unsupported_media'] is False
+        assert not any(BeautifulSoup(c['html'], 'html.parser').iframe for c in data['comments'])
+        response = client.get('/poker/free/123/comments?cpage=1')
+    assert response.status_code == 200
+    assert not any(BeautifulSoup(c['html'], 'html.parser').iframe for c in response.json['comments'])
+    assert calls == ['/free/123', '/free/123?cpage=1']
+
+
+@pytest.fixture(autouse=True)
+def isolated_limiter(monkeypatch, tmp_path):
+    monkeypatch.setenv('MIRROR_POKER_STATE_FILE', str(tmp_path / 'upstream.json'))
+
+
 def fixture(name):
     return (FIXTURES / (name + '.html')).read_bytes()
 
@@ -60,7 +163,7 @@ def test_cache_copy_expiry_and_bounded_capacity(monkeypatch):
     data['posts'].clear()
     assert len(r.board(1)['posts']) == 2
     assert len(calls) == 1
-    r.cache[('board', 'free', 1)] = (0, {}, None)
+    r.cache[('board', 'free', 1)].fresh_until = 0
     assert len(r.board(1)['posts']) == 2
     assert len(calls) == 2
     monkeypatch.setattr(pg, 'CACHE_LIMIT', 2)
@@ -94,8 +197,7 @@ def install_upstream(monkeypatch, status=200, headers=None, payload=None):
     class Session:
         def __init__(self, **kwargs):
             assert kwargs == {'impersonate': 'chrome', 'trust_env': False}
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
+        def close(self): pass
         def get(self, url, **kwargs):
             calls.append((url, kwargs))
             chunk = payload if payload is not None else fixture('board')
@@ -116,7 +218,7 @@ def test_challenge_stops_other_requests_and_is_not_cached_as_data(monkeypatch, s
             r.board(page)
         assert exc.value.status == 503
     assert len(calls) == 1
-    assert all(entry[1] is None for entry in r.cache.values())
+    assert all(entry.value is None for entry in r.cache.values())
 
 
 @pytest.mark.parametrize('status,expected', [(404, 404), (410, 404), (302, 502), (500, 502)])
@@ -229,7 +331,10 @@ def test_routes_validate_before_fetch(monkeypatch, path):
 
 def test_routes_render_and_return_to_source_page(monkeypatch):
     monkeypatch.setattr(poker_routes.reader, 'board', lambda page, board_id='free': pg.parse_board(fixture('board'), page))
-    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid, board_id='free': pg.parse_post(fixture('post'), pid))
+    reader = pg.Reader()
+    monkeypatch.setattr(reader, '_fetch', lambda path: fixture('post'))
+    monkeypatch.setattr(poker_routes, 'reader', reader)
+    monkeypatch.setattr(reader, 'board', lambda page, board_id='free': pg.parse_board(fixture('board'), page))
     client = create_app().test_client()
     board = client.get('/poker/free?page=2')
     assert board.status_code == 200
@@ -255,7 +360,8 @@ def test_route_errors_and_partial_comments(monkeypatch):
     assert soup.find('a', string='돌아가기')['href'] == '/poker/free?page=1'
     data = pg.parse_post(fixture('post'), 123)
     data['comments_partial'] = True; data['comment_count'] = 100
-    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid, board_id='free': data)
+    monkeypatch.setattr(poker_routes.reader, 'post',
+                        lambda pid, board_id='free', prepare=None: pg.Reader._prepare(data, prepare))
     response = client.get('/poker/free/123')
     assert response.status_code == 200
     assert '일부'.encode() in response.data
@@ -292,7 +398,7 @@ def test_real_curl_callback_aborts_oversize_without_caching_success(monkeypatch)
     try:
         with pytest.raises(pg.PokerError):
             reader.board(1)
-        assert reader.cache[('board', 'free', 1)][1] is None
+        assert reader.cache[('board', 'free', 1)].value is None
     finally:
         server.shutdown()
         server.server_close()
@@ -303,7 +409,8 @@ def test_malformed_body_and_comment_links_keep_text(monkeypatch):
     data = pg.parse_post(fixture('post'), 123)
     data['html'] = '<p>안전한 본문 <a href="https://[">잘못된 링크</a></p>'
     data['comments'][0]['html'] = '<a href="https://[">댓글 링크</a>'
-    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid, board_id='free': data)
+    monkeypatch.setattr(poker_routes.reader, 'post',
+                        lambda pid, board_id='free', prepare=None: pg.Reader._prepare(data, prepare))
     response = create_app().test_client().get('/poker/free/123')
     assert response.status_code == 200
     soup = BeautifulSoup(response.data, 'html.parser')

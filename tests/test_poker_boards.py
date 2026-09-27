@@ -17,6 +17,11 @@ PUBLIC_BOARDS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def isolated_limiter(monkeypatch, tmp_path):
+    monkeypatch.setenv('MIRROR_POKER_STATE_FILE', str(tmp_path / 'upstream.json'))
+
+
 def board_html(board_id):
     raw = (FIXTURES / 'board.html').read_text()
     return raw.replace('자유 게시판', PUBLIC_BOARDS[board_id]).replace('/free/', '/' + board_id + '/').encode()
@@ -88,8 +93,7 @@ def test_invalid_board_rejected_at_reader_boundary(monkeypatch, board_id):
 def test_login_redirect_does_not_trigger_global_challenge_cooldown(monkeypatch):
     class Session:
         def __init__(self, **kw): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
+        def close(self): pass
         def get(self, url, **kw):
             assert kw['allow_redirects'] is False
             return SimpleNamespace(status_code=302, headers={'location': '/login?to=/groupbuy'})
@@ -107,7 +111,9 @@ def test_routes_use_board_in_urls_and_navigation(monkeypatch, board_id):
         raw = (FIXTURES/'news.html').read_bytes() if board_id=='news' else board_html(board_id)
         return pg.parse_board(raw, page, board_id)
     monkeypatch.setattr(poker_routes.reader, 'board', board)
-    monkeypatch.setattr(poker_routes.reader, 'post', lambda pid, board_id='free': pg.parse_post((FIXTURES/'post.html').read_bytes(), pid))
+    monkeypatch.setattr(poker_routes.reader, 'post',
+                        lambda pid, board_id='free', prepare=None:
+                        pg.Reader._prepare(pg.parse_post((FIXTURES/'post.html').read_bytes(), pid), prepare))
     client = create_app().test_client()
     r = client.get('/poker/'+board_id+'?page=2')
     assert r.status_code == 200

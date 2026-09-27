@@ -1,17 +1,24 @@
 """On-demand, bounded public Pokergosu reader. Independent of the DC event loop."""
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from copy import deepcopy
+from dataclasses import dataclass
+import fcntl
+import json
+import math
+import os
+from pathlib import Path
 import re
 import logging
 import threading
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 from curl_cffi import requests
 from curl_cffi.curl import CURL_WRITEFUNC_ERROR
 from lxml import etree, html
 
-from .poker_boards import BASE_URL, MAX_PAGE, BOARDS, poker_link, is_login_redirect
+from .poker_boards import BASE_URL, MAX_PAGE, BOARDS, poker_link, is_login_redirect, validate_search
+from .poker_media import youtube_iframe_src
 MAX_HTML_BYTES = 4 * 1024 * 1024
 CACHE_LIMIT = 256
 TIMEOUT = 20
@@ -98,10 +105,11 @@ def _has_news_image(card, pid):
     return False
 
 
-def parse_board(raw, page, board_id='free'):
+def parse_board(raw, page, board_id='free', *, search=False):
     spec = _board_spec(board_id)
     tree = _tree(raw)
-    if spec['label'] not in tree.xpath('string(//title)'):
+    title = tree.xpath('string(//title)').strip()
+    if (search and title != '검색 - 포커고수') or (not search and spec['label'] not in title):
         raise PokerError("게시판 목록 구조를 확인하지 못했어요.")
     posts, seen = [], set()
     if board_id == 'news':
@@ -112,6 +120,8 @@ def parse_board(raw, page, board_id='free'):
         for card in cards:
             links = card.xpath('./p/a[@href]')
             link, pid = _row_link(links, board_id)
+            if link is None and search:
+                raise PokerError("뉴스 검색 결과 구조를 확인하지 못했어요.")
             if link is None or pid in seen:
                 continue
             seen.add(pid)
@@ -126,12 +136,19 @@ def parse_board(raw, page, board_id='free'):
                   if all(label in _text(_first(table.xpath('.//tr'))) for label in ('제목', '글쓴이', '날짜'))]
         if not tables:
             raise PokerError("게시판 목록 구조를 확인하지 못했어요.")
-        for row in tables[0].xpath('.//tr'):
+        for row in tables[0].xpath('.//tr')[1:]:
             cells = row.xpath('./td')
             if len(cells) < 3:
+                if search:
+                    raise PokerError("검색 결과 구조를 확인하지 못했어요.")
                 continue
             links = cells[0].xpath('.//a[@href]')
             link, pid = _row_link(links, board_id)
+            if link is None and search:
+                # Upstream may retain the shared notice row above board results.
+                notice, _ = _row_link(links, 'notice')
+                if notice is None or board_id == 'notice':
+                    raise PokerError("검색 결과 구조를 확인하지 못했어요.")
             if link is None or pid in seen:
                 continue
             seen.add(pid)
@@ -141,6 +158,10 @@ def parse_board(raw, page, board_id='free'):
                               view_count=_number(_text(cells[3])) if len(cells) > 3 else None,
                               voteup_count=_number(_text(cells[4])) if len(cells) > 4 else None))
     return dict(posts=posts, has_next=_next_page(tree, page, posts))
+
+
+def parse_search(raw, page, board_id='free'):
+    return parse_board(raw, page, board_id, search=True)
 
 
 def _inner(node):
@@ -205,7 +226,18 @@ def parse_post(raw, pid):
                 html=_inner(body), comments=comments, comment_count=total,
                 comments_partial=partial, comment_page=comment_page,
                 comments_next_page=comment_page - 1 if comment_page and comment_page > 1 else None,
-                unsupported_media=bool(body.xpath('.//iframe | .//video | .//audio | .//object | .//embed')))
+                unsupported_media=(any(not youtube_iframe_src(node.get('src')) for node in body.xpath('.//iframe'))
+                    or bool(body.xpath('.//video | .//audio | .//object | .//embed | .//source | .//a[@download]'))
+                    or any(_has_attachment(link) for link in body.xpath('.//a'))))
+
+
+@dataclass
+class CacheEntry:
+    fresh_until: float = 0.0
+    stale_until: float = 0.0
+    value: dict | None = None
+    error_until: float = 0.0
+    error: tuple | None = None
 
 
 class Reader:
@@ -217,22 +249,88 @@ class Reader:
         self.cooldown_until = 0.0
         self.last_start = 0.0
         self.pace_lock = threading.Lock()
+        self.sessions = threading.local()
+        # MIRROR_POKER_STALE_SECONDS extends successful values beyond their TTL.
+        self.stale_seconds = max(0, float(os.getenv('MIRROR_POKER_STALE_SECONDS', '600')))
+        # Shared wall-clock timestamps survive worker restarts; never replace this
+        # file's inode, since every worker must flock the same file.
+        self.state_file = Path(os.getenv('MIRROR_POKER_STATE_FILE',
+                              str(Path(__file__).resolve().parents[2] / 'instance/poker_upstream_state.json')))
+        self.state_failed = False
+
+    def _upstream_state(self, action):
+        """Check cooldown, attempt a paced start, or set cooldown under flock."""
+        def update(state):
+            now = time.time()
+            # Clamp shared wall-clock values so a clock step backwards cannot turn
+            # into a long sleep or cooldown outside the HTTP timeout.
+            cooldown = min(max(self.cooldown_until, state.get('cooldown_until', 0)), now + 60)
+            last = min(max(self.last_start, state.get('last_start', 0)), now)
+            if action == 'cooldown':
+                cooldown = max(cooldown, now + 60)
+            blocked = cooldown > now
+            delay = min(0.3, max(0, last + 0.3 - now)) if action == 'start' else 0
+            if action == 'start' and not blocked and not delay:
+                last = now
+            self.cooldown_until, self.last_start = cooldown, last
+            return {'cooldown_until': cooldown, 'last_start': last}, blocked, delay
+
+        with self.pace_lock:
+            if not self.state_failed:
+                try:
+                    self.state_file.parent.mkdir(parents=True, exist_ok=True)
+                    with self.state_file.open('a+', encoding='utf-8') as handle:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                        handle.seek(0)
+                        try:
+                            state = json.loads(handle.read(4096))
+                            if not isinstance(state, dict):
+                                state = {}
+                            state = {key: value for key, value in state.items()
+                                     if key in ('cooldown_until', 'last_start')
+                                     and type(value) in (int, float) and math.isfinite(value) and value >= 0}
+                        except (ValueError, UnicodeError, OverflowError):
+                            state = {}
+                        state, blocked, delay = update(state)
+                        handle.seek(0)
+                        handle.truncate()
+                        json.dump(state, handle)
+                        handle.flush()
+                        return blocked, delay
+                except OSError:
+                    self.state_failed = True
+                    logger.warning('Pokergosu shared limiter unavailable; using process-local state: %s',
+                                   self.state_file)
+            _, blocked, delay = update({})
+            return blocked, delay
+
+    def _check_upstream(self, action):
+        blocked, delay = self._upstream_state(action)
+        if blocked:
+            raise PokerError("원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요.", 503)
+        return delay
+
+    def _session(self):
+        if not hasattr(self.sessions, 'session'):
+            self.sessions.session = requests.Session(impersonate='chrome', trust_env=False)
+        return self.sessions.session
+
+    def _discard_session(self):
+        session = getattr(self.sessions, 'session', None)
+        if session is not None:
+            del self.sessions.session
+            try:
+                session.close()
+            except Exception:
+                logger.debug('Pokergosu session close failed', exc_info=True)
 
     def _fetch(self, path):
-        with self.lock:
-            if time.monotonic() < self.cooldown_until:
-                raise PokerError("원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요.", 503)
+        self._check_upstream('check')
         if not self.slots.acquire(timeout=1):
             raise PokerError("요청이 많아요. 잠시 후 다시 시도해 주세요.", 503)
         try:
-            with self.pace_lock:
-                delay = max(0, self.last_start + 0.3 - time.monotonic())
-                if delay:
-                    time.sleep(delay)
-                self.last_start = time.monotonic()
-            with self.lock:
-                if time.monotonic() < self.cooldown_until:
-                    raise PokerError("원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요.", 503)
+            while delay := self._check_upstream('start'):
+                time.sleep(delay)
             chunks, size = [], 0
             def receive(chunk):
                 nonlocal size
@@ -241,24 +339,27 @@ class Reader:
                     return CURL_WRITEFUNC_ERROR
                 chunks.append(chunk)
                 return len(chunk)
-            # A request owns its session, so no curl handle is shared across Flask threads.
-            with requests.Session(impersonate='chrome', trust_env=False) as session:
-                response = session.get(BASE_URL + path, timeout=TIMEOUT, allow_redirects=False,
-                                       content_callback=receive)
+            # A thread owns its session, and each request gets its own size guard.
+            response = self._session().get(BASE_URL + path, timeout=TIMEOUT, allow_redirects=False,
+                                           content_callback=receive)
             if size > MAX_HTML_BYTES:
+                self._discard_session()
                 raise PokerError("원본 페이지가 너무 커서 가져오지 못했어요.")
             if response.headers.get('cf-mitigated') == 'challenge' or response.status_code in (403, 429):
-                with self.lock:
-                    self.cooldown_until = time.monotonic() + 60
+                self._discard_session()
+                self._upstream_state('cooldown')
                 raise PokerError("원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요.", 503)
             if response.status_code in (301, 302, 303, 307, 308) and is_login_redirect(response.headers.get('location')):
                 raise PokerError("원본 로그인이 필요한 게시판이에요. 원문에서 확인해 주세요.", 403)
             if response.status_code in (404, 410):
                 raise PokerError("글을 찾을 수 없어요. 삭제되었거나 주소가 바뀌었을 수 있어요.", 404)
+            if response.status_code == 400:
+                raise PokerError("원본 요청을 확인해 주세요.", 400)
             if response.status_code != 200:
                 raise PokerError()
             return b''.join(chunks)
         except requests.RequestsError as exc:
+            self._discard_session()
             raise PokerError() from exc
         finally:
             self.slots.release()
@@ -267,21 +368,34 @@ class Reader:
         with self.lock:
             now = time.monotonic()
             cached = self.cache.get(key)
-            if cached and cached[0] > now:
-                return self._result(cached[1], cached[2])
+            if cached and (cached.fresh_until > now or cached.error_until > now):
+                return self._result(cached)
             future = self.flights.get(key)
             owner = future is None
             if owner:
                 future = self.flights[key] = Future()
         if not owner:
             try:
-                value, error = future.result(timeout=TIMEOUT + 5)
+                entry = future.result(timeout=TIMEOUT + 5)
             except FutureTimeout as exc:
+                with self.lock:
+                    cached = self.cache.get(key)
+                    if cached and cached.value is not None and cached.stale_until > time.monotonic():
+                        return self._stale(cached.value)
                 raise PokerError() from exc
-            return self._result(value, error)
+            return self._result(entry)
         value, error = None, None
         try:
-            value = parser(self._fetch(path))
+            raw = self._fetch(path)
+            try:
+                value = parser(raw)
+            except PokerError:
+                # Only parser failures belong here, not transport/login errors.
+                logger.warning("Pokergosu structure parse failed for %r", key)
+                raise
+            value.pop('stale', None)
+            if key[0] == 'board' and key[2] == 1 and not value['posts']:
+                logger.warning("Pokergosu empty first board page for %r", key)
         except PokerError as exc:
             error = (str(exc), exc.status)
         except Exception:
@@ -289,30 +403,87 @@ class Reader:
             error = ("원본 페이지를 처리하지 못했어요.", 502)
         finally:
             with self.lock:
-                self.cache = {k: v for k, v in self.cache.items() if v[0] > time.monotonic()}
+                now = time.monotonic()
+                previous = self.cache.get(key)
+                if error:
+                    entry = CacheEntry(error_until=now + 10, error=error)
+                    if (error[1] in (502, 503) and previous and previous.value is not None
+                            and previous.stale_until > now):
+                        entry.value = previous.value
+                        entry.stale_until = previous.stale_until
+                else:
+                    entry = CacheEntry(fresh_until=now + ttl,
+                                       stale_until=now + ttl + self.stale_seconds, value=value)
+                self.cache = {k: v for k, v in self.cache.items()
+                              if max(v.stale_until, v.error_until) > now}
+                # Drop expired successes even if their negative-cache entry lives on.
+                for retained in self.cache.values():
+                    if retained.stale_until <= now:
+                        retained.value = None
+                self.cache.pop(key, None)
                 if len(self.cache) >= CACHE_LIMIT:
                     self.cache.pop(next(iter(self.cache)))
-                self.cache[key] = (time.monotonic() + (10 if error else ttl), value, error)
+                self.cache[key] = entry
                 self.flights.pop(key, None)
-                future.set_result((value, error))
-        return self._result(value, error)
+                future.set_result(entry)
+        return self._result(entry)
 
     @staticmethod
-    def _result(value, error):
-        if error:
-            raise PokerError(*error)
-        return deepcopy(value)
+    def _stale(value):
+        data = deepcopy(value)
+        data['stale'] = True
+        return data
+
+    @classmethod
+    def _result(cls, entry):
+        """Fresh data omits `stale`; only transient-error fallback sets it True."""
+        if entry.error:
+            if (entry.error[1] in (502, 503) and entry.value is not None
+                    and entry.stale_until > time.monotonic()):
+                return cls._stale(entry.value)
+            raise PokerError(*entry.error)
+        return deepcopy(entry.value)
+
+    @staticmethod
+    def _prepare(data, prepare):
+        if prepare is not None:
+            prepare_body, prepare_comment = prepare if isinstance(prepare, tuple) else (prepare, prepare)
+            if 'html' in data:
+                data['html'] = prepare_body(data['html'])
+            for comment in data['comments']:
+                comment['html'] = prepare_comment(comment['html'])
+        return data
 
     def board(self, page, board_id='free'):
         _board_spec(board_id)
         return self.get(('board', board_id, page), f'/{board_id}?page={page}',
                         lambda raw: parse_board(raw, page, board_id), 20)
 
-    def post(self, pid, board_id='free'):
-        _board_spec(board_id)
-        return self.get(('post', board_id, pid), f'/{board_id}/{pid}', lambda raw: parse_post(raw, pid), 30)
+    def search(self, page, *, board_id, s, v):
+        spec = _board_spec(board_id)
+        try:
+            search = validate_search(board_id, s, v)
+            if type(page) is not int or not 1 <= page <= MAX_PAGE:
+                raise ValueError('페이지를 확인해 주세요.')
+        except ValueError as exc:
+            raise PokerError(str(exc), 400) from exc
+        if spec.get('login_required'):
+            raise PokerError('원본 로그인이 필요한 게시판이에요. 원문에서 확인해 주세요.', 403)
+        s, v = search['s'], search['v']
+        query = urlencode(dict(s=s, v=v, page=page))
+        return self.get(('search', board_id, s, v, page), f'/{board_id}/search?{query}',
+                        lambda raw: parse_search(raw, page, board_id), 20)
 
-    def comment_page(self, pid, page, board_id='free'):
+    def post(self, pid, board_id='free', *, prepare=None):
+        _board_spec(board_id)
+        # Raw smoke/parser consumers cannot populate the prepared route cache.
+        key = ('post', board_id, pid) + (('prepared',) if prepare is not None else ())
+        if isinstance(prepare, tuple):
+            key += ('body-comment',)
+        return self.get(key, f'/{board_id}/{pid}',
+                        lambda raw: self._prepare(parse_post(raw, pid), prepare), 30)
+
+    def comment_page(self, pid, page, board_id='free', *, prepare=None):
         _board_spec(board_id)
         if (type(pid) is not int or not 1 <= pid <= 999999999999
                 or type(page) is not int or not 1 <= page <= MAX_PAGE):
@@ -322,9 +493,11 @@ class Reader:
             data = parse_post(raw, pid)
             if data['comment_page'] != page:
                 raise PokerError('원본의 댓글 페이지를 확인하지 못했어요.')
-            return {key: data[key] for key in ('comments', 'comment_count', 'comment_page', 'comments_next_page')}
+            result = {key: data[key] for key in ('comments', 'comment_count', 'comment_page', 'comments_next_page')}
+            return self._prepare(result, prepare)
 
-        return self.get(('comments', board_id, pid, page), f'/{board_id}/{pid}?cpage={page}', parse, 30)
+        key = ('comments', board_id, pid, page) + (('prepared',) if prepare is not None else ())
+        return self.get(key, f'/{board_id}/{pid}?cpage={page}', parse, 300)
 
 
 reader = Reader()

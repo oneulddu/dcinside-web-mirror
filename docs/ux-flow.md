@@ -1,3 +1,73 @@
+## 포커고수 기능 UX·백엔드 계약 (2026-09-28)
+
+계획 계약: 백로그 7·9·10·11 및 2의 stale 안내. 기존 `.board-search-*`, `.feed-*`, `.poker-notice`, 댓글·페이저 클래스를 재사용한다.
+부모가 프론트엔드, 후속 Astra가 7·10·11 백엔드를 담당한다. 동시 작업 2–6·8의 `pokergosu.py`·`poker_routes.py`를 먼저 통합하고 HTML 캐시·stale 계약을 유지한다.
+
+### 게시판 검색 (10)
+
+- GET `/poker/<board_id>/search?s=1&v=<검색어>&page=1`; s/page 기본 1. 범위는 1 제목+내용·2 제목·3 내용·4 댓글·5 작성자(뉴스는 1–4).
+- `v`는 앞뒤 공백을 제거한 Unicode 코드 포인트 2–20자; 클라이언트·서버 기준을 일치시킨다.
+  누락·길이 오류·잘못된 s·뉴스 s=5·중복 s/v/page·비정상 page는 원본 요청 없이 400이다.
+  page는 기존 ASCII 숫자 1–10000 제한을 따른다. 알 수 없는 board는 404이다.
+- 400 검색 화면은 입력값을 이스케이프해 보존하고 폼에 연결된 오류를 표시한다(길이: “검색어는 2~20자로 입력해 주세요.”).
+  원본 실패는 기존 502/503·Retry-After 처리를 따르며 “다시 시도” URL에 s/v/page를 보존한다.
+  groupbuy/qna는 로그인 필요 403 안내와 원문 링크를 유지하고 검색 폼·최근 기록을 만들지 않는다.
+- 백엔드 `reader.search(page, *, board_id, s, v)`는 목록과 같은 `posts/has_next/stale`를 반환한다.
+  원본 `/<board>/search` 쿼리는 인코더로 한 번만 인코딩하고, 캐시·동시 요청 키는 (search, board, s, v, page)로 분리한다.
+  기존 요청 제한·실패/stale 정책을 재사용한다. 검색 제목 “검색 - 포커고수”와 결과 표/뉴스 grid를 검증한다.
+  정상 헤더만 있는 표·빈 뉴스 grid는 200 빈 결과, 구조 누락·깨진 결과 행은 파서 오류이며 빈 결과로 캐시하지 않는다.
+  검색 첫 페이지 0건은 항목 8의 일반 목록 첫 페이지 경고와 구분한다. 다음 페이지는 기존 aria-label 페이저로 판단한다.
+- 목록 페이저 아래에 `_bits.html`의 `board_search_form` 모양으로 GET 폼을 둔다(검색 범위·검색어·검색).
+  제출은 page=1, 선택·입력 유지, 도움말 “2~20자”; 결과 목록 위에는 “{범위} ‘{검색어}’ 검색 결과 · 현재 페이지 N개”와 “검색 해제”.
+  전체 결과 수는 추정하지 않는다. 해제·게시판 전환은 대상 일반 목록 1페이지; 빈 결과는 “검색 결과가 없어요.”와 같은 폼을 제공한다.
+- 제목은 s=1/2, 작성자는 s=5일 때 `highlight_search(v)`로 강조한다. 내용·댓글 요약은 만들지 않는다. 이전/다음·첫 페이지 링크는 s/v를 보존하며 JS 없이도 작동한다.
+- 결과 글 링크 `/poker/<board>/<pid>?page=N&s=S&v=V`에 출발 조건을 보존한다. read와 /list도 같은 검증을 적용한다.
+  상단 뒤로 가기·“목록으로”·오류 복귀·noscript는 검색 결과 N페이지로 돌아간다. 직접 진입은 일반 목록으로 복귀하며 본문 링크에는 검색 조건을 임의로 붙이지 않는다.
+- 읽기 하단은 “검색 결과” 목록이며 `/poker/<board>/list?page=N&s=S&v=V&current_pid=P`가 같은 검색을 조회한다.
+  JSON `{html, page, stale}`와 템플릿 검색 문맥 `{s, v}`(비검색은 없음)를 공유한다. 페이저·다음 글·재시도에 조건을 보존한다.
+  현재 글·읽음 표시 재적용, 기존 지연 로딩·부분 교체를 유지하며 하단 이동은 최초 출발 위치의 복귀 링크를 바꾸지 않는다.
+
+### YouTube 재생 (7)
+
+- 본문에서만 HTTPS/프로토콜 상대 주소의 `YOUTUBE_IFRAME_HOSTS` 정확한 호스트와 `/embed/[A-Za-z0-9_-]{11}`만 허용한다.
+  자격 증명·명시적 포트·제어문자·역슬래시·유사 호스트는 거부하고, 공용 정규화 후에도 Poker 전용 조건을 확인한다.
+  src는 `https://www.youtube-nocookie.com/embed/<id>`로 통일하고 쿼리·fragment를 제거한다. autoplay·srcdoc·원본 속성은 복사하지 않는다.
+- 서버가 `loading=lazy`, `title="YouTube 동영상"`, `referrerpolicy="strict-origin-when-cross-origin"`, `allowfullscreen`을 부여한다.
+  기존 `.article-body` 비율·포커스 스타일과 원문 링크를 유지한다. Poker에 `embed_resizer.js`를 추가하지 않으며 플레이어 외 썸네일/oEmbed/크기 조회·서버 미디어 사전 요청도 금지한다.
+- `prepare_html`은 본문에서만 YouTube를 명시적으로 허용하고 댓글에서는 계속 모든 iframe을 제거한다(초기·추가 댓글 동일).
+  정리된 HTML 캐시도 이 문맥을 구분한다. `unsupported_media`는 동일 허용 판정으로 재계산하여 YouTube만 있으면 false,
+  다른 영상·오디오·임베드 또는 실제 미지원 첨부가 있으면 true; 안내는 “일부 동영상·첨부 파일은 원문에서 확인해 주세요.”이다.
+  첨부 여부는 원본 마크업만으로 판단하고 일반 외부 링크를 첨부로 간주하지 않는다. 안내 링크는 “원문에서 보기”이다.
+
+### 댓글 스팸 접기 (9)·지난 데이터 안내 (2)
+
+- Poker는 `.poker-comment-body` 전체 텍스트만 판정한다(작성자·시각·이미지 보기 버튼 제외). 빈/이미지 전용 댓글은 접지 않는다.
+  DC의 `.comment-main p`, 이모티콘 예외·임계값은 유지한다. 최초 실행과 `poker:comments-added`마다 로드된 전체 댓글을 재계산한다.
+  ID 중복 제거 후 실행하며 토글·리스너는 목록당 하나, 접힌 수와 대상만 갱신한다. 펼침 선택·포커스·댓글 DOM·이미지 차단 상태를 보존한다.
+  “접힌 댓글 보기 (N)”/“접힌 댓글 숨기기”와 aria-expanded/aria-controls를 제공하고 판정 0건이면 토글을 숨긴다. 총 댓글 수는 바꾸지 않는다.
+- board/read의 `data.stale === true`, list/comments JSON의 최상위 `stale === true`에 “원본을 새로 가져오지 못해 조금 이전 내용을 보여드려요.”를 표시한다.
+  기본 false; 목록 위·글 메타 아래·댓글 제목 아래 해당 영역에 `.poker-notice` 하나씩 둔다. 서버 안내는 role=note, 동적 추가는 aria-live=polite.
+  댓글은 이전 stale 페이지가 DOM에 남아 있으면 안내를 유지하고, 목록은 최신 응답으로 완전히 교체될 때 해제한다. partial 안내와 구분하며 자동 재요청하지 않는다.
+
+### 최근 본 게시판 (11)
+
+- 저장 행은 `{board:'poker:free', kind:'poker', name:'포커고수 자유 게시판', visited_at:…}`; board 접두사가 DC free와의 충돌을 막는다.
+  `recent.py`의 kind 허용에 poker를 추가하고 Poker 행은 BOARDS의 ID만 인정한다. 접두사 행의 빈 kind는 poker로 복원하며 잘못된 조합은 제외한다.
+  확인: 쿠키 압축은 name만 제거하고 board/kind를 보존하며 삭제 해시는 board 전체 문자열을 사용한다. 레거시 빈-kind 매칭도 접두사로 격리된다.
+- 성공한 일반 목록·검색·글 보기 HTML(빈 결과·stale 포함)에서 같은 게시판 한 행을 갱신한다. JSON·미디어·실패/403/404는 기록하지 않는다.
+  이름이 압축으로 빠져도 BOARDS에서 복원하고 Poker 행은 DC 이름 조회에서 제외한다. 기존 DC 동작·정렬·최대 개수·홈 8개 제한을 유지한다.
+- 서버 최근 항목에 `href`를 제공하여 홈·/recent가 함께 사용한다(Poker `/poker/<id>?page=1`, DC 기존 board_url).
+  이름 “포커고수 {BOARDS.label}”, 종류 “포커고수”; 화면 ID는 원래 id만 표시한다. 삭제 POST는 board=poker:<id>·kind=poker 그대로 보낸다.
+  개별/전체 삭제·tombstone·다중 워커 병합·재방문 복원을 유지하며 Poker 삭제가 DC 동명 기록에 영향을 주지 않아야 한다.
+
+### 구현 후 인수 검사
+
+- pytest: `test_pokergosu.py`의 안전한 YouTube/혼합 미디어·댓글 차단, 신규 `test_poker_search.py`의 검증·인코딩·표/뉴스·빈 결과·오류·캐시 격리,
+  `test_poker_boards.py`·`test_poker_post_list.py`의 검색 복귀/페이저/403·stale, `test_poker_comments.py`의 stale/partial, `test_recent_gallery_names.py`의 충돌·압축·삭제·홈 링크.
+- 실행은 `uv run --no-project --python 3.12 --with-requirements requirements-dev.txt python -m pytest -q <변경 관련 파일>`; 부모 제공 Poker 125 passed는 사전 기준이며 여기서 재실행하지 않았다.
+- Node: `node tests/javascript/<이름>.test.cjs`로 comment_spam_filter·poker_comments·poker_post_list·poker_read_state의 재계산·펼침 유지·쿼리·stale·읽음 회귀를 확인한다.
+- 브라우저: 390px/데스크톱·양 테마에서 검색/해제/복귀·최근 삭제·키보드 폼/토글/iframe·가로 넘침을 확인한다. 로딩은 기존 aria-busy/진행 문구, 실패는 기존 내용과 재시도 유지,
+  자동 prepend/안내는 포커스를 빼앗지 않고 수동 목록 이동은 기존 제목 포커스를 유지한다. 빈/부분 댓글·미지원 영상·stale 혼합 및 크기/미디어 보조 요청 없음도 확인한다.
 # UX Flow - 숨터 기본 화면 리디자인
 
 ## 최근 본 게시판 합치기와 게시글 시각 표기 (2026-09-26)

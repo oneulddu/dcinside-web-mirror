@@ -10,9 +10,9 @@ from bs4 import BeautifulSoup
 from flask import Response, current_app, url_for
 import requests
 
-from .html_sanitizer import sanitize_html_tree
+from .html_sanitizer import YOUTUBE_IFRAME_HOSTS, normalize_safe_iframe_src, sanitize_html_tree
 from .poker_boards import BASE_URL, poker_link
-from .media_proxy import PinnedMediaAdapter, resolve_media_target
+from .media_proxy import MEDIA_CACHE_MAX_AGE, PinnedMediaAdapter, resolve_media_target
 
 MEDIA_HOSTS = frozenset({'www.ipokergosu.com', 'ipokergosu.com'})
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -40,7 +40,29 @@ def signature(src):
     return hmac.new(key, ('poker-media\n' + src).encode(), hashlib.sha256).hexdigest()
 
 
-def prepare_html(raw, *, base_url=BASE_URL + '/'):
+def youtube_iframe_src(value):
+    """Poker accepts only exact embed URLs, before and after shared normalization."""
+    def valid(url):
+        parsed = urlsplit(url)
+        return (parsed.scheme in ('', 'https') and parsed.hostname in YOUTUBE_IFRAME_HOSTS
+                and parsed.netloc.lower() in YOUTUBE_IFRAME_HOSTS
+                and parsed.username is None and parsed.password is None and parsed.port is None
+                and re.fullmatch(r'/embed/[A-Za-z0-9_-]{11}', parsed.path))
+
+    if not isinstance(value, str) or re.search(r'[\x00-\x20\x7f\\]', value):
+        return None
+    try:
+        if not valid(value):
+            return None
+        normalized = normalize_safe_iframe_src(value)
+        if normalized and valid(normalized):
+            return 'https://www.youtube-nocookie.com' + urlsplit(normalized).path
+    except ValueError:
+        pass
+    return None
+
+
+def prepare_html(raw, *, base_url=BASE_URL + '/', allow_youtube=False):
     soup = BeautifulSoup(raw, 'lxml')
     for node in list(soup.find_all(True)):
         if node.parent is None:
@@ -49,7 +71,11 @@ def prepare_html(raw, *, base_url=BASE_URL + '/'):
         for attr in list(node.attrs):
             if attr == 'class' or attr.startswith('data-'):
                 del node[attr]
-        if node.name in {'iframe', 'video', 'audio', 'object', 'embed', 'source'}:
+        if node.name == 'iframe' and allow_youtube and (src := youtube_iframe_src(node.get('src'))):
+            node.clear()
+            node.attrs = {'src': src, 'loading': 'lazy', 'title': 'YouTube 동영상',
+                          'referrerpolicy': 'strict-origin-when-cross-origin', 'allowfullscreen': ''}
+        elif node.name in {'iframe', 'video', 'audio', 'object', 'embed', 'source'}:
             node.decompose()
             continue
         if node.name == 'img':
@@ -125,7 +151,7 @@ def build_image_response(src, sig):
                 if not mime or upstream.headers.get('Content-Type', '').split(';')[0].strip().lower() != mime:
                     return Response(status=415)
                 return Response(bytes(body), mimetype=mime, headers={
-                    'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff',
+                    'Cache-Control': f'public, max-age={MEDIA_CACHE_MAX_AGE}', 'X-Content-Type-Options': 'nosniff',
                     'Content-Security-Policy': "default-src 'none'; sandbox",
                 })
     except (requests.RequestException, OSError, ValueError):

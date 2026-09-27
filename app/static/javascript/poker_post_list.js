@@ -44,6 +44,10 @@
         var fallbackLink = actions ? actions.querySelector("a[href]") : null;
         var listUrl = section.dataset.listUrl || "";
         var currentPid = /^\d{1,12}$/.test(section.dataset.currentPid || "") ? section.dataset.currentPid : "";
+        // 검색 결과에서 들어온 글이면 아래 목록도 같은 검색 결과를 이어 보여 준다.
+        var searchS = /^[1-5]$/.test(section.dataset.searchS || "") ? section.dataset.searchS : "";
+        var searchV = searchS ? String(section.dataset.searchV || "") : "";
+        var staleNotice = section.querySelector("[data-poker-list-stale]");
         var sourcePage = parsePage(section.dataset.page) || 1;
         if (!body || !message || !listUrl) {
             return;
@@ -96,6 +100,10 @@
             if (currentPid) {
                 url.searchParams.set("current_pid", currentPid);
             }
+            if (searchS && searchV) {
+                url.searchParams.set("s", searchS);
+                url.searchParams.set("v", searchV);
+            }
             return url.pathname + url.search;
         }
 
@@ -111,8 +119,11 @@
             showActions(true);
         }
 
-        function succeed(page, html, moveFocus) {
+        function succeed(page, html, moveFocus, stale) {
             body.innerHTML = html;
+            if (staleNotice) {
+                staleNotice.hidden = !stale;
+            }
             if (typeof CustomEvent === "function") {
                 document.dispatchEvent(new CustomEvent("poker:list-rendered", { detail: { root: body } }));
             }
@@ -184,7 +195,7 @@
                     if (typeof payload.html !== "string") {
                         return { failed: GENERIC_ERROR };
                     }
-                    return { html: payload.html };
+                    return { html: payload.html, stale: payload.stale === true };
                 }, function () {
                     return { failed: GENERIC_ERROR };
                 });
@@ -200,7 +211,7 @@
                     fail(page, fallbackHref, result.failed);
                     return;
                 }
-                succeed(page, result.html, moveFocus);
+                succeed(page, result.html, moveFocus, result.stale);
             });
         }
 

@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 
 from flask import request
 
+from .poker_boards import BOARDS
+
 
 def _env_int(name, default):
     try:
@@ -47,7 +49,7 @@ RECENT_SERVER_CACHE = {}
 RECENT_SERVER_CACHE_LOCK = threading.Lock()
 RECENT_CACHE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 RECENT_TOMBSTONE_BOARD_HASH_RE = re.compile(r"^[0-9a-f]{12,40}$")
-RECENT_GALLERY_KINDS = {"minor", "mini", "person"}
+RECENT_GALLERY_KINDS = {"minor", "mini", "person", "poker"}
 
 
 def _tombstone_board_digest(board):
@@ -133,6 +135,14 @@ def normalize_recent_entry(item):
     board = (item.get("board") or "").strip()
     if not board:
         return None
+    raw_kind = (item.get("kind") or "").strip().lower()
+    kind = normalize_recent_kind(raw_kind)
+    if board.startswith("poker:"):
+        if board.removeprefix("poker:") not in BOARDS or raw_kind not in ("", "poker"):
+            return None
+        kind = "poker"
+    elif kind == "poker":
+        return None
     name = (item.get("name") or "").strip()
     if name == board:
         name = ""
@@ -140,7 +150,7 @@ def normalize_recent_entry(item):
     return {
         "board": board,
         "name": name[:80] or None,
-        "kind": normalize_recent_kind(item.get("kind")),
+        "kind": kind,
         "visited_at": _safe_float(item.get("visited_at", 0), 0.0),
     }
 
@@ -649,11 +659,25 @@ def touch_recent_gallery(response, board, kind, name=None):
         "kind": (kind or "").strip().lower() or None,
         "visited_at": time.time(),
     })
+    if new_row is None:
+        return
     deduped = merge_recent_entries(new_row, rows)
     deduped = set_recent_server_cache(cache_key, deduped, tombstones=tombstones)
 
     save_recent_cache_key_cookie(response, cache_key)
     save_recent_cookie(response, deduped)
+
+
+def touch_recent_poker_board(response, board_id):
+    """Record a supported Poker board in its own recent-history namespace."""
+    if board_id not in BOARDS:
+        return
+    touch_recent_gallery(
+        response,
+        f"poker:{board_id}",
+        "poker",
+        name=f"포커고수 {BOARDS[board_id]['label']}",
+    )
 
 
 def remove_recent_gallery(response, board, kind):
@@ -665,6 +689,8 @@ def remove_recent_gallery(response, board, kind):
         "board": board_id,
         "kind": (kind or "").strip().lower() or None,
     })
+    if target is None:
+        return False
     rows = load_recent_entries()
     remaining = [row for row in rows if not recent_removal_matches(target, row)]
     removed = len(remaining) != len(rows)

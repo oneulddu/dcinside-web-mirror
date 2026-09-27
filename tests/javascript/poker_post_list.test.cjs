@@ -116,13 +116,15 @@ async function flush() {
 function createHarness(options) {
     const config = Object.assign({ observer: true }, options || {});
     const docBody = new Element("body");
-    const section = new Element("section", {
+    const section = new Element("section", Object.assign({
         id: "poker-post-list",
         "data-list-url": "/poker/hand/list",
         "data-page": "3",
         "data-current-pid": "123",
-    });
+    }, config.sectionAttrs || {}));
     const heading = section.appendChild(new Element("h2", { tabindex: "-1", "data-poker-list-heading": "" }));
+    const staleNotice = section.appendChild(new Element("div", { "data-poker-list-stale": "" }));
+    staleNotice.hidden = true;
     const message = section.appendChild(new Element("p", { role: "status", "data-poker-list-message": "" }));
     const actions = section.appendChild(new Element("div", { "data-poker-list-actions": "" }));
     actions.hidden = true;
@@ -200,7 +202,7 @@ function createHarness(options) {
     vm.runInContext(source, context);
 
     return {
-        section, heading, message, actions, retry, fallback, listBody, article, fetchCalls, observers, pagerLink, events,
+        section, heading, staleNotice, message, actions, retry, fallback, listBody, article, fetchCalls, observers, pagerLink, events,
         advance(ms) {
             clock += ms;
             for (const [id, timer] of Array.from(timers)) {
@@ -421,6 +423,33 @@ test("JSON 이 아닌 HTML 429 와 깨진 JSON 은 고정 안내로 처리하고
 });
 
 (async function main() {
+test("검색 결과에서 들어온 글은 아래 목록도 같은 검색 조건으로 요청한다", async () => {
+    const harness = createHarness({ sectionAttrs: { "data-search-s": "5", "data-search-v": "포커 고수" } });
+    harness.observers[0].fire(true);
+    const url = harness.requestUrl(0);
+    assert.equal(url.searchParams.get("s"), "5");
+    assert.equal(url.searchParams.get("v"), "포커 고수");
+    assert.equal(url.searchParams.get("page"), "3");
+
+    const plain = createHarness({ sectionAttrs: { "data-search-s": "9", "data-search-v": "x" } });
+    plain.observers[0].fire(true);
+    assert.equal(plain.requestUrl(0).searchParams.has("s"), false, "알 수 없는 범위는 붙이지 않는다");
+    assert.equal(plain.requestUrl(0).searchParams.has("v"), false);
+});
+
+test("지난 캐시 응답이면 안내를 보이고, 최신 응답으로 바뀌면 숨긴다", async () => {
+    const harness = createHarness();
+    harness.observers[0].fire(true);
+    harness.fetchCalls[0].resolve(json({ html: "<ul>옛 목록</ul>", page: 3, stale: true }));
+    await flush();
+    assert.equal(harness.staleNotice.hidden, false);
+
+    harness.pagerLink(4).click();
+    harness.fetchCalls[1].resolve(json({ html: "<ul>4페이지</ul>", page: 4 }));
+    await flush();
+    assert.equal(harness.staleNotice.hidden, true);
+});
+
     for (const entry of tests) {
         try {
             await entry.fn();
