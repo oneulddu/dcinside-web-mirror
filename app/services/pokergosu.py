@@ -118,6 +118,22 @@ def _inner(node):
     return etree.tostring(node, encoding='unicode', method='html') if node is not None else ''
 
 
+def _comment_page(total_node, complete):
+    """Only the comment heading's pager identifies this response's page."""
+    buttons = total_node.xpath('.//button[@aria-label]') if total_node is not None else []
+    active = []
+    for button in buttons:
+        if 'Page-active' not in (button.get('class') or '').split():
+            continue
+        match = re.fullmatch(r'Go to page ([0-9]{1,5})', button.get('aria-label', ''))
+        if not match or not 1 <= int(match[1]) <= MAX_PAGE:
+            return None
+        active.append(int(match[1]))
+    if len(active) == 1:
+        return active[0]
+    return 1 if not buttons and complete else None
+
+
 def parse_post(raw, pid):
     tree = _tree(raw)
     document = _first(tree.xpath(f'//*[{_class("boarddocument")}]'))
@@ -152,11 +168,14 @@ def parse_post(raw, pid):
     total_node = _first(tree.xpath('//*[@id="comment"]'))
     total_text = ' '.join(total_node.itertext()) if total_node is not None else ''
     total = _number(total_text) if re.search(r'댓글\s*수\s*\d', total_text) else None
+    partial = total is None or total != len(comments)
+    comment_page = _comment_page(total_node, not partial)
     return dict(id=pid, title=title, author=author, time=stamp,
                 view_count=next((_number(_text(e)) for e in meta if '조회 수' in _text(e)), None),
                 voteup_count=next((_number(_text(e)) for e in meta if '추천 수' in _text(e)), None),
                 html=_inner(body), comments=comments, comment_count=total,
-                comments_partial=total is None or total > len(comments),
+                comments_partial=partial, comment_page=comment_page,
+                comments_next_page=comment_page - 1 if comment_page and comment_page > 1 else None,
                 unsupported_media=bool(body.xpath('.//iframe | .//video | .//audio | .//object | .//embed')))
 
 
@@ -263,6 +282,20 @@ class Reader:
     def post(self, pid, board_id='free'):
         _board_spec(board_id)
         return self.get(('post', board_id, pid), f'/{board_id}/{pid}', lambda raw: parse_post(raw, pid), 30)
+
+    def comment_page(self, pid, page, board_id='free'):
+        _board_spec(board_id)
+        if (type(pid) is not int or not 1 <= pid <= 999999999999
+                or type(page) is not int or not 1 <= page <= MAX_PAGE):
+            raise PokerError('댓글 요청을 확인해 주세요.', 400)
+
+        def parse(raw):
+            data = parse_post(raw, pid)
+            if data['comment_page'] != page:
+                raise PokerError('원본의 댓글 페이지를 확인하지 못했어요.')
+            return {key: data[key] for key in ('comments', 'comment_count', 'comment_page', 'comments_next_page')}
+
+        return self.get(('comments', board_id, pid, page), f'/{board_id}/{pid}?cpage={page}', parse, 30)
 
 
 reader = Reader()

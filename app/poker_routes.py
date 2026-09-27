@@ -107,6 +107,31 @@ def read(board_id, pid):
                            page=page, source_url=source_url, **context)
 
 
+@bp.get('/<board_id>/<int:pid>/comments')
+def comments(board_id, pid):
+    try:
+        _context(board_id)
+        value = request.args.get('cpage', '')
+        if (not 1 <= pid <= 999999999999 or not value.isascii() or not value.isdecimal()
+                or not 1 <= len(value) <= 5 or not 1 <= int(value) <= MAX_PAGE):
+            abort(400)
+        page = int(value)
+    except HTTPException as exc:
+        return _list_response({'error': '게시판을 찾을 수 없어요.' if exc.code == 404
+                               else '댓글 요청을 확인해 주세요.'}, exc.code)
+    try:
+        data = reader.comment_page(pid, page, board_id=board_id)
+    except PokerError as exc:
+        return _list_response({'error': str(exc)}, exc.status)
+    source_url = f'{BASE_URL}/{board_id}/{pid}'
+    rows = []
+    for comment in data['comments']:
+        comment['html'] = prepare_html(comment['html'], base_url=source_url)
+        rows.append({'id': comment['id'], 'html': render_template('poker/_comment.html', comment=comment)})
+    return _list_response({'comments': rows, 'page': data['comment_page'],
+                           'next_page': data['comments_next_page'], 'total': data['comment_count']})
+
+
 @bp.get('/media')
 def media():
     return build_image_response(request.args.get('src', ''), request.args.get('sig', ''))

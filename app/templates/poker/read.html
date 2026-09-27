@@ -53,35 +53,30 @@
     <div class="section-band" aria-hidden="true"></div>
 
     {% set shown_count = data.comments|length %}
-    <section class="comment-shell poker-comments" id="comment" aria-labelledby="comment-title">
-        <h2 id="comment-title">댓글 <span class="comment-count">{{ number(data.comment_count if data.comment_count is number else shown_count) }}</span></h2>
+    {% set comments_next = data.comments_next_page if data.comments_next_page is number else "" %}
+    <section class="comment-shell poker-comments" id="comment" aria-labelledby="comment-title" data-comments-url="{{ url_for('poker.comments', board_id=board_id, pid=data.id) }}" data-next-page="{{ comments_next }}" data-total="{{ data.comment_count if data.comment_count is number else '' }}">
+        <h2 id="comment-title" tabindex="-1">댓글 <span class="comment-count">{{ number(data.comment_count if data.comment_count is number else shown_count) }}</span></h2>
         {% if data.comments_partial %}
-        <div class="poker-notice" role="note">
-            <p>댓글 일부만 보여요.{% if data.comment_count is number %} 전체 {{ number(data.comment_count) }}개 중 {{ number(shown_count) }}개예요.{% endif %}</p>
+        <div class="poker-notice" role="note" data-poker-comments-notice>
+            <p data-poker-comments-notice-text>댓글 일부만 보여요.{% if data.comment_count is number %} 전체 {{ number(data.comment_count) }}개 중 {{ number(shown_count) }}개예요.{% endif %}</p>
             {% if source_base %}<a class="poker-notice-link" href="{{ source_base }}#comment" target="_blank" rel="noopener noreferrer">원문에서 전체 댓글 보기<span class="sr-only"> (새 창)</span></a>{% endif %}
         </div>
         {% endif %}
-        <ul class="comment-list">
+        <ul class="comment-list" id="poker-comment-list">
             {% for comment in data.comments %}
-            <li class="comment-item{% if comment.is_reply %} is-reply{% endif %}">
-                {% if comment.is_reply %}
-                <span class="reply-mark" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M6 5v6a4 4 0 0 0 4 4h8"/><path d="M15 12l3 3-3 3"/></svg></span>
-                {% endif %}
-                <div class="comment-main">
-                    {% if comment.is_reply %}<span class="sr-only">답글:</span>{% endif %}
-                    <div class="poker-comment-body">{{ comment.html | safe }}</div>
-                </div>
-                {% if comment.author or comment.time %}
-                <div class="comment-meta">
-                    {% if comment.author %}<span class="author-text">{{ comment.author }}</span>{% endif %}
-                    {% if comment.time %}{{ post_time(comment.time) }}{% endif %}
-                </div>
-                {% endif %}
-            </li>
+            {% include "poker/_comment.html" %}
             {% else %}
             <li class="empty-row">{% if data.comments_partial %}여기서 가져온 댓글이 없어요.{% else %}아직 댓글이 없어요.{% endif %}</li>
             {% endfor %}
         </ul>
+        {% if comments_next != "" %}
+        {# 이전 댓글 페이지를 자동으로 붙이는 동안의 진행·오류 안내. 스크립트가 없으면 위 원문 안내가 대신한다. #}
+        <div class="poker-comments-status" data-poker-comments-status hidden>
+            <p class="poker-comments-progress" data-poker-comments-progress></p>
+            <button class="poker-action is-primary" type="button" data-poker-comments-retry hidden>다시 시도</button>
+        </div>
+        <p class="sr-only" role="status" aria-live="polite" data-poker-comments-live></p>
+        {% endif %}
     </section>
 
     <div class="section-band" aria-hidden="true"></div>
@@ -116,14 +111,17 @@
     (function () {
         "use strict";
         var root = document.documentElement;
-        var images = document.querySelectorAll(".poker-comment-body img.body-image[data-body-image-src]");
-        if (!images.length) {
-            return;
-        }
+        var SELECTOR = ".poker-comment-body img.body-image[data-body-image-src]";
+        var images = [];
         var overrides = new WeakMap();
         var buttons = new WeakMap();
         var lastMode = null;
         var nextId = 0;
+
+        // 댓글이 나중에 붙어도 같은 설정을 따르도록 매번 다시 모은다. 이미 본 이미지의 선택은 WeakMap 에 남는다.
+        function collect() {
+            images = Array.prototype.slice.call(document.querySelectorAll(SELECTOR));
+        }
 
         function blocksImages(mode) {
             return mode === "body" || mode === "all";
@@ -135,7 +133,9 @@
                 return button;
             }
             if (!image.id) {
-                nextId += 1;
+                do {
+                    nextId += 1;
+                } while (document.getElementById("poker-comment-image-" + nextId));
                 image.id = "poker-comment-image-" + nextId;
             }
             button = document.createElement("button");
@@ -182,9 +182,15 @@
         }
 
         new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ["data-media-block-mode"] });
+        document.addEventListener("poker:comments-added", function () {
+            collect();
+            sync();
+        });
+        collect();
         sync();
     })();
 </script>
 <script defer src="{{ static_url('javascript/poker_post_list.js') }}"></script>
+<script defer src="{{ static_url('javascript/poker_comments.js') }}"></script>
 <script src="{{ static_url('javascript/back_to_top.js') }}"></script>
 {% endblock %}

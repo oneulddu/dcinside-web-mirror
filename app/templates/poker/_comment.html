@@ -1,0 +1,17 @@
+{#- 댓글 한 줄. 글 보기 첫 화면과 이전 댓글 JSON 응답이 같은 마크업을 쓴다. comment.html 은 서버에서 정리한 HTML이다. -#}
+{%- from "_bits.html" import post_time -%}
+<li class="comment-item{% if comment.is_reply %} is-reply{% endif %}"{% if comment.id %} data-comment-id="{{ comment.id }}"{% endif %}{% if comment.parent_id %} data-parent-id="{{ comment.parent_id }}"{% endif %}>
+    {% if comment.is_reply %}
+    <span class="reply-mark" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M6 5v6a4 4 0 0 0 4 4h8"/><path d="M15 12l3 3-3 3"/></svg></span>
+    {% endif %}
+    <div class="comment-main">
+        {% if comment.is_reply %}<span class="sr-only">답글:</span>{% endif %}
+        <div class="poker-comment-body">{{ comment.html | safe }}</div>
+    </div>
+    {% if comment.author or comment.time %}
+    <div class="comment-meta">
+        {% if comment.author %}<span class="author-text">{{ comment.author }}</span>{% endif %}
+        {% if comment.time %}{{ post_time(comment.time) }}{% endif %}
+    </div>
+    {% endif %}
+</li>

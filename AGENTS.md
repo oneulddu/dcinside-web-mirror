@@ -84,7 +84,13 @@ pm2 logs dc-mirror
 - `app/services/poker_media.py` sanitizes content and serves signed, allowlisted images through
   the pinned media transport. Do not expand the DC media allowlist for Pokergosu.
 - Templates live in `app/templates/poker/` with scoped `app/static/css/poker.css`.
-  News uses a separate grid parser; missing metadata stays absent. Comments may be partial.
+  News uses a separate grid parser; missing metadata stays absent.
+- Post HTML opens at the last upstream comment page. `poker_comments.js` automatically loads
+  earlier pages through `/poker/<board_id>/<pid>/comments?cpage=N`, one request at a time.
+  Infer comment page only from the `#comment` pager, keep cache keys board/post/page-specific,
+  validate the returned page, sanitize every comment, and deduplicate IDs when prepending.
+  Failed or ambiguous collection stays partial; never delay the initial post for extra pages.
+  Newly added comment images must respect the existing image-block setting.
 
 ### Async Bridge Pattern
 

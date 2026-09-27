@@ -424,3 +424,55 @@
         transition: none;
     }
 }
+
+/* ===== 이전 댓글 자동 수집 =====
+   목록 아래 한 줄 안내와 실패 시 다시 시도 버튼만 둔다. */
+
+.poker-view .poker-comments-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-3);
+    margin: 0 0 var(--space-4);
+}
+
+.poker-view .poker-comments-status[hidden],
+.poker-view .poker-comments-status [hidden],
+.poker-view .poker-comments .poker-notice[hidden] {
+    display: none;
+}
+
+.poker-view .poker-comments-progress {
+    flex: 1 1 200px;
+    margin: 0;
+    color: var(--muted);
+    font: var(--type-note);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+
+.poker-view .poker-comments[data-comments-state="error"] .poker-comments-progress {
+    color: var(--text);
+}
+
+.poker-view .poker-comments-status .poker-action {
+    flex: none;
+    min-height: 44px;
+    border: 0;
+    cursor: pointer;
+}
+
+.poker-view .poker-comments-status .poker-action[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.poker-view .poker-comments h2:focus {
+    outline: none;
+}
+
+.poker-view .poker-comments h2:focus-visible {
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: 4px;
+    border-radius: var(--radius-xs);
+}

@@ -98,6 +98,7 @@ def test_screen_and_service_route_map_contract():
         "/poker/<board_id>": "poker.board",
         "/poker/<board_id>/list": "poker.post_list",
         "/poker/<board_id>/<int:pid>": "poker.read",
+        "/poker/<board_id>/<int:pid>/comments": "poker.comments",
         "/poker/media": "poker.media",
         "/media": "main.media",
         "/movie": "main.movie",
