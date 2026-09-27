@@ -113,6 +113,9 @@
 
         function succeed(page, html, moveFocus) {
             body.innerHTML = html;
+            if (typeof CustomEvent === "function") {
+                document.dispatchEvent(new CustomEvent("poker:list-rendered", { detail: { root: body } }));
+            }
             failedPage = null;
             failedFallback = null;
             section.dataset.shownPage = String(page);

@@ -7,6 +7,9 @@
     var LEGACY_DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1";
     var MEDIA_BLOCK_MODES = { none: true, dccon: true, body: true, all: true };
     var MAX_ENTRIES = 1500;
+    // 포커고수 글 주소는 같은 사이트의 허용된 게시판만 읽음 기록 대상으로 삼는다.
+    var POKER_READ_PATH = /^\/poker\/(free|best|hand|grinding|strategy|news|buyboard|notice|groupbuy|qna)\/(\d{1,12})$/;
+    var READ_LINK_SELECTOR = "a.feed-item[href*=\"/read?\"], a.feed-item[href^=\"/poker/\"]";
     var DEFAULT_THEME = "dark";
     var readStore = null;
     var dcconFoldShowing = false;
@@ -546,9 +549,22 @@
             return null;
         }
         if (url.pathname !== "/read") {
-            return null;
+            return parsePokerReadUrl(url);
         }
         return toReadKey(url.searchParams.get("board"), url.searchParams.get("pid"));
+    }
+
+    // 포커고수 글은 게시판과 무관하게 글 번호로 기록한다(free·best가 같은 글을 공유).
+    function parsePokerReadUrl(url) {
+        if (url.origin !== window.location.origin) {
+            return null;
+        }
+        var match = POKER_READ_PATH.exec(url.pathname);
+        if (!match) {
+            return null;
+        }
+        var pid = Number(match[2]);
+        return pid > 0 ? "poker:" + pid : null;
     }
 
     function markRead(key) {
@@ -563,6 +579,10 @@
     }
 
     function markCurrentRead() {
+        if (window.location.pathname.indexOf("/poker/") === 0) {
+            markCurrentPokerRead();
+            return;
+        }
         if (window.location.pathname !== "/read") {
             return;
         }
@@ -570,10 +590,24 @@
         markRead(toReadKey(params.get("board"), params.get("pid")));
     }
 
+    // 오류 화면에는 본문 표시가 없으므로 글을 제대로 연 경우에만 읽음으로 남긴다.
+    function markCurrentPokerRead() {
+        var key = parseReadHref(window.location.href);
+        var article = document.getElementById("article-body");
+        var marker = article ? article.getAttribute("data-poker-post-id") : null;
+        if (!key || !marker || !/^\d{1,12}$/.test(marker)) {
+            return;
+        }
+        if (key !== "poker:" + Number(marker)) {
+            return;
+        }
+        markRead(key);
+    }
+
     function applyReadState(root, store) {
         var scope = root || document;
         var currentStore = store || readStore || loadStore();
-        var links = scope.querySelectorAll("a.feed-item[href*=\"/read?\"]");
+        var links = scope.querySelectorAll(READ_LINK_SELECTOR);
         var i;
         for (i = 0; i < links.length; i += 1) {
             var link = links[i];
@@ -581,7 +615,12 @@
             if (!key) {
                 continue;
             }
-            link.classList.toggle("is-read", !!currentStore[key]);
+            var isRead = !!currentStore[key];
+            link.classList.toggle("is-read", isRead);
+            var label = link.querySelector("[data-poker-read-label]");
+            if (label) {
+                label.hidden = !isRead;
+            }
         }
     }
 
@@ -595,7 +634,12 @@
             if (!link) {
                 return;
             }
-            markRead(parseReadHref(link.getAttribute("href")));
+            var key = parseReadHref(link.getAttribute("href"));
+            // Poker 주소의 쿼리에 /read?가 있어도 클릭만으로 읽음 처리하지 않는다.
+            if (key && key.indexOf("poker:") === 0) {
+                return;
+            }
+            markRead(key);
             link.classList.add("is-read");
         }, true);
     }
@@ -644,6 +688,12 @@
     }
 
     document.addEventListener("mirror:board-refreshed", function (event) {
+        readStore = loadStore();
+        applyReadState(event.detail && event.detail.root, readStore);
+    });
+
+    // 포커고수 글 아래 목록은 불러온 뒤에 들어오므로 그때 읽음 표시를 입힌다.
+    document.addEventListener("poker:list-rendered", function (event) {
         readStore = loadStore();
         applyReadState(event.detail && event.detail.root, readStore);
     });

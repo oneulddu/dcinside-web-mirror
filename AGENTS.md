@@ -91,6 +91,9 @@ pm2 logs dc-mirror
   validate the returned page, sanitize every comment, and deduplicate IDs when prepending.
   Failed or ambiguous collection stays partial; never delay the initial post for extra pages.
   Newly added comment images must respect the existing image-block setting.
+- Shared `read_state.js` stores Pokergosu posts as `poker:<pid>` alongside unchanged DC keys.
+  Only successful article views mark Poker posts read; footer list updates must reapply read state.
+  Upstream `file.gif` means an attachment, not necessarily a photo. Keep that label distinction.
 
 ### Async Bridge Pattern
 

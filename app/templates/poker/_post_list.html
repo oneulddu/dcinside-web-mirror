@@ -1,7 +1,7 @@
 {# 포커고수 글 목록과 페이지 이동. 게시판 화면(mode 없음)과 글 아래 목록(mode="read")이 같이 쓴다.
    글 아래에서는 홈 버튼을 빼고, 페이지 링크에 data-list-page를 달아 목록 부분만 바꾼다.
    뉴스처럼 원본 목록에 없는 값은 비워 두고, 표시할 값이 하나도 없으면 메타 줄 자체를 그리지 않는다. #}
-{% from "_bits.html" import icon_chevron, reply_count, number, post_time %}
+{% from "_bits.html" import icon_chevron, reply_count, number, post_time, feed_status_icon %}
 {% set in_read = mode is defined and mode == "read" %}
 {% set active_pid = (current_pid | string) if in_read and current_pid is defined and current_pid is not none else "" %}
 <ul>
@@ -14,6 +14,9 @@
         <a class="feed-item{% if is_current %} is-current{% endif %}" href="{{ url_for('poker.read', board_id=board_id if in_read else (post.board_id or board_id), pid=post.id, page=page) }}"{% if is_current %} aria-current="page"{% endif %}>
             <div class="feed-title-wrap">
                 {% if is_current %}<span class="poker-current-label">읽는 글</span>{% endif %}
+                <span class="sr-only" data-poker-read-label hidden>읽은 글</span>
+                {#- 목록 첨부 표시는 파일일 수도 있어 사진으로 단정하지 않는다. -#}
+                {{ feed_status_icon({"has_image": post.has_image or post.has_attachment}, image_label="이미지·파일 첨부" if post.has_attachment else "사진 첨부") }}
                 <span class="feed-title">{{ post.title }}</span>
                 {{ reply_count(post.comment_count) }}
             </div>

@@ -147,15 +147,18 @@ function createHarness(options) {
     const timers = new Map();
     const fetchCalls = [];
     const observers = [];
+    const events = [];
 
     const context = {
         URL,
         console,
         AbortController,
+        CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
         document: {
             readyState: "complete",
             getElementById: (id) => docBody.descendants().find((node) => node.getAttribute("id") === id) || null,
             addEventListener() {},
+            dispatchEvent(event) { events.push(event); },
         },
         window: { location: { href: BASE_HREF } },
         setTimeout(handler, delay) {
@@ -197,7 +200,7 @@ function createHarness(options) {
     vm.runInContext(source, context);
 
     return {
-        section, heading, message, actions, retry, fallback, listBody, article, fetchCalls, observers, pagerLink,
+        section, heading, message, actions, retry, fallback, listBody, article, fetchCalls, observers, pagerLink, events,
         advance(ms) {
             clock += ms;
             for (const [id, timer] of Array.from(timers)) {
@@ -220,6 +223,8 @@ async function loadedHarness(options) {
     harness.observers[0].fire(true);
     harness.fetchCalls[0].resolve(json({ html: "<ul>3페이지</ul>", page: 3 }));
     await flush();
+    assert.equal(harness.events[0].type, "poker:list-rendered");
+    assert.equal(harness.events[0].detail.root, harness.listBody);
     return harness;
 }
 

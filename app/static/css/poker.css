@@ -406,6 +406,10 @@
     color: var(--fg);
 }
 
+.poker-view .feed-item.is-current.is-read .feed-title {
+    color: var(--read);
+}
+
 .poker-view .poker-current-label {
     margin-right: 6px;
     color: var(--accent);

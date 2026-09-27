@@ -5,6 +5,7 @@ import re
 import logging
 import threading
 import time
+from urllib.parse import urljoin, urlsplit
 
 from curl_cffi import requests
 from curl_cffi.curl import CURL_WRITEFUNC_ERROR
@@ -71,6 +72,32 @@ def _comments_count(links):
     return next((_number(_text(a)) for a in links if re.fullmatch(r'\[[0-9]+\]', _text(a))), 0)
 
 
+def _upstream_image_path(value):
+    try:
+        url = urlsplit(urljoin(BASE_URL, value or ''))
+        if url.scheme == 'https' and url.hostname in ('ipokergosu.com', 'www.ipokergosu.com'):
+            return url.path
+    except ValueError:
+        pass
+    return ''
+
+
+def _has_attachment(link):
+    return any(_upstream_image_path(image.get('src')) == '/files/pg/util/file.gif'
+               for image in link.xpath('.//img[@alt="file"]'))
+
+
+def _has_news_image(card, pid):
+    for link in card.xpath('.//a[@href]'):
+        target = poker_link(link.get('href'))
+        if not target or target['board_id'] != 'news' or target['pid'] != pid:
+            continue
+        if any(_upstream_image_path(image.get('src')).startswith(('/img2/', '/files/attach/'))
+               for image in link.xpath('.//img[@src]')):
+            return True
+    return False
+
+
 def parse_board(raw, page, board_id='free'):
     spec = _board_spec(board_id)
     tree = _tree(raw)
@@ -90,6 +117,7 @@ def parse_board(raw, page, board_id='free'):
             seen.add(pid)
             posts.append(dict(board_id=board_id, id=pid, title=_text(link),
                               comment_count=_comments_count(links), author=None, time=None,
+                              has_image=_has_news_image(card, pid), has_attachment=False,
                               view_count=None, voteup_count=None))
         if cards and not posts:
             raise PokerError("뉴스 목록 구조를 확인하지 못했어요.")
@@ -108,6 +136,7 @@ def parse_board(raw, page, board_id='free'):
                 continue
             seen.add(pid)
             posts.append(dict(board_id=board_id, id=pid, title=_text(link), author=_text(cells[1]) or None,
+                              has_image=False, has_attachment=_has_attachment(link),
                               time=_text(cells[2]) or None, comment_count=_comments_count(links),
                               view_count=_number(_text(cells[3])) if len(cells) > 3 else None,
                               voteup_count=_number(_text(cells[4])) if len(cells) > 4 else None))
