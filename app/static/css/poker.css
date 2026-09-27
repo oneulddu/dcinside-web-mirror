@@ -305,3 +305,122 @@
         transition: none;
     }
 }
+
+/* ===== 글 아래 같은 게시판 목록 =====
+   기존 목록 행과 페이지 이동을 그대로 쓰고, 읽는 글만 옅은 면과 글자 표기로 알린다. */
+
+.poker-view .poker-post-list .board-head h2:focus {
+    outline: none;
+}
+
+.poker-view .poker-post-list .board-head h2:focus-visible {
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: 4px;
+    border-radius: var(--radius-xs);
+}
+
+.poker-view .poker-post-list-status {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.poker-view .poker-post-list-message {
+    margin: 0;
+    color: var(--muted);
+    font: var(--type-note);
+    font-size: 15px;
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
+}
+
+.poker-view .poker-post-list-message:empty {
+    display: none;
+}
+
+/* 불러온 뒤의 안내는 화면 읽기 프로그램에만 들려준다. */
+.poker-view .poker-post-list[data-state="ready"] .poker-post-list-message {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.poker-view .poker-post-list[data-state="loading"] .poker-post-list-message,
+.poker-view .poker-post-list[data-state="error"] .poker-post-list-message {
+    padding: var(--space-2) 0 var(--space-3);
+}
+
+.poker-view .poker-post-list[data-state="error"] .poker-post-list-message {
+    color: var(--text);
+}
+
+.poker-view .poker-post-list-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-bottom: var(--space-4);
+}
+
+.poker-view .poker-post-list-actions[hidden] {
+    display: none;
+}
+
+.poker-view .poker-post-list-actions .poker-action {
+    min-height: 48px;
+    border: 0;
+    cursor: pointer;
+}
+
+.poker-view .poker-post-list-actions .poker-action[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: default;
+}
+
+/* 첫 요청 전에는 목록이 들어올 자리만 조금 잡아 둔다. */
+.poker-view .poker-post-list[data-state="idle"] .poker-post-list-body,
+.poker-view .poker-post-list[data-state="loading"] .poker-post-list-body:not(:has(.feed-item, .empty-row)) {
+    min-height: 96px;
+}
+
+/* 다음 페이지를 기다리는 동안 이전 행은 남기되 흐리게 둔다. */
+.poker-view .poker-post-list-body[aria-busy="true"] > ul,
+.poker-view .poker-post-list-body[aria-busy="true"] > .pager-row {
+    opacity: 0.5;
+    transition: opacity var(--dur) ease-out;
+}
+
+.poker-view .poker-post-list-noscript {
+    margin: 0;
+    padding: var(--space-4) 0;
+    font: var(--type-label);
+}
+
+.poker-view .feed-item.is-current {
+    background: var(--hover);
+}
+
+.poker-view .feed-item.is-current .feed-title {
+    color: var(--fg);
+}
+
+.poker-view .poker-current-label {
+    margin-right: 6px;
+    color: var(--accent);
+    font: var(--type-meta);
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.poker-view .poker-post-pager {
+    margin-top: var(--space-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .poker-view .poker-post-list-body[aria-busy="true"] > ul,
+    .poker-view .poker-post-list-body[aria-busy="true"] > .pager-row {
+        transition: none;
+    }
+}

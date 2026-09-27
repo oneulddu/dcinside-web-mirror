@@ -1,5 +1,6 @@
 """Read-only Pokergosu board routes; DC contracts stay intact."""
-from flask import Blueprint, abort, make_response, render_template, request, url_for, redirect
+from flask import Blueprint, abort, jsonify, make_response, render_template, request, url_for, redirect
+from werkzeug.exceptions import HTTPException
 
 from .services.pokergosu import PokerError, reader
 from .services.poker_boards import BASE_URL, MAX_PAGE, BOARDS
@@ -53,6 +54,39 @@ def board(board_id):
         return _error(exc, source_url, page, board_id)
     return render_template('poker/board.html', title=context['board_name'] + ' · 숨터', data=data,
                            page=page, source_url=source_url, **context)
+
+
+def _list_response(payload, status=200):
+    response = jsonify(payload)
+    response.status_code = status
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    if status == 503:
+        response.headers['Retry-After'] = '60'
+    return response
+
+
+@bp.get('/<board_id>/list')
+def post_list(board_id):
+    try:
+        context = _context(board_id)
+        page = _page()
+        current_pid = request.args.get('current_pid')
+        if current_pid is not None:
+            if (not current_pid.isascii() or not current_pid.isdecimal()
+                    or not 1 <= len(current_pid) <= 12 or int(current_pid) < 1):
+                abort(400)
+            current_pid = int(current_pid)
+    except HTTPException as exc:
+        return _list_response({'error': '게시판을 찾을 수 없어요.' if exc.code == 404
+                               else '목록 요청을 확인해 주세요.'}, exc.code)
+    try:
+        data = reader.board(page, board_id=board_id)
+    except PokerError as exc:
+        return _list_response({'error': str(exc)}, exc.status)
+    fragment = render_template('poker/_post_list.html', data=data, page=page,
+                               current_pid=current_pid, mode='read', **context)
+    return _list_response({'html': fragment, 'page': page})
 
 
 @bp.get('/<board_id>/<int:pid>')

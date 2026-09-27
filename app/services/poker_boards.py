@@ -5,16 +5,16 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 BASE_URL = 'https://www.pokergosu.com'
 MAX_PAGE = 10000
 BOARDS = {
-    'notice': {'label': '공지사항'},
     'free': {'label': '자유 게시판'},
-    'groupbuy': {'label': '공동구매', 'login_required': True},
-    'hand': {'label': '핸드 게시판'},
     'best': {'label': '추천 게시판'},
+    'hand': {'label': '핸드 게시판'},
     'grinding': {'label': '그라인딩 게시판'},
     'strategy': {'label': '전략/번역 게시판'},
-    'buyboard': {'label': '공구 게시판'},
-    'qna': {'label': '문의 게시판', 'login_required': True},
     'news': {'label': '뉴스 게시판'},
+    'buyboard': {'label': '공구 게시판'},
+    'notice': {'label': '공지사항'},
+    'groupbuy': {'label': '공동구매', 'login_required': True},
+    'qna': {'label': '문의 게시판', 'login_required': True},
 }
 
 

@@ -86,6 +86,26 @@
 
     <div class="section-band" aria-hidden="true"></div>
 
+    {# 같은 게시판의 출발 페이지 목록. 본문과 따로 불러오고, 실패해도 본문은 그대로 둔다. #}
+    {% set list_title = board_name | replace("포커고수 ", "") %}
+    <section class="feed-list poker-post-list" id="poker-post-list" aria-labelledby="poker-post-list-title" data-list-url="{{ url_for('poker.post_list', board_id=board_id) }}" data-page="{{ page }}" data-current-pid="{{ data.id }}">
+        <div class="board-head">
+            <h2 id="poker-post-list-title" tabindex="-1" data-poker-list-heading>{{ list_title }}</h2>
+        </div>
+        <div class="poker-post-list-status">
+            <p class="poker-post-list-message" role="status" aria-live="polite" data-poker-list-message></p>
+            <div class="poker-post-list-actions" data-poker-list-actions hidden>
+                <button class="poker-action is-primary" type="button" data-poker-list-retry>다시 시도</button>
+                <a class="poker-action" href="{{ board_href }}">게시판에서 보기</a>
+            </div>
+        </div>
+        <div class="poker-post-list-body" data-poker-list-body aria-busy="false">
+            <noscript><p class="poker-post-list-noscript"><a class="poker-inline-link" href="{{ board_href }}">{{ list_title }} {{ page }}페이지 목록 보기</a></p></noscript>
+        </div>
+    </section>
+
+    <div class="section-band" aria-hidden="true"></div>
+
     <div class="pager-row single">
         <a class="pager-btn" href="{{ board_href }}">목록으로</a>
     </div>
@@ -165,5 +185,6 @@
         sync();
     })();
 </script>
+<script defer src="{{ static_url('javascript/poker_post_list.js') }}"></script>
 <script src="{{ static_url('javascript/back_to_top.js') }}"></script>
 {% endblock %}
