@@ -113,6 +113,8 @@ def create_app():
     app.add_template_filter(linkify_comment_text, "linkify_comment")
     app.jinja_env.globals["post_time_info"] = post_time_info
     register_routes(app)
+    from .poker_routes import bp as poker_bp
+    app.register_blueprint(poker_bp)
     _init_request_logging(app)
     _init_static_cache_busting(app)
     _init_response_compression(app)

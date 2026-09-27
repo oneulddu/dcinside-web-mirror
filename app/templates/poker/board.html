@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% from "_bits.html" import back_link, icon_chevron, reply_count, number, post_time %}
+{% set board_name = "포커고수 자유게시판" %}
+
+{% block body_class %}board-view poker-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link("/", aria_label="홈으로") }}{% endblock %}
+
+{% block masthead_context %}
+<link rel="stylesheet" href="{{ static_url('css/poker.css') }}">
+<div class="board-head masthead-board-head poker-board-head">
+    <h1>{{ board_name }}</h1>
+    {% if source_url %}
+    <a class="poker-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문 보기<span class="sr-only"> (새 창)</span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/></svg></a>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block page_class %} board-page poker-board-page{% endblock %}
+
+{% block content %}
+<section class="feed-list poker-feed" aria-label="{{ board_name }} 글 목록">
+    <ul>
+        {% for post in data.posts %}
+        <li>
+            <a class="feed-item" href="{{ url_for('poker.read', pid=post.id, page=page) }}">
+                <div class="feed-title-wrap">
+                    <span class="feed-title">{{ post.title }}</span>
+                    {{ reply_count(post.comment_count) }}
+                </div>
+                <div class="feed-meta-row">
+                    <div class="feed-meta-left">
+                        <span class="author-text">{{ post.author }}</span>
+                        {{ post_time(post.time) }}
+                        {% if post.view_count is number %}<span>조회 {{ number(post.view_count) }}</span>{% endif %}
+                        <span class="feed-vote">추천 {{ number(post.voteup_count) }}</span>
+                    </div>
+                </div>
+            </a>
+        </li>
+        {% else %}
+        <li class="empty-row">
+            <b>게시글이 없어요</b>
+            {% if page > 1 %}
+            <span>이 페이지에는 글이 없어요. <a class="poker-inline-link" href="{{ url_for('poker.board', page=1) }}">첫 페이지로</a></span>
+            {% else %}
+            <span>잠시 후 다시 확인해 보세요.</span>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    <nav class="pager-row board-pager" aria-label="페이지 이동">
+        <a class="pager-btn pager-home" href="/">홈</a>
+        <div class="pager-center">
+            {% if page > 1 %}
+            <a class="pager-btn" href="{{ url_for('poker.board', page=page - 1) }}" rel="prev">{{ icon_chevron("left") }}이전</a>
+            {% else %}
+            <span class="pager-btn off" aria-disabled="true">{{ icon_chevron("left") }}이전</span>
+            {% endif %}
+            <span class="pager-current" aria-current="page"><span class="sr-only">현재 </span>{{ page }}<span class="sr-only"> 페이지</span></span>
+            {% if data.has_next %}
+            <a class="pager-btn" href="{{ url_for('poker.board', page=page + 1) }}" rel="next">다음{{ icon_chevron("right") }}</a>
+            {% else %}
+            <span class="pager-btn off" aria-disabled="true">다음{{ icon_chevron("right") }}</span>
+            {% endif %}
+        </div>
+    </nav>
+</section>
+{% endblock %}

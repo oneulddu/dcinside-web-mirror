@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_bits.html" import back_link %}
+{% if status in [404, 410] %}
+{% set heading = "글을 찾을 수 없어요" %}
+{% elif status in [403, 429, 503] %}
+{% set heading = "잠시 후 다시 시도해 주세요" %}
+{% else %}
+{% set heading = "불러오지 못했어요" %}
+{% endif %}
+
+{% block body_class %}poker-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link(return_url or "/", aria_label="돌아가기") }}{% endblock %}
+
+{% block masthead_context %}
+<link rel="stylesheet" href="{{ static_url('css/poker.css') }}">
+{% endblock %}
+
+{% block content %}
+<section class="poker-error" aria-labelledby="poker-error-title">
+    <p class="poker-error-kicker">포커고수 자유게시판{% if status %} · 오류 {{ status }}{% endif %}</p>
+    <h1 id="poker-error-title">{{ heading }}</h1>
+    {% if message %}<p class="poker-error-message">{{ message }}</p>{% endif %}
+    <div class="poker-actions">
+        {% if retry_url %}<a class="poker-action is-primary" href="{{ retry_url }}">다시 시도</a>{% endif %}
+        <a class="poker-action" href="{{ return_url or '/' }}">돌아가기</a>
+        {% if source_url %}<a class="poker-action" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문 보기<span class="sr-only"> (새 창)</span></a>{% endif %}
+    </div>
+</section>
+{% endblock %}

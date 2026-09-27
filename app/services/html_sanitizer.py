@@ -207,7 +207,7 @@ def parse_html_fragment(raw_html):
     return BeautifulSoup(raw_html or "", HTML_PARSER)
 
 
-def sanitize_html_tree(soup):
+def sanitize_html_tree(soup, *, media_prefixes=("/media?",)):
     for tag in list(soup.find_all(True)):
         if tag.parent is None or not tag.name:
             continue
@@ -235,15 +235,15 @@ def sanitize_html_tree(soup):
             elif attr_name == "src":
                 if name == "img":
                     src = str(value)
-                    if not src.startswith(("/media?", "/embed/link-preview-image?")):
+                    if not src.startswith(media_prefixes + ("/embed/link-preview-image?",)):
                         tag.decompose()
                         break
                 elif name == "video":
-                    if not str(value).startswith("/media?"):
+                    if not str(value).startswith(media_prefixes):
                         tag.decompose()
                         break
                 elif name == "source":
-                    if not str(value).startswith("/media?"):
+                    if not str(value).startswith(media_prefixes):
                         tag.decompose()
                         break
                 elif name == "iframe":
@@ -258,13 +258,13 @@ def sanitize_html_tree(soup):
                     tag.decompose()
                     break
             elif attr_name == "poster":
-                if name != "video" or not str(value).startswith("/media?"):
+                if name != "video" or not str(value).startswith(media_prefixes):
                     del tag.attrs[attr]
             elif attr_name == "fetchpriority":
                 if name != "img" or str(value).strip().lower() not in {"high", "low", "auto"}:
                     del tag.attrs[attr]
             elif attr_name in {"data-body-image-src", "data-dccon-src"}:
-                if name != "img" or not str(value).startswith("/media?"):
+                if name != "img" or not str(value).startswith(media_prefixes):
                     del tag.attrs[attr]
             elif attr_name == "data-preview-image-src":
                 if name != "img" or not str(value).startswith("/embed/link-preview-image?"):

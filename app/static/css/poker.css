@@ -1,0 +1,225 @@
+/* 포커고수 자유게시판 전용 스타일. main.css 토큰만 쓰고 .poker-view 안으로 제한한다. */
+
+.poker-view .poker-board-head {
+    align-items: center;
+}
+
+.poker-view .poker-source-link {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-height: 44px;
+    padding: 0 var(--space-1);
+    margin-right: calc(-1 * var(--space-1));
+    color: var(--muted);
+    font: var(--type-label);
+    border-radius: var(--radius-s);
+    transition: color var(--dur) ease-out;
+}
+
+.poker-view .poker-source-link .ui-icon {
+    width: 15px;
+    height: 15px;
+    stroke-width: 2.2;
+}
+
+.poker-view .poker-source-link:hover {
+    color: var(--fg);
+}
+
+.poker-view .poker-source-row {
+    display: flex;
+    justify-content: flex-end;
+    margin: calc(-1 * var(--space-4)) 0 var(--space-3);
+}
+
+.poker-view .poker-inline-link,
+.poker-view .poker-notice-link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.poker-view .poker-inline-link:hover,
+.poker-view .poker-notice-link:hover {
+    color: var(--accent-strong);
+}
+
+/* 안내는 테두리 없는 회색 면 한 겹으로만 둔다. */
+.poker-view .poker-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-1) var(--space-4);
+    margin: 0 0 var(--space-5);
+    padding: 14px var(--space-4);
+    border-radius: var(--radius-l);
+    background: var(--surface);
+    color: var(--text);
+    font: var(--type-note);
+}
+
+.poker-view .poker-notice p {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.poker-view .poker-notice-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+    font: var(--type-label);
+}
+
+.poker-view .poker-comments .poker-notice {
+    margin: var(--space-2) 0 var(--space-1);
+}
+
+/* 댓글 본문은 서버에서 정리한 HTML이라 문단 없이 글자만 올 수도 있다. */
+.poker-view .poker-comment-body {
+    max-width: 100%;
+    min-width: 0;
+    color: var(--text);
+    font: var(--type-comment);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    text-wrap: pretty;
+}
+
+.poker-view .poker-comment-body p {
+    margin: 0;
+}
+
+.poker-view .poker-comment-body p + p {
+    margin-top: var(--space-1);
+}
+
+.poker-view .poker-comment-body a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.poker-view .poker-comment-body a:hover {
+    color: var(--accent-strong);
+}
+
+.poker-view .poker-comment-body img {
+    display: block;
+    max-width: min(100%, 320px);
+    height: auto;
+    margin-top: var(--space-2);
+    border-radius: var(--radius-m);
+    outline: var(--rule) solid var(--line);
+    outline-offset: -1px;
+}
+
+.poker-view .poker-comment-body img[hidden],
+.poker-view .poker-comment-image-toggle[hidden] {
+    display: none !important;
+}
+
+.poker-view .poker-comment-image-toggle {
+    display: inline-flex;
+    width: auto;
+    min-height: 44px;
+    margin: var(--space-2) 0 0;
+}
+
+.poker-view .poker-comment-image-toggle[aria-expanded="true"] {
+    min-height: 36px;
+    padding-left: 0;
+    padding-right: 0;
+}
+
+/* ===== 오류 ===== */
+
+.poker-view .poker-error {
+    padding: var(--space-10) 0 var(--space-12);
+}
+
+.poker-view .poker-error-kicker {
+    margin: 0 0 var(--space-2);
+    color: var(--meta);
+    font: var(--type-meta);
+    font-variant-numeric: tabular-nums;
+}
+
+.poker-view .poker-error h1 {
+    margin: 0;
+    color: var(--fg);
+    font: var(--type-page-title);
+    letter-spacing: -0.035em;
+    text-wrap: balance;
+}
+
+.poker-view .poker-error-message {
+    margin: var(--space-3) 0 0;
+    color: var(--muted);
+    font: var(--type-note);
+    font-size: 15px;
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
+}
+
+.poker-view .poker-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-8);
+}
+
+.poker-view .poker-action {
+    flex: 1 1 140px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    padding: 0 var(--space-4);
+    border-radius: var(--radius-l);
+    background: var(--surface);
+    color: var(--text);
+    font: var(--type-tab);
+    transition: background-color var(--dur) ease-out, color var(--dur) ease-out, transform var(--dur-fast) ease-out;
+}
+
+.poker-view .poker-action:hover {
+    background: var(--surface-strong);
+    color: var(--fg);
+}
+
+.poker-view .poker-action:active {
+    transform: scale(0.96);
+}
+
+.poker-view .poker-action.is-primary {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
+.poker-view .poker-action.is-primary:hover {
+    background: var(--accent-strong);
+    color: var(--on-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .poker-view .poker-source-link,
+    .poker-view .poker-action {
+        transition: none;
+    }
+
+    .poker-view .poker-action:active {
+        transform: none;
+    }
+}
+
+/* 원문 코드·표가 댓글의 읽기 컬럼을 밀어내지 않게 한다. */
+.poker-view .poker-comment-body pre,
+.poker-view .poker-comment-body table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+}

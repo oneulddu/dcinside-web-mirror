@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% from "_bits.html" import back_link, number, post_time %}
+{% set board_name = "포커고수 자유게시판" %}
+{% set board_href = url_for('poker.board', page=page) %}
+{% set source_base = (source_url or "").split("#")[0] %}
+
+{% block body_class %}read-view poker-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link(board_href, label=board_name, aria_label=board_name ~ " 목록으로", extra_class="crumb-link") }}{% endblock %}
+
+{% block masthead_context %}
+<link rel="stylesheet" href="{{ static_url('css/poker.css') }}">
+{% endblock %}
+
+{% block content %}
+<section class="read-shell poker-read">
+    <div class="article-head">
+        <h1>{{ data.title }}</h1>
+        <div class="article-meta">
+            <span class="author-text">{{ data.author }}</span>
+            {{ post_time(data.time, "full") }}
+            {% if data.view_count is number %}<span>조회 {{ number(data.view_count) }}</span>{% endif %}
+            {% if data.voteup_count is number %}<span>추천 {{ number(data.voteup_count) }}</span>{% endif %}
+        </div>
+    </div>
+
+    <div class="body-media-controls" hidden>
+        <button class="body-media-toggle" type="button" data-body-media-group="image" aria-expanded="false" aria-controls="article-body" hidden>이미지 전체 보기</button>
+        <button class="body-media-toggle" type="button" data-body-media-group="dccon" aria-expanded="false" aria-controls="article-body" hidden>이모티콘 전체 보기</button>
+    </div>
+    <article class="article-body" id="article-body">
+        {{ data.html | safe }}
+    </article>
+
+    {% if data.unsupported_media %}
+    <aside class="poker-notice" aria-label="원문 확인 안내">
+        <p>동영상이나 첨부 파일 일부는 여기서 보이지 않아요.</p>
+        {% if source_url %}<a class="poker-notice-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문에서 보기<span class="sr-only"> (새 창)</span></a>{% endif %}
+    </aside>
+    {% endif %}
+
+    {% if source_url %}
+    <div class="poker-source-row">
+        <a class="poker-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문 보기<span class="sr-only"> (새 창)</span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/></svg></a>
+    </div>
+    {% endif %}
+
+    <div class="section-band" aria-hidden="true"></div>
+
+    {% set shown_count = data.comments|length %}
+    <section class="comment-shell poker-comments" aria-labelledby="comment-title">
+        <h2 id="comment-title">댓글 <span class="comment-count">{{ number(data.comment_count if data.comment_count is number else shown_count) }}</span></h2>
+        {% if data.comments_partial %}
+        <div class="poker-notice" role="note">
+            <p>댓글 일부만 보여요.{% if data.comment_count is number %} 전체 {{ number(data.comment_count) }}개 중 {{ number(shown_count) }}개예요.{% endif %}</p>
+            {% if source_base %}<a class="poker-notice-link" href="{{ source_base }}#comment" target="_blank" rel="noopener noreferrer">원문에서 전체 댓글 보기<span class="sr-only"> (새 창)</span></a>{% endif %}
+        </div>
+        {% endif %}
+        <ul class="comment-list">
+            {% for comment in data.comments %}
+            <li class="comment-item{% if comment.is_reply %} is-reply{% endif %}">
+                {% if comment.is_reply %}
+                <span class="reply-mark" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M6 5v6a4 4 0 0 0 4 4h8"/><path d="M15 12l3 3-3 3"/></svg></span>
+                {% endif %}
+                <div class="comment-main">
+                    {% if comment.is_reply %}<span class="sr-only">답글:</span>{% endif %}
+                    <div class="poker-comment-body">{{ comment.html | safe }}</div>
+                </div>
+                <div class="comment-meta">
+                    <span class="author-text">{{ comment.author }}</span>
+                    {{ post_time(comment.time) }}
+                </div>
+            </li>
+            {% else %}
+            <li class="empty-row">{% if data.comments_partial %}여기서 가져온 댓글이 없어요.{% else %}아직 댓글이 없어요.{% endif %}</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <div class="section-band" aria-hidden="true"></div>
+
+    <div class="pager-row single">
+        <a class="pager-btn" href="{{ board_href }}">목록으로</a>
+    </div>
+</section>
+<button class="back-to-top" id="back-to-top" type="button" aria-label="맨 위로" title="맨 위로"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+<script>
+    // 공용 이미지 차단 스크립트는 본문(.article-body)만 채운다. 댓글 이미지는 같은 차단 설정을 따라 여기서 채운다.
+    (function () {
+        "use strict";
+        var root = document.documentElement;
+        var images = document.querySelectorAll(".poker-comment-body img.body-image[data-body-image-src]");
+        if (!images.length) {
+            return;
+        }
+        var overrides = new WeakMap();
+        var buttons = new WeakMap();
+        var lastMode = null;
+        var nextId = 0;
+
+        function blocksImages(mode) {
+            return mode === "body" || mode === "all";
+        }
+
+        function buttonFor(image) {
+            var button = buttons.get(image);
+            if (button) {
+                return button;
+            }
+            if (!image.id) {
+                nextId += 1;
+                image.id = "poker-comment-image-" + nextId;
+            }
+            button = document.createElement("button");
+            button.type = "button";
+            button.className = "body-media-item-toggle poker-comment-image-toggle";
+            button.setAttribute("aria-controls", image.id);
+            var anchor = image.closest("a");
+            var position = anchor || image;
+            position.parentNode.insertBefore(button, position);
+            button.addEventListener("click", function (event) {
+                event.preventDefault();
+                overrides.set(image, !(overrides.get(image) === true));
+                sync();
+            });
+            buttons.set(image, button);
+            return button;
+        }
+
+        function sync() {
+            var mode = root.dataset.mediaBlockMode || "none";
+            if (mode !== lastMode) {
+                overrides = new WeakMap();
+                lastMode = mode;
+            }
+            var blocked = blocksImages(mode);
+            for (var i = 0; i < images.length; i += 1) {
+                var image = images[i];
+                var showing = !blocked || overrides.get(image) === true;
+                if (showing) {
+                    if (!image.getAttribute("src")) {
+                        image.setAttribute("src", image.getAttribute("data-body-image-src"));
+                    }
+                } else {
+                    image.removeAttribute("src");
+                }
+                image.hidden = !showing;
+                var button = blocked ? buttonFor(image) : buttons.get(image);
+                if (button) {
+                    button.hidden = !blocked;
+                    button.textContent = showing ? "이미지 숨기기" : "이미지 보기";
+                    button.setAttribute("aria-expanded", showing ? "true" : "false");
+                }
+            }
+        }
+
+        new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ["data-media-block-mode"] });
+        sync();
+    })();
+</script>
+<script src="{{ static_url('javascript/back_to_top.js') }}"></script>
+{% endblock %}
