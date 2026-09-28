@@ -1,7 +1,7 @@
 {# 포커고수 게시판 전환 줄. 목록은 aria-current="page", 글·오류는 "location"으로 현재 게시판을 알린다. #}
 {% macro board_nav(boards, board_id, current="page") -%}
 {%- if boards %}
-<nav class="poker-board-nav" aria-label="포커고수 게시판">
+<nav class="poker-board-nav" aria-label="포커 게시판">
     <ul class="poker-board-nav-scroll" id="poker-board-nav-scroll">
         {% for item in boards %}
         {% set active = item.id == board_id %}

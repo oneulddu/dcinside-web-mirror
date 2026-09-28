@@ -23,7 +23,7 @@
 
 {% block content %}
 <section class="poker-error" aria-labelledby="poker-error-title">
-    <p class="poker-error-kicker">{{ board_name or "포커고수" }}{% if status %} · 오류 {{ status }}{% endif %}</p>
+    <p class="poker-error-kicker">{{ board_name or "포커" }}{% if status %} · 오류 {{ status }}{% endif %}</p>
     <h1 id="poker-error-title">{{ heading }}</h1>
     {% if login_required %}
     <p class="poker-error-message">원본 사이트에서 로그인해야 볼 수 있어요. 숨터는 로그인을 지원하지 않으니 원문에서 확인해 주세요.</p>

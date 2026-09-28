@@ -87,7 +87,7 @@
     <div class="section-band" aria-hidden="true"></div>
 
     {# 같은 게시판의 출발 페이지 목록. 본문과 따로 불러오고, 실패해도 본문은 그대로 둔다. #}
-    {% set list_title = (board_name | replace("포커고수 ", "")) ~ (" 검색 결과" if q else "") %}
+    {% set list_title = board_name ~ (" 검색 결과" if q else "") %}
     <section class="feed-list poker-post-list" id="poker-post-list" aria-labelledby="poker-post-list-title" data-list-url="{{ url_for('poker.post_list', board_id=board_id) }}" data-page="{{ page }}" data-current-pid="{{ data.id }}"{% if q %} data-search-s="{{ q.s }}" data-search-v="{{ q.v }}"{% endif %}>
         <div class="board-head">
             <h2 id="poker-post-list-title" tabindex="-1" data-poker-list-heading>{{ list_title }}</h2>
