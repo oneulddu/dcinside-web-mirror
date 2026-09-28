@@ -51,18 +51,38 @@
     return false;
   };
 
+  // 포커고수 댓글은 여러 문단일 수 있어 본문 전체 글자로 비교한다.
+  // 이미지 차단 버튼 글자는 빼고 세므로, 이미지만 있는 댓글은 글자가 없어 접히지 않는다.
+  const pokerText = (body) => {
+    const copy = body.cloneNode(true);
+    copy.querySelectorAll("button").forEach((button) => button.remove());
+    return copy.textContent || "";
+  };
+
   const getCommentInfo = (li) => {
     const main = li.querySelector(".comment-main");
-    const textNode = main ? main.querySelector("p") : null;
+    const pokerBody = main ? main.querySelector(".poker-comment-body") : null;
+    const textNode = pokerBody ? null : (main ? main.querySelector("p") : null);
     return {
       element: li,
-      text: textNode ? textNode.textContent : "",
+      text: pokerBody ? pokerText(pokerBody) : (textNode ? textNode.textContent : ""),
       hasDccon: !!(main && main.querySelector("img.dccon"))
     };
   };
 
   const isRepeatedTextSpam = (text, count) =>
     Boolean(text) && count >= getRepeatThreshold(text);
+
+  // 댓글이 나중에 붙으면(포커고수 이전 댓글) 다시 계산한다. 버튼은 하나만 두고 펼침 상태를 이어 간다.
+  const state = { button: null, hidden: [], showing: false };
+
+  const labelButton = () => {
+    const btn = state.button;
+    btn.setAttribute("aria-expanded", state.showing ? "true" : "false");
+    btn.textContent = state.showing
+      ? "접힌 댓글 숨기기"
+      : `접힌 댓글 보기 (${state.hidden.length})`;
+  };
 
   const runFilter = () => {
     const list = document.querySelector(".comment-list");
@@ -72,9 +92,6 @@
     }
 
     const comments = Array.from(list.querySelectorAll(":scope > li")).map(getCommentInfo);
-    if (!comments.length) {
-      return;
-    }
 
     const normalized = comments.map((comment) => normalizeText(comment.text));
     const counts = normalized.reduce((acc, text) => {
@@ -98,30 +115,51 @@
       }
     });
 
+    state.hidden.forEach((li) => {
+      if (!hidden.includes(li)) {
+        li.classList.remove("comment-spam-hidden", "comment-spam-highlight");
+      }
+    });
+    state.hidden = hidden;
+
     if (!hidden.length) {
+      if (state.button) {
+        state.button.remove();
+        state.button = null;
+        state.showing = false;
+      }
       return;
     }
 
     hidden.forEach((li) => {
-      li.classList.add("comment-spam-hidden");
+      if (state.showing) {
+        li.classList.remove("comment-spam-hidden");
+        li.classList.add("comment-spam-highlight");
+      } else {
+        li.classList.add("comment-spam-hidden");
+      }
     });
+
+    if (state.button) {
+      labelButton();
+      return;
+    }
 
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "comment-spam-toggle";
-    btn.setAttribute("aria-expanded", "false");
-    btn.textContent = `접힌 댓글 보기 (${hidden.length})`;
+    if (list.id) {
+      btn.setAttribute("aria-controls", list.id);
+    }
+    state.button = btn;
+    labelButton();
 
-    let showing = false;
     btn.addEventListener("click", () => {
-      showing = !showing;
-      btn.setAttribute("aria-expanded", showing ? "true" : "false");
-      btn.textContent = showing
-        ? "접힌 댓글 숨기기"
-        : `접힌 댓글 보기 (${hidden.length})`;
-      hidden.forEach((li) => {
-        li.classList.toggle("comment-spam-hidden", !showing);
-        li.classList.toggle("comment-spam-highlight", showing);
+      state.showing = !state.showing;
+      labelButton();
+      state.hidden.forEach((li) => {
+        li.classList.toggle("comment-spam-hidden", !state.showing);
+        li.classList.toggle("comment-spam-highlight", state.showing);
       });
     });
 
@@ -138,4 +176,5 @@
   } else {
     runFilter();
   }
+  document.addEventListener("poker:comments-added", runFilter);
 })();

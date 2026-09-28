@@ -4,7 +4,7 @@
     <{{ tag }}{% if info.iso %} datetime="{{ info.iso }}" title="{{ info.title }}"{% endif %}{% if post_id %} data-board-time data-post-id="{{ post_id }}"{% if needs_hydrate %} data-needs-time-hydrate="1"{% endif %}{% endif %}>{{ info.label }}</{{ tag }}>
 {%- endmacro %}
 
-{% macro feed_status_icon(item) -%}
+{% macro feed_status_icon(item, image_label="사진 첨부") -%}
     {%- set has_image = item.has_image or item.isimage -%}
     {%- set has_video = item.has_video or item.isvideo -%}
     {%- set has_media = has_image or has_video -%}
@@ -24,7 +24,7 @@
         </svg>
     </span>
     {%- elif has_image -%}
-    <span class="feed-image-icon" aria-label="사진 첨부" title="사진 첨부">
+    <span class="feed-image-icon" aria-label="{{ image_label }}" title="{{ image_label }}">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <rect x="3" y="5" width="18" height="14" rx="2.4"></rect>
             <circle cx="8.5" cy="10" r="1.8"></circle>

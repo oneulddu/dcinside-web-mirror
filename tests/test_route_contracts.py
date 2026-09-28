@@ -93,6 +93,14 @@ def test_screen_and_service_route_map_contract():
         "/legacy/board": "main.board_compat_redirect",
         "/legacy/read": "main.read_compat_redirect",
         "/legacy/recent": "main.recent_compat_redirect",
+        "/poker": "poker.index",
+        "/poker/": "poker.index",
+        "/poker/<board_id>": "poker.board",
+        "/poker/<board_id>/list": "poker.post_list",
+        "/poker/<board_id>/search": "poker.search",
+        "/poker/<board_id>/<int:pid>": "poker.read",
+        "/poker/<board_id>/<int:pid>/comments": "poker.comments",
+        "/poker/media": "poker.media",
         "/media": "main.media",
         "/movie": "main.movie",
         "/read": "main.read",
@@ -105,7 +113,7 @@ def test_screen_and_service_route_map_contract():
         "/v2/read": "main.read_compat_redirect",
         "/v2/recent": "main.recent_compat_redirect",
     }
-    assert all(rule.endpoint.startswith("main.") for rule in app.url_map.iter_rules() if rule.endpoint != "static")
+    assert all(rule.endpoint.startswith(("main.", "poker.")) for rule in app.url_map.iter_rules() if rule.endpoint != "static")
 
 
 def test_screen_status_redirect_cookie_and_html_contract(monkeypatch):

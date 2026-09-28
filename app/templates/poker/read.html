@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% from "_bits.html" import back_link, number, post_time %}
+{% from "poker/_nav.html" import board_nav %}
+{% from "poker/_search.html" import stale_notice %}
+{#- 검색 결과에서 들어왔으면 돌아가는 곳도 같은 검색 결과 페이지다. -#}
+{% set q = search if search is defined and search else none %}
+{% set board_href = url_for('poker.search', board_id=board_id, s=q.s, v=q.v, page=page) if q else url_for('poker.board', board_id=board_id, page=page) %}
+{% set source_base = (source_url or "").split("#")[0] %}
+
+{% block body_class %}read-view poker-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link(board_href, label=board_name, aria_label=board_name ~ " 목록으로", extra_class="crumb-link") }}{% endblock %}
+
+{% block masthead_context %}
+<link rel="stylesheet" href="{{ static_url('css/poker.css') }}">
+{{ board_nav(boards, board_id, "location") }}
+{% endblock %}
+
+{% block content %}
+<section class="read-shell poker-read">
+    <div class="article-head">
+        <h1>{{ data.title }}</h1>
+        {% set has_view = data.view_count is number %}
+        {% set has_vote = data.voteup_count is number %}
+        {% if data.author or data.time or has_view or has_vote %}
+        <div class="article-meta">
+            {% if data.author %}<span class="author-text">{{ data.author }}</span>{% endif %}
+            {% if data.time %}{{ post_time(data.time, "full") }}{% endif %}
+            {% if has_view %}<span>조회 {{ number(data.view_count) }}</span>{% endif %}
+            {% if has_vote %}<span>추천 {{ number(data.voteup_count) }}</span>{% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% if data.stale %}{{ stale_notice() }}{% endif %}
+
+    <div class="body-media-controls" hidden>
+        <button class="body-media-toggle" type="button" data-body-media-group="image" aria-expanded="false" aria-controls="article-body" hidden>이미지 전체 보기</button>
+        <button class="body-media-toggle" type="button" data-body-media-group="dccon" aria-expanded="false" aria-controls="article-body" hidden>이모티콘 전체 보기</button>
+    </div>
+    <article class="article-body" id="article-body" data-poker-post-id="{{ data.id }}">
+        {{ data.html | safe }}
+    </article>
+
+    {% if data.unsupported_media %}
+    <aside class="poker-notice" aria-label="원문 확인 안내">
+        <p>일부 동영상·첨부 파일은 원문에서 확인해 주세요.</p>
+        {% if source_url %}<a class="poker-notice-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문에서 보기<span class="sr-only"> (새 창)</span></a>{% endif %}
+    </aside>
+    {% endif %}
+
+    {% if source_url %}
+    <div class="poker-source-row">
+        <a class="poker-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문 보기<span class="sr-only"> (새 창)</span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/></svg></a>
+    </div>
+    {% endif %}
+
+    <div class="section-band" aria-hidden="true"></div>
+
+    {% set shown_count = data.comments|length %}
+    {% set comments_next = data.comments_next_page if data.comments_next_page is number else "" %}
+    <section class="comment-shell poker-comments" id="comment" aria-labelledby="comment-title" data-comments-url="{{ url_for('poker.comments', board_id=board_id, pid=data.id) }}" data-next-page="{{ comments_next }}" data-total="{{ data.comment_count if data.comment_count is number else '' }}">
+        <h2 id="comment-title" tabindex="-1">댓글 <span class="comment-count">{{ number(data.comment_count if data.comment_count is number else shown_count) }}</span></h2>
+        {{ stale_notice(' data-poker-comments-stale' ~ ('' if data.stale else ' hidden')) }}
+        {% if data.comments_partial %}
+        <div class="poker-notice" role="note" data-poker-comments-notice>
+            <p data-poker-comments-notice-text>댓글 일부만 보여요.{% if data.comment_count is number %} 전체 {{ number(data.comment_count) }}개 중 {{ number(shown_count) }}개예요.{% endif %}</p>
+            {% if source_base %}<a class="poker-notice-link" href="{{ source_base }}#comment" target="_blank" rel="noopener noreferrer">원문에서 전체 댓글 보기<span class="sr-only"> (새 창)</span></a>{% endif %}
+        </div>
+        {% endif %}
+        <ul class="comment-list" id="poker-comment-list">
+            {% for comment in data.comments %}
+            {% include "poker/_comment.html" %}
+            {% else %}
+            <li class="empty-row">{% if data.comments_partial %}여기서 가져온 댓글이 없어요.{% else %}아직 댓글이 없어요.{% endif %}</li>
+            {% endfor %}
+        </ul>
+        {% if comments_next != "" %}
+        {# 이전 댓글 페이지를 자동으로 붙이는 동안의 진행·오류 안내. 스크립트가 없으면 위 원문 안내가 대신한다. #}
+        <div class="poker-comments-status" data-poker-comments-status hidden>
+            <p class="poker-comments-progress" data-poker-comments-progress></p>
+            <button class="poker-action is-primary" type="button" data-poker-comments-retry hidden>다시 시도</button>
+        </div>
+        <p class="sr-only" role="status" aria-live="polite" data-poker-comments-live></p>
+        {% endif %}
+    </section>
+
+    <div class="section-band" aria-hidden="true"></div>
+
+    {# 같은 게시판의 출발 페이지 목록. 본문과 따로 불러오고, 실패해도 본문은 그대로 둔다. #}
+    {% set list_title = board_name ~ (" 검색 결과" if q else "") %}
+    <section class="feed-list poker-post-list" id="poker-post-list" aria-labelledby="poker-post-list-title" data-list-url="{{ url_for('poker.post_list', board_id=board_id) }}" data-page="{{ page }}" data-current-pid="{{ data.id }}"{% if q %} data-search-s="{{ q.s }}" data-search-v="{{ q.v }}"{% endif %}>
+        <div class="board-head">
+            <h2 id="poker-post-list-title" tabindex="-1" data-poker-list-heading>{{ list_title }}</h2>
+        </div>
+        {{ stale_notice(' data-poker-list-stale hidden') }}
+        <div class="poker-post-list-status">
+            <p class="poker-post-list-message" role="status" aria-live="polite" data-poker-list-message></p>
+            <div class="poker-post-list-actions" data-poker-list-actions hidden>
+                <button class="poker-action is-primary" type="button" data-poker-list-retry>다시 시도</button>
+                <a class="poker-action" href="{{ board_href }}">게시판에서 보기</a>
+            </div>
+        </div>
+        <div class="poker-post-list-body" data-poker-list-body aria-busy="false">
+            <noscript><p class="poker-post-list-noscript"><a class="poker-inline-link" href="{{ board_href }}">{{ list_title }} {{ page }}페이지 목록 보기</a></p></noscript>
+        </div>
+    </section>
+
+    <div class="section-band" aria-hidden="true"></div>
+
+    <div class="pager-row single">
+        <a class="pager-btn" href="{{ board_href }}">목록으로</a>
+    </div>
+</section>
+<button class="back-to-top" id="back-to-top" type="button" aria-label="맨 위로" title="맨 위로"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+<script>
+    // 공용 이미지 차단 스크립트는 본문(.article-body)만 채운다. 댓글 이미지는 같은 차단 설정을 따라 여기서 채운다.
+    (function () {
+        "use strict";
+        var root = document.documentElement;
+        var SELECTOR = ".poker-comment-body img.body-image[data-body-image-src]";
+        var images = [];
+        var overrides = new WeakMap();
+        var buttons = new WeakMap();
+        var lastMode = null;
+        var nextId = 0;
+
+        // 댓글이 나중에 붙어도 같은 설정을 따르도록 매번 다시 모은다. 이미 본 이미지의 선택은 WeakMap 에 남는다.
+        function collect() {
+            images = Array.prototype.slice.call(document.querySelectorAll(SELECTOR));
+        }
+
+        function blocksImages(mode) {
+            return mode === "body" || mode === "all";
+        }
+
+        function buttonFor(image) {
+            var button = buttons.get(image);
+            if (button) {
+                return button;
+            }
+            if (!image.id) {
+                do {
+                    nextId += 1;
+                } while (document.getElementById("poker-comment-image-" + nextId));
+                image.id = "poker-comment-image-" + nextId;
+            }
+            button = document.createElement("button");
+            button.type = "button";
+            button.className = "body-media-item-toggle poker-comment-image-toggle";
+            button.setAttribute("aria-controls", image.id);
+            var anchor = image.closest("a");
+            var position = anchor || image;
+            position.parentNode.insertBefore(button, position);
+            button.addEventListener("click", function (event) {
+                event.preventDefault();
+                overrides.set(image, !(overrides.get(image) === true));
+                sync();
+            });
+            buttons.set(image, button);
+            return button;
+        }
+
+        function sync() {
+            var mode = root.dataset.mediaBlockMode || "none";
+            if (mode !== lastMode) {
+                overrides = new WeakMap();
+                lastMode = mode;
+            }
+            var blocked = blocksImages(mode);
+            for (var i = 0; i < images.length; i += 1) {
+                var image = images[i];
+                var showing = !blocked || overrides.get(image) === true;
+                if (showing) {
+                    if (!image.getAttribute("src")) {
+                        image.setAttribute("src", image.getAttribute("data-body-image-src"));
+                    }
+                } else {
+                    image.removeAttribute("src");
+                }
+                image.hidden = !showing;
+                var button = blocked ? buttonFor(image) : buttons.get(image);
+                if (button) {
+                    button.hidden = !blocked;
+                    button.textContent = showing ? "이미지 숨기기" : "이미지 보기";
+                    button.setAttribute("aria-expanded", showing ? "true" : "false");
+                }
+            }
+        }
+
+        new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ["data-media-block-mode"] });
+        document.addEventListener("poker:comments-added", function () {
+            collect();
+            sync();
+        });
+        collect();
+        sync();
+    })();
+</script>
+<script defer src="{{ static_url('javascript/poker_post_list.js') }}"></script>
+<script defer src="{{ static_url('javascript/poker_comments.js') }}"></script>
+<script defer src="{{ static_url('javascript/comment_spam_filter.js') }}"></script>
+<script src="{{ static_url('javascript/back_to_top.js') }}"></script>
+{% endblock %}

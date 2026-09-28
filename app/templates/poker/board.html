@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_bits.html" import back_link %}
+{% from "poker/_nav.html" import board_nav %}
+{% from "poker/_search.html" import poker_search_form, poker_search_summary, stale_notice %}
+
+{% block body_class %}board-view poker-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link("/", aria_label="홈으로") }}{% endblock %}
+
+{% block masthead_context %}
+<link rel="stylesheet" href="{{ static_url('css/poker.css') }}">
+<div class="board-head masthead-board-head poker-board-head">
+    <h1>{{ board_name }}</h1>
+    {% if source_url %}
+    <a class="poker-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문 보기<span class="sr-only"> (새 창)</span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/></svg></a>
+    {% endif %}
+</div>
+{{ board_nav(boards, board_id, "page") }}
+{% endblock %}
+
+{% block page_class %} board-page poker-board-page{% endblock %}
+
+{% block content %}
+<section class="feed-list poker-feed" aria-label="{{ board_name }} 글 목록">
+    {% if data.stale %}{{ stale_notice() }}{% endif %}
+    {{ poker_search_summary(board_id, search, data.posts | length) }}
+    {% include "poker/_post_list.html" %}
+    {{ poker_search_form(board_id, search_types, search, search_error) }}
+</section>
+{% endblock %}

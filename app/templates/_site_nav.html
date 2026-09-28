@@ -1,0 +1,5 @@
+{% set is_poker = request.blueprint == 'poker' %}
+<nav class="board-tabs site-tabs" aria-label="사이트 선택">
+    <a class="tab-item{% if not is_poker %} active{% endif %}" href="{{ url_for('main.index') }}"{% if not is_poker %} aria-current="location"{% endif %}>게시판</a>
+    <a class="tab-item{% if is_poker %} active{% endif %}" href="{{ url_for('poker.board', board_id='free', page=1) }}"{% if is_poker %} aria-current="location"{% endif %}>포커</a>
+</nav>

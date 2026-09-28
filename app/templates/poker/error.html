@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% from "_bits.html" import back_link %}
+{% from "poker/_nav.html" import board_nav %}
+{% set login_required = status == 403 %}
+{% if status in [404, 410] %}
+{% set heading = "글을 찾을 수 없어요" %}
+{% elif login_required %}
+{% set heading = "로그인이 필요한 게시판이에요" %}
+{% elif status in [429, 503] %}
+{% set heading = "잠시 후 다시 시도해 주세요" %}
+{% else %}
+{% set heading = "불러오지 못했어요" %}
+{% endif %}
+
+{% block body_class %}poker-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link(return_url or "/", aria_label="돌아가기") }}{% endblock %}
+
+{% block masthead_context %}
+<link rel="stylesheet" href="{{ static_url('css/poker.css') }}">
+{{ board_nav(boards, board_id, "location") }}
+{% endblock %}
+
+{% block content %}
+<section class="poker-error" aria-labelledby="poker-error-title">
+    <p class="poker-error-kicker">{{ board_name or "포커" }}{% if status %} · 오류 {{ status }}{% endif %}</p>
+    <h1 id="poker-error-title">{{ heading }}</h1>
+    {% if login_required %}
+    <p class="poker-error-message">원본 사이트에서 로그인해야 볼 수 있어요. 숨터는 로그인을 지원하지 않으니 원문에서 확인해 주세요.</p>
+    {% elif message %}
+    <p class="poker-error-message">{{ message }}</p>
+    {% endif %}
+    <div class="poker-actions">
+        {% if login_required %}
+        {% if source_url %}<a class="poker-action is-primary" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문에서 보기<span class="sr-only"> (새 창)</span></a>{% endif %}
+        <a class="poker-action" href="{{ return_url or '/' }}">돌아가기</a>
+        {% else %}
+        {% if retry_url %}<a class="poker-action is-primary" href="{{ retry_url }}">다시 시도</a>{% endif %}
+        <a class="poker-action" href="{{ return_url or '/' }}">돌아가기</a>
+        {% if source_url %}<a class="poker-action" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">원문 보기<span class="sr-only"> (새 창)</span></a>{% endif %}
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

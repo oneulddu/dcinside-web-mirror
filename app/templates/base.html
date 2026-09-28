@@ -109,6 +109,9 @@
                     </button>
                 </div>
             </div>
+            {% if request.endpoint == 'main.index' or request.blueprint == 'poker' %}
+            {% include "_site_nav.html" %}
+            {% endif %}
             {% block masthead_context %}{% endblock %}
         </header>
 

@@ -1,0 +1,510 @@
+/* 포커고수 게시판 전용 스타일. main.css 토큰만 쓰고 .poker-view 안으로 제한한다. */
+
+.poker-view .poker-board-head {
+    align-items: center;
+}
+
+.poker-view .poker-source-link {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-height: 44px;
+    padding: 0 var(--space-1);
+    margin-right: calc(-1 * var(--space-1));
+    color: var(--muted);
+    font: var(--type-label);
+    border-radius: var(--radius-s);
+    transition: color var(--dur) ease-out;
+}
+
+.poker-view .poker-source-link .ui-icon {
+    width: 15px;
+    height: 15px;
+    stroke-width: 2.2;
+}
+
+.poker-view .poker-source-link:hover {
+    color: var(--fg);
+}
+
+.poker-view .poker-source-row {
+    display: flex;
+    justify-content: flex-end;
+    margin: calc(-1 * var(--space-4)) 0 var(--space-3);
+}
+
+.poker-view .poker-inline-link,
+.poker-view .poker-notice-link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.poker-view .poker-inline-link:hover,
+.poker-view .poker-notice-link:hover {
+    color: var(--accent-strong);
+}
+
+/* 안내는 테두리 없는 회색 면 한 겹으로만 둔다. */
+.poker-view .poker-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-1) var(--space-4);
+    margin: 0 0 var(--space-5);
+    padding: 14px var(--space-4);
+    border-radius: var(--radius-l);
+    background: var(--surface);
+    color: var(--text);
+    font: var(--type-note);
+}
+
+.poker-view .poker-notice p {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.poker-view .poker-notice-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+    font: var(--type-label);
+}
+
+.poker-view .poker-comments .poker-notice {
+    margin: var(--space-2) 0 var(--space-1);
+}
+
+/* 지난 캐시 안내와 동적으로 붙는 안내는 숨김 속성을 확실히 따른다. */
+.poker-view .poker-stale-notice[hidden] {
+    display: none;
+}
+
+.poker-view .poker-read .poker-stale-notice {
+    margin: var(--space-4) 0 0;
+}
+
+.poker-view .poker-post-list .poker-stale-notice {
+    margin: var(--space-2) 0 var(--space-3);
+}
+
+/* 검색 결과 요약은 목록 위, 검색 폼은 목록과 페이지 이동 사이에 둔다. */
+.poker-view .poker-feed > .board-search-summary {
+    padding: 0 0 var(--space-2);
+}
+
+.poker-view .poker-search-form {
+    margin: var(--space-5) 0 0;
+}
+
+.poker-view .poker-search-error {
+    margin: var(--space-2) var(--space-1) 0;
+    color: var(--hot);
+    font: var(--type-note);
+}
+
+/* 댓글 본문은 서버에서 정리한 HTML이라 문단 없이 글자만 올 수도 있다. */
+.poker-view .poker-comment-body {
+    max-width: 100%;
+    min-width: 0;
+    color: var(--text);
+    font: var(--type-comment);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    text-wrap: pretty;
+}
+
+.poker-view .poker-comment-body p {
+    margin: 0;
+}
+
+.poker-view .poker-comment-body p + p {
+    margin-top: var(--space-1);
+}
+
+.poker-view .poker-comment-body a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.poker-view .poker-comment-body a:hover {
+    color: var(--accent-strong);
+}
+
+.poker-view .poker-comment-body img {
+    display: block;
+    max-width: min(100%, 320px);
+    height: auto;
+    margin-top: var(--space-2);
+    border-radius: var(--radius-m);
+    outline: var(--rule) solid var(--line);
+    outline-offset: -1px;
+}
+
+.poker-view .poker-comment-body img[hidden],
+.poker-view .poker-comment-image-toggle[hidden] {
+    display: none !important;
+}
+
+.poker-view .poker-comment-image-toggle {
+    display: inline-flex;
+    width: auto;
+    min-height: 44px;
+    margin: var(--space-2) 0 0;
+}
+
+.poker-view .poker-comment-image-toggle[aria-expanded="true"] {
+    min-height: 36px;
+    padding-left: 0;
+    padding-right: 0;
+}
+
+/* ===== 오류 ===== */
+
+.poker-view .poker-error {
+    padding: var(--space-10) 0 var(--space-12);
+}
+
+.poker-view .poker-error-kicker {
+    margin: 0 0 var(--space-2);
+    color: var(--meta);
+    font: var(--type-meta);
+    font-variant-numeric: tabular-nums;
+}
+
+.poker-view .poker-error h1 {
+    margin: 0;
+    color: var(--fg);
+    font: var(--type-page-title);
+    letter-spacing: -0.035em;
+    text-wrap: balance;
+}
+
+.poker-view .poker-error-message {
+    margin: var(--space-3) 0 0;
+    color: var(--muted);
+    font: var(--type-note);
+    font-size: 15px;
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
+}
+
+.poker-view .poker-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-8);
+}
+
+.poker-view .poker-action {
+    flex: 1 1 140px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    padding: 0 var(--space-4);
+    border-radius: var(--radius-l);
+    background: var(--surface);
+    color: var(--text);
+    font: var(--type-tab);
+    transition: background-color var(--dur) ease-out, color var(--dur) ease-out, transform var(--dur-fast) ease-out;
+}
+
+.poker-view .poker-action:hover {
+    background: var(--surface-strong);
+    color: var(--fg);
+}
+
+.poker-view .poker-action:active {
+    transform: scale(0.96);
+}
+
+.poker-view .poker-action.is-primary {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
+.poker-view .poker-action.is-primary:hover {
+    background: var(--accent-strong);
+    color: var(--on-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .poker-view .poker-source-link,
+    .poker-view .poker-action {
+        transition: none;
+    }
+
+    .poker-view .poker-action:active {
+        transform: none;
+    }
+}
+
+/* 원문 코드·표가 댓글의 읽기 컬럼을 밀어내지 않게 한다. */
+.poker-view .poker-comment-body pre,
+.poker-view .poker-comment-body table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+/* ===== 게시판 전환 =====
+   기존 글자 탭과 같은 말투로, 10개 게시판을 한 줄 가로 스크롤에 둔다.
+   활성은 --fg 글자와 2px 밑줄, 줄 전체는 탭 구분선처럼 화면 끝까지 그린다. */
+
+.poker-view .poker-board-nav {
+    margin: 10px calc(-1 * var(--gutter)) 0;
+    border-bottom: var(--rule) solid var(--line);
+}
+
+.poker-view .poker-board-nav-scroll {
+    display: flex;
+    gap: var(--space-5);
+    margin: 0;
+    padding: 0 var(--gutter);
+    list-style: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+}
+
+.poker-view .poker-board-nav-scroll::-webkit-scrollbar {
+    display: none;
+}
+
+.poker-view .poker-board-nav-scroll > li {
+    flex: none;
+    display: flex;
+}
+
+/* 마지막 항목이 흐려지는 오른쪽 가장자리에 가려지지 않게 여유를 둔다. */
+.poker-view .poker-board-nav-scroll > li:last-child {
+    padding-right: 28px;
+}
+
+.poker-view .poker-board-nav-item {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-height: 44px;
+    border-bottom: var(--rule-bold) solid transparent;
+    color: var(--muted);
+    font: var(--type-tab);
+    white-space: nowrap;
+    transition: color var(--dur) ease-out, border-color var(--dur) ease-out;
+}
+
+/* 스크롤 줄 안에서 포커스 테두리가 잘리지 않게 안쪽으로 그린다. */
+.poker-view .poker-board-nav-item:focus-visible {
+    outline-offset: -2px;
+    border-radius: var(--radius-xs);
+}
+
+.poker-view .poker-board-nav-item:hover {
+    color: var(--fg);
+}
+
+.poker-view .poker-board-nav-item.active {
+    color: var(--fg);
+    border-bottom-color: var(--fg);
+}
+
+.poker-view .poker-board-nav-lock {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .poker-view .poker-board-nav-item {
+        transition: none;
+    }
+}
+
+/* ===== 글 아래 같은 게시판 목록 =====
+   기존 목록 행과 페이지 이동을 그대로 쓰고, 읽는 글만 옅은 면과 글자 표기로 알린다. */
+
+.poker-view .poker-post-list .board-head h2:focus {
+    outline: none;
+}
+
+.poker-view .poker-post-list .board-head h2:focus-visible {
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: 4px;
+    border-radius: var(--radius-xs);
+}
+
+.poker-view .poker-post-list-status {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.poker-view .poker-post-list-message {
+    margin: 0;
+    color: var(--muted);
+    font: var(--type-note);
+    font-size: 15px;
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
+}
+
+.poker-view .poker-post-list-message:empty {
+    display: none;
+}
+
+/* 불러온 뒤의 안내는 화면 읽기 프로그램에만 들려준다. */
+.poker-view .poker-post-list[data-state="ready"] .poker-post-list-message {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.poker-view .poker-post-list[data-state="loading"] .poker-post-list-message,
+.poker-view .poker-post-list[data-state="error"] .poker-post-list-message {
+    padding: var(--space-2) 0 var(--space-3);
+}
+
+.poker-view .poker-post-list[data-state="error"] .poker-post-list-message {
+    color: var(--text);
+}
+
+.poker-view .poker-post-list-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-bottom: var(--space-4);
+}
+
+.poker-view .poker-post-list-actions[hidden] {
+    display: none;
+}
+
+.poker-view .poker-post-list-actions .poker-action {
+    min-height: 48px;
+    border: 0;
+    cursor: pointer;
+}
+
+.poker-view .poker-post-list-actions .poker-action[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: default;
+}
+
+/* 첫 요청 전에는 목록이 들어올 자리만 조금 잡아 둔다. */
+.poker-view .poker-post-list[data-state="idle"] .poker-post-list-body,
+.poker-view .poker-post-list[data-state="loading"] .poker-post-list-body:not(:has(.feed-item, .empty-row)) {
+    min-height: 96px;
+}
+
+/* 다음 페이지를 기다리는 동안 이전 행은 남기되 흐리게 둔다. */
+.poker-view .poker-post-list-body[aria-busy="true"] > ul,
+.poker-view .poker-post-list-body[aria-busy="true"] > .pager-row {
+    opacity: 0.5;
+    transition: opacity var(--dur) ease-out;
+}
+
+.poker-view .poker-post-list-noscript {
+    margin: 0;
+    padding: var(--space-4) 0;
+    font: var(--type-label);
+}
+
+.poker-view .feed-item.is-current {
+    background: var(--hover);
+}
+
+.poker-view .feed-item.is-current .feed-title {
+    color: var(--fg);
+}
+
+.poker-view .feed-item.is-current.is-read .feed-title {
+    color: var(--read);
+}
+
+.poker-view .poker-current-label {
+    margin-right: 6px;
+    color: var(--accent);
+    font: var(--type-meta);
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.poker-view .poker-post-pager {
+    margin-top: var(--space-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .poker-view .poker-post-list-body[aria-busy="true"] > ul,
+    .poker-view .poker-post-list-body[aria-busy="true"] > .pager-row {
+        transition: none;
+    }
+}
+
+/* ===== 이전 댓글 자동 수집 =====
+   목록 아래 한 줄 안내와 실패 시 다시 시도 버튼만 둔다. */
+
+.poker-view .poker-comments-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-3);
+    margin: 0 0 var(--space-4);
+}
+
+.poker-view .poker-comments-status[hidden],
+.poker-view .poker-comments-status [hidden],
+.poker-view .poker-comments .poker-notice[hidden] {
+    display: none;
+}
+
+.poker-view .poker-comments-progress {
+    flex: 1 1 200px;
+    margin: 0;
+    color: var(--muted);
+    font: var(--type-note);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+
+.poker-view .poker-comments[data-comments-state="error"] .poker-comments-progress {
+    color: var(--text);
+}
+
+.poker-view .poker-comments-status .poker-action {
+    flex: none;
+    min-height: 44px;
+    border: 0;
+    cursor: pointer;
+}
+
+.poker-view .poker-comments-status .poker-action[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.poker-view .poker-comments h2:focus {
+    outline: none;
+}
+
+.poker-view .poker-comments h2:focus-visible {
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: 4px;
+    border-radius: var(--radius-xs);
+}

@@ -1,0 +1,80 @@
+{# 포커고수 글 목록과 페이지 이동. 게시판 화면(mode 없음)과 글 아래 목록(mode="read")이 같이 쓴다.
+   글 아래에서는 홈 버튼을 빼고, 페이지 링크에 data-list-page를 달아 목록 부분만 바꾼다.
+   뉴스처럼 원본 목록에 없는 값은 비워 두고, 표시할 값이 하나도 없으면 메타 줄 자체를 그리지 않는다. #}
+{% from "_bits.html" import icon_chevron, reply_count, number, post_time, feed_status_icon %}
+{% set in_read = mode is defined and mode == "read" %}
+{% set active_pid = (current_pid | string) if in_read and current_pid is defined and current_pid is not none else "" %}
+{#- 검색 결과 목록이면 글 링크·페이지 이동에 검색 조건(s, v)을 이어 붙인다. -#}
+{% set q = search if search is defined and search else none %}
+{% set title_hl = q.v if q and q.s in (1, 2) else none %}
+{% set author_hl = q.v if q and q.s == 5 else none %}
+{% macro list_href(target_page) -%}
+{%- if q -%}{{ url_for('poker.search', board_id=board_id, s=q.s, v=q.v, page=target_page) }}
+{%- else -%}{{ url_for('poker.board', board_id=board_id, page=target_page) }}{%- endif -%}
+{%- endmacro %}
+<ul>
+    {% for post in data.posts %}
+    {% set has_view = post.view_count is number %}
+    {% set has_vote = post.voteup_count is number %}
+    {% set has_meta = post.author or post.time or has_view or has_vote %}
+    {% set is_current = active_pid and (post.id | string) == active_pid %}
+    <li>
+        {% set read_board = board_id if in_read else (post.board_id or board_id) %}
+        <a class="feed-item{% if is_current %} is-current{% endif %}" href="{% if q %}{{ url_for('poker.read', board_id=read_board, pid=post.id, page=page, s=q.s, v=q.v) }}{% else %}{{ url_for('poker.read', board_id=read_board, pid=post.id, page=page) }}{% endif %}"{% if is_current %} aria-current="page"{% endif %}>
+            <div class="feed-title-wrap">
+                {% if is_current %}<span class="poker-current-label">읽는 글</span>{% endif %}
+                <span class="sr-only" data-poker-read-label hidden>읽은 글</span>
+                {#- 목록 첨부 표시는 파일일 수도 있어 사진으로 단정하지 않는다. -#}
+                {{ feed_status_icon({"has_image": post.has_image or post.has_attachment}, image_label="이미지·파일 첨부" if post.has_attachment else "사진 첨부") }}
+                <span class="feed-title">{{ post.title | highlight_search(title_hl) }}</span>
+                {{ reply_count(post.comment_count) }}
+            </div>
+            {% if has_meta %}
+            <div class="feed-meta-row">
+                <div class="feed-meta-left">
+                    {% if post.author %}<span class="author-text">{{ post.author | highlight_search(author_hl) }}</span>{% endif %}
+                    {% if post.time %}{{ post_time(post.time) }}{% endif %}
+                    {% if has_view %}<span>조회 {{ number(post.view_count) }}</span>{% endif %}
+                    {% if has_vote %}<span class="feed-vote">추천 {{ number(post.voteup_count) }}</span>{% endif %}
+                </div>
+            </div>
+            {% endif %}
+        </a>
+    </li>
+    {% else %}
+    <li class="empty-row">
+        {% if q %}
+        <b>검색 결과가 없어요</b>
+        {% if page > 1 %}
+        <span>이 페이지에는 결과가 없어요. <a class="poker-inline-link" href="{{ list_href(1) }}"{% if in_read %} data-list-page="1"{% endif %}>첫 페이지로</a></span>
+        {% else %}
+        <span>다른 검색어나 범위로 찾아보세요.</span>
+        {% endif %}
+        {% else %}
+        <b>게시글이 없어요</b>
+        {% if page > 1 %}
+        <span>이 페이지에는 글이 없어요. <a class="poker-inline-link" href="{{ url_for('poker.board', board_id=board_id, page=1) }}"{% if in_read %} data-list-page="1"{% endif %}>첫 페이지로</a></span>
+        {% else %}
+        <span>잠시 후 다시 확인해 보세요.</span>
+        {% endif %}
+        {% endif %}
+    </li>
+    {% endfor %}
+</ul>
+<nav class="pager-row {% if in_read %}poker-post-pager{% else %}board-pager{% endif %}" aria-label="{% if in_read %}{{ board_name }} 목록 페이지 이동{% else %}페이지 이동{% endif %}">
+    {% if not in_read %}<a class="pager-btn pager-home" href="/">홈</a>{% endif %}
+    <div class="pager-center">
+        {% if page > 1 %}
+        <a class="pager-btn" href="{{ list_href(page - 1) }}" rel="prev"{% if in_read %} data-list-page="{{ page - 1 }}"{% endif %}>{{ icon_chevron("left") }}이전</a>
+        {% else %}
+        <span class="pager-btn off" aria-disabled="true">{{ icon_chevron("left") }}이전</span>
+        {% endif %}
+        {#- 글 아래에서는 읽는 글이 aria-current="page"를 쓰므로 페이지 번호는 글자로만 알린다. -#}
+        <span class="pager-current"{% if not in_read %} aria-current="page"{% endif %}><span class="sr-only">현재 </span>{{ page }}<span class="sr-only"> 페이지</span></span>
+        {% if data.has_next %}
+        <a class="pager-btn" href="{{ list_href(page + 1) }}" rel="next"{% if in_read %} data-list-page="{{ page + 1 }}"{% endif %}>다음{{ icon_chevron("right") }}</a>
+        {% else %}
+        <span class="pager-btn off" aria-disabled="true">다음{{ icon_chevron("right") }}</span>
+        {% endif %}
+    </div>
+</nav>

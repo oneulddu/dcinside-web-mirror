@@ -1,0 +1,43 @@
+{# 포커고수 게시판 검색 폼과 결과 요약. DC 검색 폼과 같은 모양(.board-search-*)을 쓴다.
+   search 가 있으면 선택·입력을 유지하고, search_error 가 있으면 입력과 오류 문구를 연결한다. #}
+{% from "_bits.html" import icon_chevron %}
+
+{% macro poker_search_form(board_id, search_types, search=None, search_error=None) -%}
+{%- if search_types %}
+{% set current_s = search.s if search else 1 %}
+<form class="board-search-form poker-search-form" id="poker-search" method="get" action="{{ url_for('poker.search', board_id=board_id) }}" role="search" aria-label="게시판 안에서 검색">
+    <label class="board-search-label" for="poker-search-type">검색 범위</label>
+    <span class="board-search-select-wrap">
+        <select class="board-search-select" id="poker-search-type" name="s" aria-label="검색 범위">
+            {% for option in search_types %}
+            <option value="{{ option.value }}"{% if option.value == current_s %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+        </select>
+        {{ icon_chevron("down") }}
+    </span>
+    {#- 글자 수는 서버가 앞뒤 공백을 뺀 코드 포인트로 센다. 브라우저 길이 제한(UTF-16)과 어긋나 두지 않는다. -#}
+    <input class="board-search-input" id="poker-search-input" type="search" name="v" value="{{ search.v if search else '' }}" placeholder="2~20자로 검색" aria-label="검색어" autocomplete="off" enterkeyhint="search" required{% if search_error %} aria-invalid="true" aria-describedby="poker-search-error"{% endif %}>
+    {% if search %}
+    <a class="board-search-clear" href="{{ url_for('poker.board', board_id=board_id, page=1) }}" aria-label="검색 해제"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 7l10 10M17 7L7 17"/></svg></a>
+    {% endif %}
+    <button class="board-search-submit" type="submit">검색</button>
+</form>
+{% if search_error %}<p class="poker-search-error" id="poker-search-error" role="alert">{{ search_error }}</p>{% endif %}
+{%- endif %}
+{%- endmacro %}
+
+{% macro poker_search_summary(board_id, search, count) -%}
+{%- if search %}
+<div class="board-search-summary">
+    <span>{{ search.label }} <b>‘{{ search.v }}’</b> 검색 결과{% if count %} · 이 페이지 {{ count }}개{% endif %}</span>
+    <a class="board-search-summary-clear" href="{{ url_for('poker.board', board_id=board_id, page=1) }}">검색 해제</a>
+</div>
+{%- endif %}
+{%- endmacro %}
+
+{# 원본을 새로 가져오지 못해 지난 캐시를 보여 줄 때의 안내. #}
+{% macro stale_notice(extra_attrs="") -%}
+<div class="poker-notice poker-stale-notice" role="note"{{ extra_attrs | safe }}>
+    <p>원본을 새로 가져오지 못해 조금 이전 내용을 보여드려요.</p>
+</div>
+{%- endmacro %}

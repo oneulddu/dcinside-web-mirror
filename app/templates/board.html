@@ -3,7 +3,16 @@
 
 {% block body_class %}board-view{% endblock %}
 
-{% block masthead_lead %}{{ back_link("/", aria_label="홈으로") }}{% endblock %}
+{#- 뒤로 아이콘은 한 단계씩 물러난다: 검색 중이면 검색 해제(분류는 유지), 분류(말머리)를 보고 있으면 분류 해제, 그 밖에는 홈. -#}
+{% block masthead_lead %}
+{%- if search_keyword -%}
+{{ back_link(board_url(board, recommend=recommend, page=1, kind=kind, nav=nav_mode, head_id=head_id, gallery_name=gallery_name), aria_label="검색 해제") }}
+{%- elif head_id is not none -%}
+{{ back_link(board_url(board, recommend=recommend, page=1, kind=kind, nav=nav_mode, gallery_name=gallery_name), aria_label="분류 해제") }}
+{%- else -%}
+{{ back_link("/", aria_label="홈으로") }}
+{%- endif -%}
+{% endblock %}
 
 {% block masthead_actions %}
 <button class="icon-btn board-search-jump" type="button" aria-label="이 게시판에서 검색" aria-controls="board-search-input" data-search-target="board-search-input">{{ icon_search() }}</button>

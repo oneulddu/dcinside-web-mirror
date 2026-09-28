@@ -133,6 +133,10 @@ def normalize_recent_entry(item):
     board = (item.get("board") or "").strip()
     if not board:
         return None
+    # 최근 본 게시판은 디시 전용이다. 예전 버전이 남긴 포커고수 행(poker:<id>, kind=poker)은
+    # 읽을 때 버려서 디시 화면에 섞이지 않게 하고, 다음 저장 때 쿠키에서도 지워진다.
+    if board.startswith("poker:") or (item.get("kind") or "").strip().lower() == "poker":
+        return None
     name = (item.get("name") or "").strip()
     if name == board:
         name = ""
@@ -649,6 +653,8 @@ def touch_recent_gallery(response, board, kind, name=None):
         "kind": (kind or "").strip().lower() or None,
         "visited_at": time.time(),
     })
+    if new_row is None:
+        return
     deduped = merge_recent_entries(new_row, rows)
     deduped = set_recent_server_cache(cache_key, deduped, tombstones=tombstones)
 
@@ -665,6 +671,8 @@ def remove_recent_gallery(response, board, kind):
         "board": board_id,
         "kind": (kind or "").strip().lower() or None,
     })
+    if target is None:
+        return False
     rows = load_recent_entries()
     remaining = [row for row in rows if not recent_removal_matches(target, row)]
     removed = len(remaining) != len(rows)
