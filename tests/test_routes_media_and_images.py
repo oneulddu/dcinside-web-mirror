@@ -2769,6 +2769,35 @@ def test_board_head_category_tabs_filter_and_preserve_links(monkeypatch):
     assert main_tab_queries[1]["headid"] == ["10"]
 
 
+@pytest.mark.parametrize(
+    "query,label,expected",
+    [
+        # 검색 중: 검색만 풀고 분류·추천글·종류는 유지한다.
+        ("&headid=10&recommend=1&kind=minor&s_type=subject&serval=hello&page=3", "검색 해제",
+         {"board": ["test"], "recommend": ["1"], "page": ["1"], "kind": ["minor"], "headid": ["10"]}),
+        # 분류만 보고 있을 때: 분류를 풀고 추천글·종류는 유지한다.
+        ("&headid=10&recommend=1&kind=minor&page=2", "분류 해제",
+         {"board": ["test"], "recommend": ["1"], "page": ["1"], "kind": ["minor"]}),
+        ("", "홈으로", None),
+    ],
+)
+def test_board_back_icon_steps_out_of_search_then_category(monkeypatch, query, label, expected):
+    async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
+        return [], []
+
+    monkeypatch.setattr(routes, "async_index_with_head_categories", fake_board_payload)
+    response = create_app().test_client().get("/board?board=test" + query)
+    back = BeautifulSoup(response.data, "html.parser").select_one("a.back-link")
+
+    assert back["aria-label"] == label
+    if expected is None:
+        assert back["href"] == "/"
+    else:
+        parsed = urlparse(back["href"])
+        assert parsed.path == "/board"
+        assert parse_qs(parsed.query) == expected
+
+
 def test_board_renders_image_icon_before_image_post_title(monkeypatch):
     async def fake_board_payload(page, board, recommend, kind=None, **kwargs):
         return [
