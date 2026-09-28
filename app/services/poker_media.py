@@ -16,6 +16,7 @@ from .media_proxy import MEDIA_CACHE_MAX_AGE, PinnedMediaAdapter, resolve_media_
 
 MEDIA_HOSTS = frozenset({'www.ipokergosu.com', 'ipokergosu.com'})
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+IMAGE_DEADLINE_SECONDS = 20
 _slots = threading.BoundedSemaphore(4)
 
 
@@ -135,26 +136,48 @@ def build_image_response(src, sig):
             session.mount('https://', PinnedMediaAdapter(target))
             with session.get(normalized, timeout=(5, 10), stream=True, allow_redirects=False,
                              headers={'Referer': 'https://www.pokergosu.com/', 'Accept-Encoding': 'identity'}) as upstream:
-                if upstream.status_code != 200:
-                    return Response(status=502)
-                declared = upstream.headers.get('Content-Length')
-                if declared and (not declared.isdigit() or int(declared) > MAX_IMAGE_BYTES):
-                    return Response(status=413)
-                body = bytearray()
-                for chunk in upstream.iter_content(65536):
-                    if time.monotonic() - started > 20:
-                        return Response(status=504)
-                    if len(body) + len(chunk) > MAX_IMAGE_BYTES:
-                        return Response(status=413)
-                    body.extend(chunk)
-                mime = _image_type(body)
-                if not mime or upstream.headers.get('Content-Type', '').split(';')[0].strip().lower() != mime:
-                    return Response(status=415)
-                return Response(bytes(body), mimetype=mime, headers={
-                    'Cache-Control': f'public, max-age={MEDIA_CACHE_MAX_AGE}', 'X-Content-Type-Options': 'nosniff',
-                    'Content-Security-Policy': "default-src 'none'; sandbox",
-                })
+                return _read_image(upstream, started)
     except (requests.RequestException, OSError, ValueError):
         return Response(status=502)
     finally:
         _slots.release()
+
+
+def _chunks(upstream):
+    """Yield bytes as soon as each socket read returns.
+
+    iter_content() keeps reading until a whole chunk is filled, so an upstream that trickles one
+    byte at a time never reaches the deadline check. read1() returns after one successful recv,
+    which bounds the wait between checks by the 10-second read timeout.
+    """
+    read1 = getattr(getattr(upstream, 'raw', None), 'read1', None)
+    if read1 is None:
+        yield from upstream.iter_content(65536)
+        return
+    while True:
+        chunk = read1(65536)
+        if not chunk:
+            return
+        yield chunk
+
+
+def _read_image(upstream, started):
+    if upstream.status_code != 200:
+        return Response(status=502)
+    declared = upstream.headers.get('Content-Length')
+    if declared and (not declared.isdigit() or int(declared) > MAX_IMAGE_BYTES):
+        return Response(status=413)
+    body = bytearray()
+    for chunk in _chunks(upstream):
+        if time.monotonic() - started > IMAGE_DEADLINE_SECONDS:
+            return Response(status=504)
+        if len(body) + len(chunk) > MAX_IMAGE_BYTES:
+            return Response(status=413)
+        body.extend(chunk)
+    mime = _image_type(body)
+    if not mime or upstream.headers.get('Content-Type', '').split(';')[0].strip().lower() != mime:
+        return Response(status=415)
+    return Response(bytes(body), mimetype=mime, headers={
+        'Cache-Control': f'public, max-age={MEDIA_CACHE_MAX_AGE}', 'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+    })

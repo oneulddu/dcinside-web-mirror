@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 import threading
+import time
 from urllib.parse import urlsplit, parse_qs
 
 from bs4 import BeautifulSoup
@@ -320,6 +321,43 @@ def test_media_redirect_mime_and_size_guards(monkeypatch):
         state['headers'].pop('Content-Length')
         monkeypatch.setattr(media, 'MAX_IMAGE_BYTES', 2)
         assert call().status_code == 413
+
+
+def test_media_deadline_stops_trickling_upstream(monkeypatch):
+    # 바이트가 조금씩 와서 읽기 제한이 계속 연장돼도 소켓 읽기마다 마감을 확인해 504로 끝낸다.
+    reads = []
+    class Raw:
+        def read1(self, size):
+            reads.append(size)
+            time.sleep(0.05)
+            return b'RIFF' if len(reads) == 1 else b'x'
+    class Upstream:
+        status_code = 200
+        headers = {'Content-Type': 'image/webp'}
+        raw = Raw()
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def iter_content(self, *a):
+            raise AssertionError('read1 must be used when the raw stream supports it')
+    class Session:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def mount(self, *a): pass
+        def get(self, url, **kw): return Upstream()
+    monkeypatch.setattr(media, 'resolve_media_target', lambda *a, **k: object())
+    monkeypatch.setattr(media, 'PinnedMediaAdapter', lambda *a: object())
+    monkeypatch.setattr(media.requests, 'Session', Session)
+    monkeypatch.setattr(media, 'IMAGE_DEADLINE_SECONDS', 0.3)
+    app = create_app()
+    with app.test_request_context('/'):
+        src = 'https://www.ipokergosu.com/img2/test.webp'
+        started = time.monotonic()
+        response = media.build_image_response(src, media.signature(src))
+    assert response.status_code == 504
+    assert time.monotonic() - started < 2
+    assert 3 <= len(reads) < 40
+    assert media._slots.acquire(timeout=0.1)
+    media._slots.release()
 
 
 @pytest.mark.parametrize('path', ['/poker/free?page=0', '/poker/free?page=10001', '/poker/free?page=oops',
