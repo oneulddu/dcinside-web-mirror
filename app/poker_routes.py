@@ -8,7 +8,6 @@ from werkzeug.exceptions import HTTPException
 from .services.pokergosu import PokerError, reader
 from .services.poker_boards import BASE_URL, MAX_PAGE, BOARDS, search_types, validate_search
 from .services.poker_media import build_image_response, prepare_html
-from .services.recent import touch_recent_poker_board
 
 bp = Blueprint('poker', __name__, url_prefix='/poker')
 
@@ -71,7 +70,6 @@ def board(board_id):
     response = make_response(render_template('poker/board.html', title=context['board_name'] + ' · 숨터', data=data,
                            page=page, source_url=source_url, search=None, search_types=search_types(board_id),
                            search_error=None, **context))
-    touch_recent_poker_board(response, board_id)
     return response
 
 
@@ -106,7 +104,6 @@ def search(board_id):
         return _error(exc, source_url, page, board_id, search)
     response = make_response(render_template('poker/board.html', title=context['board_name'] + ' · 숨터',
         data=data, page=page, source_url=source_url, search=search, search_types=types, search_error=None, **context))
-    touch_recent_poker_board(response, board_id)
     return response
 
 
@@ -169,7 +166,6 @@ def read(board_id, pid):
         return _error(exc, source_url, page, board_id, search)
     response = make_response(render_template('poker/read.html', title=data['title'] + ' · 숨터', data=data,
                            page=page, source_url=source_url, search=search, **context))
-    touch_recent_poker_board(response, board_id)
     return response
 
 

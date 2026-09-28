@@ -51,19 +51,15 @@
 
 ### 최근 본 게시판 (11)
 
-- 저장 행은 `{board:'poker:free', kind:'poker', name:'포커고수 자유 게시판', visited_at:…}`; board 접두사가 DC free와의 충돌을 막는다.
-  `recent.py`의 kind 허용에 poker를 추가하고 Poker 행은 BOARDS의 ID만 인정한다. 접두사 행의 빈 kind는 poker로 복원하며 잘못된 조합은 제외한다.
-  확인: 쿠키 압축은 name만 제거하고 board/kind를 보존하며 삭제 해시는 board 전체 문자열을 사용한다. 레거시 빈-kind 매칭도 접두사로 격리된다.
-- 성공한 일반 목록·검색·글 보기 HTML(빈 결과·stale 포함)에서 같은 게시판 한 행을 갱신한다. JSON·미디어·실패/403/404는 기록하지 않는다.
-  이름이 압축으로 빠져도 BOARDS에서 복원하고 Poker 행은 DC 이름 조회에서 제외한다. 기존 DC 동작·정렬·최대 개수·홈 8개 제한을 유지한다.
-- 서버 최근 항목에 `href`를 제공하여 홈·/recent가 함께 사용한다(Poker `/poker/<id>?page=1`, DC 기존 board_url).
-  이름 “포커고수 {BOARDS.label}”, 종류 “포커고수”; 화면 ID는 원래 id만 표시한다. 삭제 POST는 board=poker:<id>·kind=poker 그대로 보낸다.
-  개별/전체 삭제·tombstone·다중 워커 병합·재방문 복원을 유지하며 Poker 삭제가 DC 동명 기록에 영향을 주지 않아야 한다.
+- 되돌림(2026-09-28): 포커고수 게시판이 디시 홈·`/recent`의 최근 본 게시판에 섞여 보여 기록을 없앴다.
+  최근 본 게시판은 디시 전용이다. 포커고수 화면은 최근 기록 쿠키를 쓰지 않는다.
+- 예전 버전이 남긴 `poker:<id>`·`kind=poker` 행은 `normalize_recent_entry`에서 버려 화면에 나오지 않고,
+  다음 디시 방문 때 저장되는 쿠키에서 빠진다. 같은 ID의 디시 게시판 행은 그대로 남는다.
 
 ### 구현 후 인수 검사
 
 - pytest: `test_pokergosu.py`의 안전한 YouTube/혼합 미디어·댓글 차단, 신규 `test_poker_search.py`의 검증·인코딩·표/뉴스·빈 결과·오류·캐시 격리,
-  `test_poker_boards.py`·`test_poker_post_list.py`의 검색 복귀/페이저/403·stale, `test_poker_comments.py`의 stale/partial, `test_recent_gallery_names.py`의 충돌·압축·삭제·홈 링크.
+  `test_poker_boards.py`·`test_poker_post_list.py`의 검색 복귀/페이저/403·stale, `test_poker_comments.py`의 stale/partial, `test_poker_recent.py`의 디시 전용 최근 기록.
 - 실행은 `uv run --no-project --python 3.12 --with-requirements requirements-dev.txt python -m pytest -q <변경 관련 파일>`; 부모 제공 Poker 125 passed는 사전 기준이며 여기서 재실행하지 않았다.
 - Node: `node tests/javascript/<이름>.test.cjs`로 comment_spam_filter·poker_comments·poker_post_list·poker_read_state의 재계산·펼침 유지·쿼리·stale·읽음 회귀를 확인한다.
 - 브라우저: 390px/데스크톱·양 테마에서 검색/해제/복귀·최근 삭제·키보드 폼/토글/iframe·가로 넘침을 확인한다. 로딩은 기존 aria-busy/진행 문구, 실패는 기존 내용과 재시도 유지,

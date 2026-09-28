@@ -11,8 +11,6 @@ from datetime import datetime, timedelta, timezone
 
 from flask import request
 
-from .poker_boards import BOARDS
-
 
 def _env_int(name, default):
     try:
@@ -49,7 +47,7 @@ RECENT_SERVER_CACHE = {}
 RECENT_SERVER_CACHE_LOCK = threading.Lock()
 RECENT_CACHE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 RECENT_TOMBSTONE_BOARD_HASH_RE = re.compile(r"^[0-9a-f]{12,40}$")
-RECENT_GALLERY_KINDS = {"minor", "mini", "person", "poker"}
+RECENT_GALLERY_KINDS = {"minor", "mini", "person"}
 
 
 def _tombstone_board_digest(board):
@@ -135,13 +133,9 @@ def normalize_recent_entry(item):
     board = (item.get("board") or "").strip()
     if not board:
         return None
-    raw_kind = (item.get("kind") or "").strip().lower()
-    kind = normalize_recent_kind(raw_kind)
-    if board.startswith("poker:"):
-        if board.removeprefix("poker:") not in BOARDS or raw_kind not in ("", "poker"):
-            return None
-        kind = "poker"
-    elif kind == "poker":
+    # 최근 본 게시판은 디시 전용이다. 예전 버전이 남긴 포커고수 행(poker:<id>, kind=poker)은
+    # 읽을 때 버려서 디시 화면에 섞이지 않게 하고, 다음 저장 때 쿠키에서도 지워진다.
+    if board.startswith("poker:") or (item.get("kind") or "").strip().lower() == "poker":
         return None
     name = (item.get("name") or "").strip()
     if name == board:
@@ -150,7 +144,7 @@ def normalize_recent_entry(item):
     return {
         "board": board,
         "name": name[:80] or None,
-        "kind": kind,
+        "kind": normalize_recent_kind(item.get("kind")),
         "visited_at": _safe_float(item.get("visited_at", 0), 0.0),
     }
 
@@ -666,18 +660,6 @@ def touch_recent_gallery(response, board, kind, name=None):
 
     save_recent_cache_key_cookie(response, cache_key)
     save_recent_cookie(response, deduped)
-
-
-def touch_recent_poker_board(response, board_id):
-    """Record a supported Poker board in its own recent-history namespace."""
-    if board_id not in BOARDS:
-        return
-    touch_recent_gallery(
-        response,
-        f"poker:{board_id}",
-        "poker",
-        name=f"포커고수 {BOARDS[board_id]['label']}",
-    )
 
 
 def remove_recent_gallery(response, board, kind):

@@ -1,7 +1,5 @@
-"""Search parser, cache, route contexts and successful-HTML recent recording."""
-import base64
+"""Search parser, cache, route contexts, and Poker views staying out of DC recent history."""
 from concurrent.futures import ThreadPoolExecutor
-import json
 from pathlib import Path
 import threading
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -158,7 +156,7 @@ def test_search_defaults_unicode_and_frozen_context(monkeypatch, app, contexts, 
     assert context['search'] == {'s': 1, 'v': v.strip(), 'label': '제목+내용'}
     assert context['search_error'] is None and context['data']['stale']
     assert [row['value'] for row in context['search_types']] == [1, 2, 3, 4]
-    assert client.get_cookie(recent.RECENT_COOKIE_NAME)
+    assert client.get_cookie(recent.RECENT_COOKIE_NAME) is None
     with app.test_request_context():
         assert url_for('poker.search', board_id='news') == '/poker/news/search'
 
@@ -200,7 +198,7 @@ def test_read_context_keeps_valid_search_without_fetching_list(monkeypatch, app,
     client = app.test_client()
     assert client.get('/poker/free/123' + suffix).status_code == 200
     assert contexts[-1][1]['search'] == expected
-    assert client.get_cookie(recent.RECENT_COOKIE_NAME)
+    assert client.get_cookie(recent.RECENT_COOKIE_NAME) is None
 
 
 @pytest.mark.parametrize('suffix', ['?s=6&v=검색', '?s=1&v=a', '?s=1&s=2&v=검색', '?v=ab&v=cd', '?page=4&s=1&v=a'])
@@ -240,7 +238,7 @@ def test_invalid_fragment_search_is_json_without_fetch(monkeypatch, app, query):
     assert response.status_code == 400 and response.json['error']
 
 
-def test_successful_html_recent_rows_are_deduplicated_including_stale_and_empty(monkeypatch, app, contexts):
+def test_poker_pages_never_touch_dc_recent_history(monkeypatch, app, contexts):
     reader = pg.Reader()
     monkeypatch.setattr(reader, '_fetch', lambda path: fixture('post'))
     monkeypatch.setattr(reader, 'board', lambda *a, **kw: {'posts': [], 'has_next': False, 'stale': True})
@@ -248,10 +246,9 @@ def test_successful_html_recent_rows_are_deduplicated_including_stale_and_empty(
     monkeypatch.setattr(poker_routes, 'reader', reader)
     client = app.test_client()
     for path in ['/poker/free', '/poker/free/search?v=검색', '/poker/free/123']:
-        assert client.get(path).status_code == 200
-        cookie = client.get_cookie(recent.RECENT_COOKIE_NAME)
-        rows = json.loads(base64.urlsafe_b64decode(cookie.value))
-        assert len(rows) == 1 and rows[0]['board'] == 'poker:free' and rows[0]['kind'] == 'poker'
+        response = client.get(path)
+        assert response.status_code == 200
+        assert not response.headers.getlist('Set-Cookie')
     board_context = contexts[0][1]
     assert board_context['search'] is None and board_context['search_error'] is None
     assert len(board_context['search_types']) == 5

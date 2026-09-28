@@ -89,8 +89,8 @@ pm2 logs dc-mirror
 - Search is `/poker/<board_id>/search?s=1..5&v=` (news excludes 5, 2-20 chars) and validated
   in `poker_boards.validate_search` before any fetch. Search context (`search`) follows read,
   footer list, back links, and error retry URLs. Cache keys include board, s, v, and page.
-- Successful Poker HTML views record recent rows as `board="poker:<id>", kind="poker"` through
-  `touch_recent_poker_board`; keep them isolated from DC rows with the same board id.
+- Recent galleries (home tiles and `/recent`) are DC-only. Poker routes never write the recent
+  cookie, and `normalize_recent_entry` drops legacy `poker:<id>` / `kind="poker"` rows.
 - `scripts/poker_smoke.py` checks every public board against the live source.
 - Eight boards are public; `groupbuy` and `qna` currently redirect to upstream login and show
   a 403 explanation. Login redirects do not trigger the Cloudflare cooldown.
