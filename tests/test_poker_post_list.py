@@ -27,7 +27,7 @@ def listing(board_id='free', has_next=True):
 
 def test_board_order():
     assert list(BOARDS) == [
-        'free', 'best', 'hand', 'grinding', 'strategy',
+        'best', 'free', 'hand', 'grinding', 'strategy',
         'news', 'buyboard', 'notice', 'groupbuy', 'qna',
     ]
 
