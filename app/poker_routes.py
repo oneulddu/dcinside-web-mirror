@@ -6,7 +6,7 @@ from flask import Blueprint, abort, jsonify, make_response, render_template, req
 from werkzeug.exceptions import HTTPException
 
 from .services.pokergosu import PokerError, reader
-from .services.poker_boards import BASE_URL, MAX_PAGE, BOARDS, search_types, validate_search
+from .services.poker_boards import BASE_URL, DEFAULT_BOARD, MAX_PAGE, BOARDS, search_types, validate_search
 from .services.poker_media import build_image_response, prepare_html
 
 bp = Blueprint('poker', __name__, url_prefix='/poker')
@@ -56,7 +56,7 @@ def _error(error, source_url, page, board_id, search=None):
 @bp.get('')
 @bp.get('/')
 def index():
-    return redirect(url_for('poker.board', board_id='free', page=1))
+    return redirect(url_for('poker.board', board_id=DEFAULT_BOARD, page=1))
 
 
 @bp.get('/<board_id>')

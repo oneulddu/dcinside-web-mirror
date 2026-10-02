@@ -4,9 +4,10 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 BASE_URL = 'https://www.pokergosu.com'
 MAX_PAGE = 10000
+DEFAULT_BOARD = 'best'
 BOARDS = {
-    'free': {'label': '자유 게시판'},
     'best': {'label': '추천 게시판'},
+    'free': {'label': '자유 게시판'},
     'hand': {'label': '핸드 게시판'},
     'grinding': {'label': '그라인딩 게시판'},
     'strategy': {'label': '전략/번역 게시판'},

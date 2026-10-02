@@ -146,7 +146,9 @@ def test_unknown_routes_never_fetch(monkeypatch):
     client=create_app().test_client()
     assert client.get('/poker/unknown').status_code == 404
     assert client.get('/poker/unknown/123').status_code == 404
-    assert client.get('/poker').status_code in (301,302,308)
+    response = client.get('/poker')
+    assert response.status_code in (301,302,308)
+    assert response.headers['Location'].endswith('/poker/best?page=1')
 
 
 def test_cross_board_links_preserve_safe_page_and_comments():
