@@ -84,8 +84,14 @@ def prepare_html(raw, *, base_url=BASE_URL + '/', allow_youtube=False):
             if not src:
                 node.decompose()
                 continue
+            # Preserve layout so offscreen lazy images do not all load at once.
+            dimensions = {key: node.get(key, '') for key in ('width', 'height')}
+            if not all(re.fullmatch(r'[0-9]{1,5}', value) and 0 < int(value) <= 10000
+                       for value in dimensions.values()):
+                dimensions = {}
             node.attrs = {'class': 'body-image', 'data-body-image-src': url_for('poker.media', src=src, sig=signature(src)),
                           'alt': node.get('alt') or '본문 이미지', 'hidden': '', 'loading': 'lazy', 'decoding': 'async'}
+            node.attrs.update(dimensions)
         elif node.name == 'a' and not node.get('href'):
             node.unwrap()
         elif node.name == 'a' and node.get('href'):
@@ -120,25 +126,46 @@ def _image_type(body):
     return None
 
 
+def _image_error(status, reason, *, src='', started=None, upstream_status=None):
+    # Never log signed queries, paths, exception messages, or upstream bodies.
+    if status >= 500 or status in (413, 415):
+        current_app.logger.warning(
+            'poker media rejected reason=%s status=%s host=%s upstream_status=%s elapsed=%.3f',
+            reason, status, urlsplit(src).hostname or '', upstream_status,
+            time.monotonic() - started if started is not None else 0,
+        )
+    headers = {'Cache-Control': 'no-store'}
+    if status == 503:
+        headers['Retry-After'] = '2'
+    return Response(status=status, headers=headers)
+
+
 def build_image_response(src, sig):
     normalized = image_url(src)
     if not normalized or not re.fullmatch(r'[0-9a-f]{64}', sig or '') or not hmac.compare_digest(signature(normalized), sig):
-        return Response(status=400)
+        return _image_error(400, 'invalid_signature')
+    started = time.monotonic()
     if not _slots.acquire(timeout=1):
-        return Response(status=503)
+        return _image_error(503, 'busy', src=normalized, started=started)
     try:
         target = resolve_media_target(normalized, require_allowed_media_host=False)
         if target is None:
-            return Response(status=400)
-        started = time.monotonic()
+            return _image_error(400, 'invalid_target')
+        fetch_started = time.monotonic()
         with requests.Session() as session:
             session.trust_env = False
             session.mount('https://', PinnedMediaAdapter(target))
             with session.get(normalized, timeout=(5, 10), stream=True, allow_redirects=False,
                              headers={'Referer': 'https://www.pokergosu.com/', 'Accept-Encoding': 'identity'}) as upstream:
-                return _read_image(upstream, started)
+                response = _read_image(upstream, fetch_started)
+                if response.status_code != 200:
+                    reason = {413: 'too_large', 415: 'invalid_image', 504: 'deadline'}.get(
+                        response.status_code, 'upstream_status')
+                    return _image_error(response.status_code, reason, src=normalized,
+                                        started=started, upstream_status=upstream.status_code)
+                return response
     except (requests.RequestException, OSError, ValueError):
-        return Response(status=502)
+        return _image_error(502, 'transport', src=normalized, started=started)
     finally:
         _slots.release()
 

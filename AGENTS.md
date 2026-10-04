@@ -96,6 +96,10 @@ pm2 logs dc-mirror
   a 403 explanation. Login redirects do not trigger the Cloudflare cooldown.
 - `app/services/poker_media.py` sanitizes content and serves signed, allowlisted images through
   the pinned media transport. Do not expand the DC media allowlist for Pokergosu.
+  Preserve validated image width/height pairs for lazy layout. Keep the four-slot, one-second
+  wait bound; errors are no-store and logged without source paths or signatures.
+  `poker_images.js` retries failed body/comment images at most twice with backoff and two
+  retry slots. Load it before image hydration; retries must not reveal hidden images.
 - Templates live in `app/templates/poker/` with scoped `app/static/css/poker.css`.
   News uses a separate grid parser; missing metadata stays absent.
 - Post HTML opens at the last upstream comment page. `poker_comments.js` automatically loads
