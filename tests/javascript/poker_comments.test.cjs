@@ -130,6 +130,13 @@ test('failure preserves rows and retry starts at failed cursor',async()=>{
   await h.advance(60000); assert.equal(h.requests.length,2); h.click(); assert.match(h.requests[2].url,/cpage=1/);
   await h.resolve(2,payload(1,['C1'],3)); assert.equal(h.section.dataset.commentsComplete,'1');
 });
+test('upstream comment block ends collection as partial without retry or more requests',async()=>{
+  const h=harness({next:2,total:3,ids:['C3']}); await h.resolve(0,payload(2,['C2'],3)); await h.advance(1000);
+  await h.resolve(1,{error:'이전 댓글은 지금 원본에서 가져올 수 없어요.',code:'comments_blocked'},{status:503});
+  assert.deepEqual(h.ids(),['C2','C3']); assert.equal(h.retry.hidden,true);
+  assert.equal(h.section.dataset.commentsState,'done'); assert.equal(h.section.dataset.commentsComplete,'0');
+  await h.advance(60000); assert.equal(h.requests.length,2);
+});
 test('timeout and stale response never mutate rows or overwrite successful retry',async()=>{
   const h=harness({total:2,ids:['C2']}); await h.advance(26000); assert.equal(h.requests[0].init.signal.aborted,true); h.click();
   await h.resolve(1,payload(1,['C1'],2)); await h.resolve(0,payload(1,['C9'],2)); assert.deepEqual(h.ids(),['C1','C2']);

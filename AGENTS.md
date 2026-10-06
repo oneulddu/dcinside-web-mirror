@@ -82,6 +82,10 @@ pm2 logs dc-mirror
   Sessions are thread-local and discarded on transport errors, oversize bodies, or challenges.
   Cooldown and start pacing are shared across Gunicorn workers through an `fcntl`-locked state
   file (`MIRROR_POKER_STATE_FILE`); keep the same inode and fall back to process-local state on OSError.
+  A challenge/403/429 on a comment-page fetch (`?cpage=`) does not start the global 60s cooldown;
+  it pauses only comment pages for `MIRROR_POKER_COMMENTS_BLOCK_SECONDS` (default 6h) in the same
+  state file. Reads then skip automatic comment collection, and the endpoint returns
+  `code: "comments_blocked"` so the client stops without a retry. Do not try to bypass the challenge.
   Transient 502/503 failures may return expired successes with `stale: True` within
   `MIRROR_POKER_STALE_SECONDS`; 400/403/404 never do. Templates and JSON surface that as a notice.
   Routes pass `prepare` callables so sanitized HTML is cached; body and comment preparers differ

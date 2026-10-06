@@ -161,6 +161,7 @@ def test_comment_fetch_failure_is_json(monkeypatch, status):
 
 def test_initial_read_fetches_no_extra_comment_pages(monkeypatch):
     monkeypatch.setattr(poker_routes.reader, 'post', lambda *a, **k: pg.parse_post(page_fixture(2), 123))
+    monkeypatch.setattr(poker_routes.reader, 'comments_blocked', lambda: False)
     monkeypatch.setattr(poker_routes.reader, 'comment_page', lambda *a, **k: pytest.fail('must be asynchronous'))
     response = create_app().test_client().get('/poker/free/123?page=3')
     soup = BeautifulSoup(response.data, 'html.parser')
@@ -171,6 +172,27 @@ def test_initial_read_fetches_no_extra_comment_pages(monkeypatch):
     assert section['data-total'] == '49'
     assert len(soup.select('#poker-comment-list [data-comment-id]')) == 21
     assert soup.select_one('#article-body')
+
+
+def test_blocked_comment_pages_skip_automatic_collection(monkeypatch):
+    monkeypatch.setattr(poker_routes.reader, 'post', lambda *a, **k: pg.parse_post(page_fixture(2), 123))
+    monkeypatch.setattr(poker_routes.reader, 'comments_blocked', lambda: True)
+    monkeypatch.setattr(poker_routes.reader, 'comment_page', lambda *a, **k: pytest.fail('must not fetch'))
+    soup = BeautifulSoup(create_app().test_client().get('/poker/free/123').data, 'html.parser')
+    section = soup.select_one('#comment')
+    assert section['data-next-page'] == ''
+    assert section.select_one('[data-poker-comments-notice]') is not None
+    assert section.select_one('[data-poker-comments-retry]') is None
+
+
+def test_blocked_comment_endpoint_reports_code(monkeypatch):
+    def blocked(*args, **kwargs):
+        raise pg.PokerError(pg.COMMENTS_BLOCKED_MESSAGE, 503)
+
+    monkeypatch.setattr(poker_routes.reader, 'comment_page', blocked)
+    response = create_app().test_client().get('/poker/free/123/comments?cpage=1')
+    assert response.status_code == 503
+    assert response.get_json() == {'error': pg.COMMENTS_BLOCKED_MESSAGE, 'code': 'comments_blocked'}
 
 
 def test_automatic_comment_loader_state_machine():

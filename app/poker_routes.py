@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from flask import Blueprint, abort, jsonify, make_response, render_template, request, url_for, redirect
 from werkzeug.exceptions import HTTPException
 
-from .services.pokergosu import PokerError, reader
+from .services.pokergosu import COMMENTS_BLOCKED_MESSAGE, PokerError, reader
 from .services.poker_boards import BASE_URL, DEFAULT_BOARD, MAX_PAGE, BOARDS, search_types, validate_search
 from .services.poker_media import build_image_response, prepare_html
 
@@ -165,8 +165,11 @@ def read(board_id, pid):
             partial(prepare_html, base_url=source_url)))
     except PokerError as exc:
         return _error(exc, source_url, page, board_id, search)
+    # 원본이 댓글 페이지 주소를 막고 있으면 자동 수집을 시작하지 않고 원문 안내만 남긴다.
+    comments_blocked = isinstance(data.get('comments_next_page'), int) and reader.comments_blocked()
     response = make_response(render_template('poker/read.html', title=data['title'] + ' · 숨터', data=data,
-                           page=page, source_url=source_url, search=search, **context))
+                           page=page, source_url=source_url, search=search,
+                           comments_blocked=comments_blocked, **context))
     return response
 
 
@@ -187,7 +190,10 @@ def comments(board_id, pid):
         data = reader.comment_page(pid, page, board_id=board_id,
                                    prepare=partial(prepare_html, base_url=source_url))
     except PokerError as exc:
-        return _list_response({'error': str(exc)}, exc.status)
+        payload = {'error': str(exc)}
+        if str(exc) == COMMENTS_BLOCKED_MESSAGE:
+            payload['code'] = 'comments_blocked'
+        return _list_response(payload, exc.status)
     rows = []
     for comment in data['comments']:
         rows.append({'id': comment['id'], 'html': render_template('poker/_comment.html', comment=comment)})
