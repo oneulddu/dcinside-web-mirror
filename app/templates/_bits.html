@@ -44,7 +44,7 @@
 
 {% macro author_text(item) -%}
     {%- set role = item.author_role if item.author_role in ["manager", "submanager"] else None -%}
-    <span class="author-text{% if role %} author-role-{{ role }}{% endif %}">{{ item.author }}{% if item.author_code %}({{ item.author_code }}){% endif %}</span>
+    <span class="author-text{% if role %} author-role-{{ role }}{% endif %}" data-author="{{ item.author }}"{% if item.author_code %} data-author-code="{{ item.author_code }}"{% endif %}>{{ item.author }}{% if item.author_code %}({{ item.author_code }}){% endif %}</span>
 {%- endmacro %}
 
 {% macro reply_count(count) -%}

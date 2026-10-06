@@ -124,6 +124,9 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
 - `static/javascript/read_state.js`: Dark mode and read-state persistence
 - `static/javascript/read_related_loader.js`: Infinite scroll related-post loader
 - `static/javascript/comment_spam_filter.js`: Client-side spam filtering
+- `static/javascript/user_filter.js`: DC-only block filter (nickname, author code, guest IP, title word) stored in
+  `localStorage["mirror_user_filter_v1"]`. It reads `data-author`/`data-author-code` from the `author_text` macro
+  and the related loader; keep those attributes when changing author markup. Poker pages do not load it.
 - `static/css/main.css`: SUIT font and responsive light/dark UI
 
 ### Frontend Skill Priority

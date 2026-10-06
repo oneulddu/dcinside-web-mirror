@@ -29,6 +29,33 @@
             root.dataset.dcconBlocked = mediaBlockMode === "dccon" || mediaBlockMode === "all" ? "true" : "false";
             root.style.colorScheme = theme;
         })();
+        (function () {
+            "use strict";
+
+            // 차단 규칙이 있으면 user_filter.js가 판정할 때까지 디시 목록·글을 잠시 가린다.
+            // 스크립트가 실패해도 1.5초 뒤에는 그대로 보여 준다.
+            try {
+                if (!/^\/(board|read)$/.test(window.location.pathname)) {
+                    return;
+                }
+                var saved = JSON.parse(window.localStorage.getItem("mirror_user_filter_v1") || "null");
+                if (!saved || saved.version !== 1 || saved.enabled !== true) {
+                    return;
+                }
+                if (saved.blockGuests !== true && !(Array.isArray(saved.rules) && saved.rules.length)) {
+                    return;
+                }
+                var root = document.documentElement;
+                root.setAttribute("data-user-filter", "pending");
+                window.setTimeout(function () {
+                    if (root.getAttribute("data-user-filter") === "pending") {
+                        root.setAttribute("data-user-filter", "timeout");
+                    }
+                }, 1500);
+            } catch (err) {
+                // 저장소를 읽을 수 없으면 가리지 않는다.
+            }
+        })();
     </script>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link rel="icon" href="{{ static_url('favicon.svg') }}" type="image/svg+xml">
@@ -66,6 +93,15 @@
                 </div>
                 <div class="header-actions">
                     {% block masthead_actions %}{% endblock %}
+                    {% if request.endpoint in ('main.board', 'main.read') %}
+                    <button class="icon-btn user-filter-open" type="button" data-user-filter-header data-user-filter-open aria-haspopup="dialog" aria-label="차단 필터 설정" title="차단 필터 설정" hidden>
+                        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <circle cx="10" cy="8" r="3.6"/>
+                            <path d="M3.5 19.5c.9-3.5 3.4-5.6 6.5-5.6 1.4 0 2.7.4 3.8 1.2"/>
+                            <path d="M15.5 17.5h5.5"/>
+                        </svg>
+                    </button>
+                    {% endif %}
                     <div class="media-block-control">
                         <button class="dccon-toggle" type="button" aria-label="이미지 차단 설정: 차단 없음" aria-haspopup="menu" aria-expanded="false" aria-controls="media-block-menu" title="이미지 차단 설정: 차단 없음">
                             <svg class="dccon-icon dccon-icon-show" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
