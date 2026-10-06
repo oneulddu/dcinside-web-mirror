@@ -277,6 +277,10 @@
 
         var author = document.createElement("span");
         author.className = "author-text" + getAuthorRoleClass(item);
+        author.setAttribute("data-author", String(item.author || "익명"));
+        if (item.author_code) {
+            author.setAttribute("data-author-code", String(item.author_code));
+        }
         author.textContent = (item.author || "익명") + (item.author_code ? "(" + String(item.author_code) + ")" : "");
         metaLeft.appendChild(author);
 
