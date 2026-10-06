@@ -192,6 +192,9 @@ def _index_time_display(item):
 
 def _index_item_to_dict(item):
     author, author_code = _normalize_author(item.author, getattr(item, "author_id", None))
+    is_notice = bool(getattr(item, "is_notice", False))
+    if is_notice and item.author is None:
+        author = None
     needs_time_hydrate = not bool(getattr(item, "time_is_precise", True))
     return {
         "id": item.id,
@@ -203,9 +206,11 @@ def _index_item_to_dict(item):
         "author_search_name": getattr(item, "author_search_name", None),
         "author_code": author_code,
         "author_role": _normalize_author_role(getattr(item, "author_role", None)),
-        "time": format_display_time(item.time),
-        "time_display": _index_time_display(item),
-        "needs_time_hydrate": needs_time_hydrate,
+        "time": None if is_notice and item.time is None else format_display_time(item.time),
+        # 날짜가 없는 공지는 "-"를 그리지 않고 생략한다.
+        "time_display": None if is_notice and item.time is None else _index_time_display(item),
+        "needs_time_hydrate": needs_time_hydrate and not is_notice,
+        "is_notice": is_notice,
         "comment_count": item.comment_count,
         "voteup_count": item.voteup_count,
         "view_count": item.view_count,
@@ -356,8 +361,10 @@ def _board_index_cache_key(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    notice=False,
 ):
     return (
+        bool(notice),
         board,
         kind or "",
         _safe_int(recommend, 0),
@@ -731,7 +738,7 @@ async def _fill_missing_author_codes(api, board, kind, rows, recommend=0):
     return rows
 
 
-async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, notice=False):
     data = {}
     comments = []
     images = []
@@ -743,6 +750,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        **({"notice": True} if notice else {}),
     )
     if doc is None:
         raise dc_api.DocumentUnavailableError("document parser returned no payload")
@@ -766,7 +774,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         "voteup_count": doc.voteup_count,
         "contents": getattr(doc, "contents", ""),
         "html": doc.html,
-        "related_posts": [_index_item_to_dict(item) for item in getattr(doc, "related_posts", [])],
+        "related_posts": [] if notice else [_index_item_to_dict(item) for item in getattr(doc, "related_posts", [])],
         "_comment_prefer_mobile": bool(getattr(doc, "is_mobile_source", True)),
     }
     seen_comment_ids = set()
@@ -854,6 +862,7 @@ async def _load_read_payload(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    notice=False,
 ):
     body_cached = _cache_get(_READ_STALE_CACHE, _READ_STALE_CACHE_LOCK, cache_key)
     if body_cached is not None:
@@ -871,14 +880,23 @@ async def _load_read_payload(
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            **({"notice": True} if notice else {}),
         )
 
 
-async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, notice=False):
+    if notice:
+        recommend, head_id, search_type, search_keyword = 0, None, None, None
     payload = await _async_read_body(
         api_id, board, kind=kind, recommend=recommend, search_type=search_type,
         search_keyword=search_keyword, head_id=head_id,
+        **({"notice": True} if notice else {}),
     )
+    if notice:
+        data, comments, images = _copy_read_payload(payload)
+        data["related_posts"] = []
+        data["_related_has_more"] = False
+        return data, comments, images
     key = _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id)
     snapshot = _cache_get(_INITIAL_RELATED_CACHE, _INITIAL_RELATED_CACHE_LOCK, key)
     data, comments, images = _copy_read_payload(payload)
@@ -888,7 +906,7 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
     return data, comments, images
 
 
-async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, notice=False):
     cache_key = _read_cache_key(
         api_id,
         board,
@@ -924,11 +942,12 @@ async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=No
                     search_type=search_type,
                     search_keyword=search_keyword,
                     head_id=head_id,
+                    **({"notice": True} if notice else {}),
                 ),
                 timeout=READ_FETCH_TIMEOUT,
             )
             body_from_cache = bool(payload[0].pop("_body_from_cache", False))
-            if not body_from_cache:
+            if not body_from_cache and not notice:
                 _store_initial_related(
                     _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id),
                     payload[0].get("related_posts", []),
@@ -1008,7 +1027,10 @@ async def async_index_with_head_categories(
     head_id=None,
     pagination_collector=None,
     force_refresh=False,
+    notice=False,
 ):
+    if notice:
+        recommend, head_id, search_type, search_keyword = 0, None, None, None
     if pagination_collector is not None:
         pagination_collector.clear()
     if limit is None:
@@ -1021,13 +1043,17 @@ async def async_index_with_head_categories(
     if fetch_num == 0:
         return [], []
     if max_scan_pages is None:
-        scan_limit = None
+        # 게시판 화면은 미러 N페이지가 원본 N페이지 한 장과 같아야 한다. 개수를 채우려고
+        # 다음 원본 페이지까지 읽으면 30개 단위 PC 목록에서 경계 글이 다음 페이지와 겹친다.
+        scan_limit = 1 if limit is None else None
     else:
         try:
             scan_limit = max(int(max_scan_pages), 0)
         except (TypeError, ValueError):
             scan_limit = None
 
+    if notice:
+        fetch_num, scan_limit = -1, 1
     cache_key = _board_index_cache_key(
         page,
         board,
@@ -1040,6 +1066,7 @@ async def async_index_with_head_categories(
         search_type=search_type,
         search_keyword=search_keyword,
         head_id=head_id,
+        notice=notice,
     )
     force_refresh_requested = bool(force_refresh)
     if force_refresh_requested:
@@ -1074,12 +1101,14 @@ async def async_index_with_head_categories(
                 headtexts_collector=headtexts,
                 pagination_collector=pagination,
                 raise_on_unavailable=True,
+                **({"notice": True} if notice else {}),
             ):
                 data.append(_index_item_to_dict(item))
             fetched_at = time.time()
-            await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
-            categories = _normalize_head_categories(headtexts, head_id=head_id)
-        if data or categories or (force_refresh_requested and force_refresh):
+            if not notice:
+                await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
+            categories = [] if notice else _normalize_head_categories(headtexts, head_id=head_id)
+        if notice or data or categories or (force_refresh_requested and force_refresh):
             cache_ttl = BOARD_PAGE_CACHE_TTL
             if not data and not categories:
                 cache_ttl = min(BOARD_PAGE_CACHE_TTL, BOARD_FORCE_REFRESH_COOLDOWN)

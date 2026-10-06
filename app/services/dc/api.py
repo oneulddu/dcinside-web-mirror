@@ -208,12 +208,13 @@ class API(ParserMixin):
             unique.append(url)
         return unique
 
-    def __board_kind_cache_key(self, board_id, kind=None, recommend=False, search_keyword=None):
+    def __board_kind_cache_key(self, board_id, kind=None, recommend=False, search_keyword=None, notice=False):
         return (
             board_id,
             (kind or "").lower(),
             1 if recommend else 0,
             bool((search_keyword or "").strip()),
+            bool(notice),
         )
 
     def __list_url_pattern(self, url):
@@ -430,6 +431,33 @@ class API(ParserMixin):
             return False
         return True
 
+    def _notice_pagination(self, parsed, url):
+        # HTTP redirects are followed explicitly for notice requests. Select the
+        # parser by returned markup as scripted/mobile fallbacks can serve PC HTML.
+        mobile = bool(parsed.xpath("//*[@id='notice_list']"))
+        parse_url = url if self.__is_mobile_request(url) == mobile else (
+            "https://m.dcinside.com/board/notice" if mobile else "https://gall.dcinside.com/board/lists/"
+        )
+        pagination = self.__parse_board_pagination(parsed, parse_url)
+        pagination["requested_page"] = self.__positive_page_from_url(url)
+        if pagination["current_page"] is None:
+            widgets = parsed.xpath("//*[@id='pagination_div']" if mobile else
+                                   "//*[contains(concat(' ', normalize-space(@class), ' '), ' bottom_paging_box ')]")
+            if any(node.xpath(".//a | .//strong | .//em") or self.__compact_text(node) for node in widgets):
+                raise ValueError("ambiguous notice pagination")
+            pagination.update(current_page=1, has_next=False)
+        if pagination["has_next"] is None:
+            raise ValueError("ambiguous notice pagination")
+        return pagination
+
+    def _notice_page_validator(self, parsed, text, url, board_id):
+        try:
+            self._parse_notice_page(parsed, board_id)
+            self._notice_pagination(parsed, url)
+        except ValueError:
+            return False
+        return True
+
     def __is_rate_limited_response(self, status, text):
         if status == 429:
             return True
@@ -539,6 +567,7 @@ class API(ParserMixin):
                     headers=request_headers,
                     data=data,
                     cookies=cookies,
+                    **({"allow_redirects": False} if self._is_notice_url(url) else {}),
                 ) as res:
                     text = await res.text()
                     status = res.status
@@ -590,10 +619,14 @@ class API(ParserMixin):
         return "&" + urlencode({"search_head": normalized})
 
     def __with_pc_list_page_size(self, url):
-        separator = "&" if "?" in url else "?"
-        return url + separator + urlencode({"list_num": BOARD_LIST_PAGE_SIZE})
+        parsed = urlparse(url)
+        params = [(key, value) for key, value in parse_qsl(parsed.query) if key != "list_num"]
+        params.append(("list_num", BOARD_LIST_PAGE_SIZE))
+        return parsed._replace(query=urlencode(params)).geturl()
 
-    def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None):
+    def __build_list_urls(self, board_id, page, recommend=False, kind=None, search_type=None, search_keyword=None, head_id=None, notice=False):
+        if notice:
+            recommend, head_id, search_type, search_keyword = False, None, None, None
         kind = (kind or "").lower()
         urls = []
         mobile_recommend_suffix = "&recommend=1" if recommend else ""
@@ -625,7 +658,12 @@ class API(ParserMixin):
             "https://gall.dcinside.com/mini/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
             "https://gall.dcinside.com/person/board/lists/?id={}&page={}{}{}{}".format(board_id, page, pc_recommend_suffix, pc_head_id_suffix, pc_search_suffix),
         ])
-        return self.__dedupe_urls(urls)
+        if notice:
+            urls = [url + ("&notice=1" if self.__is_mobile_request(url) else "&exception_mode=notice") for url in urls]
+        return self.__dedupe_urls([
+            url if self.__is_mobile_request(url) else self.__with_pc_list_page_size(url)
+            for url in urls
+        ])
     def __normalize_search_type(self, search_type):
         value = (search_type or "").strip()
         pc_type_map = {
@@ -703,11 +741,15 @@ class API(ParserMixin):
             params.append(("s_keyword", keyword))
         return ("&" + urlencode(params)) if params else ""
 
-    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None):
+    def __build_view_urls(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None, notice=False):
+        if notice:
+            recommend, head_id, search_type, search_keyword = False, None, None, None
         kind = (kind or "").lower()
         urls = []
         mobile_suffix = self.__build_mobile_view_suffix(recommend, search_type, search_keyword, head_id=head_id)
         pc_suffix = self.__build_pc_view_suffix(recommend, search_type, search_keyword, head_id=head_id)
+        if notice:
+            mobile_suffix, pc_suffix = "?notice=1", "&exception_mode=notice"
 
         if kind == "mini":
             urls.append("https://m.dcinside.com/mini/{}/{}{}".format(board_id, document_id, mobile_suffix))
@@ -767,11 +809,18 @@ class API(ParserMixin):
             cooldown_scope = f"{cooldown_namespace}:{host}" if cooldown_namespace and host else None
 
             try:
-                status, _, text = await self.__request_text(
+                status, response_headers, text = await self.__request_text(
                     "GET",
                     url,
                     cooldown_scope=cooldown_scope,
                 )
+                if 300 <= status < 400 and self._is_notice_url(url):
+                    location = response_headers.get("Location") or response_headers.get("location")
+                    if location:
+                        target = self.__normalize_redirect_url(url, location)
+                        if target not in queue and len(queue) < len(urls) + 5:
+                            queue.append(target)
+                    continue
                 if classify_not_found and status in {404, 410}:
                     if failure_outcomes is not None:
                         failure_outcomes.append((host, "not_found", status))
@@ -790,7 +839,8 @@ class API(ParserMixin):
                 # A valid content payload takes precedence over script matches.
                 usable = validator is None or validator(parsed, text, url)
                 if validator and usable and (
-                    self.__has_board_rows(parsed)
+                    (self._is_notice_url(url) and bool(parsed.xpath("//*[@id='notice_list']")))
+                    or self.__has_board_rows(parsed)
                     or self.__is_usable_document_page(parsed, text, url)
                 ):
                     return parsed, text, url
@@ -818,10 +868,22 @@ class API(ParserMixin):
                 continue
         return None, "", None
 
+    def _is_notice_url(self, url):
+        query = parse_qs(urlparse(url).query)
+        return "1" in query.get("notice", []) or "notice" in query.get("exception_mode", [])
+
     def __normalize_redirect_url(self, current_url, redirect_url):
         normalized_url = urljoin(current_url, redirect_url)
         current_parsed = urlparse(current_url)
         current_query = parse_qs(current_parsed.query)
+        if self._is_notice_url(current_url):
+            parsed = urlparse(normalized_url)
+            query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                     if key not in {"notice", "recommend", "exception_mode", "headid", "search_head", "s_type", "serval", "s_keyword"}]
+            pc = parsed.hostname == "gall.dcinside.com"
+            query.append(("exception_mode" if pc else "notice", "notice" if pc else "1"))
+            normalized_url = parsed._replace(query=urlencode(query)).geturl()
+            return self.__with_pc_list_page_size(normalized_url) if pc and "/lists" in parsed.path else normalized_url
         preserve_recommend = (
             "1" in current_query.get("recommend", [])
             or "recommend" in current_query.get("exception_mode", [])
@@ -867,7 +929,11 @@ class API(ParserMixin):
         if preserved_head_id is not None and not head_added:
             query_items.append((target_head_key, preserved_head_id))
         return parsed._replace(query=urlencode(query_items)).geturl()
-    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, pagination_collector=None, raise_on_failure=False, raise_on_unavailable=False):
+    async def board(self, board_id, num=-1, start_page=1, recommend=False, document_id_upper_limit=None, document_id_lower_limit=None, is_minor=False, kind=None, max_scan_pages=None, search_type=None, search_keyword=None, head_id=None, headtexts_collector=None, pagination_collector=None, raise_on_failure=False, raise_on_unavailable=False, notice=False):
+        if notice:
+            recommend, head_id, search_type, search_keyword = False, None, None, None
+            num = -1
+        validator = (lambda parsed, text, url: self._notice_page_validator(parsed, text, url, board_id)) if notice else self.__board_page_validator
         page = start_page
         scanned_pages = 0
         if pagination_collector is not None:
@@ -890,31 +956,33 @@ class API(ParserMixin):
                 search_type=search_type,
                 search_keyword=search_keyword,
                 head_id=head_id,
+                notice=notice,
             )
             cache_key = self.__board_kind_cache_key(
                 board_id,
                 kind=kind,
                 recommend=recommend,
                 search_keyword=search_keyword,
+                notice=notice,
             )
             cached_url, cached_pattern = self.__get_cached_list_url(list_urls, cache_key)
             if cached_url and cached_url != list_urls[0]:
                 parsed, text, used_url = await self.__fetch_parsed_from_urls(
                     [cached_url],
-                    validator=self.__board_page_validator,
+                    validator=validator,
                     cooldown_namespace="board",
                 )
                 if parsed is None:
                     self.__invalidate_list_url_pattern(cache_key)
                     parsed, text, used_url = await self.__fetch_parsed_from_urls(
                         list_urls,
-                        validator=self.__board_page_validator,
+                        validator=validator,
                         cooldown_namespace="board",
                     )
             else:
                 parsed, text, used_url = await self.__fetch_parsed_from_urls(
                     list_urls,
-                    validator=self.__board_page_validator,
+                    validator=validator,
                     cooldown_namespace="board",
                 )
             if cached_pattern and used_url and self.__list_url_pattern(used_url) != cached_pattern:
@@ -923,15 +991,19 @@ class API(ParserMixin):
                 self.__cache_list_url_pattern(cache_key, used_url)
             scanned_pages += 1
             if parsed is None:
-                if raise_on_failure or raise_on_unavailable:
+                if notice or raise_on_failure or raise_on_unavailable:
                     raise BoardUnavailableError("list page upstream unavailable")
                 break
-            pagination = self.__parse_board_pagination(parsed, used_url)
+            pagination = self._notice_pagination(parsed, used_url) if notice else self.__parse_board_pagination(parsed, used_url)
             if pagination_collector is not None and not pagination_collector:
                 pagination_collector.update(dict(pagination))
                 gallery_name = self.__parse_gallery_name(parsed, board_id)
                 if gallery_name:
                     pagination_collector["gallery_name"] = gallery_name
+            if notice:
+                for item in self._parse_notice_page(parsed, board_id, kind=kind):
+                    yield item
+                return
             if not headtexts_captured:
                 headtexts = self.__parse_mobile_headtext_tabs(parsed)
                 if headtexts_collector is not None:
@@ -1016,8 +1088,7 @@ class API(ParserMixin):
 
         for current_page in range(start_page, start_page + page_count):
             list_urls = [
-                self.__with_pc_list_page_size(url)
-                for url in self.__build_list_urls(
+                url for url in self.__build_list_urls(
                     board_id,
                     current_page,
                     recommend=recommend,
@@ -1153,7 +1224,7 @@ class API(ParserMixin):
             iframe.getparent().replace(iframe, card)
         return doc_content
 
-    async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None):
+    async def document(self, board_id, document_id, kind=None, recommend=False, search_type=None, search_keyword=None, head_id=None, notice=False):
         failure_outcomes = []
         parsed, text, used_url = await self.__fetch_parsed_from_urls(
             self.__build_view_urls(
@@ -1164,6 +1235,7 @@ class API(ParserMixin):
                 search_type=search_type,
                 search_keyword=search_keyword,
                 head_id=head_id,
+                notice=notice,
             ),
             validator=self.__is_usable_document_page,
             failure_outcomes=failure_outcomes,
@@ -1234,7 +1306,7 @@ class API(ParserMixin):
             embedded_comments = []
             embedded_comment_total = None
             if is_mobile_source:
-                related_posts = self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind, recommend=recommend)
+                related_posts = [] if notice else self.__parse_embedded_mobile_posts(parsed, board_id, document_id, kind=kind, recommend=recommend)
                 embedded_comments, embedded_comment_total = self.__parse_embedded_mobile_comments(parsed)
             comment_status = {}
 

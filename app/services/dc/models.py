@@ -1,7 +1,7 @@
 class DocumentIndex:
     __slots__ = ["id", "subject", "title", "board_id", "has_image", "has_video", "author", "author_search_name", "author_id", "author_role", "time", "time_text", "time_is_precise", "view_count", "comment_count", "voteup_count",
-            "document", "comments", "isimage", "isvideo", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
-    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False, has_video=False, isvideo=False, time_text=None, time_is_precise=None, author_role=None, author_search_name=None):
+            "document", "comments", "isimage", "isvideo", "isrecommend", "isdcbest", "ishit", "is_mobile_source", "is_notice"]
+    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False, has_video=False, isvideo=False, time_text=None, time_is_precise=None, author_role=None, author_search_name=None, is_notice=False):
         self.id = id
         self.board_id = board_id
         self.title = title
@@ -25,6 +25,7 @@ class DocumentIndex:
         self.isrecommend = isrecommend
         self.isdcbest = isdcbest
         self.ishit = ishit
+        self.is_notice = bool(is_notice)
         self.is_mobile_source = bool(is_mobile_source)
     def __str__(self):
         time_text = self.time.isoformat() if hasattr(self.time, "isoformat") else str(self.time or "-")

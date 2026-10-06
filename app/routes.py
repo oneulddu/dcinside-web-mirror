@@ -171,12 +171,17 @@ def _board_link_params(
     search_keyword=None,
     head_id=None,
     refresh=False,
+    notice=0,
 ):
+    if _safe_int(notice, 0) == 1:
+        recommend, head_id, search_type, search_keyword = 0, None, None, None
     params = {
         "board": board,
         "recommend": 1 if _safe_int(recommend, 0) == 1 else 0,
         "page": max(_safe_int(page, 1), 1),
     }
+    if _safe_int(notice, 0) == 1:
+        params["notice"] = 1
     _add_kind_param(params, kind)
     if nav:
         params["nav"] = nav
@@ -200,6 +205,7 @@ def board_url(
     head_id=None,
     gallery_name=None,
     refresh=False,
+    notice=0,
 ):
     params = _board_link_params(
         board,
@@ -211,6 +217,7 @@ def board_url(
         search_keyword,
         head_id,
         refresh,
+        notice,
     )
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
@@ -218,7 +225,9 @@ def board_url(
     return url_for("main.board", **params)
 
 
-def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None):
+def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None, notice=0):
+    if _safe_int(notice, 0) == 1:
+        recommend, head_id, search_type, search_keyword = 0, None, None, None
     params = {
         "board": board,
         "pid": pid,
@@ -228,6 +237,8 @@ def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, sear
     source_page_int = _safe_int(source_page, 0)
     if source_page_int > 0:
         params["source_page"] = source_page_int
+    if _safe_int(notice, 0) == 1:
+        params["notice"] = 1
     _add_kind_param(params, kind)
     normalized_head_id = _normalize_head_id(head_id)
     if normalized_head_id is not None:
@@ -246,8 +257,9 @@ def read_url(
     search_keyword=None,
     head_id=None,
     gallery_name=None,
+    notice=0,
 ):
-    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id)
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, notice)
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
         params["gallery_name"] = clean_name
@@ -400,8 +412,8 @@ def _read_social_description(data):
     return SITE_NAME
 
 
-def _read_canonical_url(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id):
-    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id)
+def _read_canonical_url(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, notice=0):
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, notice)
     return _external_url_for("main.read", **params)
 
 
@@ -430,7 +442,7 @@ def _first_social_preview_image(images):
     return None
 
 
-def _read_social_meta(data, images, board, pid, kind, recommend, source_page, search_type, search_keyword, head_id):
+def _read_social_meta(data, images, board, pid, kind, recommend, source_page, search_type, search_keyword, head_id, notice=0):
     title = _collapse_preview_text(data.get("title")) or SITE_NAME
     preview_image = _first_social_preview_image(images)
     media_params = {
@@ -455,6 +467,7 @@ def _read_social_meta(data, images, board, pid, kind, recommend, source_page, se
             search_type,
             search_keyword,
             head_id,
+            notice,
         ),
         "type": "article",
         "image": image_url,
@@ -473,6 +486,7 @@ async def _load_board_payload(
     head_id=None,
     pagination_collector=None,
     force_refresh=False,
+    notice=0,
 ):
     kwargs = {
         "kind": kind,
@@ -482,6 +496,8 @@ async def _load_board_payload(
         "head_id": head_id,
         "pagination_collector": pagination_collector,
     }
+    if notice:
+        kwargs["notice"] = True
     if force_refresh:
         kwargs["force_refresh"] = True
     return await async_index_with_head_categories(page, board, recommend, **kwargs)
@@ -714,6 +730,13 @@ def board():
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    notice = 1 if _safe_int(request.args.get("notice"), 0) == 1 else 0
+    if notice:
+        if recommend or any(key in request.args for key in ("headid", "head_id", "search_head", "s_type", "serval", "s_keyword")):
+            return redirect(board_url(board, page=page, kind=kind, nav=nav_mode,
+                                      gallery_name=gallery_name, notice=1,
+                                      refresh=request.args.get("refresh")), code=302)
+        recommend, head_id, search_type, search_keyword = 0, None, DEFAULT_SEARCH_TYPE, ""
     force_refresh = _safe_bool(request.args.get("refresh"))
     pagination = {}
     board_payload_kwargs = {
@@ -723,6 +746,8 @@ def board():
         "head_id": head_id,
         "pagination_collector": pagination,
     }
+    if notice:
+        board_payload_kwargs["notice"] = True
     if force_refresh:
         board_payload_kwargs["force_refresh"] = True
     try:
@@ -745,6 +770,7 @@ def board():
             board_url(
                 board,
                 recommend=recommend,
+                notice=notice,
                 page=current_page,
                 kind=kind,
                 nav=nav_mode,
@@ -765,6 +791,7 @@ def board():
             page=page,
             board=board,
             recommend=recommend,
+            notice=notice,
             kind=kind,
             gallery_name=gallery_name,
             gallery_display_name=gallery_display_name,
@@ -958,6 +985,12 @@ def read():
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    notice = 1 if _safe_int(request.args.get("notice"), 0) == 1 else 0
+    if notice:
+        if recommend or any(key in request.args for key in ("headid", "head_id", "search_head", "s_type", "serval", "s_keyword")):
+            return redirect(read_url(board, pid, kind=kind, source_page=source_page,
+                                     gallery_name=gallery_name, notice=1), code=302)
+        recommend, head_id, search_type, search_keyword = 0, None, DEFAULT_SEARCH_TYPE, ""
     try:
         data, comments, images = run_async(
             async_read(
@@ -966,6 +999,7 @@ def read():
                 kind=kind,
                 recommend=recommend,
                 head_id=head_id,
+                **({"notice": True} if notice else {}),
                 **_search_call_kwargs(search_type, search_keyword),
             )
         )
@@ -1006,6 +1040,7 @@ def read():
             gallery_name=gallery_name,
             gallery_display_name=gallery_display_name,
             recommend=recommend,
+            notice=notice,
             source_page=source_page,
             head_id=head_id,
             search_type=search_type,
@@ -1023,6 +1058,7 @@ def read():
                 search_type,
                 search_keyword,
                 head_id,
+                notice,
             ),
             nav_tab=_nav_tab_for_gallery(board, recommend),
         )
@@ -1042,6 +1078,8 @@ def read_compat_redirect():
 
 @bp.route("/read/related")
 def read_related():
+    if _safe_int(request.args.get("notice"), 0) == 1:
+        return jsonify({"ok": True, "items": [], "has_more": False, "disabled_reason": "notice_context"})
     pid = _safe_int(request.args.get("pid", 0), 0)
     board = _normalize_board_id(request.args.get("board", "airforce"))
     kind = _normalize_gallery_kind(request.args.get("kind"))

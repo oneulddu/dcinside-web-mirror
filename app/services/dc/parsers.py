@@ -328,6 +328,7 @@ class ParserMixin:
         time_text=None,
         author_role=None,
         author_search_name=None,
+        is_notice=False,
     ):
         parsed_flags = self.__gallery_flags(
             flags,
@@ -347,7 +348,8 @@ class ParserMixin:
             view_count=view_count,
             voteup_count=voteup_count,
             comment_count=comment_count,
-            document=lambda b=board_id, d=document_id, k=kind, r=recommend: self.document(b, d, kind=k, recommend=r),
+            document=lambda b=board_id, d=document_id, k=kind, r=recommend, n=is_notice: self.document(
+                b, d, kind=k, recommend=r, **({"notice": True} if n else {})),
             comments=lambda b=board_id, d=document_id, k=kind: self.comments(b, d, kind=k),
             time=post_time,
             subject=subject,
@@ -360,11 +362,142 @@ class ParserMixin:
             time_text=time_text,
             author_role=author_role,
             author_search_name=author_search_name,
+            is_notice=is_notice,
         )
+
+    def _is_notice_row(self, row):
+        return (
+            "notice" in (row.get("class") or "").split()
+            or "icon_notice" in (row.get("data-type") or "").split()
+            or bool(row.xpath(".//*[contains(concat(' ', normalize-space(@class), ' '), ' icon_notice ')]"))
+            or any(self.__compact_text(node) == "공지" for node in row.xpath("./td[contains(@class, 'gall_num')]"))
+        )
+
+    def _notice_post_link(self, row, board_id, mobile):
+        links = row.xpath(".//a[@href]") if mobile else row.xpath(".//td[contains(@class, 'gall_tit')]//a[@href]")
+        for link in links:
+            url = urlparse(link.get("href") or "")
+            if url.scheme and url.scheme not in {"http", "https"}:
+                continue
+            if url.netloc and url.hostname not in {"m.dcinside.com", "gall.dcinside.com"}:
+                continue
+            if "reply_numbox" in (link.get("class") or "").split() or "rt" in (link.get("class") or "").split():
+                continue
+            if mobile:
+                match = re.fullmatch(r"/(?:board|mini|person)/" + re.escape(board_id) + r"/(\d+)/?", url.path)
+                document_id = match.group(1) if match else None
+            else:
+                query = parse_qs(url.query)
+                document_id = (query.get("no") or [None])[0]
+                if not url.path.rstrip("/").endswith("/board/view") or query.get("id") != [board_id]:
+                    continue
+            if document_id and document_id.isdigit() and int(document_id) > 0:
+                return link, document_id
+        return None, None
+
+    def _parse_mobile_notice_item(self, row, board_id, kind=None):
+        if not self._is_notice_row(row):
+            return None
+        link, document_id = self._notice_post_link(row, board_id, mobile=True)
+        if link is None:
+            return None
+        title, subject = self.__extract_mobile_title_subject(link)
+        for badge in link.xpath("./span[contains(concat(' ', normalize-space(@class), ' '), ' round ')]"):
+            label = self.__compact_text(badge)
+            if label == "공지" and title.startswith(label):
+                title = title[len(label):].strip()
+        if not title:
+            raise ValueError("notice title missing")
+        ginfo = [self.__compact_text(node) for node in row.xpath(".//ul[contains(@class, 'ginfo')]/li")]
+        offset = 1 if len(ginfo) >= 5 else 0
+
+        def meta(index):
+            if len(ginfo) <= offset + index:
+                return None
+            return ginfo[offset + index] or None
+
+        time_text = meta(1)
+        if not time_text:
+            # 모바일 공지 목록은 작성 정보 대신 숨은 등록일(YYYY,M,D)만 준다.
+            for raw in row.xpath(".//input[@name='notify_newday']/@value"):
+                parts = [part.strip() for part in raw.split(",")]
+                if len(parts) == 3 and all(part.isdigit() for part in parts):
+                    time_text = "{}.{:02d}.{:02d}".format(int(parts[0]), int(parts[1]), int(parts[2]))
+                    break
+        comments = row.xpath(".//a[contains(@class, 'rt')]//*[contains(@class, 'ct')]")
+        author_id = self.__extract_mobile_author_id(row)
+        return self.__make_board_index(
+            document_id, board_id, title, meta(0), author_id,
+            self.__parse_time(time_text) if time_text else None,
+            to_int(meta(2), None), to_int(meta(3), None),
+            to_int(self.__compact_text(comments[0]), None) if comments else None,
+            subject, self.__mobile_icon_flags(link), kind=kind,
+            is_mobile_source=True, time_text=time_text, is_notice=True,
+            author_role=self.__extract_mobile_author_role_from_ginfo(link),
+            author_search_name=_author_search_name(meta(0), known_suffix=author_id),
+        )
+
+    def _notice_row_has_excluded_link(self, row, board_id):
+        for href in row.xpath(".//a[@href]/@href"):
+            url = urlparse(href)
+            if url.netloc and url.hostname not in {"m.dcinside.com", "gall.dcinside.com"}:
+                return True
+            match = re.fullmatch(r"/(?:board|mini|person)/([^/]+)/\d+/?", url.path)
+            if match and match.group(1) != board_id:
+                return True
+            if url.path.rstrip("/").endswith("/board/view"):
+                linked_board = parse_qs(url.query).get("id")
+                if linked_board and linked_board != [board_id]:
+                    return True
+        return False
+
+    def _parse_notice_page(self, parsed, board_id, kind=None):
+        """Accept a dedicated notice list, never an unrecognized empty page."""
+        empty_messages = {"등록된 게시물이 없습니다.", "등록된 공지가 없습니다."}
+        containers = parsed.xpath("//*[@id='notice_list']")
+        mobile = bool(containers)
+        if mobile:
+            if len(containers) != 1:
+                raise ValueError("ambiguous notice lists")
+            rows = containers[0].xpath("./li")
+            if not rows:
+                text = self.__compact_text(containers[0])
+                if text not in empty_messages and (text or len(containers[0])):
+                    raise ValueError("unrecognized notice list")
+        else:
+            containers = parsed.xpath("//table[contains(concat(' ', normalize-space(@class), ' '), ' gall_list ')]")
+            rows = parsed.xpath("//tr[td[contains(@class, 'gall_tit')] or td[contains(@class, 'gall_num')]]")
+            if not rows and not (len(containers) == 1 and (
+                "등록된 게시물이 없습니다." in self.__compact_text(containers[0])
+                or "등록된 공지가 없습니다." in self.__compact_text(containers[0])
+            )):
+                raise ValueError("notice list missing")
+        posts, seen = [], set()
+        for row in rows:
+            markers = set((row.get("class") or "").split()) | set((row.get("data-type") or "").split())
+            labels = [self.__compact_text(node) for node in row.xpath("./td[contains(@class, 'gall_num')]")]
+            if markers.intersection({"ad", "ads", "survey", "poll", "icon_survey", "icon_ad"}) or any(label in {"설문", "AD", "광고"} for label in labels):
+                continue
+            if self.__compact_text(row) in empty_messages and not row.xpath(".//a[@href]"):
+                continue
+            link, _ = self._notice_post_link(row, board_id, mobile)
+            if link is None:
+                if self._notice_row_has_excluded_link(row, board_id):
+                    continue
+                raise ValueError("notice post link missing or unrecognized")
+            if not self._is_notice_row(row):
+                # A normal post means notice mode was lost, not an empty list.
+                raise ValueError("non-notice row in notice list")
+            item = (self._parse_mobile_notice_item(row, board_id, kind=kind) if mobile else
+                    self.__parse_pc_board_row(row, board_id, kind=kind, notice=True))
+            if item is not None and item.id not in seen:
+                posts.append(item)
+                seen.add(item.id)
+        return posts
 
     def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True, recommend=False):
         row_class = " {} ".format(row.get("class", ""))
-        if " ad " in row_class:
+        if " ad " in row_class or self._is_notice_row(row):
             return None
 
         link = self.__find_mobile_list_link(row)
@@ -720,7 +853,9 @@ class ParserMixin:
             " ".join(row.xpath(".//td[contains(@class, 'gall_tit')]//em/@class")),
         ])
 
-    def __parse_pc_board_row(self, row, board_id, kind=None, recommend=False, is_mobile_source=False):
+    def __parse_pc_board_row(self, row, board_id, kind=None, recommend=False, is_mobile_source=False, notice=False):
+        if self._is_notice_row(row) != bool(notice):
+            return None
         data_no = row.get("data-no", "")
         href_els = row.xpath(".//td[contains(@class, 'gall_tit')]//a[contains(@href, 'view')]")
         if not href_els:
@@ -731,7 +866,14 @@ class ParserMixin:
         if not document_id or not document_id.isdigit():
             return None
 
+        if notice:
+            link, document_id = self._notice_post_link(row, board_id, mobile=False)
+            if link is None:
+                return None
+            href_els = [link]
         title = self.__compact_text(href_els[0])
+        if notice and not title:
+            raise ValueError("notice title missing")
         author, author_id, author_role, author_search_name = self.__extract_pc_board_author(row)
 
         date_el = row.xpath(".//td[contains(@class, 'gall_date')]")
@@ -739,6 +881,13 @@ class ParserMixin:
         if date_el:
             time_text = (date_el[0].get("title") or date_el[0].text_content() or "").strip()
         view_count, voteup_count, comment_count = self.__extract_pc_board_counts(row)
+        if notice:
+            writer = row.xpath(".//td[contains(@class, 'gall_writer')]")
+            if not writer or not ((writer[0].get("data-nick") or "").strip() or self.__compact_text(writer[0])):
+                author = None
+            view_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_count')]/text()")), None)
+            voteup_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_recommend')]/text()")), None)
+            comment_count = to_int("".join(row.xpath(".//span[contains(@class, 'reply_num')]/text()")), None)
 
         return self.__make_board_index(
             document_id=document_id,
@@ -746,7 +895,7 @@ class ParserMixin:
             title=title,
             author=author,
             author_id=author_id,
-            post_time=self.__parse_time(time_text),
+            post_time=self.__parse_time(time_text) if time_text or not notice else None,
             view_count=view_count,
             voteup_count=voteup_count,
             comment_count=comment_count,
@@ -758,7 +907,8 @@ class ParserMixin:
             recommend_marker="recom",
             include_board_best=False,
             include_issue_hit=True,
-            time_text=time_text,
+            time_text=(time_text or None) if notice else time_text,
+            is_notice=notice,
             author_role=author_role,
             author_search_name=author_search_name,
         )
