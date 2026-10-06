@@ -124,6 +124,8 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
 - `static/javascript/read_state.js`: Dark mode and read-state persistence
 - `static/javascript/read_related_loader.js`: Infinite scroll related-post loader
 - `static/javascript/comment_spam_filter.js`: Client-side spam filtering
+- `static/javascript/board_updates.js`: Polls `/board/updates` every ~60s on the plain page-1 board list only
+  (visible tab, online) and offers "새 글 N개" that replaces `#board-list` and dispatches `mirror:board-refreshed`.
 - `static/javascript/user_filter.js`: DC-only block filter (nickname, author code, guest IP, title word) stored in
   `localStorage["mirror_user_filter_v1"]`. It reads `data-author`/`data-author-code` from the `author_text` macro
   and the related loader; keep those attributes when changing author markup. Poker pages do not load it.
