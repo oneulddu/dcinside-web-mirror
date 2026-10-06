@@ -238,6 +238,23 @@ def test_comment_page_challenge_pauses_only_comment_pages(monkeypatch, clock, tm
     assert len(starts) == 4
 
 
+def test_comment_block_set_during_pacing_wait_stops_request(monkeypatch, clock):
+    # 요청 간격을 기다리는 사이 다른 워커가 댓글 차단을 걸면 전송하지 않는다.
+    _, starts = install_session(monkeypatch)
+    reader, other = pg.Reader(), pg.Reader()
+    reader._fetch('/best?page=1')
+    original_sleep = clock.sleep
+
+    def sleep(delay):
+        other._upstream_state('block_comments')
+        original_sleep(delay)
+
+    clock.sleep = sleep
+    with pytest.raises(pg.PokerError) as exc:
+        reader._fetch('/best/123?cpage=1')
+    assert str(exc.value) == pg.COMMENTS_BLOCKED_MESSAGE and len(starts) == 1
+
+
 def test_page_challenge_still_cools_down_comment_pages(monkeypatch, clock):
     _, starts = install_session(monkeypatch, [429])
     reader = pg.Reader()

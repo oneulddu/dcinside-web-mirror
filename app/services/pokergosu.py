@@ -279,13 +279,17 @@ class Reader:
                 cooldown = max(cooldown, now + COOLDOWN_SECONDS)
             elif action == 'block_comments':
                 comments_blocked = max(comments_blocked, now + self.comments_block_seconds)
-            blocked = cooldown > now or (action == 'check_comments' and comments_blocked > now)
-            delay = min(0.3, max(0, last + 0.3 - now)) if action == 'start' else 0
-            if action == 'start' and not blocked and not delay:
+            # 차단 원인은 같은 시각의 상태로 한 번에 정한다. 댓글 요청은 전송 직전까지 댓글 차단도 본다.
+            comments_request = action in ('check_comments', 'start_comments')
+            blocked = ('cooldown' if cooldown > now
+                       else 'comments' if comments_request and comments_blocked > now else None)
+            starting = action in ('start', 'start_comments')
+            delay = min(0.3, max(0, last + 0.3 - now)) if starting else 0
+            if starting and not blocked and not delay:
                 last = now
             self.cooldown_until, self.comments_blocked_until, self.last_start = cooldown, comments_blocked, last
             return ({'cooldown_until': cooldown, 'comments_blocked_until': comments_blocked, 'last_start': last},
-                    blocked, delay)
+                    (blocked, delay, comments_blocked > now))
 
         with self.pace_lock:
             if not self.state_failed:
@@ -303,34 +307,34 @@ class Reader:
                                      and type(value) in (int, float) and math.isfinite(value) and value >= 0}
                         except (ValueError, UnicodeError, OverflowError):
                             state = {}
-                        state, blocked, delay = update(state)
+                        state, result = update(state)
                         handle.seek(0)
                         handle.truncate()
                         json.dump(state, handle)
                         handle.flush()
-                        return blocked, delay
+                        return result
                 except OSError:
                     self.state_failed = True
                     logger.warning('Pokergosu shared limiter unavailable; using process-local state: %s',
                                    self.state_file)
-            _, blocked, delay = update({})
-            return blocked, delay
+            _, result = update({})
+            return result
 
     def _check_upstream(self, action):
-        blocked, delay = self._upstream_state(action)
+        blocked, delay, _ = self._upstream_state(action)
+        if blocked == 'comments':
+            raise PokerError(COMMENTS_BLOCKED_MESSAGE, 503)
         if blocked:
-            if action == 'check_comments' and self.cooldown_until <= time.time():
-                raise PokerError(COMMENTS_BLOCKED_MESSAGE, 503)
             raise PokerError(COOLDOWN_MESSAGE, 503)
         return delay
 
     def comments_blocked(self):
         """True while comment-page requests are paused after an upstream challenge."""
         try:
-            self._upstream_state('check_comments')
+            return self._upstream_state('check_comments')[2]
         except Exception:
             logger.debug('Pokergosu comment block check failed', exc_info=True)
-        return self.comments_blocked_until > time.time()
+            return False
 
     def _session(self):
         if not hasattr(self.sessions, 'session'):
@@ -353,7 +357,7 @@ class Reader:
         if not self.slots.acquire(timeout=1):
             raise PokerError("요청이 많아요. 잠시 후 다시 시도해 주세요.", 503)
         try:
-            while delay := self._check_upstream('start'):
+            while delay := self._check_upstream('start_comments' if comments else 'start'):
                 time.sleep(delay)
             chunks, size = [], 0
             def receive(chunk):
