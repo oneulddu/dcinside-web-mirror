@@ -422,7 +422,8 @@
                         var text = response.status !== 429 && payload && typeof payload.error === "string"
                             ? payload.error.trim().slice(0, 200)
                             : "";
-                        return { failed: text || GENERIC_ERROR };
+                        // 원본이 댓글 페이지를 막고 있으면 다시 시도해도 같으므로 여기서 수집을 끝낸다.
+                        return { failed: text || GENERIC_ERROR, final: !!payload && payload.code === "comments_blocked" };
                     }
                     var data = validate(payload, page);
                     return data ? { data: data } : { failed: GENERIC_ERROR };
@@ -438,6 +439,11 @@
                 stopRequestTimer();
                 controller = null;
                 if (result.failed) {
+                    if (result.final) {
+                        cursor = null;
+                        finish();
+                        return;
+                    }
                     fail(result.failed);
                     return;
                 }

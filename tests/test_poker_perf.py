@@ -215,6 +215,40 @@ def test_shared_cooldown_between_readers(monkeypatch, clock, tmp_path):
     assert len(starts) == 2
 
 
+def test_comment_page_challenge_pauses_only_comment_pages(monkeypatch, clock, tmp_path, caplog):
+    # 원본은 ?cpage= 주소만 확인 화면으로 막는다. 글·목록 읽기는 계속돼야 한다.
+    sessions, starts = install_session(monkeypatch, [403, 200, 200])
+    first, second = pg.Reader(), pg.Reader()
+    with pytest.raises(pg.PokerError) as exc:
+        first._fetch('/best/123?cpage=1')
+    assert exc.value.status == 503 and str(exc.value) == pg.COMMENTS_BLOCKED_MESSAGE
+    assert 'comment pages blocked' in caplog.text
+    state = json.loads((tmp_path / 'upstream.json').read_text())
+    assert state['cooldown_until'] <= clock.now and state['comments_blocked_until'] == 1000 + 21600
+    second._fetch('/best/123')
+    second._fetch('/best?page=1')
+    assert len(starts) == 3
+    with pytest.raises(pg.PokerError) as exc:
+        second._fetch('/best/456?cpage=2')
+    assert str(exc.value) == pg.COMMENTS_BLOCKED_MESSAGE and len(starts) == 3
+    assert second.comments_blocked() is True
+    clock.now = 1000 + 21600 + 1
+    assert second.comments_blocked() is False
+    second._fetch('/best/456?cpage=2')
+    assert len(starts) == 4
+
+
+def test_page_challenge_still_cools_down_comment_pages(monkeypatch, clock):
+    _, starts = install_session(monkeypatch, [429])
+    reader = pg.Reader()
+    with pytest.raises(pg.PokerError):
+        reader._fetch('/best?page=1')
+    with pytest.raises(pg.PokerError) as exc:
+        reader._fetch('/best/123?cpage=1')
+    assert str(exc.value) == pg.COOLDOWN_MESSAGE and len(starts) == 1
+    assert reader.comments_blocked() is False
+
+
 def test_shared_start_pacing_between_readers(monkeypatch, clock):
     _, starts = install_session(monkeypatch)
     first, second = pg.Reader(), pg.Reader()

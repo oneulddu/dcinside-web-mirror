@@ -22,6 +22,9 @@ from .poker_media import youtube_iframe_src
 MAX_HTML_BYTES = 4 * 1024 * 1024
 CACHE_LIMIT = 256
 TIMEOUT = 20
+COOLDOWN_SECONDS = 60
+COOLDOWN_MESSAGE = "원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요."
+COMMENTS_BLOCKED_MESSAGE = "이전 댓글은 지금 원본에서 가져올 수 없어요. 원문에서 확인해 주세요."
 logger = logging.getLogger(__name__)
 
 
@@ -247,6 +250,7 @@ class Reader:
         self.flights = {}
         self.slots = threading.BoundedSemaphore(2)
         self.cooldown_until = 0.0
+        self.comments_blocked_until = 0.0
         self.last_start = 0.0
         self.pace_lock = threading.Lock()
         self.sessions = threading.local()
@@ -257,23 +261,31 @@ class Reader:
         self.state_file = Path(os.getenv('MIRROR_POKER_STATE_FILE',
                               str(Path(__file__).resolve().parents[2] / 'instance/poker_upstream_state.json')))
         self.state_failed = False
+        # 원본이 댓글 페이지(?cpage=) 주소만 확인 화면으로 막을 때, 그 주소를 쉬게 하는 시간.
+        # 글·목록 읽기 전체를 멈추는 짧은 쿨다운과 따로 둔다.
+        self.comments_block_seconds = max(0, float(os.getenv('MIRROR_POKER_COMMENTS_BLOCK_SECONDS', '21600')))
 
     def _upstream_state(self, action):
-        """Check cooldown, attempt a paced start, or set cooldown under flock."""
+        """Check limits, attempt a paced start, or set a cooldown/comment block under flock."""
         def update(state):
             now = time.time()
             # Clamp shared wall-clock values so a clock step backwards cannot turn
             # into a long sleep or cooldown outside the HTTP timeout.
-            cooldown = min(max(self.cooldown_until, state.get('cooldown_until', 0)), now + 60)
+            cooldown = min(max(self.cooldown_until, state.get('cooldown_until', 0)), now + COOLDOWN_SECONDS)
+            comments_blocked = min(max(self.comments_blocked_until, state.get('comments_blocked_until', 0)),
+                                   now + self.comments_block_seconds)
             last = min(max(self.last_start, state.get('last_start', 0)), now)
             if action == 'cooldown':
-                cooldown = max(cooldown, now + 60)
-            blocked = cooldown > now
+                cooldown = max(cooldown, now + COOLDOWN_SECONDS)
+            elif action == 'block_comments':
+                comments_blocked = max(comments_blocked, now + self.comments_block_seconds)
+            blocked = cooldown > now or (action == 'check_comments' and comments_blocked > now)
             delay = min(0.3, max(0, last + 0.3 - now)) if action == 'start' else 0
             if action == 'start' and not blocked and not delay:
                 last = now
-            self.cooldown_until, self.last_start = cooldown, last
-            return {'cooldown_until': cooldown, 'last_start': last}, blocked, delay
+            self.cooldown_until, self.comments_blocked_until, self.last_start = cooldown, comments_blocked, last
+            return ({'cooldown_until': cooldown, 'comments_blocked_until': comments_blocked, 'last_start': last},
+                    blocked, delay)
 
         with self.pace_lock:
             if not self.state_failed:
@@ -287,7 +299,7 @@ class Reader:
                             if not isinstance(state, dict):
                                 state = {}
                             state = {key: value for key, value in state.items()
-                                     if key in ('cooldown_until', 'last_start')
+                                     if key in ('cooldown_until', 'comments_blocked_until', 'last_start')
                                      and type(value) in (int, float) and math.isfinite(value) and value >= 0}
                         except (ValueError, UnicodeError, OverflowError):
                             state = {}
@@ -307,8 +319,18 @@ class Reader:
     def _check_upstream(self, action):
         blocked, delay = self._upstream_state(action)
         if blocked:
-            raise PokerError("원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요.", 503)
+            if action == 'check_comments' and self.cooldown_until <= time.time():
+                raise PokerError(COMMENTS_BLOCKED_MESSAGE, 503)
+            raise PokerError(COOLDOWN_MESSAGE, 503)
         return delay
+
+    def comments_blocked(self):
+        """True while comment-page requests are paused after an upstream challenge."""
+        try:
+            self._upstream_state('check_comments')
+        except Exception:
+            logger.debug('Pokergosu comment block check failed', exc_info=True)
+        return self.comments_blocked_until > time.time()
 
     def _session(self):
         if not hasattr(self.sessions, 'session'):
@@ -325,7 +347,9 @@ class Reader:
                 logger.debug('Pokergosu session close failed', exc_info=True)
 
     def _fetch(self, path):
-        self._check_upstream('check')
+        # 원본은 댓글 페이지 주소(?cpage=)만 따로 확인 화면으로 막을 수 있다.
+        comments = 'cpage=' in urlsplit(path).query
+        self._check_upstream('check_comments' if comments else 'check')
         if not self.slots.acquire(timeout=1):
             raise PokerError("요청이 많아요. 잠시 후 다시 시도해 주세요.", 503)
         try:
@@ -347,8 +371,16 @@ class Reader:
                 raise PokerError("원본 페이지가 너무 커서 가져오지 못했어요.")
             if response.headers.get('cf-mitigated') == 'challenge' or response.status_code in (403, 429):
                 self._discard_session()
+                reason = 'challenge' if response.headers.get('cf-mitigated') == 'challenge' else response.status_code
+                if comments:
+                    # 글·목록은 정상이므로 전체를 멈추지 않고 댓글 페이지 요청만 쉰다.
+                    self._upstream_state('block_comments')
+                    logger.warning('Pokergosu comment pages blocked upstream (%s); pausing them for %ds',
+                                   reason, self.comments_block_seconds)
+                    raise PokerError(COMMENTS_BLOCKED_MESSAGE, 503)
                 self._upstream_state('cooldown')
-                raise PokerError("원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요.", 503)
+                logger.warning('Pokergosu upstream limited (%s); cooling down for %ds', reason, COOLDOWN_SECONDS)
+                raise PokerError(COOLDOWN_MESSAGE, 503)
             if response.status_code in (301, 302, 303, 307, 308) and is_login_redirect(response.headers.get('location')):
                 raise PokerError("원본 로그인이 필요한 게시판이에요. 원문에서 확인해 주세요.", 403)
             if response.status_code in (404, 410):

@@ -57,7 +57,7 @@
     <div class="section-band" aria-hidden="true"></div>
 
     {% set shown_count = data.comments|length %}
-    {% set comments_next = data.comments_next_page if data.comments_next_page is number else "" %}
+    {% set comments_next = data.comments_next_page if data.comments_next_page is number and not comments_blocked else "" %}
     <section class="comment-shell poker-comments" id="comment" aria-labelledby="comment-title" data-comments-url="{{ url_for('poker.comments', board_id=board_id, pid=data.id) }}" data-next-page="{{ comments_next }}" data-total="{{ data.comment_count if data.comment_count is number else '' }}">
         <h2 id="comment-title" tabindex="-1">댓글 <span class="comment-count">{{ number(data.comment_count if data.comment_count is number else shown_count) }}</span></h2>
         {{ stale_notice(' data-poker-comments-stale' ~ ('' if data.stale else ' hidden')) }}
