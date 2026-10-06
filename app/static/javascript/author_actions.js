@@ -30,6 +30,81 @@
         });
     }
 
+    function enhanceMentions() {
+        // 표시용 익명 이름만으로 계정을 추측하지 않는다. 원본 닉네임이 같아도
+        // 코드가 여러 개면 닉네임 메뉴만 열고 특정 계정의 메모·차단으로 연결하지 않는다.
+        var authors = new Map();
+        document.querySelectorAll(".article-meta [data-author-search-name], .comment-meta [data-author-search-name]").forEach(function (author) {
+            var name = author.getAttribute("data-author-search-name");
+            var code = author.getAttribute("data-author-code") || "";
+            var aliases = [name];
+            if (code) {
+                aliases.push(name + "(" + code + ")");
+            }
+            aliases.forEach(function (alias) {
+                if (!authors.has(alias)) {
+                    authors.set(alias, author);
+                } else if (authors.get(alias) && (authors.get(alias).getAttribute("data-author-code") || "") !== code) {
+                    authors.set(alias, null);
+                }
+            });
+        });
+        var names = Array.from(authors.keys()).sort(function (a, b) { return b.length - a.length; });
+        var boundary = /[\s.,!?;:。！？，、\])}]/;
+        document.querySelectorAll(".comment-main > p").forEach(function (paragraph) {
+            // 서버가 이미 만든 URL 링크에는 손대지 않는다. 이메일의 @도 언급이 아니다.
+            Array.from(paragraph.childNodes).forEach(function (node) {
+                if (node.nodeType !== 3 || node.textContent.indexOf("@") === -1) {
+                    return;
+                }
+                var text = node.textContent;
+                var fragment = document.createDocumentFragment();
+                var last = 0;
+                for (var at = text.indexOf("@"); at !== -1; at = text.indexOf("@", at + 1)) {
+                    if (at > 0 && !/[\s([{]/.test(text[at - 1])) {
+                        continue;
+                    }
+                    var tail = text.slice(at + 1);
+                    var name = names.find(function (candidate) {
+                        var next = tail[candidate.length];
+                        // 점으로 이어지는 닉네임을 문장 끝으로 오인하지 않는다(@abc.def).
+                        var continues = next === "." && /[\p{L}\p{N}_-]/u.test(tail[candidate.length + 1] || "");
+                        return tail.startsWith(candidate) && !continues && (!next || boundary.test(next));
+                    });
+                    var author = name ? authors.get(name) : null;
+                    if (!name) {
+                        // 화면에 없는 작성자는 닉네임만 사용한다. 계정 코드는 만들지 않는다.
+                        var match = tail.match(/^[\p{L}\p{N}_\-.]+(?:\([^()\s]+\))?/u);
+                        name = match ? match[0].replace(/[.]+$/, "") : "";
+                    }
+                    if (!name) {
+                        continue;
+                    }
+                    fragment.appendChild(document.createTextNode(text.slice(last, at)));
+                    var button = document.createElement("button");
+                    button.type = "button";
+                    button.className = "author-action-btn comment-mention";
+                    button.setAttribute("data-author", author ? author.getAttribute("data-author") : name);
+                    button.setAttribute("data-author-search-name", author ? author.getAttribute("data-author-search-name") : name);
+                    if (author && author.getAttribute("data-author-code")) {
+                        button.setAttribute("data-author-code", author.getAttribute("data-author-code"));
+                    }
+                    button.setAttribute("aria-haspopup", "menu");
+                    button.setAttribute("aria-expanded", "false");
+                    button.setAttribute("aria-label", name + " 언급, 작성자 메뉴");
+                    button.textContent = "@" + name;
+                    fragment.appendChild(button);
+                    last = at + 1 + name.length;
+                    at = last - 1;
+                }
+                if (last) {
+                    fragment.appendChild(document.createTextNode(text.slice(last)));
+                    node.replaceWith(fragment);
+                }
+            });
+        });
+    }
+
     function boardContext() {
         // 공지 글은 다른 게시글 목록이 없으므로 본문 영역에 둔 게시판 정보를 먼저 읽는다.
         var section = document.querySelector("[data-board-context]") || document.getElementById("related-section");
@@ -238,6 +313,7 @@
 
     function boot() {
         enhance(document);
+        enhanceMentions();
         document.addEventListener("click", function (event) {
             var target = event.target && event.target.closest ? event.target : null;
             if (!target) {
