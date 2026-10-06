@@ -1726,7 +1726,7 @@ async def test_force_refresh_during_ordinary_fetch_keeps_empty_result_cache(monk
     release.set()
     assert await ordinary == await refresh == ([], [])
     assert calls == 2
-    key = core._board_index_cache_key(1, "test", 0)
+    key = core._board_index_cache_key(1, "test", 0, scan_limit=1)
     assert core._cache_get(core._BOARD_INDEX_CACHE, core._BOARD_INDEX_CACHE_LOCK, key) == ([], [], {})
     await core.async_index_with_head_categories(1, "test", 0, force_refresh=True)
     assert calls == 2

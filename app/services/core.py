@@ -203,7 +203,8 @@ def _index_item_to_dict(item):
         "author_code": author_code,
         "author_role": _normalize_author_role(getattr(item, "author_role", None)),
         "time": None if is_notice and item.time is None else format_display_time(item.time),
-        "time_display": _index_time_display(item),
+        # 날짜가 없는 공지는 "-"를 그리지 않고 생략한다.
+        "time_display": None if is_notice and item.time is None else _index_time_display(item),
         "needs_time_hydrate": needs_time_hydrate and not is_notice,
         "is_notice": is_notice,
         "comment_count": item.comment_count,
@@ -966,7 +967,9 @@ async def async_index_with_head_categories(
     if fetch_num == 0:
         return [], []
     if max_scan_pages is None:
-        scan_limit = None
+        # 게시판 화면은 미러 N페이지가 원본 N페이지 한 장과 같아야 한다. 개수를 채우려고
+        # 다음 원본 페이지까지 읽으면 30개 단위 PC 목록에서 경계 글이 다음 페이지와 겹친다.
+        scan_limit = 1 if limit is None else None
     else:
         try:
             scan_limit = max(int(max_scan_pages), 0)

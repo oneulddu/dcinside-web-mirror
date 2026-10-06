@@ -69,6 +69,7 @@ async def test_mobile_notices_keep_all_rows_without_fabricating_metadata():
     assert (item.author, item.time, item.time_text, item.voteup_count, item.view_count, item.comment_count) == (None,) * 6
     row = core._index_item_to_dict(item)
     assert row['author'] is row['time'] is row['voteup_count'] is None
+    assert row['time_display'] is None
     assert row['is_notice'] is True
     assert row['needs_time_hydrate'] is False
 
@@ -186,6 +187,25 @@ async def test_pc_page_size_and_page_boundaries(recommend):
     assert first == [str(pid) for pid in range(61, 31, -1)]
     assert second == [str(pid) for pid in range(31, 1, -1)]
     assert not set(first) & set(second)
+
+
+@pytest.mark.asyncio
+async def test_board_view_pages_map_one_to_one_on_pc_fallback(monkeypatch):
+    # 화면 기본 수집량(31)이 PC 30개 단위보다 커도 다음 원본 페이지 글을 끌어오지 않아야 한다.
+    async def request(self, method, url, **kwargs):
+        if urlparse(url).hostname == 'm.dcinside.com':
+            return 200, {}, '<p>mobile unavailable</p>'
+        page = int(query(url)['page'][0])
+        rows = ''.join(pc_row(pid, notice=False, classes='ub-content us-post')
+                       for pid in range(91 - page * 30, 61 - page * 30, -1))
+        pager = f'<div class="bottom_paging_box"><em>{page}</em><a href="/board/lists/?id=airforce&amp;page={page+1}">다음</a></div>'
+        return 200, {}, pc_page(rows, pager)
+
+    monkeypatch.setattr(API, '_API__request_text', request)
+    first, _ = await core.async_index_with_head_categories(1, 'airforce', 0)
+    second, _ = await core.async_index_with_head_categories(2, 'airforce', 0)
+    assert [row['id'] for row in first] == [str(pid) for pid in range(61, 31, -1)]
+    assert [row['id'] for row in second] == [str(pid) for pid in range(31, 1, -1)]
 
 
 def test_notice_upstream_url_builders_and_pattern_cache_key():
@@ -343,7 +363,7 @@ async def test_notice_core_cache_isolation_and_no_limit(monkeypatch):
     assert again == rows and len(calls) == 1
     assert core._LATEST_ID_CACHE == core._INITIAL_RELATED_CACHE == core._BOARD_PAGE_CACHE == {}
     assert len(core._BOARD_INDEX_CACHE) == len(core._BOARD_REFRESH_CACHE) == 1
-    normal_key = core._board_index_cache_key(1, 'airforce', 0)
+    normal_key = core._board_index_cache_key(1, 'airforce', 0, scan_limit=1)
     assert normal_key not in core._BOARD_INDEX_CACHE
     assert core._claim_board_force_refresh(normal_key) is True
 
