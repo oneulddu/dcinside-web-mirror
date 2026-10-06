@@ -44,3 +44,9 @@ test("저장 키는 식별자를 그대로 인코딩해 서로 겹치지 않는�
     assert.notEqual(api.storageKey("name:a:b"), api.storageKey("name:a"));
     assert.ok(api.storageKey("name:ㅇㅇ").startsWith(api.PREFIX));
 });
+
+test("인코딩할 수 없는 식별자는 예외 없이 읽지 않는다", () => {
+    assert.equal(api.storageKey("name:\ud800"), null);
+    const raw = JSON.stringify({ version: 1, identity: "name:\ud800", nickname: "", memo: "m", updatedAt: 1 });
+    assert.equal(api.parseEntry(api.PREFIX + "x", raw), null);
+});

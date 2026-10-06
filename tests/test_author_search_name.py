@@ -61,6 +61,27 @@ def test_comments(api, source, name):
     assert core._comment_to_dict(comment)['author_search_name'] == expected
 
 
+@pytest.mark.parametrize(('raw', 'expected'), [
+    ('닉(부캐)', '닉(부캐)'),
+    ('(ㅇㅇ)', '(ㅇㅇ)'),
+    ('ㅇㅇ(1.2)', 'ㅇㅇ'),
+    ('고정닉(uid_1)', '고정닉'),
+])
+def test_nickname_parentheses_survive(api, raw, expected):
+    comment = api._API__parse_pc_comment({'no': '1', 'name': raw, 'memo': '댓글'})
+    assert comment.author_search_name == expected
+
+
+@pytest.mark.parametrize('nick', ['닉(부캐)', '(ㅇㅇ)', 'abc(def)'])
+def test_pc_data_nick_is_kept_verbatim(api, nick):
+    node = lxml.html.fromstring(f'''<tr data-no="123">
+        <td class="gall_tit"><a href="view/?no=123">제목</a></td>
+        <td class="gall_writer" data-nick="{nick}" data-uid="uid1">{nick}</td>
+        </tr>''')
+    item = api._API__parse_pc_board_row(node, 'test')
+    assert item.author_search_name == nick
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('source', ['mobile', 'pc'])
 @pytest.mark.parametrize('name', ['ㅇㅇ(123.45)', '고정닉(uid123)', '익명', None])

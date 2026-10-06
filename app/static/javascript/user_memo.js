@@ -39,7 +39,12 @@
     }
 
     function storageKey(identity) {
-        return PREFIX + encodeURIComponent(identity);
+        // 짝이 없는 서로게이트 같은 값은 키를 만들 수 없으므로 null을 돌려준다.
+        try {
+            return PREFIX + encodeURIComponent(identity);
+        } catch (err) {
+            return null;
+        }
     }
 
     function cleanMemo(value) {
@@ -78,7 +83,7 @@
         if (!data || typeof data !== "object" || Array.isArray(data) || data.version !== VERSION) {
             return null;
         }
-        if (typeof data.identity !== "string" || storageKey(data.identity) !== key) {
+        if (typeof data.identity !== "string" || !storageKey(data.identity) || storageKey(data.identity) !== key) {
             return null;
         }
         if (!/^(code|name):./.test(data.identity)) {
@@ -368,18 +373,23 @@
 
     function writeEntry(identity, entry) {
         var store = storage();
+        var key = storageKey(identity);
         try {
-            if (!store) {
+            if (!store || !key) {
                 throw new Error("storage unavailable");
             }
             if (entry) {
-                store.setItem(storageKey(identity), JSON.stringify(entry));
+                store.setItem(key, JSON.stringify(entry));
                 state.memos[identity] = entry;
             } else {
-                store.removeItem(storageKey(identity));
+                store.removeItem(key);
                 delete state.memos[identity];
             }
             delete state.overrides[identity];
+            // 같은 키에 있던 읽지 못한 값은 덮어썼거나 지웠으므로 정리 대상에서 뺀다.
+            state.brokenKeys = state.brokenKeys.filter(function (brokenKey) {
+                return brokenKey !== key;
+            });
             return true;
         } catch (err) {
             state.overrides[identity] = entry || null;

@@ -10,10 +10,15 @@ from .models import Comment, DocumentIndex, Image
 _KST = timezone(timedelta(hours=9))
 
 
-def _author_search_name(value):
+# 표시 문자열 끝의 IP 앞자리나 영문·숫자 식별 코드만 뗀다. "닉(부캐)"처럼 닉네임에 든 괄호는 남긴다.
+_AUTHOR_SUFFIX_RE = re.compile(r"\s*\((?:\d{1,3}\.\d{1,3}|[A-Za-z0-9_.-]{1,64})\)$")
+
+
+def _author_search_name(value, strip_suffix=True):
     """Clean a real upstream name, before any display-name fallback is applied."""
     name = (value or "").strip()
-    name = re.sub(r"\s*\([^()\s]{1,64}\)?$", "", name).strip()
+    if strip_suffix:
+        name = _AUTHOR_SUFFIX_RE.sub("", name).strip()
     return name or None
 
 
@@ -679,7 +684,12 @@ class ParserMixin:
             author = (author_el[0].get("data-nick") or "").strip()
             if not author:
                 author = self.__compact_text(author_el[0]) or "익명"
-            author_search_name = _author_search_name(author_el[0].get("data-nick") or self.__compact_text(author_el[0]))
+            data_nick = author_el[0].get("data-nick")
+            if data_nick and data_nick.strip():
+                # data-nick은 닉네임만 담으므로 괄호를 그대로 둔다.
+                author_search_name = _author_search_name(data_nick, strip_suffix=False)
+            else:
+                author_search_name = _author_search_name(self.__compact_text(author_el[0]))
             author_id = (author_el[0].get("data-uid") or "").strip()
             if not author_id:
                 author_id = (author_el[0].get("data-ip") or "").strip()
