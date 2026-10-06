@@ -10,15 +10,22 @@ from .models import Comment, DocumentIndex, Image
 _KST = timezone(timedelta(hours=9))
 
 
-# 표시 문자열 끝의 IP 앞자리나 영문·숫자 식별 코드만 뗀다. "닉(부캐)"처럼 닉네임에 든 괄호는 남긴다.
-_AUTHOR_SUFFIX_RE = re.compile(r"\s*\((?:\d{1,3}\.\d{1,3}|[A-Za-z0-9_.-]{1,64})\)$")
+# 표시 문자열 끝 괄호는 유동 IP 앞자리이거나 같은 글에서 확인한 작성자 코드와 같을 때만 뗀다.
+# "abc(def)", "(abc)"처럼 닉네임에 든 괄호는 그대로 남긴다.
+_AUTHOR_SUFFIX_RE = re.compile(r"\s*\(([^()]*)\)$")
+_AUTHOR_IP_PREFIX_RE = re.compile(r"\d{1,3}\.\d{1,3}")
 
 
-def _author_search_name(value, strip_suffix=True):
+def _author_search_name(value, strip_suffix=True, known_suffix=None):
     """Clean a real upstream name, before any display-name fallback is applied."""
     name = (value or "").strip()
     if strip_suffix:
-        name = _AUTHOR_SUFFIX_RE.sub("", name).strip()
+        match = _AUTHOR_SUFFIX_RE.search(name)
+        if match and match.start() > 0:
+            suffix = match.group(1).strip()
+            known = (known_suffix or "").strip()
+            if _AUTHOR_IP_PREFIX_RE.fullmatch(suffix) or (known and suffix == known):
+                name = name[:match.start()].strip()
     return name or None
 
 
@@ -233,7 +240,7 @@ class ParserMixin:
                 return self.__compact_text(title_nodes[0]), None
         return self.__compact_text(link), None
 
-    def __extract_mobile_ginfo(self, link, subject=None, allow_subject_cell=True):
+    def __extract_mobile_ginfo(self, link, subject=None, allow_subject_cell=True, known_suffix=None):
         ginfo = [
             self.__compact_text(node)
             for node in link.xpath(".//ul[contains(@class, 'ginfo')]/li")
@@ -249,7 +256,7 @@ class ParserMixin:
             subject = subject or ginfo[0] or None
             meta_offset = 1
         if len(ginfo) > meta_offset:
-            author_search_name = _author_search_name(ginfo[meta_offset])
+            author_search_name = _author_search_name(ginfo[meta_offset], known_suffix=known_suffix)
             author = ginfo[meta_offset] or "익명"
         if len(ginfo) > meta_offset + 1:
             time_text = ginfo[meta_offset + 1]
@@ -373,10 +380,12 @@ class ParserMixin:
         if not title:
             return None
 
+        author_id = self.__extract_mobile_author_id(row)
         subject, author, post_time, view_count, voteup_count, time_text, author_search_name = self.__extract_mobile_ginfo(
             link,
             subject=subject,
             allow_subject_cell=True,
+            known_suffix=author_id,
         )
         author_role = self.__extract_mobile_author_role_from_ginfo(link, allow_subject_cell=True)
         return self.__make_board_index(
@@ -384,7 +393,7 @@ class ParserMixin:
             board_id=board_id,
             title=title,
             author=author,
-            author_id=self.__extract_mobile_author_id(row),
+            author_id=author_id,
             post_time=post_time,
             view_count=view_count,
             voteup_count=voteup_count,
@@ -441,10 +450,10 @@ class ParserMixin:
         if nick_node is not None:
             nick_buttons = nick_node.xpath(".//*[contains(@class, 'nick')]")
             if nick_buttons:
-                author_search_name = _author_search_name(" ".join(nick_buttons[0].itertext()))
+                author_search_name = _author_search_name(" ".join(nick_buttons[0].itertext()), known_suffix=author_id)
                 author = " ".join(nick_buttons[0].itertext()).strip() or "익명"
             else:
-                author_search_name = _author_search_name(" ".join(nick_node.itertext()))
+                author_search_name = _author_search_name(" ".join(nick_node.itertext()), known_suffix=author_id)
                 author = " ".join(nick_node.itertext()).strip() or "익명"
         author_role = self.__extract_author_role(nick_node)
 
@@ -654,6 +663,8 @@ class ParserMixin:
         if not document_id or not document_id.isdigit():
             return None
 
+        # 작성자 코드는 목록 셀을 읽은 뒤 확정되므로 코드 접미사는 여기서 정리한다.
+        author_search_name = _author_search_name(author_search_name, known_suffix=author_id)
         return self.__make_board_index(
             document_id=document_id,
             board_id=board_id,
@@ -684,16 +695,16 @@ class ParserMixin:
             author = (author_el[0].get("data-nick") or "").strip()
             if not author:
                 author = self.__compact_text(author_el[0]) or "익명"
+            author_id = (author_el[0].get("data-uid") or "").strip()
+            if not author_id:
+                author_id = (author_el[0].get("data-ip") or "").strip()
+            author_id = author_id or None
             data_nick = author_el[0].get("data-nick")
             if data_nick and data_nick.strip():
                 # data-nick은 닉네임만 담으므로 괄호를 그대로 둔다.
                 author_search_name = _author_search_name(data_nick, strip_suffix=False)
             else:
-                author_search_name = _author_search_name(self.__compact_text(author_el[0]))
-            author_id = (author_el[0].get("data-uid") or "").strip()
-            if not author_id:
-                author_id = (author_el[0].get("data-ip") or "").strip()
-            author_id = author_id or None
+                author_search_name = _author_search_name(self.__compact_text(author_el[0]), known_suffix=author_id)
             author_role = self.__extract_author_role(author_el[0])
         return author, author_id, author_role, author_search_name
 
@@ -776,7 +787,7 @@ class ParserMixin:
             title = " ".join(doc_head_container.text_content().split()) if doc_head_container.text_content() else "제목 없음"
 
         author = "익명"
-        author_search_name = None
+        author_name_raw = None
         author_id = None
         author_role = self.__extract_author_role(doc_head_container)
 
@@ -784,7 +795,7 @@ class ParserMixin:
         # <li><a href="/gallog/{id}">닉네임</a></li> or plain "ㅇㅇ(1.2)" text.
         ginfo_author = doc_head_container.xpath(".//ul[contains(@class, 'ginfo2')]/li[1]")
         if ginfo_author:
-            author_search_name = _author_search_name(ginfo_author[0].text_content())
+            author_name_raw = ginfo_author[0].text_content()
             author = ginfo_author[0].text_content().strip() or "익명"
             gallog_href = ginfo_author[0].xpath("string((.//a[contains(@href, '/gallog/')])[1]/@href)")
             if gallog_href:
@@ -795,7 +806,7 @@ class ParserMixin:
         if author == "익명":
             author_el = doc_head_container.xpath(".//span[@class='nickname'] | .//span[contains(@class, 'nickname')]")
             if author_el:
-                author_search_name = _author_search_name(author_el[0].text_content())
+                author_name_raw = author_el[0].text_content()
                 author = author_el[0].text_content().strip() or "익명"
 
         author_id_el = doc_head_container.xpath(".//span[@class='ip']")
@@ -840,6 +851,8 @@ class ParserMixin:
         if not time_str:
             time_str = ""
 
+        # 작성자 코드가 확정된 뒤에 검색용 닉네임을 정리해야 코드 접미사만 정확히 뗄 수 있다.
+        author_search_name = _author_search_name(author_name_raw, known_suffix=author_id)
         return {
             "title": title,
             "subject": subject,
@@ -1192,7 +1205,7 @@ class ParserMixin:
             time=self.__parse_time((raw.get("reg_date") or "").strip()),
             is_reply=str(raw.get("depth") or "0").strip() != "0",
             author_role=author_role,
-            author_search_name=_author_search_name(raw.get("name")),
+            author_search_name=_author_search_name(raw.get("name"), known_suffix=author_id),
         )
 
     def __parse_time(self, time): 
