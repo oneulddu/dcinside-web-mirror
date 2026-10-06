@@ -1,3 +1,25 @@
+## 작성자 메뉴와 유저 메모 (2026-10-06)
+
+Astra 계획(작성자 검색·메모·새 글 알림·공지)을 위험도별 PR로 나눴다. 이 절은 작성자 메뉴와 메모다.
+Astra가 원본 닉네임 보존(백엔드)을, 주 에이전트(Opus)가 화면을 구현했다.
+
+- 원본 닉네임: 서버가 `ㅇㅇ`·`…갤러`를 `익명`으로 바꿔 보여 주므로, 글·댓글·목록·다른 글 JSON에 `author_search_name`을 더했다.
+  템플릿은 `data-author-search-name`으로 넘긴다. 이름 노드가 없어 `익명`으로 대신한 경우는 `null`이다.
+- 작성자 메뉴(`author_actions.js`): 글 보기의 작성자·댓글 작성자를 누르면 `이 사용자 글 보기 / 메모 남기기(고치기) / 차단 설정`.
+  글 보기는 `/board?board=B&page=1&recommend=0&s_type=name&serval=<원본 닉네임>`(+kind·gallery_name)로 이동한다.
+  유동은 "IP로 구분되지 않아요", 원본 닉네임이 없으면 항목을 비활성화한다. 방향키·Home/End·Escape(버튼으로 포커스 복귀)·Tab(닫기)를 지원한다.
+  목록 행은 전체가 링크라 메뉴를 두지 않는다. 머리의 차단 필터 버튼은 그대로 관리 창을 연다.
+- 메모(`user_memo.js`): 작성자마다 `localStorage["mirror_user_memo_v1:" + encodeURIComponent(identity)]`에
+  `{version: 1, identity, nickname, memo, updatedAt}`를 저장한다. identity는 `code:<식별 코드>`, 없으면 `name:<원본 닉네임>`(NFC·소문자).
+  메모는 한 줄 120자, 최대 200개. 형식이 다른 항목은 표시하지 않고 대화상자에서 따로 지울 수 있다. 저장에 실패하면 그 페이지에서만 적용한다.
+- 표시: 게시판 목록·다른 글(더보기 포함)·글 작성자·댓글 작성자 옆에 메모 글자를 붙인다. 목록은 12글자 폭에서 말줄임한다.
+  메모는 `data-author`에 섞이지 않아 차단 판정과 검색어에 영향을 주지 않는다.
+- 대화상자는 IP 앞자리·닉네임 기준일 때 다른 사람에게도 보인다고 알린다. 다른 탭에서 같은 메모가 바뀌면 입력을 덮지 않고 "바뀐 메모 불러오기"를 보인다.
+- `user_filter.js`는 작성자 버튼 생성을 `author_actions.js`에 넘기고, `MirrorUserFilter.openForAuthor`·`matchesCurrent`와
+  `mirror:user-filter-changed` 이벤트를 제공한다.
+- 검증: `tests/test_author_search_name.py`, `tests/javascript/user_memo.test.cjs`, Playwright 390px에서 메뉴 세 동작·키보드·메모 저장/표시/고치기·
+  차단 미리 채우기·검색 이동·목록 메모 말줄임·가로 넘침 없음.
+
 ## 디시 차단 필터 (2026-10-06)
 
 Astra UX 계약을 바탕으로 주 에이전트(Opus)가 구현했다. 서버 API와 저장 형식은 바꾸지 않고, 템플릿의 작성자에

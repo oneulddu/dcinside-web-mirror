@@ -170,6 +170,7 @@ def _comment_to_dict(comment):
         "time": format_display_time(comment.time),
         "contents": comment.contents,
         "author": comment_author,
+        "author_search_name": getattr(comment, "author_search_name", None),
         "author_code": comment_author_code,
         "author_role": _normalize_author_role(getattr(comment, "author_role", None)),
         "parent_id": comment.parent_id,
@@ -195,6 +196,7 @@ def _index_item_to_dict(item):
         "has_image": bool(getattr(item, "has_image", False) or getattr(item, "isimage", False)),
         "has_video": bool(getattr(item, "has_video", False) or getattr(item, "isvideo", False)),
         "author": author,
+        "author_search_name": getattr(item, "author_search_name", None),
         "author_code": author_code,
         "author_role": _normalize_author_role(getattr(item, "author_role", None)),
         "time": format_display_time(item.time),
@@ -407,7 +409,7 @@ def _author_code_cache_key(board, kind, doc_id):
     return (board, kind or "", str(doc_id))
 
 
-def _cache_author_code(board, kind, doc_id, author, author_code, author_role=None):
+def _cache_author_code(board, kind, doc_id, author, author_code, author_role=None, author_search_name=None):
     if not doc_id:
         return
     _cache_set(
@@ -416,6 +418,7 @@ def _cache_author_code(board, kind, doc_id, author, author_code, author_role=Non
         _author_code_cache_key(board, kind, doc_id),
         {
             "author": author,
+            "author_search_name": author_search_name,
             "author_code": author_code,
             "author_role": _normalize_author_role(author_role),
         },
@@ -609,6 +612,7 @@ def _normalize_head_categories(rows, head_id=None):
 async def _fill_missing_author_code(api, board, kind, row, recommend=0, allow_fetch=True):
     if not row:
         return row
+    row.setdefault("author_search_name", None)
     if row.get("author_code"):
         return row
     doc_id = row.get("id")
@@ -619,6 +623,7 @@ async def _fill_missing_author_code(api, board, kind, row, recommend=0, allow_fe
     if cached is not None:
         row["author"] = cached.get("author", row.get("author"))
         row["author_code"] = cached.get("author_code")
+        row["author_search_name"] = cached.get("author_search_name") or row.get("author_search_name")
         if cached.get("author_role"):
             row["author_role"] = cached.get("author_role")
         return row
@@ -633,10 +638,11 @@ async def _fill_missing_author_code(api, board, kind, row, recommend=0, allow_fe
     if not doc:
         return row
     author, author_code = _normalize_author(doc.author, doc.author_id)
+    row["author_search_name"] = getattr(doc, "author_search_name", None) or row.get("author_search_name")
     row["author"] = author
     row["author_code"] = author_code
     row["author_role"] = _normalize_author_role(getattr(doc, "author_role", None))
-    _cache_author_code(board, kind, doc_id, author, author_code, row["author_role"])
+    _cache_author_code(board, kind, doc_id, author, author_code, row["author_role"], row["author_search_name"])
     return row
 
 
@@ -666,7 +672,8 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         raise dc_api.DocumentUnavailableError("document parser returned no payload")
     author, author_code = _normalize_author(doc.author, doc.author_id)
     author_role = _normalize_author_role(getattr(doc, "author_role", None))
-    _cache_author_code(board, kind, api_id, author, author_code, author_role)
+    author_search_name = getattr(doc, "author_search_name", None)
+    _cache_author_code(board, kind, api_id, author, author_code, author_role, author_search_name)
     try:
         view_count = int(getattr(doc, "view_count", None))
     except (TypeError, ValueError, OverflowError):
@@ -678,6 +685,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         "author": author,
         "author_code": author_code,
         "author_role": author_role,
+        "author_search_name": author_search_name,
         "time": format_display_time(doc.time),
         "voteup_count": doc.voteup_count,
         "contents": getattr(doc, "contents", ""),

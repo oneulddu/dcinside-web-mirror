@@ -127,6 +127,10 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
 - `static/javascript/user_filter.js`: DC-only block filter (nickname, author code, guest IP, title word) stored in
   `localStorage["mirror_user_filter_v1"]`. It reads `data-author`/`data-author-code` from the `author_text` macro
   and the related loader; keep those attributes when changing author markup. Poker pages do not load it.
+- `static/javascript/author_actions.js`: Read-page author menu (search by original nickname via
+  `data-author-search-name`, memo, block). List rows stay full links without author buttons.
+- `static/javascript/user_memo.js`: Per-author memos in `localStorage["mirror_user_memo_v1:<identity>"]`
+  (identity `code:<author_code>` or `name:<author_search_name>`), rendered next to DC authors only.
 - `static/css/main.css`: SUIT font and responsive light/dark UI
 
 ### Frontend Skill Priority

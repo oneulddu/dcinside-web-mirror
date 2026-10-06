@@ -10,6 +10,13 @@ from .models import Comment, DocumentIndex, Image
 _KST = timezone(timedelta(hours=9))
 
 
+def _author_search_name(value):
+    """Clean a real upstream name, before any display-name fallback is applied."""
+    name = (value or "").strip()
+    name = re.sub(r"\s*\([^()\s]{1,64}\)?$", "", name).strip()
+    return name or None
+
+
 def to_int(value, default=0):
     if value is None:
         return default
@@ -227,6 +234,7 @@ class ParserMixin:
             for node in link.xpath(".//ul[contains(@class, 'ginfo')]/li")
         ]
         author = "익명"
+        author_search_name = None
         post_time = self.__parse_time("")
         time_text = ""
         view_count = 0
@@ -236,6 +244,7 @@ class ParserMixin:
             subject = subject or ginfo[0] or None
             meta_offset = 1
         if len(ginfo) > meta_offset:
+            author_search_name = _author_search_name(ginfo[meta_offset])
             author = ginfo[meta_offset] or "익명"
         if len(ginfo) > meta_offset + 1:
             time_text = ginfo[meta_offset + 1]
@@ -244,7 +253,7 @@ class ParserMixin:
             view_count = to_int(ginfo[meta_offset + 2], 0)
         if len(ginfo) > meta_offset + 3:
             voteup_count = to_int(ginfo[meta_offset + 3], 0)
-        return subject, author, post_time, view_count, voteup_count, time_text
+        return subject, author, post_time, view_count, voteup_count, time_text, author_search_name
 
     def __extract_mobile_author_role_from_ginfo(self, link, allow_subject_cell=True):
         nodes = link.xpath(".//ul[contains(@class, 'ginfo')]/li")
@@ -306,6 +315,7 @@ class ParserMixin:
         include_issue_hit=False,
         time_text=None,
         author_role=None,
+        author_search_name=None,
     ):
         parsed_flags = self.__gallery_flags(
             flags,
@@ -337,6 +347,7 @@ class ParserMixin:
             is_mobile_source=is_mobile_source,
             time_text=time_text,
             author_role=author_role,
+            author_search_name=author_search_name,
         )
 
     def __parse_mobile_list_item(self, row, board_id, kind=None, is_mobile_source=True, recommend=False):
@@ -357,7 +368,7 @@ class ParserMixin:
         if not title:
             return None
 
-        subject, author, post_time, view_count, voteup_count, time_text = self.__extract_mobile_ginfo(
+        subject, author, post_time, view_count, voteup_count, time_text, author_search_name = self.__extract_mobile_ginfo(
             link,
             subject=subject,
             allow_subject_cell=True,
@@ -380,6 +391,7 @@ class ParserMixin:
             is_mobile_source=is_mobile_source,
             time_text=time_text,
             author_role=author_role,
+            author_search_name=author_search_name,
         )
 
     def __parse_embedded_mobile_posts(self, parsed, board_id, current_document_id, kind=None, recommend=False):
@@ -420,11 +432,14 @@ class ParserMixin:
                     author_id = "".join(block_ip_nodes[0].itertext()).strip()
 
         author = "익명"
+        author_search_name = None
         if nick_node is not None:
             nick_buttons = nick_node.xpath(".//*[contains(@class, 'nick')]")
             if nick_buttons:
+                author_search_name = _author_search_name(" ".join(nick_buttons[0].itertext()))
                 author = " ".join(nick_buttons[0].itertext()).strip() or "익명"
             else:
+                author_search_name = _author_search_name(" ".join(nick_node.itertext()))
                 author = " ".join(nick_node.itertext()).strip() or "익명"
         author_role = self.__extract_author_role(nick_node)
 
@@ -456,6 +471,7 @@ class ParserMixin:
             time=self.__parse_time(time_node.text_content() if time_node is not None else ""),
             is_reply="comment-add" in li_classes,
             author_role=author_role,
+            author_search_name=author_search_name,
         )
 
     def __mobile_comment_rows(self, parsed):
@@ -564,6 +580,7 @@ class ParserMixin:
         title = ""
         subject = None
         author = "익명"
+        author_search_name = None
         author_id = None
         post_time = self.__parse_time("")
         time_text = ""
@@ -583,6 +600,7 @@ class ParserMixin:
             if len(doc[0][1]) == 5:
                 subject = doc[0][1][0].text
                 author = " ".join(doc[0][1][1].text_content().split()) if len(doc[0][1]) > 1 else "익명"
+                author_search_name = _author_search_name(doc[0][1][1].text_content()) if len(doc[0][1]) > 1 else None
                 time_text = doc[0][1][2].text or ""
                 post_time = self.__parse_time(time_text)
                 view_count = to_int(doc[0][1][3].text.split()[-1] if doc[0][1][3].text else 0, 0)
@@ -590,6 +608,7 @@ class ParserMixin:
             else:
                 subject = None
                 author = " ".join(doc[0][1][0].text_content().split()) if len(doc[0][1]) > 0 else "익명"
+                author_search_name = _author_search_name(doc[0][1][0].text_content()) if len(doc[0][1]) > 0 else None
                 time_text = doc[0][1][1].text or ""
                 post_time = self.__parse_time(time_text)
                 view_count = to_int(doc[0][1][2].text.split()[-1] if doc[0][1][2].text else 0, 0)
@@ -613,7 +632,7 @@ class ParserMixin:
             title, subject = self.__extract_mobile_title_subject(link, prefer_icon_sibling=False)
             if not title:
                 title = self.__compact_text(link)
-            subject, author, post_time, view_count, voteup_count, time_text = self.__extract_mobile_ginfo(
+            subject, author, post_time, view_count, voteup_count, time_text, author_search_name = self.__extract_mobile_ginfo(
                 link,
                 subject=subject,
                 allow_subject_cell=False,
@@ -647,23 +666,26 @@ class ParserMixin:
             is_mobile_source=is_mobile_source,
             time_text=time_text,
             author_role=author_role,
+            author_search_name=author_search_name,
         )
 
     def __extract_pc_board_author(self, row):
         author_el = row.xpath(".//td[contains(@class, 'gall_writer')]")
         author = "익명"
+        author_search_name = None
         author_id = None
         author_role = None
         if author_el:
             author = (author_el[0].get("data-nick") or "").strip()
             if not author:
                 author = self.__compact_text(author_el[0]) or "익명"
+            author_search_name = _author_search_name(author_el[0].get("data-nick") or self.__compact_text(author_el[0]))
             author_id = (author_el[0].get("data-uid") or "").strip()
             if not author_id:
                 author_id = (author_el[0].get("data-ip") or "").strip()
             author_id = author_id or None
             author_role = self.__extract_author_role(author_el[0])
-        return author, author_id, author_role
+        return author, author_id, author_role, author_search_name
 
     def __extract_pc_board_counts(self, row):
         view_count = to_int("".join(row.xpath(".//td[contains(@class, 'gall_count')]/text()") or []), 0)
@@ -689,7 +711,7 @@ class ParserMixin:
             return None
 
         title = self.__compact_text(href_els[0])
-        author, author_id, author_role = self.__extract_pc_board_author(row)
+        author, author_id, author_role, author_search_name = self.__extract_pc_board_author(row)
 
         date_el = row.xpath(".//td[contains(@class, 'gall_date')]")
         time_text = ""
@@ -717,6 +739,7 @@ class ParserMixin:
             include_issue_hit=True,
             time_text=time_text,
             author_role=author_role,
+            author_search_name=author_search_name,
         )
 
     def __first_text(self, parsed, xpath_expr):
@@ -743,6 +766,7 @@ class ParserMixin:
             title = " ".join(doc_head_container.text_content().split()) if doc_head_container.text_content() else "제목 없음"
 
         author = "익명"
+        author_search_name = None
         author_id = None
         author_role = self.__extract_author_role(doc_head_container)
 
@@ -750,6 +774,7 @@ class ParserMixin:
         # <li><a href="/gallog/{id}">닉네임</a></li> or plain "ㅇㅇ(1.2)" text.
         ginfo_author = doc_head_container.xpath(".//ul[contains(@class, 'ginfo2')]/li[1]")
         if ginfo_author:
+            author_search_name = _author_search_name(ginfo_author[0].text_content())
             author = ginfo_author[0].text_content().strip() or "익명"
             gallog_href = ginfo_author[0].xpath("string((.//a[contains(@href, '/gallog/')])[1]/@href)")
             if gallog_href:
@@ -760,6 +785,7 @@ class ParserMixin:
         if author == "익명":
             author_el = doc_head_container.xpath(".//span[@class='nickname'] | .//span[contains(@class, 'nickname')]")
             if author_el:
+                author_search_name = _author_search_name(author_el[0].text_content())
                 author = author_el[0].text_content().strip() or "익명"
 
         author_id_el = doc_head_container.xpath(".//span[@class='ip']")
@@ -808,6 +834,7 @@ class ParserMixin:
             "title": title,
             "subject": subject,
             "author": author,
+            "author_search_name": author_search_name,
             "author_id": author_id,
             "author_role": author_role,
             "time_str": time_str,
@@ -1155,6 +1182,7 @@ class ParserMixin:
             time=self.__parse_time((raw.get("reg_date") or "").strip()),
             is_reply=str(raw.get("depth") or "0").strip() != "0",
             author_role=author_role,
+            author_search_name=_author_search_name(raw.get("name")),
         )
 
     def __parse_time(self, time): 

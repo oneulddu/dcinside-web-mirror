@@ -1244,6 +1244,7 @@ class API(ParserMixin):
                     gallery_name=self.__parse_gallery_name(parsed, board_id),
                     title= title,
                     author= author,
+                    author_search_name=header["author_search_name"],
                     author_id =author_id,
                     author_role=author_role,
                     contents= self.__document_contents_text(doc_content),
