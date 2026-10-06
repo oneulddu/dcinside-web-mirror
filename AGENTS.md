@@ -82,9 +82,9 @@ pm2 logs dc-mirror
   Sessions are thread-local and discarded on transport errors, oversize bodies, or challenges.
   Cooldown and start pacing are shared across Gunicorn workers through an `fcntl`-locked state
   file (`MIRROR_POKER_STATE_FILE`); keep the same inode and fall back to process-local state on OSError.
-  A challenge/403/429 on a comment-page fetch (`?cpage=`) does not start the global 60s cooldown;
-  it pauses only comment pages for `MIRROR_POKER_COMMENTS_BLOCK_SECONDS` (default 6h) in the same
-  state file. Reads then skip automatic comment collection, and the endpoint returns
+  A challenge/403/429 on an earlier-comment fetch does not start the global 60s cooldown;
+  it pauses only comment fetches for `MIRROR_POKER_COMMENTS_BLOCK_SECONDS` (default 6h) in the same
+  state file (`comment_api_blocked_until`). Reads then skip automatic comment collection, and the endpoint returns
   `code: "comments_blocked"` so the client stops without a retry. Do not try to bypass the challenge.
   Transient 502/503 failures may return expired successes with `stale: True` within
   `MIRROR_POKER_STALE_SECONDS`; 400/403/404 never do. Templates and JSON surface that as a notice.
@@ -108,6 +108,10 @@ pm2 logs dc-mirror
   News uses a separate grid parser; missing metadata stays absent.
 - Post HTML opens at the last upstream comment page. `poker_comments.js` automatically loads
   earlier pages through `/poker/<board_id>/<pid>/comments?cpage=N`, one request at a time.
+  The server fetches them from the upstream post page's own JSON path
+  (`/api2/board/getcommnet/<board>/<pid>/<page>/25/xpage/20/undefined/undefined/0`, `parse_comment_api`);
+  upstream challenges `?cpage=` post URLs. Rows must match `parse_post` (`C<srl>` ids, direct parent,
+  depth-first order, cboard wrapper) and skip comments upstream hides (`uploaded_count` 9997/9998, `blind`).
   Infer comment page only from the `#comment` pager, keep cache keys board/post/page-specific,
   validate the returned page, sanitize every comment, and deduplicate IDs when prepending.
   Failed or ambiguous collection stays partial; never delay the initial post for extra pages.

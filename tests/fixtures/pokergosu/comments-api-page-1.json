@@ -1,0 +1,328 @@
+{
+ "comments": [
+  {
+   "comment_srl": 1,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 1</p><img src=\"https://www.ipokergosu.com/img2/test.webp\" onerror=\"alert(1)\"><script>alert(1)</script>",
+   "nick_name": "독자 1",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": [
+    {
+     "comment_srl": 2,
+     "document_srl": 123,
+     "parent_srl": 1,
+     "content": "<p>댓글 2</p>",
+     "nick_name": "독자 2",
+     "regdate": "20260923200000",
+     "comment_status": 1,
+     "uploaded_count": null,
+     "children": [
+      {
+       "comment_srl": 3,
+       "document_srl": 123,
+       "parent_srl": 2,
+       "content": "<p>댓글 3</p>",
+       "nick_name": "독자 3",
+       "regdate": "20260923200000",
+       "comment_status": 1,
+       "uploaded_count": null,
+       "children": []
+      }
+     ]
+    },
+    {
+     "comment_srl": 4,
+     "document_srl": 123,
+     "parent_srl": 1,
+     "content": "<p>댓글 4</p>",
+     "nick_name": "독자 4",
+     "regdate": "20260923200000",
+     "comment_status": 1,
+     "uploaded_count": null,
+     "children": []
+    }
+   ]
+  },
+  {
+   "comment_srl": 5,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 5</p>",
+   "nick_name": "독자 5",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 6,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 6</p>",
+   "nick_name": "독자 6",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 7,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 7</p>",
+   "nick_name": "독자 7",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 8,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 8</p>",
+   "nick_name": "독자 8",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 9,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 9</p>",
+   "nick_name": "독자 9",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 10,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 10</p>",
+   "nick_name": "독자 10",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 11,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 11</p>",
+   "nick_name": "독자 11",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 12,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 12</p>",
+   "nick_name": "독자 12",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 13,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 13</p>",
+   "nick_name": "독자 13",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 14,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 14</p>",
+   "nick_name": "독자 14",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 15,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 15</p>",
+   "nick_name": "독자 15",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 16,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 16</p>",
+   "nick_name": "독자 16",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 17,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 17</p>",
+   "nick_name": "독자 17",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 18,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 18</p>",
+   "nick_name": "독자 18",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 19,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 19</p>",
+   "nick_name": "독자 19",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 20,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 20</p>",
+   "nick_name": "독자 20",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 21,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 21</p>",
+   "nick_name": "독자 21",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 22,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 22</p>",
+   "nick_name": "독자 22",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 23,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 23</p>",
+   "nick_name": "독자 23",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 24,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 24</p>",
+   "nick_name": "독자 24",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 25,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 25</p>",
+   "nick_name": "독자 25",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 26,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 26</p>",
+   "nick_name": "독자 26",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 27,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 27</p>",
+   "nick_name": "독자 27",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  },
+  {
+   "comment_srl": 28,
+   "document_srl": 123,
+   "parent_srl": 0,
+   "content": "<p>댓글 28</p>",
+   "nick_name": "독자 28",
+   "regdate": "20260923200000",
+   "comment_status": 1,
+   "uploaded_count": null,
+   "children": []
+  }
+ ],
+ "bestcomment": [],
+ "c_count2": 46,
+ "c_count3": 1,
+ "c_count4": 1,
+ "postinfo2": {
+  "postinfo": [
+   {
+    "post_srl": 123,
+    "comment_count": 49
+   }
+  ],
+  "files": [],
+  "layouts": []
+ }
+}
