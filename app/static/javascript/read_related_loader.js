@@ -281,6 +281,9 @@
         if (item.author_code) {
             author.setAttribute("data-author-code", String(item.author_code));
         }
+        if (item.author_search_name) {
+            author.setAttribute("data-author-search-name", String(item.author_search_name));
+        }
         author.textContent = (item.author || "익명") + (item.author_code ? "(" + String(item.author_code) + ")" : "");
         metaLeft.appendChild(author);
 
