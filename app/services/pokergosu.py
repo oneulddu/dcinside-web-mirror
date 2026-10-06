@@ -291,8 +291,9 @@ def parse_comment_api(raw, pid, page):
                 raise invalid
             cid = 'C' + srl
             content = node.get('content')
-            visible = (isinstance(content, str) and node.get('blind') != 1
-                       and node.get('uploaded_count') not in HIDDEN_COMMENT_UPLOADS)
+            # 원본 응답은 숫자 필드를 문자열로 줄 때도 있다("comment_status": "1").
+            visible = (isinstance(content, str) and _api_count(node.get('blind')) != 1
+                       and _api_count(node.get('uploaded_count')) not in HIDDEN_COMMENT_UPLOADS)
             if visible and cid not in seen:
                 seen.add(cid)
                 comments.append(dict(id=cid, parent_id=parent, is_reply=parent is not None,

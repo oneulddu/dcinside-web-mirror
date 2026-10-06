@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 import pytest
 
 from app import create_app, poker_routes
+from app.services import poker_media as media
 from app.services import pokergosu as pg
 
 FIXTURES = Path(__file__).parent / 'fixtures/pokergosu'
@@ -90,11 +91,12 @@ def test_comment_api_matches_html_rows_and_hides_what_upstream_hides():
     html_rows = pg.parse_post(page_fixture(1), 123)['comments']
     api = pg.parse_comment_api(api_fixture(), 123, 1)
     assert api['comment_page'] == 1 and api['comments_next_page'] is None and api['comment_count'] == 49
+    # 픽스처 HTML은 원본의 a>span 감싸기가 없어 본문은 아래 실제 마크업 비교로 따로 확인한다.
     assert api['comments'] == [dict(row, html=api_row['html']) for row, api_row in zip(html_rows, api['comments'])]
     hidden = json.loads(api_fixture())
     first = hidden['comments'][0]
-    first['uploaded_count'] = 9998                        # 삭제된 댓글: 원본도 본문을 보이지 않는다
-    hidden['comments'][1]['blind'] = 1
+    first['uploaded_count'] = '9998'                      # 삭제된 댓글: 원본도 본문을 보이지 않는다(문자열로 와도)
+    hidden['comments'][1]['blind'] = '1'
     rows = pg.parse_comment_api(json.dumps(hidden).encode(), 123, 2)['comments']
     ids = [row['id'] for row in rows]
     blind_id = 'C%d' % hidden['comments'][1]['comment_srl']
@@ -117,6 +119,28 @@ def test_inconsistent_comment_count_stays_partial():
     data = pg.parse_post(raw, 123)
     assert len(data['comments']) == 3 and data['comment_count'] == 2
     assert data['comments_partial'] and data['comment_page'] is None
+
+
+@pytest.mark.parametrize('flag', [{'uploaded_count': 9997}, {'uploaded_count': '9997'}, {'blind': 1}])
+def test_comment_api_hides_flagged_rows_in_any_number_form(flag):
+    data = json.loads(api_fixture())
+    data['comments'][-1].update(flag)
+    rows = pg.parse_comment_api(json.dumps(data).encode(), 123, 1)['comments']
+    assert 'C%d' % data['comments'][-1]['comment_srl'] not in [row['id'] for row in rows]
+
+
+def test_comment_api_body_sanitizes_like_the_upstream_page_markup():
+    # 실제 원본 글 화면의 댓글 본문 마크업(2026-10-06 확인)과 정제 결과가 같아야 한다.
+    upstream = ('<div class="px-2 pr-6 tracking-wide lg:px-0 cboard" style="color:none;">'
+                '<a aria-label="title" class=""><span class=""><p class="min-h-[1rem]">잘 읽었습니다 '
+                '<img src="https://www.ipokergosu.com/img2/a.webp"></p></span></a></div>')
+    data = {'comments': [{'comment_srl': 5, 'content': '<p class="min-h-[1rem]">잘 읽었습니다 '
+                          '<img src="https://www.ipokergosu.com/img2/a.webp"></p>', 'children': []}],
+            'c_count2': 1, 'postinfo2': {'postinfo': [{'post_srl': 123, 'comment_count': 1}]}}
+    row = pg.parse_comment_api(json.dumps(data).encode(), 123, 1)['comments'][0]
+    with create_app().test_request_context('/'):
+        base = 'https://www.pokergosu.com/free/123'
+        assert media.prepare_html(row['html'], base_url=base) == media.prepare_html(upstream, base_url=base)
 
 
 def test_comment_requests_coalesce(monkeypatch):
