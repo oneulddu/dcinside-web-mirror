@@ -1,6 +1,6 @@
 .PHONY: install install-dev test run run-prod
 
-PYTHON ?= python3
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 PIP ?= $(PYTHON) -m pip
 
 install:
