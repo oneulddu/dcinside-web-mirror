@@ -51,9 +51,10 @@ def failing(status):
 
 @pytest.mark.parametrize('status', [502, 503])
 @pytest.mark.parametrize('kind,ttl', [('board', 20), ('post', 30), ('comments', 300)])
-def test_stale_success_survives_negative_cache_and_recovers(monkeypatch, clock, status, kind, ttl):
+def test_stale_success_survives_negative_cache_and_recovers(monkeypatch, clock, status, kind, ttl, poker_upstream):
     reader = pg.Reader()
     raw = (FIXTURES / ('board.html' if kind == 'board' else 'post.html')).read_bytes()
+    upstream = poker_upstream(raw)
     calls = []
     broken = False
 
@@ -61,7 +62,7 @@ def test_stale_success_survives_negative_cache_and_recovers(monkeypatch, clock, 
         calls.append(path)
         if broken:
             raise pg.PokerError('transient', status)
-        return raw
+        return upstream(path)
 
     monkeypatch.setattr(reader, '_fetch', fetch)
     read = {'board': lambda: reader.board(1), 'post': lambda: reader.post(123),
@@ -216,25 +217,25 @@ def test_shared_cooldown_between_readers(monkeypatch, clock, tmp_path):
 
 
 def test_comment_page_challenge_pauses_only_comment_pages(monkeypatch, clock, tmp_path, caplog):
-    # 원본은 ?cpage= 주소만 확인 화면으로 막는다. 글·목록 읽기는 계속돼야 한다.
+    # 원본이 이전 댓글 요청만 확인 화면으로 막으면 글·목록 읽기는 계속돼야 한다.
     sessions, starts = install_session(monkeypatch, [403, 200, 200])
     first, second = pg.Reader(), pg.Reader()
     with pytest.raises(pg.PokerError) as exc:
-        first._fetch('/best/123?cpage=1')
+        first._fetch(pg.comment_api_path('best', 123, 1))
     assert exc.value.status == 503 and str(exc.value) == pg.COMMENTS_BLOCKED_MESSAGE
     assert 'comment pages blocked' in caplog.text
     state = json.loads((tmp_path / 'upstream.json').read_text())
-    assert state['cooldown_until'] <= clock.now and state['comments_blocked_until'] == 1000 + 21600
+    assert state['cooldown_until'] <= clock.now and state[pg.COMMENT_BLOCK_KEY] == 1000 + 21600
     second._fetch('/best/123')
     second._fetch('/best?page=1')
     assert len(starts) == 3
     with pytest.raises(pg.PokerError) as exc:
-        second._fetch('/best/456?cpage=2')
+        second._fetch(pg.comment_api_path('best', 456, 2))
     assert str(exc.value) == pg.COMMENTS_BLOCKED_MESSAGE and len(starts) == 3
     assert second.comments_blocked() is True
     clock.now = 1000 + 21600 + 1
     assert second.comments_blocked() is False
-    second._fetch('/best/456?cpage=2')
+    second._fetch(pg.comment_api_path('best', 456, 2))
     assert len(starts) == 4
 
 
@@ -251,8 +252,39 @@ def test_comment_block_set_during_pacing_wait_stops_request(monkeypatch, clock):
 
     clock.sleep = sleep
     with pytest.raises(pg.PokerError) as exc:
-        reader._fetch('/best/123?cpage=1')
+        reader._fetch(pg.comment_api_path('best', 123, 1))
     assert str(exc.value) == pg.COMMENTS_BLOCKED_MESSAGE and len(starts) == 1
+
+
+def test_old_cpage_block_record_does_not_pause_comment_api(monkeypatch, clock, tmp_path):
+    # 막혔던 ?cpage= 시절의 기록은 새 JSON 경로를 막지 않는다.
+    (tmp_path / 'upstream.json').write_text(json.dumps({'comments_blocked_until': 5000}))
+    _, starts = install_session(monkeypatch)
+    reader = pg.Reader()
+    assert reader.comments_blocked() is False
+    reader._fetch(pg.comment_api_path('best', 123, 1))
+    assert len(starts) == 1
+
+
+def test_comment_api_request_looks_like_the_upstream_page(monkeypatch):
+    seen = []
+
+    class Session:
+        def __init__(self, **kwargs):
+            pass
+
+        def get(self, url, **kwargs):
+            seen.append((url, kwargs.get('headers')))
+            kwargs['content_callback'](b'{}')
+            return SimpleNamespace(status_code=200, headers={})
+
+    monkeypatch.setattr(pg.requests, 'Session', Session)
+    reader = pg.Reader()
+    reader._fetch(pg.comment_api_path('hand', 77, 3))
+    reader._fetch('/hand/77')
+    assert seen[0] == (pg.BASE_URL + '/api2/board/getcommnet/hand/77/3/25/xpage/20/undefined/undefined/0',
+                       {'Accept': 'application/json, text/plain, */*', 'Referer': pg.BASE_URL + '/hand/77'})
+    assert seen[1] == (pg.BASE_URL + '/hand/77', None)
 
 
 def test_page_challenge_still_cools_down_comment_pages(monkeypatch, clock):
@@ -261,7 +293,7 @@ def test_page_challenge_still_cools_down_comment_pages(monkeypatch, clock):
     with pytest.raises(pg.PokerError):
         reader._fetch('/best?page=1')
     with pytest.raises(pg.PokerError) as exc:
-        reader._fetch('/best/123?cpage=1')
+        reader._fetch(pg.comment_api_path('best', 123, 1))
     assert str(exc.value) == pg.COOLDOWN_MESSAGE and len(starts) == 1
     assert reader.comments_blocked() is False
 
@@ -371,7 +403,7 @@ def test_busy_slots_return_stale(monkeypatch, clock):
 
 @pytest.mark.parametrize('path,fixture_name', [('/poker/free/123', 'post.html'),
                                              ('/poker/hand/123/comments?cpage=1', 'comments-page-1.html')])
-def test_routes_prepare_once_per_cache_fill_and_keep_signed_images(monkeypatch, clock, path, fixture_name):
+def test_routes_prepare_once_per_cache_fill_and_keep_signed_images(monkeypatch, clock, path, fixture_name, poker_upstream):
     reader = pg.Reader()
     calls = []
     original = poker_routes.prepare_html
@@ -380,7 +412,7 @@ def test_routes_prepare_once_per_cache_fill_and_keep_signed_images(monkeypatch, 
         calls.append(kwargs['base_url'])
         return original(raw, **kwargs)
 
-    monkeypatch.setattr(reader, '_fetch', lambda path: (FIXTURES / fixture_name).read_bytes())
+    monkeypatch.setattr(reader, '_fetch', poker_upstream((FIXTURES / fixture_name).read_bytes()))
     monkeypatch.setattr(poker_routes, 'reader', reader)
     monkeypatch.setattr(poker_routes, 'prepare_html', prepare)
     client = create_app().test_client()

@@ -91,12 +91,12 @@ def test_prepared_body_comment_and_raw_caches_remain_separate(monkeypatch):
     assert not any(BeautifulSoup(comment['html'], 'html.parser').iframe for comment in prepared['comments'])
 
 
-def test_routes_keep_youtube_only_in_body_and_never_fetch_auxiliary_media(monkeypatch):
+def test_routes_keep_youtube_only_in_body_and_never_fetch_auxiliary_media(monkeypatch, poker_upstream):
     from flask import template_rendered
     youtube = '<iframe src="https://www.youtube.com/embed/Abcdef_12-3?autoplay=1"></iframe>'
     raw = fixture('post').decode().replace('<p>첫 문단</p>', youtube).replace('<p>첫 댓글</p>', youtube)
     reader, calls, contexts = pg.Reader(), [], []
-    monkeypatch.setattr(reader, '_fetch', lambda path: calls.append(path) or raw.encode())
+    monkeypatch.setattr(reader, '_fetch', poker_upstream(raw.encode(), calls=calls))
     monkeypatch.setattr(poker_routes, 'reader', reader)
     monkeypatch.setattr(media, 'resolve_media_target', lambda *a, **k: pytest.fail('auxiliary media request'))
     app = create_app()
@@ -112,7 +112,7 @@ def test_routes_keep_youtube_only_in_body_and_never_fetch_auxiliary_media(monkey
         response = client.get('/poker/free/123/comments?cpage=1')
     assert response.status_code == 200
     assert not any(BeautifulSoup(c['html'], 'html.parser').iframe for c in response.json['comments'])
-    assert calls == ['/free/123', '/free/123?cpage=1']
+    assert calls == ['/free/123', pg.comment_api_path('free', 123, 1)]
 
 
 @pytest.fixture(autouse=True)

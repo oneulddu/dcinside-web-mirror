@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ from bs4 import BeautifulSoup
 import pytest
 
 from app import create_app, poker_routes
+from app.services import poker_media as media
 from app.services import pokergosu as pg
 
 FIXTURES = Path(__file__).parent / 'fixtures/pokergosu'
@@ -15,6 +17,16 @@ FIXTURES = Path(__file__).parent / 'fixtures/pokergosu'
 
 def page_fixture(page):
     return (FIXTURES / f'comments-page-{page}.html').read_bytes()
+
+
+def api_fixture(**changes):
+    data = json.loads((FIXTURES / 'comments-api-page-1.json').read_text())
+    data.update(changes)
+    return json.dumps(data, ensure_ascii=False).encode()
+
+
+def api_path(board, page, pid=123):
+    return f'/api2/board/getcommnet/{board}/{pid}/{page}/25/xpage/20/undefined/undefined/0'
 
 
 def test_comment_pages_use_only_comment_pagination_and_preserve_replies():
@@ -46,7 +58,7 @@ def test_comment_reader_preserves_post_cache_and_keys_by_page_and_board(monkeypa
 
     def fetch(path):
         calls.append(path)
-        return page_fixture(1 if 'cpage=1' in path else 2)
+        return api_fixture() if path.startswith('/api2/') else page_fixture(2)
 
     monkeypatch.setattr(reader, '_fetch', fetch)
     assert len(reader.post(123, 'free')['comments']) == 21
@@ -56,15 +68,41 @@ def test_comment_reader_preserves_post_cache_and_keys_by_page_and_board(monkeypa
     assert len(reader.comment_page(123, 1, 'free')['comments']) == 28
     reader.comment_page(123, 2, 'free')
     reader.comment_page(123, 1, 'hand')
-    assert calls == ['/free/123', '/free/123?cpage=1', '/free/123?cpage=2', '/hand/123?cpage=1']
+    assert calls == ['/free/123', api_path('free', 1), api_path('free', 2), api_path('hand', 1)]
     assert len(reader.post(123, 'free')['comments']) == 21
 
 
-def test_comment_reader_rejects_ignored_page_parameter(monkeypatch):
+@pytest.mark.parametrize('raw,page', [
+    (api_fixture(), 3),                                   # 원본 댓글 페이지 수(46개 → 2쪽)를 넘는다
+    (api_fixture(postinfo2={'postinfo': [{'post_srl': 999, 'comment_count': 49}]}), 1),  # 다른 글
+    (api_fixture(comments='bad'), 1),
+    (api_fixture(comments=[]), 1),                        # 댓글이 있다는데 비어 있다
+    (b'<html>challenge</html>', 1),                       # JSON이 아닌 응답
+])
+def test_comment_reader_rejects_unverified_api_page(monkeypatch, raw, page):
     reader = pg.Reader()
-    monkeypatch.setattr(reader, '_fetch', lambda path: page_fixture(2))
-    with pytest.raises(pg.PokerError):
-        reader.comment_page(123, 1, 'free')
+    monkeypatch.setattr(reader, '_fetch', lambda path: raw)
+    with pytest.raises(pg.PokerError) as exc:
+        reader.comment_page(123, page, 'free')
+    assert exc.value.status == 502
+
+
+def test_comment_api_matches_html_rows_and_hides_what_upstream_hides():
+    html_rows = pg.parse_post(page_fixture(1), 123)['comments']
+    api = pg.parse_comment_api(api_fixture(), 123, 1)
+    assert api['comment_page'] == 1 and api['comments_next_page'] is None and api['comment_count'] == 49
+    # 픽스처 HTML은 원본의 a>span 감싸기가 없어 본문은 아래 실제 마크업 비교로 따로 확인한다.
+    assert api['comments'] == [dict(row, html=api_row['html']) for row, api_row in zip(html_rows, api['comments'])]
+    hidden = json.loads(api_fixture())
+    first = hidden['comments'][0]
+    first['uploaded_count'] = '9998'                      # 삭제된 댓글: 원본도 본문을 보이지 않는다(문자열로 와도)
+    hidden['comments'][1]['blind'] = '1'
+    rows = pg.parse_comment_api(json.dumps(hidden).encode(), 123, 2)['comments']
+    ids = [row['id'] for row in rows]
+    blind_id = 'C%d' % hidden['comments'][1]['comment_srl']
+    assert 'C1' not in ids and blind_id not in ids and len(rows) == 26
+    assert rows[0]['id'] == 'C2' and rows[0]['parent_id'] == 'C1'   # 답글은 남고 부모 관계도 그대로
+    assert pg.parse_comment_api(api_fixture(), 123, 2)['comments_next_page'] == 1
 
 
 @pytest.mark.parametrize('pid,page', [(0, 1), (123, 0), (123, 10001), (True, 1), (123, '1')])
@@ -83,6 +121,28 @@ def test_inconsistent_comment_count_stays_partial():
     assert data['comments_partial'] and data['comment_page'] is None
 
 
+@pytest.mark.parametrize('flag', [{'uploaded_count': 9997}, {'uploaded_count': '9997'}, {'blind': 1}])
+def test_comment_api_hides_flagged_rows_in_any_number_form(flag):
+    data = json.loads(api_fixture())
+    data['comments'][-1].update(flag)
+    rows = pg.parse_comment_api(json.dumps(data).encode(), 123, 1)['comments']
+    assert 'C%d' % data['comments'][-1]['comment_srl'] not in [row['id'] for row in rows]
+
+
+def test_comment_api_body_sanitizes_like_the_upstream_page_markup():
+    # 실제 원본 글 화면의 댓글 본문 마크업(2026-10-06 확인)과 정제 결과가 같아야 한다.
+    upstream = ('<div class="px-2 pr-6 tracking-wide lg:px-0 cboard" style="color:none;">'
+                '<a aria-label="title" class=""><span class=""><p class="min-h-[1rem]">잘 읽었습니다 '
+                '<img src="https://www.ipokergosu.com/img2/a.webp"></p></span></a></div>')
+    data = {'comments': [{'comment_srl': 5, 'content': '<p class="min-h-[1rem]">잘 읽었습니다 '
+                          '<img src="https://www.ipokergosu.com/img2/a.webp"></p>', 'children': []}],
+            'c_count2': 1, 'postinfo2': {'postinfo': [{'post_srl': 123, 'comment_count': 1}]}}
+    row = pg.parse_comment_api(json.dumps(data).encode(), 123, 1)['comments'][0]
+    with create_app().test_request_context('/'):
+        base = 'https://www.pokergosu.com/free/123'
+        assert media.prepare_html(row['html'], base_url=base) == media.prepare_html(upstream, base_url=base)
+
+
 def test_comment_requests_coalesce(monkeypatch):
     reader = pg.Reader()
     entered, release = threading.Event(), threading.Event()
@@ -92,7 +152,7 @@ def test_comment_requests_coalesce(monkeypatch):
         calls.append(path)
         entered.set()
         assert release.wait(3)
-        return page_fixture(1)
+        return api_fixture()
 
     monkeypatch.setattr(reader, '_fetch', fetch)
     with ThreadPoolExecutor(3) as pool:
@@ -111,13 +171,13 @@ def test_comment_endpoint_sanitizes_every_row_and_preserves_cursor(monkeypatch):
 
     def fetch(path):
         calls.append(path)
-        return page_fixture(1)
+        return api_fixture()
 
     monkeypatch.setattr(reader, '_fetch', fetch)
     monkeypatch.setattr(poker_routes, 'reader', reader)
     response = create_app().test_client().get('/poker/hand/123/comments?cpage=1')
     assert response.status_code == 200
-    assert calls == ['/hand/123?cpage=1']
+    assert calls == [api_path('hand', 1)]
     assert response.headers['Cache-Control'] == 'no-store'
     assert response.headers['X-Content-Type-Options'] == 'nosniff'
     data = response.get_json()

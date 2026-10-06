@@ -32,12 +32,12 @@ def test_dimensions_reserve_only_valid_complete_image_sizes(width, height, expec
         assert (img['width'], img['height']) == (width, height)
 
 
-def test_body_and_appended_comments_use_signed_images_and_dimensions(monkeypatch):
+def test_body_and_appended_comments_use_signed_images_and_dimensions(monkeypatch, poker_upstream):
     fixtures = Path(__file__).parent / 'fixtures/pokergosu'
     raw = (fixtures / 'comments-page-1.html').read_bytes().replace(
         b'/img2/test.webp"', b'/img2/test.webp" width="120" height="90"')
     reader = pg.Reader()
-    monkeypatch.setattr(reader, '_fetch', lambda path: raw)
+    monkeypatch.setattr(reader, '_fetch', poker_upstream(raw))
     monkeypatch.setattr(poker_routes, 'reader', reader)
     client = create_app().test_client()
     response = client.get('/poker/best/123')

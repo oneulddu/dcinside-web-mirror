@@ -25,6 +25,12 @@ TIMEOUT = 20
 COOLDOWN_SECONDS = 60
 COOLDOWN_MESSAGE = "원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요."
 COMMENTS_BLOCKED_MESSAGE = "이전 댓글은 지금 원본에서 가져올 수 없어요. 원문에서 확인해 주세요."
+COMMENT_PAGE_SIZE = 25
+COMMENT_API_PREFIX = '/api2/board/getcommnet/'
+# 원본 글 화면은 일반 사용자에게 이 댓글들의 본문을 보여 주지 않는다(삭제·관리자 삭제).
+HIDDEN_COMMENT_UPLOADS = (9997, 9998)
+# 공유 상태 파일의 댓글 차단 기록. 막혔던 ?cpage= 기록(comments_blocked_until)과 따로 둔다.
+COMMENT_BLOCK_KEY = 'comment_api_blocked_until'
 logger = logging.getLogger(__name__)
 
 
@@ -234,6 +240,77 @@ def parse_post(raw, pid):
                     or any(_has_attachment(link) for link in body.xpath('.//a'))))
 
 
+def comment_api_path(board_id, pid, page):
+    """The JSON path the upstream post page itself uses when its comment pager changes."""
+    return f'{COMMENT_API_PREFIX}{board_id}/{pid}/{page}/{COMMENT_PAGE_SIZE}/xpage/20/undefined/undefined/0'
+
+
+def _api_time(value):
+    text = str(value or '')
+    if not re.fullmatch(r'[0-9]{14}', text):
+        return ''
+    return f'{text[0:4]}.{text[4:6]}.{text[6:8]} {text[8:10]}:{text[10:12]}:{text[12:14]}'
+
+
+def _api_count(value):
+    if type(value) is int and value >= 0:
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        return int(value)
+    return None
+
+
+def parse_comment_api(raw, pid, page):
+    """Turn one upstream comment JSON page into the rows parse_post produces."""
+    invalid = PokerError('원본의 댓글 페이지를 확인하지 못했어요.')
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeError) as exc:
+        raise invalid from exc
+    if not isinstance(data, dict) or not isinstance(data.get('comments'), list):
+        raise invalid
+    info = data.get('postinfo2')
+    posts = info.get('postinfo') if isinstance(info, dict) else None
+    post = posts[0] if isinstance(posts, list) and posts and isinstance(posts[0], dict) else None
+    if post is None or str(post.get('post_srl')) != str(pid):
+        raise invalid
+    total = _api_count(post.get('comment_count'))
+    top_level = _api_count(data.get('c_count2'))
+    if top_level is None or page > max(1, math.ceil(top_level / COMMENT_PAGE_SIZE)):
+        raise invalid
+    comments, seen = [], set()
+
+    def walk(nodes, parent, depth):
+        if not isinstance(nodes, list) or depth > 50:
+            raise invalid
+        for node in nodes:
+            if not isinstance(node, dict):
+                raise invalid
+            srl = str(node.get('comment_srl') or '')
+            if not (srl.isascii() and srl.isdecimal()):
+                raise invalid
+            cid = 'C' + srl
+            content = node.get('content')
+            # 원본 응답은 숫자 필드를 문자열로 줄 때도 있다("comment_status": "1").
+            visible = (isinstance(content, str) and _api_count(node.get('blind')) != 1
+                       and _api_count(node.get('uploaded_count')) not in HIDDEN_COMMENT_UPLOADS)
+            if visible and cid not in seen:
+                seen.add(cid)
+                comments.append(dict(id=cid, parent_id=parent, is_reply=parent is not None,
+                                     author=str(node.get('nick_name') or '').strip() or None,
+                                     time=_api_time(node.get('regdate')),
+                                     # 원본 글 화면이 댓글 본문을 감싸는 모양 그대로 둔다.
+                                     html=('<div class="cboard"><a aria-label="title"><span>'
+                                           + content + '</span></a></div>')))
+            walk(node.get('children') or [], cid, depth + 1)
+
+    walk(data['comments'], None, 0)
+    if top_level and not data['comments']:
+        raise invalid
+    return dict(comments=comments, comment_count=total, comment_page=page,
+                comments_next_page=page - 1 if page > 1 else None)
+
+
 @dataclass
 class CacheEntry:
     fresh_until: float = 0.0
@@ -261,7 +338,7 @@ class Reader:
         self.state_file = Path(os.getenv('MIRROR_POKER_STATE_FILE',
                               str(Path(__file__).resolve().parents[2] / 'instance/poker_upstream_state.json')))
         self.state_failed = False
-        # 원본이 댓글 페이지(?cpage=) 주소만 확인 화면으로 막을 때, 그 주소를 쉬게 하는 시간.
+        # 원본이 이전 댓글 요청만 확인 화면으로 막을 때, 그 요청을 쉬게 하는 시간.
         # 글·목록 읽기 전체를 멈추는 짧은 쿨다운과 따로 둔다.
         self.comments_block_seconds = max(0, float(os.getenv('MIRROR_POKER_COMMENTS_BLOCK_SECONDS', '21600')))
 
@@ -272,7 +349,7 @@ class Reader:
             # Clamp shared wall-clock values so a clock step backwards cannot turn
             # into a long sleep or cooldown outside the HTTP timeout.
             cooldown = min(max(self.cooldown_until, state.get('cooldown_until', 0)), now + COOLDOWN_SECONDS)
-            comments_blocked = min(max(self.comments_blocked_until, state.get('comments_blocked_until', 0)),
+            comments_blocked = min(max(self.comments_blocked_until, state.get(COMMENT_BLOCK_KEY, 0)),
                                    now + self.comments_block_seconds)
             last = min(max(self.last_start, state.get('last_start', 0)), now)
             if action == 'cooldown':
@@ -288,7 +365,7 @@ class Reader:
             if starting and not blocked and not delay:
                 last = now
             self.cooldown_until, self.comments_blocked_until, self.last_start = cooldown, comments_blocked, last
-            return ({'cooldown_until': cooldown, 'comments_blocked_until': comments_blocked, 'last_start': last},
+            return ({'cooldown_until': cooldown, COMMENT_BLOCK_KEY: comments_blocked, 'last_start': last},
                     (blocked, delay, comments_blocked > now))
 
         with self.pace_lock:
@@ -303,7 +380,7 @@ class Reader:
                             if not isinstance(state, dict):
                                 state = {}
                             state = {key: value for key, value in state.items()
-                                     if key in ('cooldown_until', 'comments_blocked_until', 'last_start')
+                                     if key in ('cooldown_until', COMMENT_BLOCK_KEY, 'last_start')
                                      and type(value) in (int, float) and math.isfinite(value) and value >= 0}
                         except (ValueError, UnicodeError, OverflowError):
                             state = {}
@@ -351,8 +428,13 @@ class Reader:
                 logger.debug('Pokergosu session close failed', exc_info=True)
 
     def _fetch(self, path):
-        # 원본은 댓글 페이지 주소(?cpage=)만 따로 확인 화면으로 막을 수 있다.
-        comments = 'cpage=' in urlsplit(path).query
+        # 원본은 이전 댓글 요청만 따로 확인 화면으로 막을 수 있다.
+        comments = path.startswith(COMMENT_API_PREFIX) or 'cpage=' in urlsplit(path).query
+        headers = None
+        if path.startswith(COMMENT_API_PREFIX):
+            # 원본 글 화면이 댓글 페이지를 바꿀 때 보내는 것과 같은 요청이다.
+            board_id, pid = path[len(COMMENT_API_PREFIX):].split('/')[:2]
+            headers = {'Accept': 'application/json, text/plain, */*', 'Referer': f'{BASE_URL}/{board_id}/{pid}'}
         self._check_upstream('check_comments' if comments else 'check')
         if not self.slots.acquire(timeout=1):
             raise PokerError("요청이 많아요. 잠시 후 다시 시도해 주세요.", 503)
@@ -368,8 +450,9 @@ class Reader:
                 chunks.append(chunk)
                 return len(chunk)
             # A thread owns its session, and each request gets its own size guard.
+            options = {'headers': headers} if headers else {}
             response = self._session().get(BASE_URL + path, timeout=TIMEOUT, allow_redirects=False,
-                                           content_callback=receive)
+                                           content_callback=receive, **options)
             if size > MAX_HTML_BYTES:
                 self._discard_session()
                 raise PokerError("원본 페이지가 너무 커서 가져오지 못했어요.")
@@ -526,14 +609,11 @@ class Reader:
             raise PokerError('댓글 요청을 확인해 주세요.', 400)
 
         def parse(raw):
-            data = parse_post(raw, pid)
-            if data['comment_page'] != page:
-                raise PokerError('원본의 댓글 페이지를 확인하지 못했어요.')
-            result = {key: data[key] for key in ('comments', 'comment_count', 'comment_page', 'comments_next_page')}
-            return self._prepare(result, prepare)
+            return self._prepare(parse_comment_api(raw, pid, page), prepare)
 
         key = ('comments', board_id, pid, page) + (('prepared',) if prepare is not None else ())
-        return self.get(key, f'/{board_id}/{pid}?cpage={page}', parse, 300)
+        # 원본은 ?cpage= 글 주소를 확인 화면으로 막는다. 글 화면이 실제로 쓰는 JSON 경로로 가져온다.
+        return self.get(key, comment_api_path(board_id, pid, page), parse, 300)
 
 
 reader = Reader()
