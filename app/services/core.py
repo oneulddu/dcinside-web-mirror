@@ -50,6 +50,8 @@ AUTHOR_CODE_CACHE_TTL = 3600
 BOARD_PAGE_CACHE_MAX_ITEMS = 2048
 BOARD_INDEX_CACHE_MAX_ITEMS = 2048
 BOARD_TIME_CACHE_MAX_ITEMS = BOARD_PAGE_CACHE_MAX_ITEMS
+BOARD_UPDATES_CACHE_TTL = 60
+BOARD_UPDATES_CACHE_MAX_ITEMS = 512
 READ_CACHE_MAX_ITEMS = 512
 LATEST_ID_CACHE_MAX_ITEMS = 512
 AUTHOR_CODE_CACHE_MAX_ITEMS = 8192
@@ -60,6 +62,8 @@ _BOARD_PAGE_CACHE = {}
 _BOARD_INDEX_CACHE = {}
 _BOARD_REFRESH_CACHE = {}
 _BOARD_TIME_CACHE = {}
+_BOARD_UPDATES_CACHE = {}
+_BOARD_UPDATES_CACHE_LOCK = threading.Lock()
 _READ_CACHE = {}
 _READ_STALE_CACHE = {}
 _INITIAL_RELATED_CACHE = {}
@@ -395,8 +399,19 @@ def _store_initial_related(key, rows, has_more=None):
         )
 
 
-def _copy_board_page(payload, pagination_collector=None):
+class _BoardListPayload(tuple):
+    """Keep fetch metadata without changing existing cache tuple consumers."""
+
+    def __new__(cls, values, fetched_at):
+        payload = super().__new__(cls, values)
+        payload.fetched_at = fetched_at
+        return payload
+
+
+def _copy_board_page(payload, pagination_collector=None, fetched_at_collector=None):
     rows, pagination = payload
+    if fetched_at_collector is not None:
+        fetched_at_collector["fetched_at"] = payload.fetched_at
     if pagination_collector is not None:
         pagination_collector.clear()
         pagination_collector.update(pagination)
@@ -435,6 +450,7 @@ async def _fetch_board_page(
     search_keyword=None,
     head_id=None,
     pagination_collector=None,
+    fetched_at_collector=None,
 ):
     cache_key = (
         board,
@@ -448,7 +464,7 @@ async def _fetch_board_page(
     )
     cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
-        return _copy_board_page(cached, pagination_collector)
+        return _copy_board_page(cached, pagination_collector, fetched_at_collector)
 
     async def load():
         cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
@@ -474,18 +490,78 @@ async def _fetch_board_page(
             row = _index_item_to_dict(item)
             row["source_page"] = _safe_int(page, 1)
             posts.append(row)
+        fetched_at = time.time()
         if posts:
             _cache_set(
                 _BOARD_PAGE_CACHE,
                 _BOARD_PAGE_CACHE_LOCK,
                 cache_key,
-                (_copy_rows(posts), dict(pagination)),
+                _BoardListPayload((_copy_rows(posts), dict(pagination)), fetched_at),
                 BOARD_PAGE_CACHE_TTL,
                 BOARD_PAGE_CACHE_MAX_ITEMS,
             )
-        return posts, pagination
+        return _BoardListPayload((posts, pagination), fetched_at)
 
-    return _copy_board_page(await _load_board_once(("page", cache_key), load), pagination_collector)
+    return _copy_board_page(await _load_board_once(("page", cache_key), load),
+                            pagination_collector, fetched_at_collector)
+
+
+async def async_board_updates(board, kind=None):
+    """Return a bounded first-page snapshot without document enrichment."""
+    key = (board, kind or "")
+
+    async def load():
+        cached = _cache_get(_BOARD_UPDATES_CACHE, _BOARD_UPDATES_CACHE_LOCK, key)
+        if cached is not None:
+            return cached
+        try:
+            # /board supplies its default search type even without a keyword.
+            cached_index = None
+            for search_type in ("subject_m", None):
+                cached_index = _cache_get(
+                    _BOARD_INDEX_CACHE, _BOARD_INDEX_CACHE_LOCK,
+                    _board_index_cache_key(1, board, 0, kind=kind, scan_limit=1,
+                                           search_type=search_type),
+                )
+                if cached_index is not None:
+                    break
+            pagination = {}
+            fetch_metadata = {}
+            if (isinstance(cached_index, _BoardListPayload)
+                    and (cached_index[0] or cached_index[2].get("has_next") is False)):
+                rows, _, pagination = cached_index
+                fetch_metadata["fetched_at"] = cached_index.fetched_at
+            else:
+                async with dc_api_context() as api:
+                    rows = await asyncio.wait_for(
+                        _fetch_board_page(api, 1, board, 0, kind=kind,
+                                          pagination_collector=pagination,
+                                          fetched_at_collector=fetch_metadata),
+                        BOARD_FETCH_TIMEOUT,
+                    )
+            if not rows and pagination.get("has_next") is not False:
+                raise dc_api.BoardUnavailableError("unconfirmed empty updates list")
+            result = {
+                "ok": True, "board": board, "kind": kind,
+                "fetched_at": fetch_metadata["fetched_at"],
+                "has_next": pagination.get("has_next"),
+                "items": [
+                    {"id": str(row["id"]), "title": row["title"],
+                     "author": row["author"], "author_code": row.get("author_code")}
+                    for row in rows
+                ],
+            }
+        except Exception:
+            logger.warning("board updates unavailable board=%s", board, exc_info=True)
+            result = {"ok": False, "error": "board_updates_unavailable"}
+        _cache_set(_BOARD_UPDATES_CACHE, _BOARD_UPDATES_CACHE_LOCK, key, result,
+                   BOARD_UPDATES_CACHE_TTL, BOARD_UPDATES_CACHE_MAX_ITEMS)
+        return result
+
+    result = await _load_board_once(("updates", key), load)
+    if not result["ok"]:
+        raise dc_api.BoardUnavailableError("board updates unavailable")
+    return {**result, "items": _copy_rows(result["items"])}
 
 
 def _normalize_target_ids(target_ids):
@@ -992,6 +1068,7 @@ async def async_index_with_head_categories(
                 raise_on_unavailable=True,
             ):
                 data.append(_index_item_to_dict(item))
+            fetched_at = time.time()
             await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
             categories = _normalize_head_categories(headtexts, head_id=head_id)
         if data or categories or (force_refresh_requested and force_refresh):
@@ -1002,11 +1079,14 @@ async def async_index_with_head_categories(
                 _BOARD_INDEX_CACHE,
                 _BOARD_INDEX_CACHE_LOCK,
                 cache_key,
-                (_copy_rows(data), _copy_categories(categories), _copy_pagination(pagination)),
+                _BoardListPayload(
+                    (_copy_rows(data), _copy_categories(categories), _copy_pagination(pagination)),
+                    fetched_at,
+                ),
                 cache_ttl,
                 BOARD_INDEX_CACHE_MAX_ITEMS,
             )
-        return data, categories, pagination
+        return _BoardListPayload((data, categories, pagination), fetched_at)
 
     # An explicit refresh owns a different empty-result policy. Keep it apart
     # from ordinary fetches, including when it joins during a cold-cache miss.

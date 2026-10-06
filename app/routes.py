@@ -5,12 +5,14 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlparse
+from werkzeug.exceptions import BadRequest
 from flask import Blueprint, abort, current_app, jsonify, make_response, redirect, render_template, request, url_for
 
 from .services.async_bridge import run_async
 from .services.dc.api import BoardUnavailableError, DocumentNotFoundError, DocumentUnavailableError
 from .services.core import (
     async_board_precise_times,
+    async_board_updates,
     async_index_with_head_categories,
     async_read,
     async_related_after_position,
@@ -782,6 +784,29 @@ def board():
 @bp.route("/legacy/board")
 def board_compat_redirect():
     return _redirect_compat("main.board")
+
+
+@bp.route("/board/updates")
+def board_updates():
+    try:
+        if (set(request.args) - {"board", "kind"}
+                or any(len(values) != 1 for _, values in request.args.lists())):
+            abort(400)
+        board = _normalize_board_id(request.args.get("board"), default="")
+        kind = _normalize_gallery_kind(request.args.get("kind"))
+    except BadRequest:
+        response = jsonify(ok=False, error="invalid_board_updates_request")
+        response.status_code = 400
+    else:
+        try:
+            response = jsonify(run_async(async_board_updates(board, kind=kind)))
+        except BoardUnavailableError:
+            response = jsonify(ok=False, error="board_updates_unavailable")
+            response.status_code = 503
+            response.headers["Retry-After"] = "60"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @bp.route("/board/times")

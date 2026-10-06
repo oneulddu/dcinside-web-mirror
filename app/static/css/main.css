@@ -3396,6 +3396,58 @@ html[data-theme="dark"] .user-filter-dialog {
 }
 
 
+
+/* ===== 새 글 알림 ===== */
+
+.board-updates {
+    position: sticky;
+    z-index: 20;
+    top: var(--space-2);
+    display: flex;
+    justify-content: center;
+    height: 0;
+    overflow: visible;
+}
+
+.board-updates[hidden] {
+    display: none;
+}
+
+.board-updates-btn {
+    min-height: 44px;
+    margin-top: var(--space-2);
+    border: 0;
+    border-radius: var(--radius-m);
+    background: var(--elevated);
+    box-shadow: var(--shadow-float);
+    color: var(--accent);
+    font: var(--type-label);
+    font-size: 14.5px;
+    padding: 0 var(--space-5);
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
+    transition: background-color var(--dur) ease-out, transform var(--dur-fast) ease-out;
+}
+
+html[data-theme="dark"] .board-updates-btn {
+    outline: var(--rule) solid var(--line-strong);
+    outline-offset: -1px;
+}
+
+.board-updates-btn:hover {
+    background: var(--surface);
+}
+
+.board-updates-btn:active {
+    transform: scale(0.96);
+}
+
+.board-updates-btn:disabled {
+    color: var(--muted);
+    cursor: default;
+}
+
+
 /* ===== 모션 감소 ===== */
 
 @media (prefers-reduced-motion: reduce) {
