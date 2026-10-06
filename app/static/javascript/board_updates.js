@@ -254,7 +254,20 @@
         var url = new URL(root.location.href);
         url.searchParams.set("refresh", "1");
         var generation = state.generation;
-        fetch(url.toString(), { credentials: "same-origin", headers: { "Accept": "text/html" } })
+        // 응답이나 본문 수신이 멈춰도 버튼이 영영 잠기지 않게 본문 읽기까지 시간 제한을 둔다.
+        var controller = typeof AbortController === "function" ? new AbortController() : null;
+        var timedOut = false;
+        var timeout = setTimeout(function () {
+            timedOut = true;
+            if (controller) {
+                controller.abort();
+            }
+        }, REQUEST_TIMEOUT_MS);
+        fetch(url.toString(), {
+            credentials: "same-origin",
+            headers: { "Accept": "text/html" },
+            signal: controller ? controller.signal : undefined
+        })
             .then(function (response) {
                 if (!response.ok) {
                     throw new Error("refresh failed");
@@ -262,6 +275,9 @@
                 return response.text();
             })
             .then(function (html) {
+                if (timedOut) {
+                    throw new Error("refresh timed out");
+                }
                 var next = new DOMParser().parseFromString(html, "text/html").getElementById("board-list");
                 var current = boardList();
                 if (!next || !current || generation !== state.generation) {
@@ -284,6 +300,9 @@
                 }
                 button.disabled = false;
                 button.textContent = "새로고침하지 못했어요. 다시 시도";
+            })
+            .then(function () {
+                clearTimeout(timeout);
             });
     }
 

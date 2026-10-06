@@ -227,6 +227,18 @@
         prefillHint: ""
     };
 
+    // 다른 스크립트(새 글 알림 등)가 현재 저장된 규칙으로 글을 판정할 때 쓴다.
+    api.matchesCurrent = function (item) {
+        return matchItem(state.compiled, item);
+    };
+
+    function notifyChanged() {
+        if (typeof root.CustomEvent !== "function" || typeof document.dispatchEvent !== "function") {
+            return;
+        }
+        document.dispatchEvent(new root.CustomEvent("mirror:user-filter-changed"));
+    }
+
     function readStorage() {
         try {
             return { raw: root.localStorage.getItem(STORAGE_KEY), ok: true };
@@ -633,6 +645,7 @@
         saveSettings(next);
         resetReveal();
         applyAll();
+        notifyChanged();
         renderDialog();
         var text = message ? message + " " : "";
         if (state.saveFailed) {
@@ -766,6 +779,7 @@
         }
         resetReveal();
         applyAll();
+        notifyChanged();
         if (state.dialog && state.dialog.open) {
             renderDialog();
         }
