@@ -3148,6 +3148,35 @@ html[data-user-filter-active="true"] .user-filter-open {
     text-decoration-color: currentColor;
 }
 
+/* 언급은 본문 안의 텍스트 링크처럼 보이고 기존 작성자 메뉴를 연다. */
+.comment-mention {
+    color: var(--accent);
+    font-weight: 650;
+    text-decoration-color: currentColor;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+    border-radius: var(--radius-xs);
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+    transition: background-color var(--dur-fast) ease-out;
+}
+
+.comment-mention::after {
+    /* 인접한 언급이나 줄바꿈된 본문을 가리지 않도록 가로 터치 영역은 늘리지 않는다. */
+    inset: -4px 0;
+}
+
+.comment-mention:hover,
+.comment-mention[aria-expanded="true"] {
+    background: var(--surface);
+}
+
+.comment-mention:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+
 .user-filter-dialog {
     width: min(440px, calc(100vw - var(--space-8)));
     max-height: min(680px, calc(100dvh - var(--space-8)));
