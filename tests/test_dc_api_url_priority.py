@@ -1104,7 +1104,7 @@ async def test_board_tries_cached_successful_list_url_pattern_first(monkeypatch)
     assert [row.id for row in second_rows] == ["123"]
     assert seen_url_batches[0][0] == "https://m.dcinside.com/board/cachetest?page=1"
     assert any("/board/lists/" in url for url in seen_url_batches[0][1:])
-    assert seen_url_batches[1] == ["https://gall.dcinside.com/mgallery/board/lists/?id=cachetest&page=1"]
+    assert seen_url_batches[1] == ["https://gall.dcinside.com/mgallery/board/lists/?id=cachetest&page=1&list_num=30"]
     _clear_board_kind_cache()
 
 
@@ -1738,7 +1738,7 @@ async def test_fetch_parsed_from_urls_ignores_nested_body_script_redirect():
 async def test_board_falls_back_to_pc_when_mobile_page_is_not_parseable():
     api = API.__new__(API)
     mobile_url = "https://m.dcinside.com/board/test?page=1"
-    pc_url = "https://gall.dcinside.com/board/lists/?id=test&page=1"
+    pc_url = "https://gall.dcinside.com/board/lists/?id=test&page=1&list_num=30"
     responses = {
         mobile_url: "<html><body>mobile placeholder without list rows</body></html>",
         pc_url: """
@@ -1878,7 +1878,7 @@ async def test_board_precise_times_looks_ahead_for_rendered_overflow_row():
 async def test_board_falls_back_to_pc_when_mobile_list_has_only_ads():
     api = API.__new__(API)
     mobile_url = "https://m.dcinside.com/board/test?page=1"
-    pc_url = "https://gall.dcinside.com/board/lists/?id=test&page=1"
+    pc_url = "https://gall.dcinside.com/board/lists/?id=test&page=1&list_num=30"
     responses = {
         mobile_url: """
         <html><body>

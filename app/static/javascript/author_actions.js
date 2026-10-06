@@ -31,7 +31,8 @@
     }
 
     function boardContext() {
-        var section = document.getElementById("related-section");
+        // 공지 글은 다른 게시글 목록이 없으므로 본문 영역에 둔 게시판 정보를 먼저 읽는다.
+        var section = document.querySelector("[data-board-context]") || document.getElementById("related-section");
         if (!section) {
             return null;
         }

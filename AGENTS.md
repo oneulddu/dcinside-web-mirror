@@ -131,6 +131,11 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   `data-author-search-name`, memo, block). List rows stay full links without author buttons.
 - `static/javascript/user_memo.js`: Per-author memos in `localStorage["mirror_user_memo_v1:<identity>"]`
   (identity `code:<author_code>` or `name:<author_search_name>`), rendered next to DC authors only.
+- DC notice tab: `/board?notice=1` and `/read?notice=1` drop recommend/headid/search (mixed URLs redirect
+  before fetching). Notice lists are one page; missing author/time/votes stay `None` and templates omit them.
+  Notice reads render no related section and `/read/related?notice=1` returns empty without upstream calls.
+  Normal and recommended lists exclude pinned notices. Board cache keys include the notice flag.
+  `board.html` exposes `data-notice`; `read.html` exposes board context on `[data-board-context]`.
 - `static/css/main.css`: SUIT font and responsive light/dark UI
 
 ### Frontend Skill Priority

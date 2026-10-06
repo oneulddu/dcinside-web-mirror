@@ -3,12 +3,14 @@
 
 {% block body_class %}board-view{% endblock %}
 
-{#- 뒤로 아이콘은 한 단계씩 물러난다: 검색 중이면 검색 해제(분류는 유지), 분류(말머리)를 보고 있으면 분류 해제, 그 밖에는 홈. -#}
+{#- 뒤로 아이콘은 한 단계씩 물러난다: 검색 중이면 검색 해제(분류는 유지), 분류(말머리)를 보고 있으면 분류 해제, 공지 탭이면 전체 글, 그 밖에는 홈. -#}
 {% block masthead_lead %}
 {%- if search_keyword -%}
 {{ back_link(board_url(board, recommend=recommend, page=1, kind=kind, nav=nav_mode, head_id=head_id, gallery_name=gallery_name), aria_label="검색 해제") }}
 {%- elif head_id is not none -%}
 {{ back_link(board_url(board, recommend=recommend, page=1, kind=kind, nav=nav_mode, gallery_name=gallery_name), aria_label="분류 해제") }}
+{%- elif notice -%}
+{{ back_link(board_url(board, page=1, kind=kind, nav=nav_mode, gallery_name=gallery_name), aria_label="전체 글로") }}
 {%- else -%}
 {{ back_link("/", aria_label="홈으로") }}
 {%- endif -%}
@@ -23,15 +25,18 @@
     <h1>{{ gallery_display_name }}</h1>
 </div>
 <nav class="board-tabs" aria-label="게시글 범위">
-    <a class="tab-item{% if recommend != 1 %} active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}"{% if recommend != 1 %} aria-current="page"{% endif %}>전체</a>
-    <a class="tab-item{% if recommend == 1 %} active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}"{% if recommend == 1 %} aria-current="page"{% endif %}>추천글</a>
+    {%- set all_active = recommend != 1 and not notice -%}
+    {%- set recommend_active = recommend == 1 and not notice -%}
+    <a class="tab-item{% if all_active %} active{% endif %}" href="{{ board_url(board, recommend=0, page=1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}"{% if all_active %} aria-current="page"{% endif %}>전체</a>
+    <a class="tab-item{% if recommend_active %} active{% endif %}" href="{{ board_url(board, recommend=1, page=1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}"{% if recommend_active %} aria-current="page"{% endif %}>추천글</a>
+    <a class="tab-item{% if notice %} active{% endif %}" href="{{ board_url(board, page=1, kind=kind, nav=nav_mode, gallery_name=gallery_name, notice=1) }}"{% if notice %} aria-current="page"{% endif %}>공지</a>
 </nav>
 {% endblock %}
 
 {% block page_class %} board-page{% endblock %}
 
 {% block content %}
-<section class="feed-list" id="board-list" data-board="{{ board }}" data-page="{{ page }}" data-recommend="{{ recommend }}" data-kind="{{ kind or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
+<section class="feed-list" id="board-list" data-board="{{ board }}" data-page="{{ page }}" data-recommend="{{ recommend }}" data-notice="{{ 1 if notice else 0 }}" data-kind="{{ kind or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
     {% if head_categories %}
     <nav class="board-category-tabs" aria-label="게시글 분류">
         <div class="board-category-scroll">
@@ -52,7 +57,7 @@
     <ul>
         {% for index in datas %}
         <li>
-            <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}" data-post-id="{{ index.id }}">
+            <a class="feed-item" href="{{ read_url(board, index.id, recommend=recommend, source_page=page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, notice=notice) }}" data-post-id="{{ index.id }}">
                 <div class="feed-title-wrap">
                     {{ feed_status_icon(index) }}
                     <span class="feed-title">{{ index.title|highlight_search(search_keyword) }}</span>
@@ -61,17 +66,23 @@
                 <div class="feed-meta-row">
                     <div class="feed-meta-left">
                         {{ feed_subject(index) }}
-                        {{ author_text(index) }}
-                        {{ post_time(index.time_display or index.time, post_id=index.id, needs_hydrate=index.needs_time_hydrate) }}
-                        <span class="feed-vote">추천 {{ index.voteup_count }}</span>
+                        {#- 모바일 공지 목록은 작성자·추천 수를 주지 않는다. 없는 값은 지어내지 않고 생략한다. -#}
+                        {% if index.author is not none %}{{ author_text(index) }}{% endif %}
+                        {% if index.time_display or index.time %}{{ post_time(index.time_display or index.time, post_id=index.id, needs_hydrate=index.needs_time_hydrate) }}{% endif %}
+                        {% if index.voteup_count is not none %}<span class="feed-vote">추천 {{ index.voteup_count }}</span>{% endif %}
                     </div>
                 </div>
             </a>
         </li>
         {% else %}
         <li class="empty-row">
+            {% if notice %}
+            <b>등록된 공지가 없어요</b>
+            <span>전체 탭에서 다른 게시글을 확인해 보세요.</span>
+            {% else %}
             <b>게시글이 없어요</b>
             <span>{% if search_keyword %}다른 검색어로 찾아보세요.{% else %}다른 분류나 전체 글을 확인해 보세요.{% endif %}</span>
+            {% endif %}
         </li>
         {% endfor %}
     </ul>
@@ -80,7 +91,7 @@
         <a class="pager-btn pager-home" href="/">홈</a>
         <div class="pager-center">
             {% if page > 1 %}
-            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page - 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">{{ icon_chevron("left") }}이전</a>
+            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page - 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, notice=notice) }}">{{ icon_chevron("left") }}이전</a>
             {% else %}
             <span class="pager-btn off">{{ icon_chevron("left") }}이전</span>
             {% endif %}
@@ -88,7 +99,7 @@
             {% if board_has_next is sameas false %}
             <span class="pager-btn off">다음{{ icon_chevron("right") }}</span>
             {% else %}
-            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page + 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">다음{{ icon_chevron("right") }}</a>
+            <a class="pager-btn" href="{{ board_url(board, recommend=recommend, page=page + 1, kind=kind, nav=nav_mode, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, notice=notice) }}">다음{{ icon_chevron("right") }}</a>
             {% endif %}
         </div>
     </nav>
