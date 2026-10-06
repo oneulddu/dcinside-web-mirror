@@ -1,13 +1,14 @@
 class DocumentIndex:
-    __slots__ = ["id", "subject", "title", "board_id", "has_image", "has_video", "author", "author_id", "author_role", "time", "time_text", "time_is_precise", "view_count", "comment_count", "voteup_count",
+    __slots__ = ["id", "subject", "title", "board_id", "has_image", "has_video", "author", "author_search_name", "author_id", "author_role", "time", "time_text", "time_is_precise", "view_count", "comment_count", "voteup_count",
             "document", "comments", "isimage", "isvideo", "isrecommend", "isdcbest", "ishit", "is_mobile_source"]
-    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False, has_video=False, isvideo=False, time_text=None, time_is_precise=None, author_role=None):
+    def __init__(self, id, board_id, title, has_image, author, author_id, time, view_count, comment_count, voteup_count, document, comments, subject, isimage, isrecommend, isdcbest, ishit, is_mobile_source=False, has_video=False, isvideo=False, time_text=None, time_is_precise=None, author_role=None, author_search_name=None):
         self.id = id
         self.board_id = board_id
         self.title = title
         self.has_image = has_image
         self.has_video = has_video
         self.author = author
+        self.author_search_name = author_search_name
         self.author_id = author_id
         self.author_role = author_role
         self.time = time
@@ -30,12 +31,13 @@ class DocumentIndex:
         return f"{self.subject or ''}\t|{self.id}\t|{time_text}\t|{self.author}\t|{self.title}({self.comment_count}) +{self.voteup_count}"
 
 class Document:
-    __slots__ = ["id", "board_id", "title", "author", "author_id", "author_role", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "comment_status", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total", "gallery_name"]
-    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=None, author_role=None, comment_status=None, gallery_name=None):
+    __slots__ = ["id", "board_id", "title", "author", "author_search_name", "author_id", "author_role", "contents", "images", "html", "view_count", "voteup_count", "votedown_count", "logined_voteup_count", "time", "subject", "comments", "comment_status", "is_mobile_source", "related_posts", "embedded_comments", "embedded_comment_total", "gallery_name"]
+    def __init__(self, id, board_id, title, author, author_id, contents, images, html, view_count, voteup_count, votedown_count, logined_voteup_count, time, comments, subject=None, is_mobile_source=False, related_posts=None, embedded_comments=None, embedded_comment_total=None, author_role=None, comment_status=None, gallery_name=None, author_search_name=None):
         self.id = id
         self.board_id = board_id
         self.title = title
         self.author = author
+        self.author_search_name = author_search_name
         self.author_id = author_id
         self.author_role = author_role
         self.contents = contents
@@ -59,11 +61,12 @@ class Document:
         return f"{self.subject or ''}\t|{self.id}\t|{time_text}\t|{self.author}\t|{self.title} +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
 
 class Comment:
-    __slots__ = ["id", "parent_id", "author", "author_id", "author_role", "contents", "dccon", "voice", "time", "is_reply"]
-    def __init__(self, id, parent_id, author, author_id, contents, dccon, voice, time, is_reply=False, author_role=None):
+    __slots__ = ["id", "parent_id", "author", "author_search_name", "author_id", "author_role", "contents", "dccon", "voice", "time", "is_reply"]
+    def __init__(self, id, parent_id, author, author_id, contents, dccon, voice, time, is_reply=False, author_role=None, author_search_name=None):
         self.id = id
         self.parent_id = parent_id
         self.author = author
+        self.author_search_name = author_search_name
         self.author_id = author_id
         self.author_role = author_role
         self.contents = contents

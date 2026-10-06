@@ -443,6 +443,12 @@
             headerButton.setAttribute("aria-label", label);
             headerButton.title = label;
         }
+        // 새 글 알림처럼 같은 규칙으로 판정해야 하는 스크립트에 알린다.
+        try {
+            document.dispatchEvent(new root.CustomEvent("mirror:user-filter-changed"));
+        } catch (err) {
+            // 오래된 브라우저에서는 알림 없이 진행한다.
+        }
     }
 
     function resetReveal() {
@@ -470,27 +476,7 @@
         return parts.length ? "지금 화면에서 " + parts.join(", ") + "를 가렸어요." : "지금 화면에서 가린 항목은 없어요.";
     }
 
-    // ---------- 작성자 버튼 (글 보기의 작성자·댓글 작성자) ----------
-
-    function enhanceAuthors(scope) {
-        var spans = (scope || document).querySelectorAll(".article-meta span.author-text[data-author], .comment-meta span.author-text[data-author]");
-        Array.prototype.forEach.call(spans, function (span) {
-            if (span.closest("a")) {
-                return;
-            }
-            var button = document.createElement("button");
-            button.type = "button";
-            button.className = span.className + " author-filter-btn";
-            button.setAttribute("data-author", span.getAttribute("data-author") || "");
-            if (span.hasAttribute("data-author-code")) {
-                button.setAttribute("data-author-code", span.getAttribute("data-author-code"));
-            }
-            button.setAttribute("aria-haspopup", "dialog");
-            button.setAttribute("aria-label", (span.getAttribute("data-author") || "작성자") + " 차단 설정");
-            button.textContent = span.textContent;
-            span.replaceWith(button);
-        });
-    }
+    // ---------- 작성자 메뉴(author_actions.js)에서 쓰는 미리 채우기 ----------
 
     function prefillFor(button) {
         var author = button.getAttribute("data-author") || "";
@@ -773,7 +759,6 @@
 
     function boot() {
         loadSettings();
-        enhanceAuthors(document);
         applyAll();
 
         var header = document.querySelector("[data-user-filter-header]");
@@ -784,11 +769,6 @@
         document.addEventListener("click", function (event) {
             var target = event.target && event.target.closest ? event.target : null;
             if (!target) {
-                return;
-            }
-            var authorButton = target.closest(".author-filter-btn");
-            if (authorButton) {
-                openDialog(authorButton, prefillFor(authorButton));
                 return;
             }
             var opener = target.closest("[data-user-filter-open]");
@@ -826,6 +806,13 @@
     }
 
     try {
+        // 다른 스크립트가 현재 적용 중인 규칙(저장 실패로 이 페이지에만 적용한 규칙 포함)을 쓰게 한다.
+        api.openForAuthor = function (button) {
+            openDialog(button, prefillFor(button));
+        };
+        api.matchesCurrent = function (item) {
+            return matchItem(state.compiled, item);
+        };
         boot();
     } finally {
         // base.html의 첫 페인트 가림을 항상 해제한다(실패해도 내용은 보여야 한다).

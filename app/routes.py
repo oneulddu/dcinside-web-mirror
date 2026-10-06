@@ -268,6 +268,7 @@ def _serialize_related_posts(posts):
                 "has_video": has_video,
                 "author": item.get("author", "익명"),
                 "author_code": item.get("author_code"),
+                "author_search_name": item.get("author_search_name"),
                 "author_role": _safe_author_role(item.get("author_role")),
                 **_related_time_fields(item.get("time_display") or item.get("time")),
                 "comment_count": _safe_int(item.get("comment_count", 0), 0),
