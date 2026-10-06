@@ -41,8 +41,8 @@ DCinside 갤러리를 비동기로 스크래핑해 깔끔하게 정리하고,<br
 git clone https://github.com/oneulddu/dcinside-web-mirror.git
 cd dcinside-web-mirror
 
-python3 -m venv .venv && source .venv/bin/activate
-make install          # 의존성 설치
+uv venv --seed --python 3.12 .venv   # CI와 같은 Python 3.12 (uv가 없으면 python3.12 -m venv .venv)
+make install-dev      # 의존성·테스트 도구 설치 (make는 .venv가 있으면 자동으로 사용)
 make run              # 개발 서버 → http://127.0.0.1:8080
 ```
 
