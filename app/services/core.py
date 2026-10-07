@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from .dc import api as dc_api
+from .dc.search import normalize_search_pos, search_cache_suffix
 from .async_bridge import dc_api_context
 from .singleflight import claim_flight
 from .cache_utils import cache_get as _shared_cache_get
@@ -362,6 +363,7 @@ def _board_index_cache_key(
     search_keyword=None,
     head_id=None,
     notice=False,
+    search_pos=None,
 ):
     return (
         bool(notice),
@@ -376,7 +378,7 @@ def _board_index_cache_key(
         (search_type or "").strip(),
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
-    )
+    ) + search_cache_suffix(search_keyword, search_pos)
 
 
 def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
@@ -387,13 +389,13 @@ class RelatedPositionUnavailableError(RuntimeError):
     """The cursor was not found within the bounded list search."""
 
 
-def _initial_related_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
+def _initial_related_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, search_pos=None):
     keyword = (search_keyword or "").strip()
     return (
         board, kind or "", str(api_id), int(bool(_safe_int(recommend, 0))),
         (search_type or "subject_m").strip() if keyword else "", keyword,
         "" if head_id is None else str(head_id).strip(),
-    )
+    ) + search_cache_suffix(search_keyword, search_pos)
 
 
 def _store_initial_related(key, rows, has_more=None):
@@ -461,7 +463,9 @@ async def _fetch_board_page(
     head_id=None,
     pagination_collector=None,
     fetched_at_collector=None,
+    search_pos=None,
 ):
+    search_pos = normalize_search_pos(search_pos) if search_keyword else None
     cache_key = (
         board,
         kind or "",
@@ -472,6 +476,7 @@ async def _fetch_board_page(
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
     )
+    cache_key += search_cache_suffix(search_keyword, search_pos)
     cached = _cache_get(_BOARD_PAGE_CACHE, _BOARD_PAGE_CACHE_LOCK, cache_key)
     if cached is not None:
         return _copy_board_page(cached, pagination_collector, fetched_at_collector)
@@ -493,15 +498,18 @@ async def _fetch_board_page(
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            **({"search_pos": search_pos} if search_pos is not None else {}),
             headtexts_collector=[],
             pagination_collector=pagination,
             raise_on_failure=True,
         ):
             row = _index_item_to_dict(item)
             row["source_page"] = _safe_int(page, 1)
+            if search_keyword:
+                row["search_pos"] = search_pos or ""
             posts.append(row)
         fetched_at = time.time()
-        if posts:
+        if posts and not pagination.get("search_clamped"):
             _cache_set(
                 _BOARD_PAGE_CACHE,
                 _BOARD_PAGE_CACHE_LOCK,
@@ -578,7 +586,7 @@ def _normalize_target_ids(target_ids):
     return tuple(str(value).strip() for value in (target_ids or []) if str(value).strip())
 
 
-def _board_time_cache_key(board, kind, recommend, page, search_type=None, search_keyword=None, head_id=None, target_ids=None):
+def _board_time_cache_key(board, kind, recommend, page, search_type=None, search_keyword=None, head_id=None, target_ids=None, search_pos=None):
     return (
         board,
         kind or "",
@@ -588,7 +596,7 @@ def _board_time_cache_key(board, kind, recommend, page, search_type=None, search
         (search_keyword or "").strip(),
         "" if head_id is None else str(head_id).strip(),
         _normalize_target_ids(target_ids),
-    )
+    ) + search_cache_suffix(search_keyword, search_pos)
 
 
 async def async_board_precise_times(
@@ -600,6 +608,7 @@ async def async_board_precise_times(
     search_keyword=None,
     head_id=None,
     target_ids=None,
+    search_pos=None,
 ):
     normalized_target_ids = _normalize_target_ids(target_ids)
     cache_key = _board_time_cache_key(
@@ -611,6 +620,7 @@ async def async_board_precise_times(
         search_keyword=search_keyword,
         head_id=head_id,
         target_ids=normalized_target_ids,
+        **({"search_pos": search_pos} if normalize_search_pos(search_pos) is not None and search_keyword else {}),
     )
     cached = _cache_get(_BOARD_TIME_CACHE, _BOARD_TIME_CACHE_LOCK, cache_key)
     if cached is not None:
@@ -632,6 +642,7 @@ async def async_board_precise_times(
                 search_keyword=search_keyword,
                 head_id=head_id,
                 target_ids=normalized_target_ids,
+                **({"search_pos": search_pos} if normalize_search_pos(search_pos) is not None and search_keyword else {}),
                 status_collector=status,
             )
 
@@ -884,7 +895,7 @@ async def _load_read_payload(
         )
 
 
-async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, notice=False):
+async def async_read(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None, notice=False, search_pos=None):
     if notice:
         recommend, head_id, search_type, search_keyword = 0, None, None, None
     payload = await _async_read_body(
@@ -897,9 +908,12 @@ async def async_read(api_id, board, kind=None, recommend=0, search_type=None, se
         data["related_posts"] = []
         data["_related_has_more"] = False
         return data, comments, images
-    key = _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id)
+    key = _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id, search_pos)
     snapshot = _cache_get(_INITIAL_RELATED_CACHE, _INITIAL_RELATED_CACHE_LOCK, key)
     data, comments, images = _copy_read_payload(payload)
+    if search_keyword and snapshot is None:
+        data["related_posts"] = []
+        data.pop("_related_has_more", None)
     if snapshot is not None:
         data["related_posts"] = _copy_rows(snapshot[0])
         data["_related_has_more"] = snapshot[1]
@@ -947,7 +961,7 @@ async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=No
                 timeout=READ_FETCH_TIMEOUT,
             )
             body_from_cache = bool(payload[0].pop("_body_from_cache", False))
-            if not body_from_cache and not notice:
+            if not body_from_cache and not notice and not search_keyword:
                 _store_initial_related(
                     _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id),
                     payload[0].get("related_posts", []),
@@ -1028,9 +1042,11 @@ async def async_index_with_head_categories(
     pagination_collector=None,
     force_refresh=False,
     notice=False,
+    search_pos=None,
 ):
     if notice:
         recommend, head_id, search_type, search_keyword = 0, None, None, None
+    search_pos = normalize_search_pos(search_pos) if search_keyword else None
     if pagination_collector is not None:
         pagination_collector.clear()
     if limit is None:
@@ -1067,6 +1083,7 @@ async def async_index_with_head_categories(
         search_keyword=search_keyword,
         head_id=head_id,
         notice=notice,
+        **({"search_pos": search_pos} if search_pos is not None else {}),
     )
     force_refresh_requested = bool(force_refresh)
     if force_refresh_requested:
@@ -1097,6 +1114,7 @@ async def async_index_with_head_categories(
                 max_scan_pages=scan_limit,
                 search_type=search_type,
                 search_keyword=search_keyword,
+                **({"search_pos": search_pos} if search_pos is not None else {}),
                 head_id=head_id,
                 headtexts_collector=headtexts,
                 pagination_collector=pagination,
@@ -1108,7 +1126,7 @@ async def async_index_with_head_categories(
             if not notice:
                 await _fill_missing_author_codes(api, board, kind, data, recommend=recommend)
             categories = [] if notice else _normalize_head_categories(headtexts, head_id=head_id)
-        if notice or data or categories or (force_refresh_requested and force_refresh):
+        if not pagination.get("search_clamped") and (notice or data or categories or (force_refresh_requested and force_refresh)):
             cache_ttl = BOARD_PAGE_CACHE_TTL
             if not data and not categories:
                 cache_ttl = min(BOARD_PAGE_CACHE_TTL, BOARD_FORCE_REFRESH_COOLDOWN)
@@ -1154,6 +1172,7 @@ async def _related_after_position_with_api(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
 ):
     loop = asyncio.get_running_loop()
     # Finish a slow tail before the outer request deadline so partial rows can
@@ -1168,12 +1187,13 @@ async def _related_after_position_with_api(
     recommend_value = _safe_int(recommend, 0)
     search_keyword_value = (search_keyword or "").strip()
     search_type_value = (search_type or "").strip()
+    search_pos = normalize_search_pos(search_pos) if search_keyword_value else None
     head_id_value = "" if head_id is None else str(head_id).strip()
 
     if target_id <= 0 or fetch_limit == 0:
         return [], False
 
-    board_key = (board, kind or "", recommend_value, search_type_value, search_keyword_value, head_id_value)
+    board_key = (board, kind or "", recommend_value, search_type_value, search_keyword_value, head_id_value) + search_cache_suffix(search_keyword_value, search_pos)
     page_metadata = {}
     upstream_errors = []
 
@@ -1192,6 +1212,7 @@ async def _related_after_position_with_api(
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
                 head_id=head_id_value or None,
+                **({"search_pos": search_pos} if search_pos is not None else {}),
             )
             if not first_page:
                 return None
@@ -1228,6 +1249,7 @@ async def _related_after_position_with_api(
                     search_type=search_type_value,
                     search_keyword=search_keyword_value,
                     head_id=head_id_value or None,
+                    **({"search_pos": search_pos} if search_pos is not None else {}),
                     pagination_collector=metadata,
                 )
             except dc_api.BoardUnavailableError as exc:
@@ -1326,10 +1348,26 @@ async def _related_after_position_with_api(
 
     append_rows(found_posts[found_index + 1 :])
 
-    next_page = found_page + 1
+    def next_position(page, pos, metadata):
+        if metadata.get("has_next") is False:
+            return None
+        if search_keyword_value and metadata.get("search_pagination"):
+            if not metadata.get("next_page"):
+                return None
+            return metadata["next_page"], normalize_search_pos(metadata.get("next_search_pos"))
+        return page + 1, pos
+
+    position = next_position(found_page, search_pos, page_metadata[found_page])
+    visited_positions = {(found_page, search_pos)}
     loaded_tail = 0
-    end_confirmed = page_metadata[found_page].get("has_next") is False
-    while len(related) < collect_limit and loaded_tail < max_tail and not end_confirmed:
+    empty_search_pages = 0
+    end_confirmed = position is None
+    while len(related) < collect_limit and loaded_tail < max_tail and position is not None:
+        if position in visited_positions:
+            end_confirmed = True
+            break
+        visited_positions.add(position)
+        next_page, next_pos = position
         metadata = {}
         try:
             page_posts = await asyncio.wait_for(_fetch_board_page(
@@ -1341,18 +1379,25 @@ async def _related_after_position_with_api(
                 search_type=search_type_value,
                 search_keyword=search_keyword_value,
                 head_id=head_id_value or None,
+                **({"search_pos": next_pos} if next_pos is not None else {}),
                 pagination_collector=metadata,
             ), timeout=max(0, tail_deadline - loop.time()))
         except (dc_api.BoardUnavailableError, asyncio.TimeoutError):
-            # Keep the rows already found, but leave continuation unknown so
-            # the next request can retry from the last successful cursor.
             break
-        end_confirmed = metadata.get("has_next") is False
+        position = next_position(next_page, next_pos, metadata)
+        end_confirmed = position is None
         if not page_posts:
+            # Empty search pages can still have a valid next segment. Give
+            # those cursor-only hops a bounded lookup budget, rather than
+            # consuming the single data-page allowance and retrying forever
+            # from the same last rendered row.
+            if (search_keyword_value and metadata.get("search_pagination")
+                    and position is not None and empty_search_pages < max_probe):
+                empty_search_pages += 1
+                continue
             break
-        append_rows(page_posts)
-        next_page += 1
         loaded_tail += 1
+        append_rows(page_posts)
 
     has_more = True if len(related) > fetch_limit else (False if end_confirmed else None)
     return related[:fetch_limit], has_more
@@ -1371,6 +1416,7 @@ async def async_related_after_position(
     search_type=None,
     search_keyword=None,
     head_id=None,
+    search_pos=None,
 ):
     async with dc_api_context() as api:
         posts, has_more = await asyncio.wait_for(_related_after_position_with_api(
@@ -1387,6 +1433,7 @@ async def async_related_after_position(
             search_type=search_type,
             search_keyword=search_keyword,
             head_id=head_id,
+            **({"search_pos": search_pos} if normalize_search_pos(search_pos) is not None and search_keyword else {}),
         ), timeout=RELATED_FETCH_TIMEOUT)
     # An unknown continuation may reflect a failed tail fetch. Do not replace
     # the initial snapshot with that incomplete result.
@@ -1396,7 +1443,7 @@ async def async_related_after_position(
         and _safe_int(limit, RELATED_LIMIT) == RELATED_LIMIT
     ):
         _store_initial_related(
-            _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id),
+            _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id, search_pos),
             posts, has_more,
         )
     return posts, has_more

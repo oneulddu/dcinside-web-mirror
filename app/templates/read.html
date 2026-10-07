@@ -3,7 +3,7 @@
 
 {% block body_class %}read-view{% endblock %}
 
-{% block masthead_lead %}{{ back_link(board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, refresh=true, notice=notice), label=gallery_display_name, extra_class="crumb-link") }}{% endblock %}
+{% block masthead_lead %}{{ back_link(board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, search_pos=search_pos or '', head_id=head_id, gallery_name=gallery_name, refresh=true, notice=notice), label=gallery_display_name, extra_class="crumb-link") }}{% endblock %}
 
 {% block content %}
 <section class="read-shell" data-board-context data-board="{{ board }}" data-kind="{{ kind or '' }}" data-gallery-name="{{ gallery_name or '' }}">
@@ -62,15 +62,17 @@
 
     {#- 공지 글은 일반 글 흐름과 이어지지 않으므로 다른 게시글 목록을 붙이지 않는다. -#}
     {% if not notice %}
-    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}" data-gallery-name="{{ gallery_name or '' }}" data-has-more="{% if related_has_more is sameas false %}false{% elif related_has_more is sameas true %}true{% else %}unknown{% endif %}">
+    <section class="related-shell feed-list" id="related-section" data-board="{{ board }}" data-pid="{{ pid }}" data-kind="{{ kind or '' }}" data-recommend="{{ recommend or 0 }}" data-limit="12" data-source-page="{{ source_page or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}" data-search-pos="{{ search_pos or '' }}" data-gallery-name="{{ gallery_name or '' }}" data-has-more="{% if related_has_more is sameas false %}false{% elif related_has_more is sameas true %}true{% else %}unknown{% endif %}">
         <div class="board-head related-head">
             <h2>{% if search_keyword %}다른 검색 결과{% elif recommend == 1 %}다른 추천글{% else %}다른 게시글{% endif %}</h2>
         </div>
         <ul id="related-list" aria-busy="false">
             {% if embedded_related_posts %}
             {% for item in embedded_related_posts %}
+            {#- (source_page, search_pos)는 한 쌍이다. 행이 커서를 명시하면 빈 값(첫 구간)도 그대로 쓰고, 없을 때만 현재 글의 커서를 쓴다. -#}
+            {%- set item_search_pos = item.search_pos if (item.search_pos is defined and item.search_pos is not none) else (search_pos or '') -%}
             <li data-post-id="{{ item.id }}">
-                <a class="feed-item" data-post-id="{{ item.id }}" href="{{ read_url(board, item.id, recommend=recommend, source_page=item.source_page or source_page, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name) }}">
+                <a class="feed-item" data-post-id="{{ item.id }}" href="{{ read_url(board, item.id, recommend=recommend, source_page=item.source_page or source_page, kind=kind, search_type=search_type, search_keyword=search_keyword, search_pos=item_search_pos, head_id=head_id, gallery_name=gallery_name) }}">
                     <div class="feed-title-wrap">
                         {{ feed_status_icon(item) }}
                         <span class="feed-title">{{ item.title|highlight_search(search_keyword) }}</span>
@@ -111,7 +113,7 @@
     {{ board_search_form(board, recommend, search_type, search_keyword, kind=kind, head_id=head_id, gallery_name=gallery_name, form_id="read-search", select_id="read-search-type", input_id="read-search-input") }}
 
     <div class="pager-row single">
-        <a class="pager-btn" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, head_id=head_id, gallery_name=gallery_name, refresh=true, notice=notice) }}">목록으로</a>
+        <a class="pager-btn" href="{{ board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, search_pos=search_pos or '', head_id=head_id, gallery_name=gallery_name, refresh=true, notice=notice) }}">목록으로</a>
     </div>
 </section>
 <button class="back-to-top" id="back-to-top" type="button" aria-label="맨 위로" title="맨 위로"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>

@@ -937,7 +937,7 @@ def test_parse_pc_board_pagination(
 
 
 @pytest.mark.asyncio
-async def test_board_rejects_ambiguous_clamped_mobile_and_falls_through_to_pc_with_cached_mobile_pattern(monkeypatch):
+async def test_search_clamped_mobile_keeps_metadata_without_pc_page_size_fallback(monkeypatch):
     _clear_board_kind_cache()
     api = API.__new__(API)
     api.last_board_headtexts = []
@@ -971,10 +971,11 @@ async def test_board_rejects_ambiguous_clamped_mobile_and_falls_through_to_pc_wi
         )
     ]
 
-    assert [row.id for row in rows] == ["123"]
+    assert rows == []
+    assert len(calls) == 1
     assert calls[0].startswith("https://m.dcinside.com/")
-    assert calls[1].startswith("https://gall.dcinside.com/")
-    assert pagination == {"requested_page": 2, "current_page": 1, "has_next": False}
+    assert pagination["current_page"] == 1
+    assert pagination["search_clamped"] is True
     _clear_board_kind_cache()
 
 
