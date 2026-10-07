@@ -156,6 +156,11 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   Notice reads render no related section and `/read/related?notice=1` returns empty without upstream calls.
   Normal and recommended lists exclude pinned notices. Board cache keys include the notice flag.
   `board.html` exposes `data-notice`; `read.html` exposes board context on `[data-board-context]`.
+- DC search pagination carries a validated signed `search_pos` through list/read/related/time URLs and
+  list-context caches. Upstream mobile calls use `s_pos`; `dc/search.py` parses adjacent pages and
+  segment transitions. Search lists stay on mobile because PC search can return a different page size.
+  Clamped search pages redirect without caching duplicate rows. New searches and filter changes reset
+  the cursor; related rows carry their own `(source_page, search_pos)` across segment boundaries.
 - `static/css/main.css`: SUIT font and responsive light/dark UI
 
 ### Frontend Skill Priority

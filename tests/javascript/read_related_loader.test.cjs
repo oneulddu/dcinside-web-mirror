@@ -1,6 +1,7 @@
 // read_related_loader.js 의 실제 동작을 node:vm 위 최소 DOM 픽스처로 실행한다.
 // 초기 자동 로드 1회, 종료 상태 가드, 미확정(has_more null) 처리, 타임아웃과
-// 수동 재시도, 실패 시 기존 행 보존, 커서/필터 유지 계약을 검증한다.
+// 수동 재시도, 실패 시 기존 행 보존, 커서/필터 유지 계약과
+// 검색 커서(source_page, search_pos) 쌍의 전달·행별 링크·DOM 복원을 검증한다.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -211,6 +212,7 @@ function createHarness(options) {
         link.dataset.postId = row.id;
         link.href = "/read?board=airforce&pid=" + row.id;
         if (row.source_page) link.href += "&source_page=" + row.source_page;
+        if (row.query) link.href += "&" + row.query;
         li.appendChild(link);
         list.appendChild(li);
     });
@@ -457,6 +459,122 @@ test("자동 조회도 마지막 새 행의 페이지를 이어 쓰고 빈 응�
     assert.equal(harness.requestUrl(4).searchParams.get("source_page"), "5");
     assert.deepEqual(harness.postIds(), ["100", "99", "98", "97"]);
 });
+
+const SEARCH_DATASET = { searchType: "subject_m", searchKeyword: "검색", sourcePage: "2", searchPos: "-200000" };
+
+test("검색 문맥의 처음 커서를 /read/related 요청에 넘기고 검색이 아니면 넘기지 않는다", async () => {
+    const harness = createHarness({ dataset: SEARCH_DATASET });
+    const params = harness.requestUrl(0).searchParams;
+    assert.equal(params.get("search_pos"), "-200000");
+    assert.equal(params.get("source_page"), "2");
+    assert.equal(params.get("serval"), "검색");
+
+    const plain = createHarness({ dataset: { sourcePage: "2", searchPos: "-200000" } });
+    assert.equal(plain.requestUrl(0).searchParams.has("search_pos"), false);
+
+    const firstSegment = createHarness({ dataset: Object.assign({}, SEARCH_DATASET, { searchPos: "" }) });
+    assert.equal(firstSegment.requestUrl(0).searchParams.has("search_pos"), false);
+});
+
+test("구간을 넘은 응답은 행마다 자기 커서로 링크를 만들고 없는 속성만 처음 커서로 대신한다", async () => {
+    const harness = createHarness({ dataset: SEARCH_DATASET });
+    harness.fetchCalls[0].resolve(jsonResponse({
+        ok: true,
+        items: [
+            item("120", { source_page: 3, search_pos: "-200000" }),
+            item("119", { source_page: 1, search_pos: "-190000" }),
+            item("118", { source_page: 1 }),
+            item("117", { source_page: 1, search_pos: "" }),
+        ],
+        has_more: true,
+    }));
+    await flush();
+
+    const link = (id) => new URL(harness.hrefFor(id), BASE_HREF).searchParams;
+    assert.equal(link("120").get("search_pos"), "-200000");
+    assert.equal(link("120").get("source_page"), "3");
+    assert.equal(link("119").get("search_pos"), "-190000");
+    assert.equal(link("119").get("source_page"), "1");
+    // 속성이 없으면 최신 커서(-190000)가 아니라 현재 글의 처음 커서를 쓴다.
+    assert.equal(link("118").get("search_pos"), "-200000");
+    // 빈 문자열은 첫 구간이라는 명시값이므로 처음 커서로 바꾸지 않는다.
+    assert.equal(link("117").has("search_pos"), false);
+    assert.equal(link("117").get("serval"), "검색");
+});
+
+test("다음 요청은 마지막으로 그린 행의 source_page 와 search_pos 를 함께 넘긴다", async () => {
+    const harness = createHarness({ dataset: SEARCH_DATASET });
+    harness.fetchCalls[0].resolve(jsonResponse({
+        ok: true,
+        items: [item("120", { source_page: 3, search_pos: "-200000" }), item("119", { source_page: 1, search_pos: "-190000" })],
+        has_more: true,
+    }));
+    await flush();
+    harness.click();
+    let params = harness.requestUrl(1).searchParams;
+    assert.equal(params.get("after_pid"), "119");
+    assert.equal(params.get("source_page"), "1");
+    assert.equal(params.get("search_pos"), "-190000");
+
+    // 중복·빈 응답은 커서 쌍을 바꾸지 않는다.
+    harness.fetchCalls[1].resolve(jsonResponse({
+        ok: true, items: [item("119", { source_page: 9, search_pos: "-1" })], has_more: true,
+    }));
+    await flush();
+    harness.click();
+    params = harness.requestUrl(2).searchParams;
+    assert.equal(params.get("source_page"), "1");
+    assert.equal(params.get("search_pos"), "-190000");
+
+    // 마지막 행이 첫 구간("")을 명시하면 처음 커서가 있어도 search_pos 를 빼고 요청한다.
+    harness.fetchCalls[2].resolve(jsonResponse({
+        ok: true, items: [item("118", { source_page: 2, search_pos: "" })], has_more: true,
+    }));
+    await flush();
+    harness.click();
+    params = harness.requestUrl(3).searchParams;
+    assert.equal(params.get("after_pid"), "118");
+    assert.equal(params.get("source_page"), "2");
+    assert.equal(params.has("search_pos"), false);
+});
+
+test("서버가 그린 목록에서 마지막 행의 커서 쌍을 복원한다", async () => {
+    const searchQuery = "s_type=subject_m&serval=%EA%B2%80%EC%83%89";
+    const crossed = createHarness({
+        rows: [
+            { id: "130", source_page: 4, query: searchQuery + "&search_pos=-200000" },
+            { id: "129", source_page: 1, query: searchQuery + "&search_pos=-190000" },
+        ],
+        dataset: Object.assign({ hasMore: "true" }, SEARCH_DATASET),
+    });
+    assert.equal(crossed.fetchCalls.length, 0);
+    crossed.click();
+    let params = crossed.requestUrl(0).searchParams;
+    assert.equal(params.get("after_pid"), "129");
+    assert.equal(params.get("source_page"), "1");
+    assert.equal(params.get("search_pos"), "-190000");
+
+    // source_page 는 있고 search_pos 가 생략된 행은 첫 구간이다.
+    const firstSegment = createHarness({
+        rows: [{ id: "140", source_page: 2, query: searchQuery }],
+        dataset: Object.assign({ hasMore: "true" }, SEARCH_DATASET),
+    });
+    firstSegment.click();
+    params = firstSegment.requestUrl(0).searchParams;
+    assert.equal(params.get("source_page"), "2");
+    assert.equal(params.has("search_pos"), false);
+
+    // 커서 정보가 없는 행이면 현재 글의 처음 커서와 페이지로 이어 간다.
+    const unknown = createHarness({
+        rows: [{ id: "150" }],
+        dataset: Object.assign({ hasMore: "true" }, SEARCH_DATASET),
+    });
+    unknown.click();
+    params = unknown.requestUrl(0).searchParams;
+    assert.equal(params.get("source_page"), "2");
+    assert.equal(params.get("search_pos"), "-200000");
+});
+
 
 test("has_more=false 로 렌더된 빈 목록은 자동 로드 없이 종료 문구만 남긴다", async () => {
     const harness = createHarness({ dataset: { hasMore: "false" } });

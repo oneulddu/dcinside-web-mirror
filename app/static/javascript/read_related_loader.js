@@ -81,28 +81,60 @@
         var links = list.querySelectorAll("a.feed-item");
         var lastPostId = "";
         var lastSourcePage = "";
+        var lastSearchPos = null;
         for (var i = 0; i < links.length; i += 1) {
             var postId = getPostIdFromLink(links[i]);
             if (postId) {
                 ids[postId] = true;
                 lastPostId = postId;
                 try {
-                    lastSourcePage = normalizeSourcePage(new URL(links[i].getAttribute("href"), window.location.href).searchParams.get("source_page"));
+                    var linkParams = new URL(links[i].getAttribute("href"), window.location.href).searchParams;
+                    lastSourcePage = normalizeSourcePage(linkParams.get("source_page"));
+                    lastSearchPos = searchPosFromLinkParams(linkParams);
                 } catch (err) {
                     lastSourcePage = "";
+                    lastSearchPos = null;
                 }
             }
         }
         return {
             ids: ids,
             lastPostId: lastPostId,
-            lastSourcePage: lastSourcePage
+            lastSourcePage: lastSourcePage,
+            lastSearchPos: lastSearchPos
         };
     }
 
     function normalizeSourcePage(value) {
         var page = String(value || "").trim();
         return /^[1-9]\d*$/.test(page) ? page : "";
+    }
+
+    // 검색 커서는 부호 있는 숫자 문자열이다. 빈 문자열은 첫 검색 구간을 뜻한다.
+    function normalizeSearchPos(value) {
+        var pos = String(value === null || value === undefined ? "" : value).trim();
+        return /^-?\d+$/.test(pos) ? pos : "";
+    }
+
+    // 행이 search_pos 를 명시했으면 빈 값(첫 구간)까지 그대로 쓰고, 속성이 없을 때만 현재 글의 커서로 대신한다.
+    // 앞선 행의 링크에 나중 행의 커서를 덮어쓰지 않도록 대체값은 항상 페이지가 처음 받은 커서다.
+    function resolveItemSearchPos(item, fallbackSearchPos) {
+        if (hasOwn(item, "search_pos") && item.search_pos !== null && item.search_pos !== undefined) {
+            return normalizeSearchPos(item.search_pos);
+        }
+        return fallbackSearchPos || "";
+    }
+
+    // 서버가 그린 행은 빈 커서를 주소에서 생략한다. source_page 가 있는 행은 커서 쌍이 확정된 것으로 보고
+    // search_pos 가 없으면 첫 구간("")으로, 둘 다 없으면 알 수 없음(null)으로 돌려 처음 커서를 쓰게 한다.
+    function searchPosFromLinkParams(params) {
+        if (params.has("search_pos")) {
+            return normalizeSearchPos(params.get("search_pos"));
+        }
+        if (normalizeSourcePage(params.get("source_page"))) {
+            return "";
+        }
+        return null;
     }
 
     function escapeHtml(value) {
@@ -150,7 +182,7 @@
         return subject;
     }
 
-    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName) {
+    function buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName, fallbackSearchPos) {
         var pid = getItemPostId(item);
         var href = "/read?board=" + encodeURIComponent(board) + "&pid=" + encodeURIComponent(pid);
         var itemSourcePage = item && item.source_page ? String(item.source_page) : "";
@@ -169,6 +201,10 @@
         if (searchKeyword) {
             href += "&s_type=" + encodeURIComponent(searchType || "subject_m");
             href += "&serval=" + encodeURIComponent(searchKeyword);
+            var itemSearchPos = resolveItemSearchPos(item, fallbackSearchPos);
+            if (itemSearchPos) {
+                href += "&search_pos=" + encodeURIComponent(itemSearchPos);
+            }
         }
         if (galleryName) {
             href += "&gallery_name=" + encodeURIComponent(galleryName);
@@ -230,7 +266,7 @@
         return "";
     }
 
-    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName) {
+    function createItemNode(item, board, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName, fallbackSearchPos) {
         var postId = getItemPostId(item);
         var li = document.createElement("li");
         li.dataset.postId = postId;
@@ -238,7 +274,7 @@
         var link = document.createElement("a");
         link.className = "feed-item";
         link.dataset.postId = postId;
-        link.href = buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName);
+        link.href = buildReadHref(board, item, kind, recommend, sourcePage, searchType, searchKeyword, headId, galleryName, fallbackSearchPos);
 
         var titleWrap = document.createElement("div");
         titleWrap.className = "feed-title-wrap";
@@ -333,11 +369,13 @@
                 context.searchType,
                 context.searchKeyword,
                 context.headId,
-                context.galleryName
+                context.galleryName,
+                context.initialSearchPos
             ));
             renderedIds[postId] = true;
             context.lastPostId = postId;
             context.lastSourcePage = normalizeSourcePage(item.source_page) || context.sourcePage;
+            context.lastSearchPos = resolveItemSearchPos(item, context.initialSearchPos);
             appended += 1;
         }
         return appended;
@@ -469,6 +507,8 @@
         var headId = section.dataset.headId || "";
         var searchType = section.dataset.searchType || "";
         var searchKeyword = section.dataset.searchKeyword || "";
+        var initialSearchPos = normalizeSearchPos(section.dataset.searchPos);
+        var searchPos = state.lastSearchPos !== null && state.lastSearchPos !== undefined ? state.lastSearchPos : initialSearchPos;
         var galleryName = section.dataset.galleryName || "";
         var afterPid = state.lastPostId || "";
 
@@ -501,6 +541,9 @@
         if (searchKeyword) {
             params.set("s_type", searchType || "subject_m");
             params.set("serval", searchKeyword);
+            if (searchPos) {
+                params.set("search_pos", searchPos);
+            }
         }
 
         return {
@@ -513,6 +556,8 @@
             headId: headId,
             searchType: searchType,
             searchKeyword: searchKeyword,
+            searchPos: searchPos,
+            initialSearchPos: initialSearchPos,
             afterPid: afterPid,
             galleryName: galleryName,
             list: list,
@@ -609,6 +654,7 @@
             if (context.lastPostId) {
                 state.lastPostId = context.lastPostId;
                 state.lastSourcePage = context.lastSourcePage;
+                state.lastSearchPos = context.lastSearchPos;
             }
             if (result.hasMore === false) {
                 state.terminal = true;
@@ -645,6 +691,7 @@
             renderedIds: renderedState.ids,
             lastPostId: renderedState.lastPostId,
             lastSourcePage: renderedState.lastSourcePage,
+            lastSearchPos: renderedState.lastSearchPos,
             loading: false,
             terminal: hasMoreAttr === "false",
             autoLoaded: false,

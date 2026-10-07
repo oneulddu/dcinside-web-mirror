@@ -21,6 +21,7 @@ from .services.core import (
 )
 from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
+from .services.dc.search import normalize_search_pos
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
 from .services import link_preview, youtube_meta
 from .services.recent import (
@@ -153,10 +154,13 @@ def _add_kind_param(params, kind):
         params["kind"] = query_kind
 
 
-def _add_search_params(params, search_type=None, search_keyword=None):
+def _add_search_params(params, search_type=None, search_keyword=None, search_pos=None):
     keyword = (search_keyword or "").strip()
     if not keyword:
         return
+    pos = normalize_search_pos(search_pos)
+    if pos is not None:
+        params["search_pos"] = pos
     params["s_type"] = _normalize_board_search_type(search_type)
     params["serval"] = keyword
 
@@ -172,6 +176,7 @@ def _board_link_params(
     head_id=None,
     refresh=False,
     notice=0,
+    search_pos=None,
 ):
     if _safe_int(notice, 0) == 1:
         recommend, head_id, search_type, search_keyword = 0, None, None, None
@@ -188,7 +193,7 @@ def _board_link_params(
     normalized_head_id = _normalize_head_id(head_id)
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
-    _add_search_params(params, search_type, search_keyword)
+    _add_search_params(params, search_type, search_keyword, search_pos)
     if _safe_bool(refresh):
         params["refresh"] = 1
     return params
@@ -206,6 +211,7 @@ def board_url(
     gallery_name=None,
     refresh=False,
     notice=0,
+    search_pos=None,
 ):
     params = _board_link_params(
         board,
@@ -218,6 +224,7 @@ def board_url(
         head_id,
         refresh,
         notice,
+        search_pos,
     )
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
@@ -225,7 +232,7 @@ def board_url(
     return url_for("main.board", **params)
 
 
-def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None, notice=0):
+def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, search_type=None, search_keyword=None, head_id=None, notice=0, search_pos=None):
     if _safe_int(notice, 0) == 1:
         recommend, head_id, search_type, search_keyword = 0, None, None, None
     params = {
@@ -243,7 +250,7 @@ def _read_link_params(board, pid, recommend=0, source_page=None, kind=None, sear
     normalized_head_id = _normalize_head_id(head_id)
     if normalized_head_id is not None:
         params["headid"] = normalized_head_id
-    _add_search_params(params, search_type, search_keyword)
+    _add_search_params(params, search_type, search_keyword, search_pos)
     return params
 
 
@@ -258,8 +265,9 @@ def read_url(
     head_id=None,
     gallery_name=None,
     notice=0,
+    search_pos=None,
 ):
-    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, notice)
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, notice, search_pos)
     clean_name = _clean_gallery_name(gallery_name)
     if clean_name:
         params["gallery_name"] = clean_name
@@ -287,6 +295,7 @@ def _serialize_related_posts(posts):
                 **_related_time_fields(item.get("time_display") or item.get("time")),
                 "comment_count": _safe_int(item.get("comment_count", 0), 0),
                 "voteup_count": _safe_int(item.get("voteup_count", 0), 0),
+                **({"search_pos": normalize_search_pos(item["search_pos"]) or ""} if "search_pos" in item else {}),
                 "source_page": _safe_int(item.get("source_page", 0), 0),
                 "isimage": isimage,
                 "isvideo": isvideo,
@@ -340,6 +349,12 @@ def _current_search_context():
     return search_type, keyword
 
 
+def _current_search_pos(search_keyword):
+    if not search_keyword or _safe_int(request.args.get("notice"), 0) == 1:
+        return None
+    return normalize_search_pos(request.args.get("search_pos"))
+
+
 def _target_post_ids_arg(name="ids", limit=60):
     ids = []
     seen = set()
@@ -365,12 +380,13 @@ def _media_request_context(default_board="airforce"):
     return board, pid, kind
 
 
-def _search_call_kwargs(search_type, search_keyword):
+def _search_call_kwargs(search_type, search_keyword, search_pos=None):
     if not search_keyword:
         return {}
     return {
         "search_type": search_type,
         "search_keyword": search_keyword,
+        **({"search_pos": normalize_search_pos(search_pos)} if normalize_search_pos(search_pos) is not None else {}),
     }
 
 
@@ -412,8 +428,8 @@ def _read_social_description(data):
     return SITE_NAME
 
 
-def _read_canonical_url(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, notice=0):
-    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, notice)
+def _read_canonical_url(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, notice=0, search_pos=None):
+    params = _read_link_params(board, pid, recommend, source_page, kind, search_type, search_keyword, head_id, notice, search_pos)
     return _external_url_for("main.read", **params)
 
 
@@ -442,7 +458,7 @@ def _first_social_preview_image(images):
     return None
 
 
-def _read_social_meta(data, images, board, pid, kind, recommend, source_page, search_type, search_keyword, head_id, notice=0):
+def _read_social_meta(data, images, board, pid, kind, recommend, source_page, search_type, search_keyword, head_id, notice=0, search_pos=None):
     title = _collapse_preview_text(data.get("title")) or SITE_NAME
     preview_image = _first_social_preview_image(images)
     media_params = {
@@ -468,6 +484,7 @@ def _read_social_meta(data, images, board, pid, kind, recommend, source_page, se
             search_keyword,
             head_id,
             notice,
+            search_pos,
         ),
         "type": "article",
         "image": image_url,
@@ -487,12 +504,14 @@ async def _load_board_payload(
     pagination_collector=None,
     force_refresh=False,
     notice=0,
+    search_pos=None,
 ):
     kwargs = {
         "kind": kind,
         "max_scan_pages": 1,
         "search_type": search_type,
         "search_keyword": search_keyword,
+        **({"search_pos": normalize_search_pos(search_pos)} if search_keyword and normalize_search_pos(search_pos) is not None else {}),
         "head_id": head_id,
         "pagination_collector": pagination_collector,
     }
@@ -730,9 +749,10 @@ def board():
     nav_mode = _normalize_nav_mode(request.args.get("nav"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    search_pos = _current_search_pos(search_keyword)
     notice = 1 if _safe_int(request.args.get("notice"), 0) == 1 else 0
     if notice:
-        if recommend or any(key in request.args for key in ("headid", "head_id", "search_head", "s_type", "serval", "s_keyword")):
+        if recommend or any(key in request.args for key in ("headid", "head_id", "search_head", "s_type", "serval", "s_keyword", "search_pos")):
             return redirect(board_url(board, page=page, kind=kind, nav=nav_mode,
                                       gallery_name=gallery_name, notice=1,
                                       refresh=request.args.get("refresh")), code=302)
@@ -743,6 +763,7 @@ def board():
         "kind": kind,
         "search_type": search_type,
         "search_keyword": search_keyword,
+        **({"search_pos": search_pos} if search_pos is not None else {}),
         "head_id": head_id,
         "pagination_collector": pagination,
     }
@@ -765,7 +786,10 @@ def board():
     gallery_display_name = _gallery_display_name(board, gallery_name)
 
     current_page = _safe_int(pagination.get("current_page"), 0)
-    if current_page > 0 and current_page < page and pagination.get("has_next") is False:
+    if 0 < current_page < page and (pagination.get("has_next") is False or (
+        search_keyword and pagination.get("search_clamped")
+        and pagination.get("search_pos", "") == (search_pos or "")
+    )):
         return redirect(
             board_url(
                 board,
@@ -776,12 +800,27 @@ def board():
                 nav=nav_mode,
                 search_type=search_type,
                 search_keyword=search_keyword,
+                search_pos=search_pos,
                 head_id=head_id,
                 gallery_name=gallery_name,
                 refresh=force_refresh,
             ),
             code=302,
         )
+
+    def search_page_url(direction):
+        if not search_keyword:
+            return None
+        target_page = _safe_int(pagination.get(f"{direction}_page"), 0)
+        raw_pos = pagination.get(f"{direction}_search_pos", "")
+        target_pos = normalize_search_pos(raw_pos)
+        if target_page <= 0 or (raw_pos and target_pos is None):
+            return None
+        if (target_page, target_pos) == (page, search_pos):
+            return None
+        return board_url(board, recommend=recommend, page=target_page, kind=kind,
+                         nav=nav_mode, search_type=search_type, search_keyword=search_keyword,
+                         search_pos=target_pos, head_id=head_id, gallery_name=gallery_name)
 
     response = make_response(
         render_template(
@@ -802,6 +841,9 @@ def board():
             head_id=head_id,
             head_categories=head_categories,
             board_has_next=pagination.get("has_next"),
+            search_pos=search_pos,
+            board_prev_url=search_page_url("prev"),
+            board_next_url=search_page_url("next"),
         )
     )
     touch_recent_gallery(response, board, kind, name=gallery_name)
@@ -845,6 +887,7 @@ def board_times():
     kind = _normalize_gallery_kind(request.args.get("kind"))
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    search_pos = _current_search_pos(search_keyword)
     target_ids = _target_post_ids_arg()
 
     try:
@@ -858,6 +901,7 @@ def board_times():
                 search_keyword=search_keyword,
                 head_id=head_id,
                 target_ids=target_ids,
+                **({"search_pos": search_pos} if search_pos is not None else {}),
             )
         )
     except Exception:
@@ -985,9 +1029,10 @@ def read():
     source_page = max(_safe_int(request.args.get("source_page", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    search_pos = _current_search_pos(search_keyword)
     notice = 1 if _safe_int(request.args.get("notice"), 0) == 1 else 0
     if notice:
-        if recommend or any(key in request.args for key in ("headid", "head_id", "search_head", "s_type", "serval", "s_keyword")):
+        if recommend or any(key in request.args for key in ("headid", "head_id", "search_head", "s_type", "serval", "s_keyword", "search_pos")):
             return redirect(read_url(board, pid, kind=kind, source_page=source_page,
                                      gallery_name=gallery_name, notice=1), code=302)
         recommend, head_id, search_type, search_keyword = 0, None, DEFAULT_SEARCH_TYPE, ""
@@ -1000,7 +1045,7 @@ def read():
                 recommend=recommend,
                 head_id=head_id,
                 **({"notice": True} if notice else {}),
-                **_search_call_kwargs(search_type, search_keyword),
+                **_search_call_kwargs(search_type, search_keyword, search_pos),
             )
         )
     except DocumentNotFoundError:
@@ -1045,6 +1090,7 @@ def read():
             head_id=head_id,
             search_type=search_type,
             search_keyword=search_keyword,
+            search_pos=search_pos,
             embedded_related_posts=embedded_related_posts,
             related_has_more=related_has_more,
             social_meta=_read_social_meta(
@@ -1059,6 +1105,7 @@ def read():
                 search_keyword,
                 head_id,
                 notice,
+                search_pos,
             ),
             nav_tab=_nav_tab_for_gallery(board, recommend),
         )
@@ -1090,6 +1137,7 @@ def read_related():
     after_pid = max(_safe_int(request.args.get("after_pid", 0), 0), 0)
     head_id = _normalize_head_id(request.args.get("headid"))
     search_type, search_keyword = _current_search_context()
+    search_pos = _current_search_pos(search_keyword)
 
     posts = []
     has_more = False
@@ -1105,7 +1153,7 @@ def read_related():
                     source_page=source_page,
                     recommend=recommend,
                     head_id=head_id,
-                    **_search_call_kwargs(search_type, search_keyword),
+                    **_search_call_kwargs(search_type, search_keyword, search_pos),
                 )
             )
         except RelatedPositionUnavailableError:
