@@ -4195,6 +4195,8 @@ def test_recent_server_cache_set_evicts_expired_foreign_keys(monkeypatch):
 
 
 def test_get_heung_galleries_does_not_hold_cache_lock_while_fetching_or_writing(monkeypatch):
+    # 앞선 테스트의 갱신 실패 대기 시간이 남아 있으면 갱신이 막히므로 초기화한다.
+    monkeypatch.setattr(heung, "HEUNG_NEXT_RETRY_AT", 0.0)
     class TrackingLock:
         def __init__(self):
             self.depth = 0
@@ -4233,6 +4235,8 @@ def test_get_heung_galleries_does_not_hold_cache_lock_while_fetching_or_writing(
 
 
 def test_get_heung_galleries_returns_stale_while_refreshing(monkeypatch):
+    # 앞선 테스트의 갱신 실패 대기 시간이 남아 있으면 갱신이 막히므로 초기화한다.
+    monkeypatch.setattr(heung, "HEUNG_NEXT_RETRY_AT", 0.0)
     stale_items = [{"rank": 1, "name": "오래된 목록", "board_id": "old"}]
     fresh_items = [{"rank": 1, "name": "새 목록", "board_id": "fresh"}]
     refresh_started = threading.Event()
