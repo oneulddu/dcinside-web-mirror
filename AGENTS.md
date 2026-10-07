@@ -133,7 +133,15 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
 - `static/javascript/read_related_loader.js`: Infinite scroll related-post loader
 - `static/javascript/comment_spam_filter.js`: Client-side spam filtering
 - `static/javascript/board_updates.js`: Polls `/board/updates` every ~60s on the plain page-1 board list only
-  (visible tab, online) and offers "새 글 N개" that replaces `#board-list` and dispatches `mirror:board-refreshed`.
+  (online) and offers "새 글 N개" that replaces `#board-list` and dispatches `mirror:board-refreshed`.
+  Hidden tabs keep checking every 180-210s (never below 180s, no immediate check on hide) and stop after 30 minutes
+  hidden. `document.title` gets a single `(N)`/`(N+)` prefix from the same count; zero or list replacement removes it.
+- `static/javascript/board_keyboard.js`: DC board list J/K select, O/Enter open, Esc clear. Uses `event.code`
+  so Korean IME keys work; ignores inputs, modifiers, composition, open dialogs and `#media-block-menu`/`#author-menu`,
+  busy lists, and `.is-user-filtered` rows. Selection is real link focus plus `.is-keyboard-current`.
+- `static/javascript/image_viewer.js`: Read-page `<dialog>` viewer for visible `#article-body img.body-image`
+  only (has `src`, not hidden, not inside a link). It never reads `data-body-image-src` itself, so the image-block
+  setting stays authoritative; a viewed image that becomes blocked closes the viewer. Comments and related posts are out of scope.
 - `static/javascript/user_filter.js`: DC-only block filter (nickname, author code, guest IP, title word) stored in
   `localStorage["mirror_user_filter_v1"]`. It reads `data-author`/`data-author-code` from the `author_text` macro
   and the related loader; keep those attributes when changing author markup. Poker pages do not load it.

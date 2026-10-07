@@ -3578,6 +3578,201 @@ html[data-theme="dark"] .board-updates-btn {
 }
 
 
+/* ===== 게시판 키보드 이동 ===== */
+
+.feed-item.is-keyboard-current {
+    background: var(--hover);
+}
+
+/* ===== 본문 이미지 크게 보기 ===== */
+
+.article-body img[data-image-viewer] {
+    cursor: zoom-in;
+}
+
+.article-body img[data-image-viewer]:focus-visible {
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: 2px;
+}
+
+.image-viewer {
+    width: 100vw;
+    max-width: none;
+    height: 100dvh;
+    max-height: none;
+    margin: 0;
+    border: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    overflow: hidden;
+}
+
+.image-viewer[open] {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+}
+
+.image-viewer::backdrop {
+    background: var(--scrim);
+}
+
+.image-viewer-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2) var(--space-1) var(--gutter);
+    padding-top: max(var(--space-1), env(safe-area-inset-top));
+    border-bottom: var(--rule) solid var(--line);
+}
+
+.image-viewer-title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    color: var(--fg);
+    font: var(--type-label);
+    font-variant-numeric: tabular-nums;
+}
+
+.image-viewer-original {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 var(--space-3);
+    border-radius: var(--radius-m);
+    color: var(--accent);
+    font: var(--type-label);
+    text-decoration: none;
+}
+
+.image-viewer-original:hover {
+    background: var(--hover);
+}
+
+.image-viewer-close,
+.image-viewer-nav {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: var(--radius-m);
+    background: none;
+    color: var(--muted);
+    padding: 0;
+    cursor: pointer;
+}
+
+.image-viewer-close svg,
+.image-viewer-nav svg {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.image-viewer-close:hover {
+    color: var(--fg);
+    background: var(--hover);
+}
+
+.image-viewer-stage {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    padding: var(--space-4);
+    padding-bottom: max(var(--space-4), env(safe-area-inset-bottom));
+    touch-action: pan-y pinch-zoom;
+}
+
+.image-viewer-image {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: var(--radius-s);
+}
+
+.image-viewer-image.is-failed {
+    visibility: hidden;
+}
+
+.image-viewer-message {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    pointer-events: none;
+}
+
+.image-viewer-message[hidden] {
+    display: none;
+}
+
+.image-viewer-message-text {
+    margin: 0;
+    color: var(--muted);
+    font: var(--type-label);
+}
+
+.image-viewer-retry {
+    min-height: 44px;
+    padding: 0 var(--space-4);
+    border: 0;
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    color: var(--fg);
+    font: var(--type-label);
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.image-viewer-retry[hidden] {
+    display: none;
+}
+
+.image-viewer-nav {
+    position: fixed;
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--elevated);
+    color: var(--fg);
+    box-shadow: var(--shadow-float);
+    border-radius: 50%;
+}
+
+.image-viewer-nav.is-prev {
+    left: var(--space-3);
+}
+
+.image-viewer-nav.is-next {
+    right: var(--space-3);
+}
+
+.image-viewer-nav[hidden],
+.image-viewer-nav:disabled {
+    display: none;
+}
+
+/* 손가락으로 넘기는 화면에서는 버튼이 사진을 가리지 않게 아래로 내린다. */
+@media (hover: none) and (pointer: coarse) {
+    .image-viewer-nav {
+        top: auto;
+        bottom: max(var(--space-4), env(safe-area-inset-bottom));
+        transform: none;
+    }
+}
+
 /* ===== 모션 감소 ===== */
 
 @media (prefers-reduced-motion: reduce) {

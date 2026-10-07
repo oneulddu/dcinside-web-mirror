@@ -37,6 +37,7 @@
 
 {% block content %}
 <section class="feed-list" id="board-list" data-board="{{ board }}" data-page="{{ page }}" data-recommend="{{ recommend }}" data-notice="{{ 1 if notice else 0 }}" data-kind="{{ kind or '' }}" data-head-id="{{ head_id if head_id is not none else '' }}" data-search-type="{{ search_type or '' }}" data-search-keyword="{{ search_keyword or '' }}">
+    <p class="sr-only">키보드 단축키: J, K로 글을 고르고 O 또는 Enter로 열며 Esc로 선택을 풉니다.</p>
     {% if head_categories %}
     <nav class="board-category-tabs" aria-label="게시글 분류">
         <div class="board-category-scroll">
@@ -109,4 +110,5 @@
 <script src="{{ static_url('javascript/board_time_hydrator.js') }}"></script>
 <script src="{{ static_url('javascript/board_return_refresh.js') }}"></script>
 <script src="{{ static_url('javascript/board_updates.js') }}"></script>
+<script src="{{ static_url('javascript/board_keyboard.js') }}"></script>
 {% endblock %}

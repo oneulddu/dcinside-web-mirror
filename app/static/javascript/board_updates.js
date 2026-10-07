@@ -3,10 +3,15 @@
 
     // 게시판 전체 글 1페이지에서만 새 글을 확인해 "새 글 N개"를 알린다.
     // 확인은 /board/updates(JSON), 실제 갱신은 목록 HTML 교체로 한다.
+    // 탭이 가려진 동안에는 더 느리게, 최대 30분까지만 확인하고 탭 제목에 "(N)"을 붙인다.
     var BASE_INTERVAL_MS = 60000;
     var JITTER_MS = 10000;
+    var HIDDEN_INTERVAL_MS = 180000;
+    var HIDDEN_JITTER_MS = 30000;
+    var HIDDEN_MAX_MS = 30 * 60000;
     var BACKOFF_STEPS_MS = [120000, 240000, 300000];
     var REQUEST_TIMEOUT_MS = 20000;
+    var TITLE_COUNT_PATTERN = /^\(\d+\+?\) /;
 
     function toId(value) {
         var text = String(value == null ? "" : value).trim();
@@ -44,7 +49,40 @@
         return { count: count, newer: newer, more: newer > 0 && !reachedBaseline };
     }
 
-    root.MirrorBoardUpdates = { computeNew: computeNew };
+    // 다음 확인까지 기다릴 시간. 가려진 지 30분이 지났으면 -1(중단)을 준다.
+    function checkDelay(options) {
+        var random = typeof options.random === "number" ? options.random : Math.random();
+        if (options.hidden && options.now - options.hiddenSince >= HIDDEN_MAX_MS) {
+            return -1;
+        }
+        var delay;
+        if (options.failures > 0) {
+            delay = BACKOFF_STEPS_MS[Math.min(options.failures - 1, BACKOFF_STEPS_MS.length - 1)];
+        } else if (options.hidden) {
+            delay = HIDDEN_INTERVAL_MS + Math.floor(random * HIDDEN_JITTER_MS);
+        } else {
+            delay = BASE_INTERVAL_MS + Math.floor(random * JITTER_MS);
+        }
+        return options.hidden ? Math.max(delay, HIDDEN_INTERVAL_MS) : delay;
+    }
+
+    function stripTitleCount(title) {
+        return String(title || "").replace(TITLE_COUNT_PATTERN, "");
+    }
+
+    function titleWithCount(baseTitle, result) {
+        var base = stripTitleCount(baseTitle);
+        if (!result || !result.count) {
+            return base;
+        }
+        return "(" + result.count + (result.more ? "+" : "") + ") " + base;
+    }
+
+    root.MirrorBoardUpdates = {
+        computeNew: computeNew,
+        checkDelay: checkDelay,
+        titleWithCount: titleWithCount
+    };
 
     var document = root.document;
     if (!document || typeof document.querySelector !== "function") {
@@ -59,8 +97,14 @@
         lastItems: null,
         generation: 0,
         refreshing: false,
-        bar: null
+        bar: null,
+        hiddenSince: 0,
+        baseTitle: ""
     };
+
+    function isHidden() {
+        return document.visibilityState === "hidden";
+    }
 
     function boardList() {
         return document.getElementById("board-list");
@@ -142,6 +186,10 @@
         bar.hidden = !result.count;
         button.disabled = false;
         button.textContent = label ? label + " 보기" : "";
+        var title = titleWithCount(state.baseTitle, result);
+        if (document.title !== title) {
+            document.title = title;
+        }
         // 숫자가 바뀔 때만 읽어 준다.
         if (status.textContent !== label) {
             status.textContent = label;
@@ -151,17 +199,39 @@
     function schedule(delay) {
         clearTimeout(state.timer);
         state.timer = null;
-        if (!eligible() || document.visibilityState === "hidden") {
+        if (!eligible() || delay < 0) {
             return;
         }
         state.timer = setTimeout(check, delay);
     }
 
     function nextDelay() {
-        if (state.failures > 0) {
-            return BACKOFF_STEPS_MS[Math.min(state.failures - 1, BACKOFF_STEPS_MS.length - 1)];
+        return checkDelay({
+            hidden: isHidden(),
+            hiddenSince: state.hiddenSince,
+            now: Date.now(),
+            failures: state.failures
+        });
+    }
+
+    // 가려진 채 30분이 지났는지. 타이머가 늦게 깨어나도 요청 직전에 다시 확인한다.
+    function hiddenTooLong() {
+        return isHidden() && Date.now() - state.hiddenSince >= HIDDEN_MAX_MS;
+    }
+
+    // 탭 전환·온라인 복귀·페이지 복원에서 마지막 확인 시각을 기준으로 다음 확인을 잡는다.
+    // 보이는 탭은 60초가 지났으면 바로, 가려진 탭은 바로 요청하지 않고 마지막 확인부터 느린 주기를 지킨다.
+    function scheduleFromLastCheck() {
+        if (state.controller) {
+            return;
         }
-        return BASE_INTERVAL_MS + Math.floor(Math.random() * JITTER_MS);
+        var waited = Date.now() - state.lastCheckedAt;
+        if (!isHidden()) {
+            schedule(waited >= BASE_INTERVAL_MS ? 0 : BASE_INTERVAL_MS - waited);
+            return;
+        }
+        var delay = nextDelay();
+        schedule(delay < 0 ? delay : Math.max(delay - waited, BASE_INTERVAL_MS));
     }
 
     function abortCheck() {
@@ -173,7 +243,7 @@
 
     function check() {
         state.timer = null;
-        if (!eligible() || document.visibilityState === "hidden") {
+        if (!eligible() || hiddenTooLong() || state.controller) {
             return;
         }
         if (root.navigator && root.navigator.onLine === false) {
@@ -310,20 +380,16 @@
         if (!eligible()) {
             return;
         }
+        state.baseTitle = stripTitleCount(document.title);
+        state.hiddenSince = isHidden() ? Date.now() : 0;
         ensureBar();
         schedule(nextDelay());
         // 복귀 갱신이나 이 스크립트의 갱신으로 목록이 바뀌면 기준을 새로 잡는다.
         document.addEventListener("mirror:board-refreshed", listReplaced);
         document.addEventListener("mirror:user-filter-changed", render);
         document.addEventListener("visibilitychange", function () {
-            if (document.visibilityState === "hidden") {
-                clearTimeout(state.timer);
-                state.timer = null;
-                abortCheck();
-                return;
-            }
-            var waited = Date.now() - state.lastCheckedAt;
-            schedule(waited >= BASE_INTERVAL_MS ? 0 : BASE_INTERVAL_MS - waited);
+            state.hiddenSince = isHidden() ? Date.now() : 0;
+            scheduleFromLastCheck();
         });
         root.addEventListener("pagehide", function () {
             clearTimeout(state.timer);
@@ -332,11 +398,11 @@
         });
         root.addEventListener("pageshow", function (event) {
             if (event.persisted) {
-                schedule(0);
+                scheduleFromLastCheck();
             }
         });
         root.addEventListener("online", function () {
-            schedule(0);
+            scheduleFromLastCheck();
         });
         state.lastCheckedAt = Date.now();
     }
