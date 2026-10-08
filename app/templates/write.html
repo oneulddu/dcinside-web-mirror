@@ -20,7 +20,8 @@
     <form class="write-form" id="write-form" method="post" action="/write" novalidate aria-labelledby="write-title"
           data-board="{{ board }}" data-kind="{{ kind or '' }}" data-back-url="{{ board_back_url }}"
           data-subject-max="{{ limits.subject_max }}" data-body-max="{{ limits.body_max }}"
-          data-nickname-max="{{ limits.nickname_max }}" data-password-min="{{ limits.password_min }}" data-password-max="{{ limits.password_max }}">
+          data-nickname-max="{{ limits.nickname_max }}" data-password-min="{{ limits.password_min }}" data-password-max="{{ limits.password_max }}"
+          data-image-max-count="{{ limits.image_max_count }}" data-image-max-bytes="{{ limits.image_max_bytes }}" data-image-total-bytes="{{ limits.image_total_bytes }}">
         <div class="write-identity">
             <div class="write-field">
                 <label class="write-label" for="write-nickname">닉네임</label>
@@ -78,8 +79,30 @@
                 <span class="write-count" id="write-body-count" aria-hidden="true">0/{{ limits.body_max }}</span>
             </div>
             <textarea class="write-input write-textarea" id="write-body" name="body" rows="12" aria-describedby="write-body-hint write-body-error" required></textarea>
-            <p class="write-hint" id="write-body-hint">글자만 올릴 수 있어요. 줄바꿈은 그대로 들어가요.</p>
+            <p class="write-hint" id="write-body-hint">줄바꿈은 그대로 들어가요. 사진을 넣으면 본문은 비워도 돼요.</p>
             <p class="write-error" id="write-body-error" hidden></p>
+        </div>
+
+        <div class="write-field write-images" id="write-images" role="group" aria-labelledby="write-images-label" aria-describedby="write-images-hint write-images-error">
+            <div class="write-label-row">
+                <span class="write-label" id="write-images-label">사진</span>
+                <span class="write-count" id="write-images-count" aria-hidden="true">0/{{ limits.image_max_count }}</span>
+            </div>
+            <div class="write-images-bar">
+                <button class="write-images-add" id="write-images-add" type="button">
+                    <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M20.5 15.5l-4.5-4.5-8 8"/></svg>
+                    <span>사진 추가</span>
+                </button>
+                <input id="write-images-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple hidden>
+                <div class="write-image-position" id="write-image-position" role="radiogroup" aria-label="사진 위치" hidden>
+                    <label class="write-segment"><input type="radio" name="image_position" value="top" checked><span>본문 위</span></label>
+                    <label class="write-segment"><input type="radio" name="image_position" value="bottom"><span>본문 아래</span></label>
+                </div>
+            </div>
+            <ol class="write-image-list" id="write-image-list" aria-label="넣은 사진" hidden></ol>
+            <p class="write-hint" id="write-images-hint">JPG·PNG·GIF·WEBP {{ limits.image_max_count }}장까지, 한 장 {{ (limits.image_max_bytes // 1048576) }}MB · 모두 {{ (limits.image_total_bytes // 1048576) }}MB 이하. 본문에 붙여 넣거나 끌어 놓아도 돼요.</p>
+            <p class="write-error" id="write-images-error" hidden></p>
+            <p class="sr-only" id="write-images-live" role="status" aria-live="polite"></p>
         </div>
 
         {{ captcha_box("write-captcha", "디시가 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 다시 등록해 주세요.") }}

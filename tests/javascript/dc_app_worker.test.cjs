@@ -7,11 +7,14 @@ const { test } = require('node:test');
 
 // A local package double makes accidental network access impossible.
 const fakeLibrary = `
+import { appendFileSync } from 'node:fs';
+const trace = operation => appendFileSync(process.env.WORKER_TEST_TRACE, operation + '\\n');
 export class DCInside {
-  constructor() {
+  constructor(options) {
+    if (options.http.timeout !== 45000) throw new Error('Wrong HTTP timeout');
     this.credentials = {androidId:'123',securityToken:'456',fid:'private-fid',refreshToken:'private-refresh',clientToken:'private-token',appId:'private-app',appIdIssuedAt:Date.now()-30000};
     this.auth = {
-      appId: async () => 'private-app',
+      appId: async () => { trace('appId'); return 'private-app'; },
       exportCredentials: () => this.credentials,
       importCredentials: value => { this.credentials = value; },
     };
@@ -24,12 +27,24 @@ export class DCInside {
         return {gall_info:[{head_text:[{no:0,name:'일반',level:0,selected:true},{no:10,name:'기록',level:9},{no:3,name:'unknown'},{no:4.5,name:'bad',level:0}],no_write:true,captcha:true}],gall_list:[]};
       },
       write: async options => {
+        trace('write');
         const session = this.session;
         await new Promise(resolve => setTimeout(resolve, 5));
         if (this.session !== session) throw new Error('Session race');
         if (session.type !== 'anonymous' || session.password !== 'private-password') throw new Error('Wrong session');
-        if (options.content.length !== 1 || options.content[0] !== 'line1\\nline2 <script>') throw new Error('Content altered');
         if (!options.validateOnly) throw new Error('Expected validateOnly');
+        if (options.subject === 'images') {
+          const blocks = [];
+          for (const block of options.content) {
+            if (typeof block === 'string') blocks.push(block);
+            else {
+              if (block.type !== 'image' || !(block.file instanceof File)) throw new Error('Expected image File');
+              blocks.push({type:block.file.type,name:block.file.name,bytes:Array.from(new Uint8Array(await block.file.arrayBuffer()))});
+            }
+          }
+          return {result:'true',blocks};
+        }
+        if (options.content.length !== 1 || options.content[0] !== 'line1\\nline2 <script>') throw new Error('Content altered');
         if (options.subject === 'captcha') throw Object.assign(new Error('private-password'), {name:'CaptchaRequiredError',cause:'보안 코드 입력'});
         if (options.subject === 'unknown') throw new Error('private-password');
         return {result:'true',subject:options.subject};
@@ -42,7 +57,7 @@ export class DCInside {
       return new Response(new Uint8Array([1,2,3]), {headers:{'content-type':'image/png'}});
     }};
   }
-  useAnonymous(nickname,password) { this.session={type:'anonymous',nickname,password}; }
+  useAnonymous(nickname,password) { trace('anonymous'); this.session={type:'anonymous',nickname,password}; }
 }
 export const captchaUrl = (kind,key,gallery) => 'https://invalid.test/' + gallery;
 `;
@@ -56,12 +71,13 @@ function run(requests, seed = false) {
     fs.writeFileSync(path.join(library, 'index.mjs'), fakeLibrary);
     fs.copyFileSync(path.resolve(__dirname, '../../dc_app/worker.mjs'), path.join(directory, 'worker.mjs'));
     const state = path.join(directory, 'state/credentials.json');
+    const tracePath = path.join(directory, 'trace.txt');
     if (seed) {
       fs.mkdirSync(path.dirname(state));
       fs.writeFileSync(state, JSON.stringify({ restored: true, appIdIssuedAt: Date.now() - 30000 }), { mode: 0o644 });
     }
     const child = spawnSync(process.execPath, [path.join(directory, 'worker.mjs')], {
-      env: { ...process.env, MIRROR_DC_APP_STATE: state },
+      env: { ...process.env, MIRROR_DC_APP_STATE: state, WORKER_TEST_TRACE: tracePath },
       input: requests.map((request, index) => JSON.stringify({ id: index, ...request })).join('\n') + '\n',
       encoding: 'utf8', timeout: 5000,
     });
@@ -70,6 +86,7 @@ function run(requests, seed = false) {
     const replies = child.stdout.trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(replies.map(reply => reply.id), requests.map((_, index) => index));
     return { replies, mode: fs.existsSync(state) ? fs.statSync(state).mode & 0o777 : null,
+      trace: fs.existsSync(tracePath) ? fs.readFileSync(tracePath, 'utf8').trim().split('\n') : [],
       state: fs.existsSync(state) ? JSON.parse(fs.readFileSync(state, 'utf8')) : null,
       temporary: fs.existsSync(path.dirname(state)) ? fs.readdirSync(path.dirname(state)).filter(name => name.endsWith('.tmp')) : [] };
   } finally {
@@ -124,4 +141,64 @@ test('gallery_info rejects invalid galleries before credential persistence and r
   const failure = run([{op:'gallery_info',gallery:'failure'}]);
   assert.deepEqual(failure.replies[0].error, {name:'ApiError',cause:'권한 오류',status:null});
   assert.equal(failure.mode, 0o600);
+});
+
+test('write preserves image bytes, File names and order at the top, bottom and without text', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-upload-test-'));
+  try {
+    const images = [
+      {path:path.join(directory, 'random_1.png'),type:'image/png',name:'image1.png'},
+      {path:path.join(directory, 'random-2.jpg'),type:'image/jpeg',name:'image2.jpg'},
+    ];
+    const buffers = [Buffer.from([137,80,78,71,13,10,26,10]), Buffer.from([255,216,255])];
+    images.forEach((image, index) => fs.writeFileSync(image.path, buffers[index]));
+    const requests = [
+      {...write('images'),images},
+      {...write('images'),images,image_position:'bottom'},
+      {...write('images'),images,body:''},
+      {...write('images'),images,body:' \n\t ',image_position:'bottom'},
+    ];
+    const result = run(requests);
+    assert(result.replies.every(reply => reply.ok));
+    const blocks = images.map((image, index) => ({name:image.name,type:image.type,bytes:Array.from(buffers[index])}));
+    assert.deepEqual(result.replies.map(reply => reply.data.blocks), [
+      [...blocks, write('').body], [write('').body, ...blocks], blocks, blocks,
+    ]);
+    assert.deepEqual(result.trace, Array(4).fill(['anonymous', 'appId', 'write']).flat());
+  } finally {
+    fs.rmSync(directory, {recursive:true,force:true});
+  }
+});
+
+test('invalid image metadata and file failures precede anonymous session and DC calls', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-upload-test-'));
+  try {
+    const valid = {path:path.join(directory, 'valid.png'),type:'image/png',name:'image1.png'};
+    fs.writeFileSync(valid.path, Buffer.from([137,80,78,71,13,10,26,10]));
+    const empty = path.join(directory, 'empty.png');
+    const large = path.join(directory, 'large.png');
+    fs.writeFileSync(empty, Buffer.alloc(0));
+    fs.writeFileSync(large, Buffer.alloc(10 * 1024 * 1024 + 1));
+    const invalid = [
+      {...valid,path:'relative.png'}, {...valid,path:path.join(directory,'bad name.png')},
+      {...valid,path:path.join(directory,'bad.svg')}, {...valid,type:'image/svg+xml'},
+      {...valid,path:3}, {...valid,name:'../original.png'},
+      {...valid,path:path.join(directory,'missing.png')},
+      {...valid,path:empty}, {...valid,path:large}, null,
+    ];
+    const result = run([
+      ...invalid.map(image => ({...write('images'),images:[valid,image]})),
+      {...write('images'),images:[...Array(11)].map(() => valid)},
+      {...write('images'),images:{}},
+    ]);
+    assert(result.replies.every(reply => !reply.ok));
+    for (const reply of result.replies) {
+      assert.deepEqual(reply.error, {name:'WorkerError',cause:'',status:null,sent:false});
+    }
+    assert.deepEqual(result.trace, []);
+    assert.equal(result.state, null);
+    assert(!JSON.stringify(result.replies).includes(directory));
+  } finally {
+    fs.rmSync(directory, {recursive:true,force:true});
+  }
 });

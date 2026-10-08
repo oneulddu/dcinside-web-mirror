@@ -79,12 +79,14 @@ pm2 logs dc-mirror
   HttpOnly 180-day cookie, and `/write/lock` clears it. POSTs require same-origin headers.
   Five failed unlock attempts per process per minute are allowed; successful writes/votes
   have process-wide 20s/3s intervals. Never log nicknames, passwords, unlock keys or captcha answers.
-- `app/services/dc_write.py` serializes a lazy Node worker with a shared 40s deadline including both lock waits and discards
+- `app/services/dc_write.py` serializes a lazy Node worker with a shared 40s deadline (55s for image writes) including both lock waits and discards
   it on crash/timeout/protocol failure without replaying a potentially completed write.
   Write/vote transport failures after sending return HTTP 503 with code `uncertain`; failures before sending return `unavailable`.
   `dc_app/worker.mjs` uses pinned `@green-1052/dcinside.js@2.0.1`, stores device credentials
   atomically with mode 0600, and waits for newly issued app IDs to settle. Captcha images
   are image-only, at most 200KB, and no-store. Never bypass upstream captcha.
+- `/write` also accepts multipart `payload` + `images`: up to 10 magic-validated JPG/PNG/GIF/WEBP files, 10MiB each/30MiB total, with a 32MiB request cap.
+  Uploads use private temporary directories under `MIRROR_DC_APP_UPLOADS` (system temp by default), are removed after every outcome, and are read before worker DC calls; image-only bodies and top/bottom placement are supported.
 - `MIRROR_DC_APP_NODE` selects Node (default PATH lookup), `MIRROR_DC_APP_DIR` defaults to
   `<repo>/dc_app`, and `MIRROR_DC_APP_STATE` defaults to `instance/dc_app_credentials.json`.
   Set `MIRROR_WRITE_KEY` only in the server environment. Deployment installs `dc_app` with
@@ -169,6 +171,11 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   Nickname/password are saved in `localStorage["mirror_write_identity_v1"]` only after opt-in checkboxes.
   Vote success does not change displayed counts. The board masthead `#write-entry` and footer unlock/lock links
   appear only when `write_configured`; Poker pages never show them. Error styling uses `--fg`, never `--hot`.
+  Images: `#write-images` keeps an ordered client list (`pickImages`/`moveItem` are pure and tested), sends
+  multipart (`payload` JSON + ordered `images` + `image_position`) through `MirrorDcPost.postForm` (XHR progress;
+  disconnect before upload completes is reported as not sent; bare 413 becomes an images error). Files the browser
+  cannot preview block submission until removed. For browser QA, run the dev server with
+  `MIRROR_DC_APP_NODE=/usr/bin/false` so an unstubbed submit can never reach DC.
 - `static/javascript/user_filter.js`: DC-only block filter (nickname, author code, guest IP, title word) stored in
   `localStorage["mirror_user_filter_v1"]`. It reads `data-author`/`data-author-code` from the `author_text` macro
   and the related loader; keep those attributes when changing author markup. Poker pages do not load it.

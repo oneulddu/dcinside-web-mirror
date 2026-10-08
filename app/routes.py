@@ -3,11 +3,12 @@ import html
 import base64
 import secrets
 import ipaddress
+import json
 import re
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote, urljoin, urlparse
-from werkzeug.exceptions import BadRequest
+from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from flask import Blueprint, abort, current_app, jsonify, make_response, redirect, render_template, request, url_for
 
 from .services.async_bridge import run_async
@@ -1263,6 +1264,13 @@ def _write_invalid(field, message):
     return jsonify(ok=False, code="invalid", field=field, message=message), 400
 
 
+@bp.errorhandler(RequestEntityTooLarge)
+def write_request_too_large(error):
+    if request.endpoint == "main.write":
+        return jsonify(ok=False, code="invalid", field="images", message=dc_write.IMAGE_TOTAL_MESSAGE), 413
+    return error
+
+
 def _write_board(data):
     if not isinstance(data.get("board"), str) or not data["board"].strip():
         raise ValueError()
@@ -1341,16 +1349,35 @@ def write():
                                head_categories=categories, selected_head_id=selected,
                                write_blocked=write_blocked,
                                board_back_url=board_url(board, kind=kind), limits=dc_write.LIMITS)
-    data = _write_json_request()
+    files = []
+    if request.mimetype == "multipart/form-data":
+        try:
+            data = json.loads(request.form.get("payload", ""))
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            data = None
+        if data is not None:
+            if any(name != "images" for name in request.files):
+                return _write_invalid("images", "사진은 images 항목으로 올려 주세요.")
+            files = request.files.getlist("images")
+    else:
+        data = _write_json_request()
     if data is None:
         return _write_invalid("board", "JSON 형식으로 요청해 주세요.")
+    image_position = data.get("image_position", "top")
+    if image_position not in ("top", "bottom"):
+        return _write_invalid("images", "사진 위치는 위 또는 아래로 선택해 주세요.")
+    if len(files) > dc_write.LIMITS["image_max_count"]:
+        return _write_invalid("images", "사진은 10장까지 올릴 수 있어요.")
     try:
         board, kind = _write_board(data)
     except (ValueError, BadRequest):
         return _write_invalid("board", "올바른 갤러리를 선택해 주세요.")
     values = {}
     rules = [("subject", 1, 40, "제목은 1~40자로 입력해 주세요."),
-             ("body", 1, 10000, "본문은 1~10000자로 입력해 주세요."),
+             ("body", 0 if files else 1, 10000,
+              "본문은 10000자까지 입력해 주세요." if files else "본문은 1~10000자로 입력해 주세요."),
              ("nickname", 1, 20, "닉네임은 1~20자로 입력해 주세요."),
              ("password", 2, 20, "비밀번호는 2~20자로 입력해 주세요.")]
     for field, minimum, maximum, message in rules:
@@ -1359,7 +1386,7 @@ def write():
             return _write_invalid(field, message)
         if field in {"subject", "nickname"}:
             value = value.strip()
-        if not minimum <= len(value) <= maximum or not value.strip():
+        if not minimum <= len(value) <= maximum or (minimum and not value.strip()):
             return _write_invalid(field, message)
         values[field] = value
     try:
@@ -1373,11 +1400,17 @@ def write():
         captcha = _write_captcha_answer(data)
     except ValueError:
         return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
-    return _write_result("write", board, kind,
-                         session={"type": "anonymous", "nickname": values["nickname"], "password": values["password"]},
-                         subject=values["subject"], body=values["body"],
-                         head={"no": int(head_id), "name": head_name} if head_id is not None else None,
-                         captcha=captcha)
+    try:
+        with dc_write.prepared_images(files) as images:
+            return _write_result("write", board, kind,
+                                 session={"type": "anonymous", "nickname": values["nickname"], "password": values["password"]},
+                                 subject=values["subject"], body=values["body"],
+                                 head={"no": int(head_id), "name": head_name} if head_id is not None else None,
+                                 captcha=captcha, images=images, image_position=image_position)
+    except dc_write.InvalidImage as exc:
+        return _write_invalid("images", str(exc))
+    except dc_write.WorkerUnavailable:
+        return jsonify(dc_write.unavailable()), 503
 
 
 @bp.route("/read/vote", methods=["POST"])

@@ -3,10 +3,64 @@
 
     // 디시 글쓰기 폼. 확인은 서버가 다시 하지만 같은 기준으로 먼저 알려 준다.
     var IDENTITY_KEY = "mirror_write_identity_v1";
-    var FIELDS = ["nickname", "password", "subject", "body", "captcha"];
+    var FIELDS = ["nickname", "password", "subject", "body", "images", "captcha"];
+    var IMAGE_TYPES = { "image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true };
+    var IMAGE_EXTENSION = /\.(jpe?g|png|gif|webp)$/i;
 
     function charLength(value) {
         return Array.from(String(value == null ? "" : value)).length;
+    }
+
+    function megabytes(bytes) {
+        return Math.round(bytes / 1048576) + "MB";
+    }
+
+    // 새로 고른 파일 중 넣을 수 있는 것만 고른다. 형식은 서버가 파일 내용으로 다시 확인한다.
+    function pickImages(existing, incoming, limits) {
+        var accepted = [];
+        var skipped = { type: 0, size: 0, count: 0, total: 0 };
+        var total = existing.reduce(function (sum, file) {
+            return sum + file.size;
+        }, 0);
+        Array.prototype.forEach.call(incoming || [], function (file) {
+            var typeOk = file.type ? IMAGE_TYPES[file.type] === true : IMAGE_EXTENSION.test(file.name || "");
+            if (!typeOk) {
+                skipped.type += 1;
+            } else if (!file.size || file.size > limits.image_max_bytes) {
+                skipped.size += 1;
+            } else if (existing.length + accepted.length >= limits.image_max_count) {
+                skipped.count += 1;
+            } else if (total + file.size > limits.image_total_bytes) {
+                skipped.total += 1;
+            } else {
+                accepted.push(file);
+                total += file.size;
+            }
+        });
+        var messages = [];
+        if (skipped.type) {
+            messages.push("JPG·PNG·GIF·WEBP가 아닌 파일 " + skipped.type + "개는 넣지 않았어요.");
+        }
+        if (skipped.size) {
+            messages.push(megabytes(limits.image_max_bytes) + "를 넘거나 빈 사진 " + skipped.size + "장은 넣지 않았어요.");
+        }
+        if (skipped.count) {
+            messages.push("사진은 " + limits.image_max_count + "장까지라 " + skipped.count + "장은 넣지 않았어요.");
+        }
+        if (skipped.total) {
+            messages.push("모두 합쳐 " + megabytes(limits.image_total_bytes) + "를 넘어서 " + skipped.total + "장은 넣지 않았어요.");
+        }
+        return { accepted: accepted, message: messages.join(" ") };
+    }
+
+    function moveItem(list, from, to) {
+        if (from < 0 || from >= list.length || to < 0 || to >= list.length || from === to) {
+            return list;
+        }
+        var copy = list.slice();
+        var item = copy.splice(from, 1)[0];
+        copy.splice(to, 0, item);
+        return copy;
     }
 
     function validateFields(values, limits) {
@@ -29,8 +83,8 @@
         if (charLength(subject) > limits.subject_max) {
             return { field: "subject", message: "제목은 " + limits.subject_max + "자까지 쓸 수 있어요." };
         }
-        if (!body.trim()) {
-            return { field: "body", message: "본문을 입력해 주세요." };
+        if (!body.trim() && !(values.imageCount > 0)) {
+            return { field: "body", message: "본문을 입력하거나 사진을 넣어 주세요." };
         }
         if (charLength(body) > limits.body_max) {
             return { field: "body", message: "본문은 " + limits.body_max + "자까지 쓸 수 있어요." };
@@ -79,6 +133,8 @@
 
     root.MirrorWriteForm = {
         validateFields: validateFields,
+        pickImages: pickImages,
+        moveItem: moveItem,
         readIdentity: readIdentity,
         writeIdentity: writeIdentity,
         IDENTITY_KEY: IDENTITY_KEY
@@ -107,20 +163,31 @@
         rememberPassword: document.getElementById("write-remember-password"),
         rememberStatus: document.getElementById("write-remember-status"),
         subjectCount: document.getElementById("write-subject-count"),
-        bodyCount: document.getElementById("write-body-count")
+        bodyCount: document.getElementById("write-body-count"),
+        images: document.getElementById("write-images"),
+        imageAdd: document.getElementById("write-images-add"),
+        imageInput: document.getElementById("write-images-input"),
+        imageList: document.getElementById("write-image-list"),
+        imageCount: document.getElementById("write-images-count"),
+        imagePosition: document.getElementById("write-image-position"),
+        imageLive: document.getElementById("write-images-live")
     };
     var limits = {
         subject_max: Number(form.getAttribute("data-subject-max")) || 40,
         body_max: Number(form.getAttribute("data-body-max")) || 10000,
         nickname_max: Number(form.getAttribute("data-nickname-max")) || 20,
         password_min: Number(form.getAttribute("data-password-min")) || 2,
-        password_max: Number(form.getAttribute("data-password-max")) || 20
+        password_max: Number(form.getAttribute("data-password-max")) || 20,
+        image_max_count: Number(form.getAttribute("data-image-max-count")) || 10,
+        image_max_bytes: Number(form.getAttribute("data-image-max-bytes")) || 10485760,
+        image_total_bytes: Number(form.getAttribute("data-image-total-bytes")) || 31457280
     };
     var board = form.getAttribute("data-board") || "";
     var kind = form.getAttribute("data-kind") || "";
     var backUrl = post.safePath(form.getAttribute("data-back-url")) || "/";
     var captcha = post.createCaptcha("write-captcha", "article", board);
-    var state = { sending: false, retryUntil: 0, retryTimer: null, leaving: false, initial: "" };
+    var state = { sending: false, retryUntil: 0, retryTimer: null, leaving: false, initial: "", images: [] };
+    var nextImageId = 1;
     var storage = null;
     try {
         storage = root.localStorage;
@@ -129,7 +196,7 @@
     }
 
     function draftSnapshot() {
-        return [el.subject.value, el.body.value, el.head ? el.head.value : ""].join("\u0000");
+        return [el.subject.value, el.body.value, el.head ? el.head.value : "", state.images.length].join("\u0000");
     }
 
     function isDirty() {
@@ -155,6 +222,9 @@
     function fieldElement(field) {
         if (field === "captcha") {
             return document.getElementById("write-captcha-code");
+        }
+        if (field === "images") {
+            return el.imageAdd;
         }
         return el[field] || null;
     }
@@ -205,11 +275,21 @@
     function setBusy(busy) {
         state.sending = busy;
         form.setAttribute("aria-busy", busy ? "true" : "false");
-        [el.nickname, el.password, el.subject, el.body, el.head, el.rememberNickname, el.rememberPassword].forEach(function (input) {
+        [el.nickname, el.password, el.subject, el.body, el.head, el.rememberNickname, el.rememberPassword, el.imageAdd].forEach(function (input) {
             if (input) {
                 input.disabled = busy;
             }
         });
+        if (el.imageList) {
+            Array.prototype.forEach.call(el.imageList.querySelectorAll("button, input"), function (control) {
+                control.disabled = busy;
+            });
+        }
+        if (el.imagePosition) {
+            Array.prototype.forEach.call(el.imagePosition.querySelectorAll("input"), function (control) {
+                control.disabled = busy;
+            });
+        }
         if (captcha) {
             captcha.setDisabled(busy);
         }
@@ -270,9 +350,281 @@
         return { head_id: el.head.value, head_name: option ? option.getAttribute("data-head-name") || option.textContent : "" };
     }
 
+    function formatSize(bytes) {
+        if (bytes < 1048576) {
+            return Math.max(1, Math.round(bytes / 1024)) + "KB";
+        }
+        return (bytes / 1048576).toFixed(1).replace(/\.0$/, "") + "MB";
+    }
+
+    function imagePosition() {
+        var checked = el.imagePosition ? el.imagePosition.querySelector("input:checked") : null;
+        return checked && checked.value === "bottom" ? "bottom" : "top";
+    }
+
+    function imageButton(className, label, path, onClick) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "write-image-btn " + className;
+        button.setAttribute("aria-label", label);
+        button.innerHTML = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="' + path + '"/></svg>';
+        button.addEventListener("click", onClick);
+        return button;
+    }
+
+    // 목록을 다시 그린 뒤 같은 사진의 같은 버튼(없으면 가까운 버튼)으로 초점을 돌린다.
+    function renderImages(focus) {
+        if (!el.imageList) {
+            return;
+        }
+        var count = state.images.length;
+        el.imageList.textContent = "";
+        state.images.forEach(function (item, index) {
+            var li = document.createElement("li");
+            li.className = "write-image";
+            li.setAttribute("data-image-id", String(item.id));
+            var frame = document.createElement("div");
+            frame.className = "write-image-frame";
+            var img = document.createElement("img");
+            img.alt = (index + 1) + "번째 사진";
+            img.decoding = "async";
+            // 브라우저가 열지 못하는 파일은 디시에서도 사진이 아니므로 미리 알려 준다.
+            img.addEventListener("error", function () {
+                if (!item.broken) {
+                    item.broken = true;
+                    showImageNote(brokenMessage());
+                }
+                li.classList.add("is-broken");
+            });
+            img.src = item.url;
+            if (item.broken) {
+                li.classList.add("is-broken");
+            }
+            var badge = document.createElement("span");
+            badge.className = "write-image-order";
+            badge.setAttribute("aria-hidden", "true");
+            badge.textContent = String(index + 1);
+            frame.appendChild(img);
+            var broken = document.createElement("span");
+            broken.className = "write-image-broken";
+            broken.textContent = "열 수 없는 파일";
+            frame.appendChild(broken);
+            frame.appendChild(badge);
+            var remove = imageButton("is-remove", (index + 1) + "번째 사진 빼기", "M7 7l10 10M17 7L7 17", function () {
+                removeImage(item.id);
+            });
+            frame.appendChild(remove);
+            var bar = document.createElement("div");
+            bar.className = "write-image-bar";
+            var before = imageButton("is-before", (index + 1) + "번째 사진 앞으로", "M14.5 6l-6 6 6 6", function () {
+                shiftImage(item.id, -1);
+            });
+            var size = document.createElement("span");
+            size.className = "write-image-size";
+            size.textContent = formatSize(item.file.size);
+            var after = imageButton("is-after", (index + 1) + "번째 사진 뒤로", "M9.5 6l6 6-6 6", function () {
+                shiftImage(item.id, 1);
+            });
+            before.disabled = index === 0 || state.sending;
+            after.disabled = index === count - 1 || state.sending;
+            remove.disabled = state.sending;
+            bar.appendChild(before);
+            bar.appendChild(size);
+            bar.appendChild(after);
+            li.appendChild(frame);
+            li.appendChild(bar);
+            el.imageList.appendChild(li);
+        });
+        el.imageList.hidden = count === 0;
+        if (el.imagePosition) {
+            el.imagePosition.hidden = count === 0;
+        }
+        if (el.imageCount) {
+            el.imageCount.textContent = count + "/" + limits.image_max_count;
+        }
+        el.imageAdd.disabled = state.sending || count >= limits.image_max_count;
+        if (focus) {
+            var target = null;
+            var row = el.imageList.querySelector('[data-image-id="' + focus.id + '"]');
+            if (row) {
+                target = row.querySelector("." + focus.button);
+                if (target && target.disabled) {
+                    var opposite = { "is-before": ".is-after", "is-after": ".is-before" }[focus.button];
+                    target = (opposite && row.querySelector(opposite + ":not(:disabled)")) || row.querySelector(".write-image-btn:not(:disabled)");
+                }
+            }
+            (target || (el.imageAdd.disabled ? el.body : el.imageAdd)).focus();
+        }
+    }
+
+    function announce(text) {
+        if (el.imageLive) {
+            el.imageLive.textContent = text;
+        }
+    }
+
+    function brokenMessage() {
+        var numbers = [];
+        state.images.forEach(function (item, index) {
+            if (item.broken) {
+                numbers.push(index + 1);
+            }
+        });
+        return numbers.length ? numbers.join(", ") + "번째 파일은 사진으로 열리지 않아요. 빼고 등록해 주세요." : "";
+    }
+
+    function showImageNote(message) {
+        var error = errorElement("images");
+        if (!error) {
+            return;
+        }
+        error.textContent = message || "";
+        error.hidden = !message;
+    }
+
+    // 썸네일과 따로 브라우저가 사진으로 여는지 확인한다. 등록은 이 확인이 끝난 뒤에만 보낸다.
+    function checkImage(item) {
+        item.check = new Promise(function (resolve) {
+            var probe = new Image();
+            probe.onload = function () {
+                item.checked = true;
+                resolve();
+            };
+            probe.onerror = function () {
+                item.checked = true;
+                if (!item.broken) {
+                    item.broken = true;
+                    showImageNote(brokenMessage());
+                    var row = el.imageList.querySelector('[data-image-id="' + item.id + '"]');
+                    if (row) {
+                        row.classList.add("is-broken");
+                    }
+                }
+                resolve();
+            };
+            probe.src = item.url;
+        });
+    }
+
+    function addImages(files) {
+        if (state.sending || !files || !files.length) {
+            return;
+        }
+        var current = state.images.map(function (item) {
+            return item.file;
+        });
+        var picked = pickImages(current, files, limits);
+        picked.accepted.forEach(function (file) {
+            var item = { id: nextImageId++, file: file, url: URL.createObjectURL(file), checked: false, broken: false };
+            state.images.push(item);
+            checkImage(item);
+        });
+        el.imageAdd.removeAttribute("aria-invalid");
+        showImageNote(picked.message);
+        renderImages(null);
+        if (picked.accepted.length) {
+            announce("사진 " + picked.accepted.length + "장을 넣었어요. 모두 " + state.images.length + "장이에요.");
+        }
+    }
+
+    function removeImage(id) {
+        var index = state.images.findIndex(function (item) {
+            return item.id === id;
+        });
+        if (index < 0 || state.sending) {
+            return;
+        }
+        URL.revokeObjectURL(state.images[index].url);
+        state.images.splice(index, 1);
+        showImageNote(brokenMessage());
+        var neighbor = state.images[Math.min(index, state.images.length - 1)];
+        renderImages(neighbor ? { id: neighbor.id, button: "is-remove" } : { id: 0, button: "" });
+        announce((index + 1) + "번째 사진을 뺐어요. 남은 사진 " + state.images.length + "장.");
+    }
+
+    function shiftImage(id, delta) {
+        var index = state.images.findIndex(function (item) {
+            return item.id === id;
+        });
+        if (index < 0 || state.sending) {
+            return;
+        }
+        var moved = moveItem(state.images, index, index + delta);
+        if (moved === state.images) {
+            return;
+        }
+        state.images = moved;
+        showImageNote(brokenMessage());
+        renderImages({ id: id, button: delta < 0 ? "is-before" : "is-after" });
+        announce("사진을 " + (index + delta + 1) + "번째로 옮겼어요.");
+    }
+
+    function imageFiles(list) {
+        return Array.prototype.filter.call(list || [], function (file) {
+            return file && /^image\//.test(file.type || "");
+        });
+    }
+
+    function bindImageInputs() {
+        if (!el.images || !el.imageInput || !el.imageAdd) {
+            return;
+        }
+        el.imageAdd.addEventListener("click", function () {
+            el.imageInput.click();
+        });
+        el.imageInput.addEventListener("change", function () {
+            addImages(Array.prototype.slice.call(el.imageInput.files || []));
+            el.imageInput.value = "";
+        });
+        // 본문에 붙여 넣은 사진은 사진 칸으로 옮긴다. 글자는 평소처럼 붙는다.
+        el.body.addEventListener("paste", function (event) {
+            var files = imageFiles(event.clipboardData && event.clipboardData.files);
+            if (files.length) {
+                event.preventDefault();
+                addImages(files);
+            }
+        });
+        [el.images, el.body].forEach(function (zone) {
+            zone.addEventListener("dragover", function (event) {
+                if (event.dataTransfer && Array.prototype.indexOf.call(event.dataTransfer.types || [], "Files") >= 0) {
+                    event.preventDefault();
+                    el.images.classList.add("is-dragover");
+                }
+            });
+            zone.addEventListener("dragleave", function () {
+                el.images.classList.remove("is-dragover");
+            });
+            zone.addEventListener("drop", function (event) {
+                el.images.classList.remove("is-dragover");
+                var files = event.dataTransfer ? Array.prototype.slice.call(event.dataTransfer.files || []) : [];
+                if (files.length) {
+                    event.preventDefault();
+                    addImages(files);
+                }
+            });
+        });
+        renderImages(null);
+    }
+
     function submit(event) {
         event.preventDefault();
         if (state.sending || state.retryUntil > Date.now()) {
+            return;
+        }
+        var pending = state.images.filter(function (item) {
+            return !item.checked;
+        });
+        if (pending.length) {
+            setBusy(true);
+            setStatus("사진을 확인하고 있어요.");
+            Promise.all(pending.map(function (item) {
+                return item.check;
+            })).then(function () {
+                setBusy(false);
+                renderImages(null);
+                setStatus("");
+                submit({ preventDefault: function () {} });
+            });
             return;
         }
         clearErrors();
@@ -283,10 +635,15 @@
             password: el.password.value,
             subject: el.subject.value,
             body: el.body.value,
+            imageCount: state.images.length,
             captcha: answer
         }, limits);
         if (problem) {
             showFieldError(problem.field, problem.message);
+            return;
+        }
+        if (brokenMessage()) {
+            showFieldError("images", brokenMessage());
             return;
         }
         var body = {
@@ -305,9 +662,35 @@
             body.captcha_code = answer.code;
         }
         setBusy(true);
-        setStatus("등록하고 있어요.");
-        post.postJson("/write", body, 45000).then(function (result) {
+        var request;
+        if (state.images.length) {
+            body.image_position = imagePosition();
+            var data = new FormData();
+            data.append("payload", JSON.stringify(body));
+            state.images.forEach(function (item) {
+                data.append("images", item.file, item.file.name || "image");
+            });
+            setStatus("사진을 올리고 있어요. 0%");
+            request = post.postForm("/write", data, {
+                onProgress: function (ratio) {
+                    setStatus("사진을 올리고 있어요. " + Math.min(99, Math.floor(ratio * 100)) + "%");
+                },
+                onUploaded: function () {
+                    setStatus("등록하고 있어요.");
+                }
+            });
+        } else {
+            setStatus("등록하고 있어요.");
+            request = post.postJson("/write", body, 45000);
+        }
+        request.then(function (result) {
             setBusy(false);
+            renderImages(null);
+            if (result.notSent) {
+                // 서버가 요청을 다 받지 못했으니 보이는 캡챠 답도 아직 쓰이지 않았다.
+                setStatus("사진을 다 올리기 전에 연결이 끊겼어요. 글은 등록되지 않았어요. 다시 등록해 주세요.", "error");
+                return;
+            }
             handle(post.interpret(result.status, result.payload));
         });
     }
@@ -367,6 +750,7 @@
     });
     el.rememberNickname.addEventListener("change", saveIdentity);
     el.rememberPassword.addEventListener("change", saveIdentity);
+    bindImageInputs();
     form.addEventListener("submit", submit);
     root.addEventListener("beforeunload", function (event) {
         if (!state.leaving && isDirty()) {

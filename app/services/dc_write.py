@@ -15,16 +15,20 @@ import secrets
 import selectors
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 
 from flask import current_app, request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 COOKIE = "mirror_write"
 COOKIE_AGE = 180 * 24 * 60 * 60
-LIMITS = dict(subject_max=40, body_max=10000, nickname_max=20, password_min=2, password_max=20)
+LIMITS = dict(subject_max=40, body_max=10000, nickname_max=20, password_min=2, password_max=20,
+              image_max_count=10, image_max_bytes=10 * 1024 * 1024, image_total_bytes=30 * 1024 * 1024)
+IMAGE_TOTAL_MESSAGE = "사진은 모두 합쳐 30MB까지 올릴 수 있어요."
 CAPTCHA_KEY = re.compile(r"^[0-9a-f]{16}$")
 MAX_IMAGE = 200 * 1024
 
@@ -33,6 +37,60 @@ class WorkerUnavailable(Exception):
     def __init__(self, sent=False):
         super().__init__()
         self.sent = sent
+
+
+class InvalidImage(ValueError):
+    pass
+
+
+def _image_format(data):
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", "jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", "png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif", "gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp", "webp"
+    return None
+
+
+@contextmanager
+def prepared_images(files):
+    """Keep private, server-named uploads alive only for this worker request."""
+    if len(files) > LIMITS["image_max_count"]:
+        raise InvalidImage("사진은 10장까지 올릴 수 있어요.")
+    directory = None
+    try:
+        images, total = [], 0
+        try:
+            if files:
+                directory = tempfile.mkdtemp(prefix="mirror-dcimg-", dir=current_app.config.get("DC_APP_UPLOADS"))
+                os.chmod(directory, 0o700)
+            for index, file in enumerate(files, 1):
+                data = file.stream.read(LIMITS["image_max_bytes"] + 1)
+                if len(data) > LIMITS["image_max_bytes"]:
+                    raise InvalidImage(f"{index}번째 사진은 10MB까지 올릴 수 있어요.")
+                total += len(data)
+                if total > LIMITS["image_total_bytes"]:
+                    raise InvalidImage(IMAGE_TOTAL_MESSAGE)
+                detected = _image_format(data)
+                if detected is None:
+                    raise InvalidImage(f"{index}번째 파일은 JPG, PNG, GIF, WEBP 사진만 올릴 수 있어요.")
+                content_type, extension = detected
+                path = Path(directory).resolve() / f"{secrets.token_hex(16)}.{extension}"
+                with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output:
+                    os.fchmod(output.fileno(), 0o600)
+                    output.write(data)
+                images.append({"path": str(path), "type": content_type, "name": f"image{index}.{extension}"})
+        except OSError:
+            # Filesystem exceptions can contain private paths; do not surface them.
+            raise WorkerUnavailable() from None
+        yield images
+    finally:
+        if directory is not None:
+            # A cleanup failure must not turn a completed write into an error response.
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 class WorkerManager:
@@ -188,7 +246,7 @@ _last_success = {}
 
 
 def perform(op, **payload):
-    deadline = time.monotonic() + 40
+    deadline = time.monotonic() + (55 if op == "write" and payload.get("images") else 40)
     # The interval check and success timestamp must surround the serialized call.
     remaining = deadline - time.monotonic()
     if remaining <= 0 or not _action_lock.acquire(timeout=remaining):
@@ -217,6 +275,8 @@ def perform(op, **payload):
         cause = error.get("cause") if not result.get("ok") else data.get("cause")
         cause = cause if isinstance(cause, str) else ""
         name = error.get("name")
+        if name == "WorkerError" and error.get("sent") is False:
+            return unavailable(), 503
         if name == "CaptchaRequiredError" or (cause and re.search(r"captcha|보안\s?코드|자동\s?입력", cause, re.I)):
             return {"ok": False, "code": "captcha_required", "message": cause or "보안 코드를 입력해 주세요."}, 200
         if cause == "잠시후 다시 이용해주세요.":

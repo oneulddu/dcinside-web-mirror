@@ -1,4 +1,7 @@
 import base64
+import io
+import json
+from pathlib import Path
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -556,3 +559,222 @@ def test_readonly_worker_calls_have_short_deadlines(setup, monkeypatch):
     assert client.get("/write/captcha?kind=article&board=programming&key=" + "a" * 16).status_code == 200
     assert [op for op, _ in manager.calls] == ["gallery_info", "captcha"]
     assert manager.deadlines == [110.0, 110.0]
+
+
+PNG = b"\x89PNG\r\n\x1a\nfirst"
+JPEG = b"\xff\xd8\xffsecond"
+
+
+def multipart(client, files=(), *, headers=None, **changes):
+    return client.post("/write", data={
+        "payload": json.dumps({**BODY, **changes}),
+        "images": [(io.BytesIO(data), "private-original.png", "text/plain") for data in files],
+    }, content_type="multipart/form-data", headers=ORIGIN if headers is None else headers)
+
+
+@pytest.mark.parametrize("position", ["top", "bottom"])
+def test_multipart_image_order_permissions_and_cleanup(setup, tmp_path, monkeypatch, position):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    unlock(client)
+    observed = []
+
+    def inspect(op, deadline=None, **payload):
+        assert op == "write" and payload["image_position"] == position
+        assert deadline == 155.0
+        assert payload["body"] == BODY["body"]
+        for index, (image, data, extension, content_type) in enumerate(zip(
+                payload["images"], [PNG, JPEG, b"GIF87a", b"GIF89a", b"RIFF1234WEBP"],
+                ["png", "jpg", "gif", "gif", "webp"],
+                ["image/png", "image/jpeg", "image/gif", "image/gif", "image/webp"]), 1):
+            path = Path(image["path"])
+            assert path.is_absolute() and path.parent.parent == tmp_path
+            assert path.suffix == f".{extension}" and "private-original" not in path.name
+            assert path.read_bytes() == data
+            assert path.stat().st_mode & 0o777 == 0o600
+            assert path.parent.stat().st_mode & 0o777 == 0o700
+            assert image["type"] == content_type and image["name"] == f"image{index}.{extension}"
+            observed.append(path)
+        return manager.result
+
+    monkeypatch.setattr(manager, "request", inspect)
+    monkeypatch.setattr(service.time, "monotonic", lambda: 100.0)
+    response = multipart(client, [PNG, JPEG, b"GIF87a", b"GIF89a", b"RIFF1234WEBP"], image_position=position)
+    assert response.status_code == 200 and response.json["ok"]
+    assert len(observed) == 5
+    assert all(not path.parent.exists() for path in observed)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("files,limit,message", [
+    ([PNG, b"text"], None, "2번째 파일은 JPG, PNG, GIF, WEBP 사진만 올릴 수 있어요."),
+    ([b""], None, "1번째 파일은 JPG, PNG, GIF, WEBP 사진만 올릴 수 있어요."),
+    ([b"RIFFshort", b"GIFwrong"], None, "1번째 파일은 JPG, PNG, GIF, WEBP 사진만 올릴 수 있어요."),
+    ([PNG] * 11, None, "사진은 10장까지 올릴 수 있어요."),
+    ([JPEG, PNG], ("image_max_bytes", len(PNG) - 1), "2번째 사진은 10MB까지 올릴 수 있어요."),
+    ([PNG, JPEG], ("image_total_bytes", len(PNG) + len(JPEG) - 1), service.IMAGE_TOTAL_MESSAGE),
+])
+def test_invalid_uploads_cleanup_before_worker(setup, tmp_path, monkeypatch, files, limit, message):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    unlock(client)
+    if limit:
+        monkeypatch.setitem(service.LIMITS, *limit)
+    response = multipart(client, files)
+    assert response.status_code == 400
+    assert response.json == {"ok": False, "code": "invalid", "field": "images", "message": message}
+    assert not manager.calls and list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("body", ["", " \n\t "])
+@pytest.mark.parametrize("images", [False, True])
+def test_image_only_body(setup, body, images):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = multipart(client, [PNG] if images else [], body=body)
+    assert response.status_code == (200 if images else 400)
+    if images:
+        assert manager.calls[0][1]["body"] == body
+        assert manager.calls[0][1]["image_position"] == "top"
+    else:
+        assert response.json["field"] == "body" and not manager.calls
+
+
+@pytest.mark.parametrize("body", [None, 3, "x" * 10001])
+def test_images_do_not_relax_body_type_or_maximum(setup, body):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = multipart(client, [PNG], body=body)
+    assert response.status_code == 400 and response.json["field"] == "body"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("position", [None, "middle", [], {}, 1])
+@pytest.mark.parametrize("encoding", ["json", "multipart"])
+def test_invalid_image_position(setup, position, encoding):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = (post if encoding == "json" else multipart)(client, image_position=position)
+    assert response.status_code == 400 and response.json["field"] == "images"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("payload", [None, "[]", "null", "1", '"text"', "{"])
+def test_multipart_requires_object_payload(setup, payload):
+    _, client, manager, _ = setup
+    unlock(client)
+    data = {"images": (io.BytesIO(PNG), "photo.png")}
+    if payload is not None:
+        data["payload"] = payload
+    response = client.post("/write", data=data, content_type="multipart/form-data", headers=ORIGIN)
+    assert response.status_code == 400
+    assert response.json == {"ok": False, "code": "invalid", "field": "board", "message": "JSON 형식으로 요청해 주세요."}
+    assert not manager.calls
+
+
+def test_multipart_rejects_unknown_file_field(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = client.post("/write", data={"payload": json.dumps(BODY), "other": (io.BytesIO(PNG), "x.png")}, headers=ORIGIN)
+    assert response.status_code == 400 and response.json["field"] == "images"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("gate", ["unconfigured", "locked", "missing_origin", "foreign_origin"])
+def test_multipart_write_gates_run_before_body_parsing(setup, gate):
+    app, client, manager, _ = setup
+    headers = ORIGIN
+    if gate == "unconfigured":
+        app.config["WRITE_KEY"] = ""
+    elif gate != "locked":
+        unlock(client)
+        headers = {} if gate == "missing_origin" else {"Origin": "https://evil.test"}
+    # Parsing this body would raise 413; the access gate must reject it first.
+    app.config["MAX_CONTENT_LENGTH"] = 1
+    response = multipart(client, [PNG], headers=headers)
+    assert response.status_code == (404 if gate == "unconfigured" else 403)
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("encoding", ["json", "multipart"])
+def test_write_413_is_json_and_other_endpoints_keep_default(setup, encoding):
+    app, client, manager, _ = setup
+    assert app.config["MAX_CONTENT_LENGTH"] == 32 * 1024 * 1024
+    unlock(client)
+    app.config["MAX_CONTENT_LENGTH"] = 10
+    response = post(client) if encoding == "json" else multipart(client, [PNG])
+    assert response.status_code == 413
+    assert response.json == {"ok": False, "code": "invalid", "field": "images", "message": service.IMAGE_TOTAL_MESSAGE}
+    assert response.headers["Cache-Control"] == "no-store"
+    other = post(client, "/read/vote", pid=123)
+    assert other.status_code == 413 and other.mimetype == "text/html"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("result,code", [
+    (service.WorkerUnavailable(sent=True), "uncertain"),
+    (service.WorkerUnavailable(), "unavailable"),
+    ({"ok": False, "error": {"name": "WorkerError", "sent": False}}, "unavailable"),
+    ({"ok": False, "error": {"name": "ApiError", "cause": "권한 오류"}}, "rejected"),
+    (RuntimeError("fake worker failure"), None),
+])
+def test_upload_cleanup_on_failed_or_exceptional_perform(setup, tmp_path, monkeypatch, result, code):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    unlock(client)
+    manager.result = result
+    original = manager.request
+    observed = []
+
+    def inspect(op, **payload):
+        observed.extend(Path(image["path"]) for image in payload["images"])
+        assert all(path.is_file() for path in observed)
+        return original(op, **payload)
+
+    monkeypatch.setattr(manager, "request", inspect)
+    if code is None:
+        with pytest.raises(RuntimeError, match="fake worker failure"):
+            multipart(client, [PNG])
+    else:
+        assert multipart(client, [PNG]).json["code"] == code
+    assert observed and all(not path.parent.exists() for path in observed)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_upload_cleanup_when_rate_limited(setup, tmp_path):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    unlock(client)
+    assert post(client).json["ok"]
+    assert multipart(client, [PNG]).status_code == 429
+    assert len(manager.calls) == 1 and list(tmp_path.iterdir()) == []
+
+
+def test_image_deadline_includes_action_lock_wait(setup, monkeypatch):
+    app, _, manager, _ = setup
+    now, released = [100.0], []
+
+    class DelayedLock:
+        def acquire(self, *, timeout):
+            assert timeout == 55
+            now[0] += 15
+            return True
+
+        def release(self):
+            released.append(True)
+
+    monkeypatch.setattr(service, "_action_lock", DelayedLock())
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+    with app.app_context():
+        assert service.perform("write", images=[{"path": "fake"}])[1] == 200
+    assert manager.deadlines == [155.0] and released == [True]
+
+
+def test_image_limits_in_write_context(setup):
+    _, client, _, contexts = setup
+    unlock(client)
+    assert client.get("/write?board=programming").status_code == 200
+    limits = contexts[-1][1]["limits"]
+    assert limits["image_max_count"] == 10
+    assert limits["image_max_bytes"] == 10 * 1024 * 1024
+    assert limits["image_total_bytes"] == 30 * 1024 * 1024

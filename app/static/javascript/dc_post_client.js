@@ -107,6 +107,77 @@
         });
     }
 
+    // 사진이 있는 글은 XHR로 보내 올리는 진행률을 보여 준다. 다 올린 뒤에는 서버 답만 기다린다.
+    // 프록시가 본문을 받기 전에 거절한 413은 디시에 보내지 않은 것이 확실하므로 입력 오류로 바꾼다.
+    function postForm(url, formData, options) {
+        var settings = options || {};
+        return new Promise(function (resolve) {
+            var xhr = new XMLHttpRequest();
+            var timer = null;
+            var done = false;
+            var uploaded = false;
+            var stallMs = settings.stallTimeoutMs || 60000;
+            // 올리는 동안 진행이 멈추면 끊는다. 다 올리기 전이라 디시에는 가지 않았다.
+            function watchStall() {
+                clearTimeout(timer);
+                timer = setTimeout(function () {
+                    xhr.abort();
+                }, stallMs);
+            }
+            function finish(result) {
+                if (done) {
+                    return;
+                }
+                done = true;
+                clearTimeout(timer);
+                resolve(result);
+            }
+            xhr.open("POST", url);
+            xhr.withCredentials = true;
+            xhr.setRequestHeader("Accept", "application/json");
+            if (xhr.upload) {
+                xhr.upload.addEventListener("progress", function (event) {
+                    if (!uploaded) {
+                        watchStall();
+                    }
+                    if (event.lengthComputable && typeof settings.onProgress === "function") {
+                        settings.onProgress(event.loaded / event.total);
+                    }
+                });
+                xhr.upload.addEventListener("load", function () {
+                    uploaded = true;
+                    if (typeof settings.onUploaded === "function") {
+                        settings.onUploaded();
+                    }
+                    clearTimeout(timer);
+                    timer = setTimeout(function () {
+                        xhr.abort();
+                    }, settings.responseTimeoutMs || 70000);
+                });
+            }
+            xhr.addEventListener("load", function () {
+                var payload = null;
+                try {
+                    payload = JSON.parse(xhr.responseText);
+                } catch (err) {
+                    payload = null;
+                }
+                if (xhr.status === 413 && (!payload || typeof payload !== "object")) {
+                    payload = { ok: false, code: "invalid", field: "images", message: "사진 용량이 너무 커서 서버가 받지 않았어요. 사진을 줄이거나 빼 주세요." };
+                }
+                finish({ status: xhr.status, payload: payload });
+            });
+            ["error", "abort", "timeout"].forEach(function (name) {
+                xhr.addEventListener(name, function () {
+                    // 다 올리기 전에 끊겼으면 서버가 요청 전체를 받지 못했으니 디시에도 가지 않았다.
+                    finish({ status: 0, payload: null, notSent: !uploaded });
+                });
+            });
+            xhr.send(formData);
+            watchStall();
+        });
+    }
+
     // 캡챠 칸 하나를 다룬다. 서버가 준 문제를 보여 주고, 새로고침은 새 키로 이미지만 다시 받는다.
     function createCaptcha(prefix, kind, board) {
         var box = document.getElementById(prefix);
@@ -169,5 +240,6 @@
     }
 
     root.MirrorDcPost.postJson = postJson;
+    root.MirrorDcPost.postForm = postForm;
     root.MirrorDcPost.createCaptcha = createCaptcha;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -32,6 +32,41 @@ test("비밀번호 앞뒤 공백은 지우지 않고 그대로 센다", () => {
     assert.equal(form.validateFields(Object.assign({}, ok, { password: " 1" }), limits), null);
 });
 
+test("사진이 있으면 본문을 비워도 되고, 없으면 본문이 필요하다", () => {
+    assert.equal(form.validateFields(Object.assign({}, ok, { body: "  ", imageCount: 1 }), limits), null);
+    assert.equal(form.validateFields(Object.assign({}, ok, { body: "", imageCount: 0 }), limits).field, "body");
+    assert.equal(form.validateFields(Object.assign({}, ok, { body: "a".repeat(10001), imageCount: 2 }), limits).field, "body");
+});
+
+test("사진은 형식·장당 크기·장수·합계를 넘는 것만 빼고 넣는다", () => {
+    const imageLimits = { image_max_count: 3, image_max_bytes: 100, image_total_bytes: 250 };
+    const file = (name, type, size) => ({ name, type, size });
+    const picked = form.pickImages([file("a.jpg", "image/jpeg", 90)], [
+        file("b.png", "image/png", 90),
+        file("c.heic", "image/heic", 10),
+        file("d.gif", "image/gif", 101),
+        file("e.webp", "", 80),
+        file("f.jpg", "image/jpeg", 10)
+    ], imageLimits);
+    assert.equal(JSON.stringify(picked.accepted.map((f) => f.name)), JSON.stringify(["b.png", "f.jpg"]));
+    assert.match(picked.message, /아닌 파일 1개/);
+    assert.match(picked.message, /빈 사진 1장/);
+    assert.match(picked.message, /합쳐 0MB를 넘어서 1장/);
+    const full = form.pickImages([file("a.jpg", "image/jpeg", 1)], [1, 2, 3].map((n) => file(n + ".jpg", "image/jpeg", 1)), imageLimits);
+    assert.equal(full.accepted.length, 2);
+    assert.match(full.message, /3장까지라 1장/);
+    assert.equal(form.pickImages([], [file("x.png", "image/png", 0)], imageLimits).accepted.length, 0);
+    assert.equal(form.pickImages([], [file("x.webp", "", 10)], imageLimits).accepted.length, 1);
+});
+
+test("사진 순서는 범위 안에서만 옮긴다", () => {
+    assert.equal(JSON.stringify(form.moveItem([1, 2, 3], 0, 1)), JSON.stringify([2, 1, 3]));
+    assert.equal(JSON.stringify(form.moveItem([1, 2, 3], 2, 1)), JSON.stringify([1, 3, 2]));
+    const list = [1, 2];
+    assert.equal(form.moveItem(list, 0, -1), list);
+    assert.equal(form.moveItem(list, 1, 2), list);
+});
+
 test("캡챠가 보이면 답이 있어야 하고 이미지를 못 받았으면 보내지 않는다", () => {
     assert.equal(form.validateFields(Object.assign({}, ok, { captcha: { key: "a".repeat(16), code: "" } }), limits).field, "captcha");
     assert.equal(form.validateFields(Object.assign({}, ok, { captcha: { key: "a".repeat(16), code: "ab12", imageFailed: true } }), limits).field, "captcha");

@@ -44,6 +44,8 @@ class Config:
     DC_APP_NODE = os.getenv("MIRROR_DC_APP_NODE", "").strip() or shutil.which("node")
     DC_APP_DIR = os.getenv("MIRROR_DC_APP_DIR", "").strip() or None
     DC_APP_STATE = os.getenv("MIRROR_DC_APP_STATE", "").strip() or None
+    DC_APP_UPLOADS = os.getenv("MIRROR_DC_APP_UPLOADS", "").strip() or None
+    MAX_CONTENT_LENGTH = 32 * 1024 * 1024
 
 
 class DevelopmentConfig(Config):

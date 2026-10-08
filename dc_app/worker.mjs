@@ -1,14 +1,17 @@
 import { DCInside, captchaUrl } from '@green-1052/dcinside.js';
 import { readFile, mkdir, open, rename, unlink, chmod } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
 const statePath = process.env.MIRROR_DC_APP_STATE || resolve(dirname(fileURLToPath(import.meta.url)), '../instance/dc_app_credentials.json');
-const dc = new DCInside({ http: { timeout: 20000 } });
+const dc = new DCInside({ http: { timeout: 45000 } });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const MAX_IMAGE = 200 * 1024;
+const MAX_UPLOAD = 10 * 1024 * 1024;
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const IMAGE_NAME = /^[A-Za-z0-9_-]+\.(jpg|png|gif|webp)$/;
 try {
   const credentials = JSON.parse(await readFile(statePath, 'utf8'));
   dc.auth.importCredentials(credentials);
@@ -62,6 +65,27 @@ async function captchaImage(input) {
   return { content_type: contentType, base64: Buffer.concat(chunks).toString('base64') };
 }
 
+async function writeContent(input) {
+  const images = [];
+  try {
+    const uploads = input.images ?? [];
+    if (!Array.isArray(uploads) || uploads.length > 10) throw new Error('Invalid image');
+    for (const image of uploads) {
+      if (!image || typeof image.path !== 'string' || !isAbsolute(image.path)
+          || !IMAGE_NAME.test(basename(image.path)) || !IMAGE_TYPES.has(image.type)
+          || typeof image.name !== 'string' || !IMAGE_NAME.test(image.name)) throw new Error('Invalid image');
+      const buffer = await readFile(image.path);
+      if (!buffer.length || buffer.length > MAX_UPLOAD) throw new Error('Invalid image');
+      images.push({ type: 'image', file: new File([buffer], image.name, { type: image.type }) });
+    }
+  } catch {
+    // No DC calls have happened. Do not expose filesystem paths or original errors.
+    throw Object.assign(new Error('Invalid image'), { sent: false });
+  }
+  const text = typeof input.body === 'string' && input.body.trim() ? [input.body] : [];
+  return input.image_position === 'bottom' ? [...text, ...images] : [...images, ...text];
+}
+
 async function handle(input) {
   if (input.op === 'ping') return { ready: true };
   if (input.op === 'captcha') return captchaImage(input);
@@ -79,15 +103,17 @@ async function handle(input) {
     }
   }
   if (!['write', 'upvote'].includes(input.op)) throw new Error('Unsupported operation');
+  let content;
   if (input.op === 'write') {
     // Future login support belongs here; never reuse the preceding writer's session.
     if (input.session?.type !== 'anonymous') throw new Error('Unsupported session');
+    content = await writeContent(input);
     dc.useAnonymous(input.session.nickname, input.session.password);
   }
   try {
     await settled();
     const send = () => input.op === 'write'
-      ? dc.articles.write({ gallery: input.gallery, subject: input.subject, content: [input.body], headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true })
+      ? dc.articles.write({ gallery: input.gallery, subject: input.subject, content, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true })
       : dc.articles.upvote(input.gallery, input.no, input.captcha);
     try {
       return await send();
@@ -117,6 +143,7 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       name: apiError || error.name === 'HTTPError' ? error.name : 'WorkerError',
       cause: apiError && typeof error.cause === 'string' ? error.cause : '',
       status: Number.isInteger(error.status) ? error.status : null,
+      ...(error.sent === false ? { sent: false } : {}),
     } };
   }
   process.stdout.write(`${JSON.stringify(result)}\n`);
