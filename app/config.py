@@ -1,5 +1,6 @@
 import os
 import secrets
+import shutil
 
 
 def _env_secret_key():
@@ -38,6 +39,11 @@ class Config:
     SESSION_COOKIE_SAMESITE = "Lax"
     PREFERRED_URL_SCHEME = os.getenv("MIRROR_PREFERRED_URL_SCHEME", "http")
     PUBLIC_BASE_URL = os.getenv("MIRROR_PUBLIC_BASE_URL", "").strip()
+    # 비어 있으면 글쓰기·추천 라우트가 모두 꺼진다. 값은 서버 .env에만 둔다.
+    WRITE_KEY = os.getenv("MIRROR_WRITE_KEY", "").strip()
+    DC_APP_NODE = os.getenv("MIRROR_DC_APP_NODE", "").strip() or shutil.which("node")
+    DC_APP_DIR = os.getenv("MIRROR_DC_APP_DIR", "").strip() or None
+    DC_APP_STATE = os.getenv("MIRROR_DC_APP_STATE", "").strip() or None
 
 
 class DevelopmentConfig(Config):

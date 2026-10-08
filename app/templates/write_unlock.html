@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% from "_bits.html" import back_link %}
+
+{% block body_class %}write-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link(next or "/", aria_label="돌아가기") }}{% endblock %}
+
+{% block content %}
+<section class="write-shell">
+    <div class="board-head page-head">
+        <div class="page-head-copy">
+            <h1 id="write-unlock-title">글쓰기·추천</h1>
+            <p class="board-head-note">이 브라우저에서 개인용 글쓰기와 추천을 켜요.</p>
+        </div>
+    </div>
+    {% if unlocked %}
+    <p class="write-status is-success">이 브라우저에서 글쓰기와 추천을 쓸 수 있어요.</p>
+    <div class="write-actions">
+        <form method="post" action="/write/lock">
+            <input type="hidden" name="next" value="{{ next or '/' }}">
+            <button class="write-cancel" type="submit">잠그기</button>
+        </form>
+        <a class="write-submit" href="{{ next or '/' }}">계속하기</a>
+    </div>
+    {% else %}
+    <form class="write-form" id="write-unlock-form" method="post" action="/write/unlock" aria-labelledby="write-unlock-title">
+        <input type="hidden" name="next" value="{{ next or '/' }}">
+        <div class="write-field">
+            <label class="write-label" for="write-key">접근 키</label>
+            <input class="write-input" id="write-key" name="key" type="password" autocomplete="current-password" required{% if error %} aria-invalid="true" autofocus{% endif %} aria-describedby="write-key-hint{% if error %} write-key-error{% endif %}">
+            <p class="write-hint" id="write-key-hint">서버의 MIRROR_WRITE_KEY 값이에요. 맞으면 이 브라우저에 180일 동안 기억해요.</p>
+            {% if error == "wrong" %}<p class="write-error" id="write-key-error">키가 맞지 않아요. 다시 입력해 주세요.</p>{% endif %}
+            {% if error == "limited" %}<p class="write-error" id="write-key-error">시도가 많아 잠시 막았어요. 1분 뒤에 다시 해 주세요.</p>{% endif %}
+        </div>
+        <div class="write-actions">
+            <a class="write-cancel" href="{{ next or '/' }}">취소</a>
+            <button class="write-submit" type="submit">잠금 해제</button>
+        </div>
+    </form>
+    {% endif %}
+</section>
+{% endblock %}

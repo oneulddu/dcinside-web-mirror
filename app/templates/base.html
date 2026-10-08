@@ -156,7 +156,24 @@
         </main>
 
         <footer class="site-foot">
+            {#- 글쓰기·추천은 서버에 접근 키가 설정된 DC 화면에서만 켤 수 있다. -#}
+            {%- set write_next = request.full_path.rstrip("?") -%}
+            {% if write_configured|default(false) and request.blueprint != 'poker' %}
+            <div class="site-foot-write" data-write-access>
+                {% if write_enabled|default(false) %}
+                <span>개인 미러 · 글쓰기 켜짐</span>
+                <form id="write-lock-form" method="post" action="/write/lock">
+                    <input type="hidden" name="next" value="{{ write_next }}">
+                    <button class="site-foot-link" type="submit">글쓰기·추천 잠그기</button>
+                </form>
+                {% else %}
+                <span>개인 미러</span>
+                <a class="site-foot-link" href="/write/unlock?{{ {'next': write_next}|urlencode }}">글쓰기·추천 잠금 해제</a>
+                {% endif %}
+            </div>
+            {% else %}
             <span>읽기 전용 미러</span>
+            {% endif %}
         </footer>
     </div>
     <script src="{{ static_url('javascript/read_state.js') }}"></script>

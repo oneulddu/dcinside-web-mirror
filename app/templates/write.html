@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% from "_bits.html" import back_link, captcha_box %}
+
+{% block body_class %}write-view{% endblock %}
+
+{% block masthead_lead %}{{ back_link(board_back_url, label=gallery_name or board, extra_class="crumb-link") }}{% endblock %}
+
+{% block content %}
+<section class="write-shell">
+    <div class="board-head page-head">
+        <div class="page-head-copy">
+            <h1 id="write-title">글쓰기</h1>
+            <p class="board-head-note">유동닉으로 올라가요. 서버 IP로 기록돼요.</p>
+        </div>
+    </div>
+    {% if write_blocked|default(false) %}
+    <p class="write-status is-error write-blocked">디시에서 이 갤러리의 글쓰기를 막아 두었어요. 등록해도 거절될 수 있어요.</p>
+    {% endif %}
+
+    <form class="write-form" id="write-form" method="post" action="/write" novalidate aria-labelledby="write-title"
+          data-board="{{ board }}" data-kind="{{ kind or '' }}" data-back-url="{{ board_back_url }}"
+          data-subject-max="{{ limits.subject_max }}" data-body-max="{{ limits.body_max }}"
+          data-nickname-max="{{ limits.nickname_max }}" data-password-min="{{ limits.password_min }}" data-password-max="{{ limits.password_max }}">
+        <div class="write-identity">
+            <div class="write-field">
+                <label class="write-label" for="write-nickname">닉네임</label>
+                <input class="write-input" id="write-nickname" name="nickname" type="text" autocomplete="nickname" maxlength="{{ limits.nickname_max * 2 }}" aria-describedby="write-nickname-error" required>
+                <p class="write-error" id="write-nickname-error" hidden></p>
+            </div>
+            <div class="write-field">
+                <label class="write-label" for="write-password">글 비밀번호</label>
+                <input class="write-input" id="write-password" name="password" type="password" autocomplete="new-password" maxlength="{{ limits.password_max * 2 }}" aria-describedby="write-password-hint write-password-error" required>
+                <p class="write-hint" id="write-password-hint">글을 지울 때 써요. {{ limits.password_min }}~{{ limits.password_max }}자</p>
+                <p class="write-error" id="write-password-error" hidden></p>
+            </div>
+        </div>
+
+        <div class="write-remember">
+            <label class="write-check">
+                <input type="checkbox" id="write-remember-nickname">
+                <span>이 브라우저에 닉네임 저장</span>
+            </label>
+            <label class="write-check">
+                <input type="checkbox" id="write-remember-password" aria-describedby="write-remember-password-note">
+                <span>이 브라우저에 글 비밀번호 저장</span>
+            </label>
+            <p class="write-hint" id="write-remember-password-note">비밀번호는 암호화하지 않고 저장해요. 이 브라우저를 쓰는 사람은 볼 수 있어요.</p>
+            <p class="write-hint write-remember-status" id="write-remember-status" role="status" aria-live="polite"></p>
+        </div>
+
+        {% set heads = (head_categories or [])|selectattr("head_id", "ne", none)|list %}
+        {% if heads %}
+        <div class="write-field">
+            <label class="write-label" for="write-head">말머리</label>
+            <div class="board-search-select-wrap write-select-wrap">
+                <select class="write-input write-select" id="write-head" name="head_id">
+                    <option value="">말머리 없음</option>
+                    {% for head in heads %}
+                    <option value="{{ head.head_id }}" data-head-name="{{ head.label }}"{% if selected_head_id is not none and head.head_id|string == selected_head_id|string %} selected{% endif %}>{{ head.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="write-field">
+            <div class="write-label-row">
+                <label class="write-label" for="write-subject">제목</label>
+                <span class="write-count" id="write-subject-count" aria-hidden="true">0/{{ limits.subject_max }}</span>
+            </div>
+            <input class="write-input" id="write-subject" name="subject" type="text" autocomplete="off" aria-describedby="write-subject-error" required>
+            <p class="write-error" id="write-subject-error" hidden></p>
+        </div>
+
+        <div class="write-field">
+            <div class="write-label-row">
+                <label class="write-label" for="write-body">본문</label>
+                <span class="write-count" id="write-body-count" aria-hidden="true">0/{{ limits.body_max }}</span>
+            </div>
+            <textarea class="write-input write-textarea" id="write-body" name="body" rows="12" aria-describedby="write-body-hint write-body-error" required></textarea>
+            <p class="write-hint" id="write-body-hint">글자만 올릴 수 있어요. 줄바꿈은 그대로 들어가요.</p>
+            <p class="write-error" id="write-body-error" hidden></p>
+        </div>
+
+        {{ captcha_box("write-captcha", "디시가 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 다시 등록해 주세요.") }}
+
+        <p class="write-status" id="write-status" role="status" aria-live="polite"></p>
+
+        <div class="write-actions">
+            <a class="write-cancel" id="write-back" href="{{ board_back_url }}">취소</a>
+            <button class="write-submit" id="write-submit" type="submit" disabled>등록</button>
+        </div>
+        <noscript><p class="write-hint">글쓰기는 자바스크립트를 켜야 쓸 수 있어요.</p></noscript>
+    </form>
+</section>
+<script src="{{ static_url('javascript/dc_post_client.js') }}"></script>
+<script src="{{ static_url('javascript/write_form.js') }}"></script>
+{% endblock %}

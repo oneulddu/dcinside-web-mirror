@@ -93,6 +93,14 @@ jobs:
             python -m pip install --upgrade pip
             python -m pip install -r requirements.txt
 
+            NPM_BIN="$(command -v npm || true)"
+            if [ -z "${NPM_BIN}" ] && [ -x "/home/ubuntu/.nvm/versions/node/v24.11.1/bin/npm" ]; then
+              NPM_BIN="/home/ubuntu/.nvm/versions/node/v24.11.1/bin/npm"
+            fi
+            if [ -f dc_app/package-lock.json ] && [ -n "${NPM_BIN}" ]; then
+              PATH="$(dirname "${NPM_BIN}"):${PATH}" "${NPM_BIN}" ci --omit=dev --prefix dc_app
+            fi
+
             python scripts/ensure_production_env.py
 
             PM2_BIN="$(command -v pm2 || true)"

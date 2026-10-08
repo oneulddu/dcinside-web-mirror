@@ -135,3 +135,6 @@ dmypy.json
 # Local agent/tooling worktrees
 .claude/
 .claude/worktrees/
+
+# Isolated DC app worker dependencies
+dc_app/node_modules/

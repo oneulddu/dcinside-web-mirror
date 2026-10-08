@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_bits.html" import author_text, feed_status_icon, feed_subject, reply_count, number, back_link, board_search_form, post_time %}
+{% from "_bits.html" import author_text, feed_status_icon, feed_subject, reply_count, number, back_link, board_search_form, post_time, captcha_box %}
 
 {% block body_class %}read-view{% endblock %}
 
@@ -24,6 +24,17 @@
     <article class="article-body" id="article-body">
         {{ data.html | safe }}
     </article>
+
+    {% if write_enabled|default(false) %}
+    <div class="vote-panel" id="vote-panel" data-board="{{ board }}" data-kind="{{ kind or '' }}" data-pid="{{ pid }}">
+        <button class="vote-btn" id="vote-submit" type="button" aria-describedby="vote-status">
+            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 10v10H4V10h3z"/><path d="M7 10l4-7c1.4 0 2.3 1.1 2 2.4L12.4 9H18a2 2 0 0 1 2 2.3l-1.2 6.4A2.5 2.5 0 0 1 16.3 20H7"/></svg>
+            <span class="vote-label" data-vote-label>추천</span>
+        </button>
+        <p class="vote-status" id="vote-status" role="status" aria-live="polite"></p>
+        {{ captcha_box("vote-captcha", "디시가 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 다시 추천해 주세요.") }}
+    </div>
+    {% endif %}
 
     <div class="section-band" aria-hidden="true"></div>
 
@@ -126,4 +137,8 @@
 <script src="{{ static_url('javascript/comment_spam_filter.js') }}"></script>
 <script src="{{ static_url('javascript/back_to_top.js') }}"></script>
 <script src="{{ static_url('javascript/image_viewer.js') }}"></script>
+{% if write_enabled|default(false) %}
+<script src="{{ static_url('javascript/dc_post_client.js') }}"></script>
+<script src="{{ static_url('javascript/vote.js') }}"></script>
+{% endif %}
 {% endblock %}

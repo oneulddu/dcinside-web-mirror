@@ -106,6 +106,7 @@ def test_screen_and_service_route_map_contract():
         "/movie": "main.movie",
         "/read": "main.read",
         "/read/related": "main.read_related",
+        "/read/vote": "main.read_vote",
         "/recent": "main.recent",
         "/recent/clear": "main.recent_clear",
         "/recent/remove": "main.recent_remove",
@@ -113,6 +114,10 @@ def test_screen_and_service_route_map_contract():
         "/v2/board": "main.board_compat_redirect",
         "/v2/read": "main.read_compat_redirect",
         "/v2/recent": "main.recent_compat_redirect",
+        "/write": "main.write",
+        "/write/captcha": "main.write_captcha",
+        "/write/lock": "main.write_lock",
+        "/write/unlock": "main.write_unlock",
     }
     assert all(rule.endpoint.startswith(("main.", "poker.")) for rule in app.url_map.iter_rules() if rule.endpoint != "static")
 

@@ -1,10 +1,12 @@
 #-*- coding:utf-8 -*-
 import html
+import base64
+import secrets
 import ipaddress
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 from werkzeug.exceptions import BadRequest
 from flask import Blueprint, abort, current_app, jsonify, make_response, redirect, render_template, request, url_for
 
@@ -23,7 +25,7 @@ from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
 from .services.dc.search import normalize_search_pos
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
-from .services import link_preview, youtube_meta
+from .services import dc_write, link_preview, youtube_meta
 from .services.recent import (
     RECENT_MAX_ITEMS,
     clear_recent_galleries,
@@ -1192,3 +1194,236 @@ def register_routes(app):
     app.add_template_global(board_url, "board_url")
     app.add_template_global(read_url, "read_url")
     app.register_blueprint(bp)
+
+
+# DC app writes are opt-in and isolated from the read scraper and Poker routes.
+@bp.app_context_processor
+def dc_write_context():
+    is_dc = request.blueprint == "main"
+    return {"write_configured": is_dc and dc_write.configured(),
+            "write_enabled": is_dc and dc_write.enabled()}
+
+
+_WRITE_ENDPOINTS = {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote"}
+
+
+@bp.before_request
+def gate_dc_write():
+    if request.endpoint not in _WRITE_ENDPOINTS:
+        return None
+    if not dc_write.configured():
+        abort(404)
+    if request.endpoint not in {"main.write_unlock", "main.write_lock"} and not dc_write.enabled():
+        if request.endpoint == "main.write" and request.method == "GET":
+            return redirect(url_for("main.write_unlock", next=request.full_path.rstrip("?")), code=302)
+        return jsonify(ok=False, code="locked"), 403
+    if request.method == "POST":
+        _reject_cross_origin_post()
+
+
+@bp.after_request
+def dc_write_no_store(response):
+    if request.endpoint in _WRITE_ENDPOINTS:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+def _write_next(value):
+    value = value or "/"
+    decoded = unquote(value)
+    if (not value.startswith("/") or decoded.startswith("//") or "\\" in decoded
+            or any(ord(char) < 32 or ord(char) == 127 for char in decoded)
+            or urlparse(value).netloc or urlparse(value).scheme):
+        return "/"
+    return value
+
+
+@bp.route("/write/unlock", methods=["GET", "POST"])
+def write_unlock():
+    next_path = _write_next(request.form.get("next") if request.method == "POST" else request.args.get("next"))
+    error = dc_write.check_key(request.form.get("key", "")) if request.method == "POST" else None
+    if request.method == "POST" and error is None:
+        response = redirect(next_path, code=303)
+        dc_write.unlock_cookie(response)
+        return response
+    return render_template("write_unlock.html", **{
+        "next": next_path, "error": error, "unlocked": dc_write.enabled(),
+    }), (429 if error == "limited" else 400 if error else 200)
+
+
+@bp.route("/write/lock", methods=["POST"])
+def write_lock():
+    response = redirect(_write_next(request.form.get("next")), code=303)
+    response.delete_cookie(dc_write.COOKIE, secure=request.is_secure, httponly=True, samesite="Lax")
+    return response
+
+
+def _write_invalid(field, message):
+    return jsonify(ok=False, code="invalid", field=field, message=message), 400
+
+
+def _write_board(data):
+    if not isinstance(data.get("board"), str) or not data["board"].strip():
+        raise ValueError()
+    if data.get("kind") is not None and not isinstance(data["kind"], str):
+        raise ValueError()
+    return _normalize_board_id(data["board"]), _normalize_gallery_kind(data.get("kind"))
+
+
+def _write_captcha_answer(data):
+    key, code = data.get("captcha_key"), data.get("captcha_code")
+    if key is None and code is None:
+        return None
+    if not isinstance(key, str) or not dc_write.CAPTCHA_KEY.fullmatch(key) or not isinstance(code, str) or not 1 <= len(code.strip()) <= 10:
+        raise ValueError()
+    return {"key": key, "code": code.strip()}
+
+
+def _write_json_request():
+    if not request.is_json:
+        return None
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else None
+
+
+def _write_result(op, board, kind, **payload):
+    result, status = dc_write.perform(op, gallery=board, **payload)
+    if result["ok"]:
+        data = result.pop("data")
+        if op == "write":
+            params = {"board": board}
+            _add_kind_param(params, kind)
+            result["board_url"] = url_for("main.board", **params, refresh=1)
+            number = data.get("no")
+            if not isinstance(number, bool) and re.fullmatch(r"[1-9][0-9]*", str(number or "")):
+                result["read_url"] = read_url(board, int(number), kind=kind)
+        else:
+            result["message"] = "추천했어요."
+    elif result["code"] == "captcha_required":
+        key = secrets.token_hex(8)
+        result["captcha"] = {"key": key, "image_url": url_for(
+            "main.write_captcha", kind="article" if op == "write" else "recommend", board=board, key=key)}
+    response = jsonify(result)
+    response.status_code = status
+    if status == 429:
+        response.headers["Retry-After"] = str(result["retry_after"])
+    return response
+
+
+@bp.route("/write", methods=["GET", "POST"])
+def write():
+    if request.method == "GET":
+        board = _normalize_board_id(request.args.get("board"))
+        kind = _normalize_gallery_kind(request.args.get("kind"))
+        selected = _normalize_head_id(request.args.get("head_id"))
+        pagination, categories = {}, []
+        try:
+            run_async(_load_board_payload(1, board, 0, kind=kind, pagination_collector=pagination))
+        except Exception:
+            # Metadata is optional; do not log upstream responses or session data.
+            pass
+        write_blocked = False
+        try:
+            result = dc_write.get_manager().request("gallery_info", deadline=time.monotonic() + 10, gallery=board)
+            if result.get("ok"):
+                info = result["data"]
+                categories = [{"head_id": str(head["no"]), "label": head["name"]}
+                              for head in info.get("heads", []) if head["level"] <= 0]
+                write_blocked = bool(info.get("no_write"))
+        except Exception:
+            # Optional worker metadata must not prevent opening the editor.
+            categories, write_blocked = [], False
+        if selected not in {head["head_id"] for head in categories}:
+            selected = None
+        return render_template("write.html", board=board, kind=kind,
+                               gallery_name=_gallery_display_name(board, pagination.get("gallery_name")),
+                               head_categories=categories, selected_head_id=selected,
+                               write_blocked=write_blocked,
+                               board_back_url=board_url(board, kind=kind), limits=dc_write.LIMITS)
+    data = _write_json_request()
+    if data is None:
+        return _write_invalid("board", "JSON 형식으로 요청해 주세요.")
+    try:
+        board, kind = _write_board(data)
+    except (ValueError, BadRequest):
+        return _write_invalid("board", "올바른 갤러리를 선택해 주세요.")
+    values = {}
+    rules = [("subject", 1, 40, "제목은 1~40자로 입력해 주세요."),
+             ("body", 1, 10000, "본문은 1~10000자로 입력해 주세요."),
+             ("nickname", 1, 20, "닉네임은 1~20자로 입력해 주세요."),
+             ("password", 2, 20, "비밀번호는 2~20자로 입력해 주세요.")]
+    for field, minimum, maximum, message in rules:
+        value = data.get(field)
+        if not isinstance(value, str):
+            return _write_invalid(field, message)
+        if field in {"subject", "nickname"}:
+            value = value.strip()
+        if not minimum <= len(value) <= maximum or not value.strip():
+            return _write_invalid(field, message)
+        values[field] = value
+    try:
+        head_id = _normalize_head_id(data.get("head_id"))
+        head_name = data.get("head_name", "")
+        if not isinstance(head_name, str) or len(head_name) > 80:
+            raise ValueError()
+    except (ValueError, BadRequest):
+        return _write_invalid("board", "올바른 말머리를 선택해 주세요.")
+    try:
+        captcha = _write_captcha_answer(data)
+    except ValueError:
+        return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
+    return _write_result("write", board, kind,
+                         session={"type": "anonymous", "nickname": values["nickname"], "password": values["password"]},
+                         subject=values["subject"], body=values["body"],
+                         head={"no": int(head_id), "name": head_name} if head_id is not None else None,
+                         captcha=captcha)
+
+
+@bp.route("/read/vote", methods=["POST"])
+def read_vote():
+    data = _write_json_request()
+    if data is None:
+        return _write_invalid("board", "JSON 형식으로 요청해 주세요.")
+    try:
+        board, kind = _write_board(data)
+        pid = data.get("pid")
+        if isinstance(pid, bool) or not re.fullmatch(r"[1-9][0-9]{0,14}", str(pid or "")):
+            raise ValueError()
+    except (ValueError, BadRequest):
+        return _write_invalid("board", "올바른 갤러리와 글 번호를 선택해 주세요.")
+    try:
+        captcha = _write_captcha_answer(data)
+    except ValueError:
+        return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
+    return _write_result("upvote", board, kind, no=int(pid), captcha=captcha)
+
+
+@bp.route("/write/captcha")
+def write_captcha():
+    try:
+        board = _normalize_board_id(request.args.get("board"), default="")
+        kind, key = request.args.get("kind"), request.args.get("key", "")
+        if kind not in {"article", "recommend"} or not dc_write.CAPTCHA_KEY.fullmatch(key):
+            raise ValueError()
+    except (ValueError, BadRequest):
+        return _write_invalid("captcha", "올바른 보안 코드 이미지를 요청해 주세요.")
+    try:
+        result = dc_write.get_manager().request("captcha", deadline=time.monotonic() + 10, kind=kind, gallery=board, key=key)
+        data = result.get("data", {})
+        content_type = data.get("content_type", "")
+        encoded = data.get("base64", "")
+        if not result.get("ok") or not isinstance(content_type, str) or not re.fullmatch(r"image/[a-zA-Z0-9.+-]+", content_type):
+            raise ValueError()
+        if not isinstance(encoded, str) or len(encoded) > ((dc_write.MAX_IMAGE + 2) // 3) * 4:
+            raise ValueError()
+        body = base64.b64decode(encoded, validate=True)
+        if not body or len(body) > dc_write.MAX_IMAGE:
+            raise ValueError()
+    except (dc_write.WorkerUnavailable, ValueError):
+        return jsonify(dc_write.unavailable()), 502
+    response = make_response(body)
+    response.headers["Content-Type"] = content_type
+    # Even image/svg+xml must not execute script when opened as a document.
+    response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return response
