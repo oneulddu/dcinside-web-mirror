@@ -45,6 +45,8 @@ class Config:
     DC_APP_DIR = os.getenv("MIRROR_DC_APP_DIR", "").strip() or None
     DC_APP_STATE = os.getenv("MIRROR_DC_APP_STATE", "").strip() or None
     DC_APP_UPLOADS = os.getenv("MIRROR_DC_APP_UPLOADS", "").strip() or None
+    # DC 워커만 이 HTTP 프록시(집 회선 중계기)를 거쳐 나간다. DC는 클라우드 IP의 추천·글쓰기를 조용히 거절한다.
+    DC_APP_PROXY = os.getenv("MIRROR_DC_APP_PROXY", "").strip() or None
     MAX_CONTENT_LENGTH = 32 * 1024 * 1024
 
 

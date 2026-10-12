@@ -884,3 +884,50 @@ def test_image_limits_in_write_context(setup):
     assert limits["image_max_count"] == 10
     assert limits["image_max_bytes"] == 10 * 1024 * 1024
     assert limits["image_total_bytes"] == 30 * 1024 * 1024
+
+def test_worker_env_routes_only_worker_through_relay(monkeypatch):
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setenv("https_proxy", "http://other:1")
+    env = service.worker_env("/state.json", "http://relay:secret@100.64.0.2:8899")
+    assert env["NODE_USE_ENV_PROXY"] == "1"
+    assert env["HTTPS_PROXY"] == env["HTTP_PROXY"] == "http://relay:secret@100.64.0.2:8899"
+    assert "NO_PROXY" not in env and "https_proxy" not in env
+    plain = service.worker_env("/state.json")
+    assert not set(plain) & set(service._PROXY_ENV) and plain["MIRROR_DC_APP_STATE"] == "/state.json"
+
+
+@pytest.mark.parametrize("path", ["/write", "/read/vote"])
+def test_offline_relay_is_reported_as_not_sent(setup, monkeypatch, path):
+    app, client, manager, _ = setup
+    app.config["DC_APP_PROXY"] = "http://relay:secret@100.64.0.2:8899"
+    monkeypatch.setattr(service, "relay_reachable", lambda proxy: False)
+    unlock(client)
+    response = post(client, path, pid=123)
+    assert response.status_code == 503
+    assert response.json["code"] == "unavailable" and response.json["message"] == service.RELAY_DOWN
+    assert manager.calls == []
+    monkeypatch.setattr(service, "relay_reachable", lambda proxy: True)
+    assert post(client, path, pid=124).json["ok"] is True
+
+
+def test_relay_reachable_uses_proxy_host_and_port(monkeypatch):
+    seen = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def connect(address, timeout):
+        seen.append((address, timeout))
+        if address[1] == 1:
+            raise OSError()
+        return Connection()
+
+    monkeypatch.setattr(service.socket, "create_connection", connect)
+    assert service.relay_reachable("http://relay:secret@100.64.0.2:8899") is True
+    assert service.relay_reachable("http://relay:secret@100.64.0.2:1") is False
+    assert service.relay_reachable("not a url") is False
+    assert seen[0] == (("100.64.0.2", 8899), 2)

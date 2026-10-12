@@ -1300,8 +1300,10 @@ def _write_result(op, board, kind, **payload):
     result, status = dc_write.perform(op, gallery=board, **payload)
     cause = result.pop("cause", "")
     # 디시가 준 결과 코드와 거절 사유만 남긴다. 닉네임·비밀번호·보안 문자 답은 남기지 않는다.
-    current_app.logger.info("dc %s board=%s no=%s code=%s reason=%s cause=%s", op, board, payload.get("no", "-"),
-                            "ok" if result["ok"] else result["code"], result.get("reason", "-"), (cause or "-")[:200])
+    # 운영 로그 수준이 WARNING이라 실패는 WARNING으로 남겨야 보인다.
+    (current_app.logger.info if result["ok"] else current_app.logger.warning)(
+        "dc %s board=%s no=%s code=%s reason=%s cause=%s", op, board, payload.get("no", "-"),
+        "ok" if result["ok"] else result["code"], result.get("reason", "-"), (cause or "-")[:200])
     if result["ok"]:
         data = result.pop("data")
         if op == "write":

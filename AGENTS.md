@@ -94,6 +94,16 @@ pm2 logs dc-mirror
   Set `MIRROR_WRITE_KEY` only in the server environment. Deployment installs `dc_app` with
   `npm ci --omit=dev`; use Node 24. Live checks may only use `write` with `validateOnly: true`;
   upvote has no validation mode. Pytest must use a fake manager and never contact DC.
+- DC silently rejects votes from cloud/datacenter IPs ("추천 할수 없습니다." without `carrier_vpn_ban`),
+  so `MIRROR_DC_APP_PROXY` (an `http://relay:<token>@<tailscale-ip>:<port>` URL) sends every worker request,
+  including app_id issuance and captcha images, through the home relay `scripts/dc_relay.mjs`. Only the worker
+  gets `NODE_USE_ENV_PROXY`/`HTTPS_PROXY`; scraping and media stay direct. The relay accepts CONNECT to
+  `*.dcinside.com`, `*.dcinside.co.kr` and the three app-registration Google hosts on 443 only, from
+  `DC_RELAY_ALLOW_FROM` with the token. Before write/vote sends, `perform` TCP-checks the relay and returns
+  `unavailable`/`relay_down` (not sent) when it is offline. Production relay: Mac mini LaunchAgent
+  `com.oneul.dc-relay` running a copy at `~/Library/Application Support/dc-relay/` (copy the script again after
+  changes), log `~/Library/Logs/dc-relay.log`. A repeated upvote answers "추천은 1일 1회만 가능합니다.", which
+  verifies the route without adding a vote.
 
 ### Pokergosu Mirror
 
@@ -172,8 +182,8 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   Captcha refresh makes a new random 16-hex key client-side and only re-fetches `/write/captcha`.
   Nickname/password are saved in `localStorage["mirror_write_identity_v1"]` only after opt-in checkboxes.
   `vote.js` reads `GET /read/vote/options` (worker `vote_info`: app API `view_main.nonrecomm_use` and
-  `view_info.recommend_captcha`, cached per board for 30 minutes) and shows or hides the downvote button from it;
-  mobile HTML may show a downvote button for galleries that disable it. Before options load, the button follows the
+  `view_info.recommend_captcha`, cached per board for 30 minutes) and shows or hides the downvote button from it.
+  Despite its name, `nonrecomm_use: true` means downvotes are disabled (checked against PC view pages). Before options load, the button follows the
   scraped `votedown_count`. A cached `down: false` makes `/read/vote` reject downvotes without contacting DC, and
   `captcha: true` opens the captcha box on the first press instead of sending. Rejected votes show DC's own cause
   after "디시 안내:"; `carrier_vpn_ban` becomes `reason: ip_blocked`. Vote and write outcomes are logged as
