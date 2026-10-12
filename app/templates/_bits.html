@@ -98,3 +98,22 @@
     <button class="board-search-submit" type="submit">검색</button>
 </form>
 {%- endmacro %}
+
+
+{% macro icon_write() -%}
+<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>
+{%- endmacro %}
+
+{#- 글쓰기·추천이 함께 쓰는 자동 입력 방지 문자 칸. 서버가 문제를 줄 때만 보인다. -#}
+{% macro captcha_box(prefix, help_text) -%}
+<div class="captcha-box" id="{{ prefix }}" hidden>
+    <p class="captcha-help" id="{{ prefix }}-help">{{ help_text }}</p>
+    <div class="captcha-row">
+        <img class="captcha-image" id="{{ prefix }}-image" alt="자동 입력 방지 문자" width="200" height="70" decoding="async">
+        <button class="captcha-refresh" id="{{ prefix }}-refresh" type="button">다른 문자 보기</button>
+    </div>
+    <p class="captcha-error" id="{{ prefix }}-error" hidden>문자 이미지를 불러오지 못했어요. 다른 문자 보기를 눌러 주세요.</p>
+    <label class="write-label" for="{{ prefix }}-code">보이는 문자</label>
+    <input class="write-input captcha-code" id="{{ prefix }}-code" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="10" aria-describedby="{{ prefix }}-help">
+</div>
+{%- endmacro %}

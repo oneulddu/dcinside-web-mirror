@@ -1,0 +1,7 @@
+{
+  "name": "mirror-dc-app-worker",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=24"},
+  "dependencies": {"@green-1052/dcinside.js": "2.0.1"}
+}

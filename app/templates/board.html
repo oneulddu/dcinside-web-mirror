@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_bits.html" import author_text, feed_status_icon, feed_subject, reply_count, back_link, icon_search, icon_chevron, board_search_form, post_time %}
+{% from "_bits.html" import author_text, feed_status_icon, feed_subject, reply_count, back_link, icon_search, icon_chevron, board_search_form, post_time, icon_write %}
 
 {% block body_class %}board-view{% endblock %}
 
@@ -17,6 +17,12 @@
 {% endblock %}
 
 {% block masthead_actions %}
+{% if write_configured|default(false) %}
+{%- set write_query = {'board': board} -%}
+{%- if kind %}{% set _ = write_query.update({'kind': kind}) %}{% endif -%}
+{%- if head_id is not none and not notice %}{% set _ = write_query.update({'head_id': head_id}) %}{% endif -%}
+<a class="icon-btn write-entry" id="write-entry" href="/write?{{ write_query|urlencode }}" aria-label="글쓰기{% if not write_enabled|default(false) %} (잠금 해제 필요){% endif %}" title="글쓰기">{{ icon_write() }}</a>
+{% endif %}
 <button class="icon-btn board-search-jump" type="button" aria-label="이 게시판에서 검색" aria-controls="board-search-input" data-search-target="board-search-input">{{ icon_search() }}</button>
 {% endblock %}
 

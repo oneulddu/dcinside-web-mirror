@@ -12,6 +12,7 @@ module.exports = {
       max_restarts: 20,
       restart_delay: 1000,
       env: {
+        MIRROR_DC_APP_NODE: '/home/ubuntu/.nvm/versions/node/v24.11.1/bin/node',
         MIRROR_BIND: '0.0.0.0:6100',
         // One process keeps cache, cooldown and single-flight state server-wide.
         // Threads retain concurrent request capacity for this I/O-bound service.
