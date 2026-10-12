@@ -379,23 +379,25 @@ def unavailable():
     return {"ok": False, "code": "unavailable", "message": "디시 연결을 사용할 수 없어요. 잠시 후 다시 시도해 주세요."}
 
 
-# 갤러리의 추천 설정(비추천 사용, 추천 보안 문자). 앱 API의 글 보기 응답이 기준이다.
-VOTE_OPTIONS_TTL = 30 * 60
+# 글의 추천 설정(비추천 사용, 추천 보안 문자). 앱 API의 글 보기 응답이 기준이다.
+# 비추천은 말머리마다 꺼질 수 있어서 갤러리가 아니라 글 단위로 저장한다.
+VOTE_OPTIONS_TTL = 10 * 60
+VOTE_OPTIONS_MAX = 2000
 _vote_options = {}
 _vote_options_lock = threading.Lock()
 
 
-def cached_vote_options(board):
+def cached_vote_options(board, no):
     with _vote_options_lock:
-        entry = _vote_options.get(board)
+        entry = _vote_options.get((board, no))
         if entry and entry[0] > time.monotonic():
             return entry[1]
     return None
 
 
 def vote_options(board, no):
-    """Return {"down", "captcha"} for a gallery, or None when DC could not be read."""
-    cached = cached_vote_options(board)
+    """Return {"down", "captcha"} for one post, or None when DC could not be read."""
+    cached = cached_vote_options(board, no)
     if cached is not None:
         return cached
     try:
@@ -407,5 +409,11 @@ def vote_options(board, no):
         return None
     options = {"down": data["down"], "captcha": data["captcha"]}
     with _vote_options_lock:
-        _vote_options[board] = (time.monotonic() + VOTE_OPTIONS_TTL, options)
+        now = time.monotonic()
+        if len(_vote_options) >= VOTE_OPTIONS_MAX:
+            for key in [key for key, entry in _vote_options.items() if entry[0] <= now]:
+                del _vote_options[key]
+            while len(_vote_options) >= VOTE_OPTIONS_MAX:
+                del _vote_options[next(iter(_vote_options))]
+        _vote_options[(board, no)] = (now + VOTE_OPTIONS_TTL, options)
     return options

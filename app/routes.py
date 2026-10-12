@@ -1449,7 +1449,7 @@ def read_vote():
     direction = data.get("direction", "up")
     if direction not in ("up", "down"):
         return _write_invalid("direction", "추천 또는 비추천을 골라 주세요.")
-    options = dc_write.cached_vote_options(board)
+    options = dc_write.cached_vote_options(board, int(pid))
     if direction == "down" and options and not options["down"]:
         # 비추천을 끈 갤러리다. 디시에 보내지 않는다.
         return jsonify(ok=False, code="rejected", reason="down_disabled", message="이 갤러리는 비추천을 받지 않아요.")

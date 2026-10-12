@@ -182,7 +182,7 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   Captcha refresh makes a new random 16-hex key client-side and only re-fetches `/write/captcha`.
   Nickname/password are saved in `localStorage["mirror_write_identity_v1"]` only after opt-in checkboxes.
   `vote.js` reads `GET /read/vote/options` (worker `vote_info`: app API `view_main.nonrecomm_use` and
-  `view_info.recommend_captcha`, cached per board for 30 minutes) and shows or hides the downvote button from it.
+  `view_info.recommend_captcha`, cached per post for 10 minutes because galleries can disable downvotes per 말머리) and shows or hides the downvote button from it.
   Despite its name, `nonrecomm_use: true` means downvotes are disabled (checked against PC view pages). Before options load, the button follows the
   scraped `votedown_count`. A cached `down: false` makes `/read/vote` reject downvotes without contacting DC, and
   `captcha: true` opens the captcha box on the first press instead of sending. Rejected votes show DC's own cause
