@@ -14,6 +14,7 @@
             {{ post_time(data.time, "full") }}
             {% if data.view_count is number %}<span>조회 {{ number(data.view_count) }}</span>{% endif %}
             <span>추천 <span data-vote-meta="up">{{ number(data.voteup_count) }}</span></span>
+            {% if data.votedown_count is number %}<span data-vote-meta-row="down">비추천 <span data-vote-meta="down">{{ number(data.votedown_count) }}</span></span>{% endif %}
         </div>
     </div>
 
