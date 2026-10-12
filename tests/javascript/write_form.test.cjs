@@ -59,6 +59,27 @@ test("사진은 형식·장당 크기·장수·합계를 넘는 것만 빼고 �
     assert.equal(form.pickImages([], [file("x.webp", "", 10)], imageLimits).accepted.length, 1);
 });
 
+test("사진 줄은 커서 자리에 한 줄씩 들어가고 커서는 다음 줄로 간다", () => {
+    const middle = form.insertMarkers("가나\n다라", 2, 2, [1, 2]);
+    assert.equal(middle.text, "가나\n[사진 1]\n[사진 2]\n다라");
+    assert.equal(middle.text.slice(middle.caret), "다라");
+    const inline = form.insertMarkers("가나다", 1, 2, [3]);
+    assert.equal(inline.text, "가\n[사진 3]\n다");
+    const end = form.insertMarkers("", 0, 0, [1]);
+    assert.equal(end.text, "[사진 1]\n");
+    assert.equal(end.caret, end.text.length);
+});
+
+test("사진을 옮기거나 빼면 본문 번호를 맞추고, 문제 있는 줄은 알려 준다", () => {
+    const text = "a\n[사진 1]\nb\n[사진 2]\n[사진 3]";
+    assert.equal(form.renumberMarkers(text, { 1: 2, 2: 1 }), "a\n[사진 2]\nb\n[사진 1]\n[사진 3]");
+    assert.equal(form.renumberMarkers(text, { 2: 0, 3: 2 }), "a\n[사진 1]\nb\n[사진 2]");
+    assert.equal(form.checkMarkers(text, 3), null);
+    assert.match(form.checkMarkers(text, 2), /\[사진 3\]에 맞는 사진이 없어요/);
+    assert.match(form.checkMarkers("[사진 1]\n[사진1]", 1), /두 번/);
+    assert.equal(form.checkMarkers("글 속 [사진 9] 언급", 1), null);
+});
+
 test("사진 순서는 범위 안에서만 옮긴다", () => {
     assert.equal(JSON.stringify(form.moveItem([1, 2, 3], 0, 1)), JSON.stringify([2, 1, 3]));
     assert.equal(JSON.stringify(form.moveItem([1, 2, 3], 2, 1)), JSON.stringify([1, 3, 2]));

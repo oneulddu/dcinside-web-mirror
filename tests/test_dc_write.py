@@ -654,6 +654,38 @@ def test_image_only_body(setup, body, images):
         assert response.json["field"] == "body" and not manager.calls
 
 
+def test_photo_markers_place_images_between_paragraphs(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    body = "첫 문단\r\n\n[사진 2]\n둘째 문단\n  [사진1]  \n"
+    response = multipart(client, [PNG, JPEG, PNG], body=body, image_position="bottom")
+    assert response.status_code == 200
+    payload = manager.calls[0][1]
+    assert payload["body"] == body
+    assert payload["blocks"] == [{"text": "첫 문단"}, {"image": 1}, {"text": "둘째 문단"}, {"image": 0}, {"image": 2}]
+
+
+@pytest.mark.parametrize("body,message", [
+    ("[사진 3]", "본문의 [사진 3]에 맞는 사진이 없어요. 그 줄을 지우거나 사진을 넣어 주세요."),
+    ("[사진 1]\n가\n[사진 1]", "본문에 [사진 1] 줄이 두 번 있어요. 하나만 남겨 주세요."),
+])
+def test_bad_photo_markers_are_rejected_before_upload(setup, tmp_path, body, message):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    unlock(client)
+    response = multipart(client, [PNG, PNG], body=body)
+    assert response.status_code == 400
+    assert response.json == {"ok": False, "code": "invalid", "field": "body", "message": message}
+    assert not manager.calls and list(tmp_path.iterdir()) == []
+
+
+def test_marker_text_without_images_stays_text(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    assert post(client, body="[사진 1]").json["ok"]
+    assert "blocks" not in manager.calls[0][1]
+
+
 @pytest.mark.parametrize("body", [None, 3, "x" * 10001])
 def test_images_do_not_relax_body_type_or_maximum(setup, body):
     _, client, manager, _ = setup

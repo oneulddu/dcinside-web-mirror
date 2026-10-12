@@ -86,6 +86,8 @@ pm2 logs dc-mirror
   atomically with mode 0600, and waits for newly issued app IDs to settle. Captcha images
   are image-only, at most 200KB, and no-store. Never bypass upstream captcha.
 - `/write` also accepts multipart `payload` + `images`: up to 10 magic-validated JPG/PNG/GIF/WEBP files, 10MiB each/30MiB total, with a 32MiB request cap.
+  A body line that is only `[사진 N]` places photo N there (`dc_write.photo_blocks` → worker `blocks`); unknown or
+  duplicate markers are body errors, unmarked photos follow `image_position`, and marker text without photos stays text.
   Uploads use private temporary directories under `MIRROR_DC_APP_UPLOADS` (system temp by default), are removed after every outcome, and are read before worker DC calls; image-only bodies and top/bottom placement are supported.
 - `MIRROR_DC_APP_NODE` selects Node (default PATH lookup), `MIRROR_DC_APP_DIR` defaults to
   `<repo>/dc_app`, and `MIRROR_DC_APP_STATE` defaults to `instance/dc_app_credentials.json`.
@@ -172,6 +174,8 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   The read page shows a downvote button only when the scraped `votedown_count` is a number (galleries that
   disable downvotes have no count). Vote success adds one to that button's count and the header up count.
   The write page lays title/body/photo strip out as one document between lines; 말머리 are radios in a text row.
+  Adding photos inserts `[사진 N]` lines at the last body caret; removing renumbers them, while strip arrows swap
+  which photo fills each marker (photos trade places in the post). The client sends `image_position: bottom`.
   The board masthead `#write-entry` and footer unlock/lock links
   appear only when `write_configured`; Poker pages never show them. Error styling uses `--fg`, never `--hot`.
   Images: `#write-images` keeps an ordered client list (`pickImages`/`moveItem` are pure and tested), sends

@@ -4136,8 +4136,7 @@ html[data-theme="dark"] .board-updates-btn {
     display: none;
 }
 
-.write-image-list[hidden],
-.write-image-position[hidden] {
+.write-image-list[hidden] {
     display: none;
 }
 
@@ -4346,59 +4345,13 @@ html[data-theme="dark"] .board-updates-btn {
     box-shadow: inset 0 0 0 var(--rule-bold) var(--fg);
 }
 
-.write-image-position {
-    display: inline-flex;
-    padding: 3px;
-    border-radius: var(--radius-m);
-    background: var(--surface);
-}
-
-.write-segment {
-    position: relative;
-    display: inline-flex;
-}
-
-.write-segment input {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    margin: 0;
-    opacity: 0;
-    cursor: pointer;
-}
-
-.write-segment span {
-    display: inline-flex;
-    align-items: center;
-    min-height: 34px;
-    padding: 0 var(--space-3);
-    border-radius: calc(var(--radius-m) - 3px);
-    color: var(--muted);
-    font: var(--type-meta);
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
-    transition: background-color var(--dur) ease-out, color var(--dur) ease-out, box-shadow var(--dur) ease-out;
-}
-
-.write-segment input:checked + span {
-    background: var(--elevated);
-    color: var(--fg);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.03);
-}
-
-.write-segment input:focus-visible + span {
-    outline: var(--rule-bold) solid var(--accent);
-    outline-offset: 1px;
-}
-
-.write-segment input:disabled {
-    cursor: not-allowed;
-}
-
 .write-body-count {
     margin-left: auto;
+}
+
+.write-images-hint strong {
+    color: var(--text);
+    font-weight: 600;
 }
 
 .write-images-hint {

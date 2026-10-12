@@ -159,14 +159,21 @@ test('write preserves image bytes, File names and order at the top, bottom and w
       {...write('images'),images,image_position:'bottom'},
       {...write('images'),images,body:''},
       {...write('images'),images,body:' \n\t ',image_position:'bottom'},
+      {...write('images'),images,blocks:[{text:'첫 문단'},{image:1},{text:'둘째'},{image:0}]},
     ];
     const result = run(requests);
     assert(result.replies.every(reply => reply.ok));
     const blocks = images.map((image, index) => ({name:image.name,type:image.type,bytes:Array.from(buffers[index])}));
     assert.deepEqual(result.replies.map(reply => reply.data.blocks), [
       [...blocks, write('').body], [write('').body, ...blocks], blocks, blocks,
+      ['첫 문단', blocks[1], '둘째', blocks[0]],
     ]);
-    assert.deepEqual(result.trace, Array(4).fill(['anonymous', 'appId', 'write']).flat());
+    assert.deepEqual(result.trace, Array(5).fill(['anonymous', 'appId', 'write']).flat());
+    // 사진을 빠뜨리거나 두 번 쓰는 순서는 디시에 보내기 전에 거절한다.
+    const bad = run([[{image:0}], [{image:0},{image:0},{image:1}], [{image:0},{image:2},{image:1}], [{text:' '},{image:0},{image:1}]]
+      .map(order => ({...write('images'),images,blocks:order})));
+    assert(bad.replies.every(reply => !reply.ok && reply.error.sent === false));
+    assert.deepEqual(bad.trace, []);
   } finally {
     fs.rmSync(directory, {recursive:true,force:true});
   }

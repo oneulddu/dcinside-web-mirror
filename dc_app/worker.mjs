@@ -82,6 +82,21 @@ async function writeContent(input) {
     // No DC calls have happened. Do not expose filesystem paths or original errors.
     throw Object.assign(new Error('Invalid image'), { sent: false });
   }
+  // 서버가 본문의 [사진 N] 줄로 나눈 순서. 사진마다 정확히 한 번씩 써야 한다.
+  if (input.blocks !== undefined) {
+    const used = new Set();
+    if (!Array.isArray(input.blocks) || input.blocks.length > images.length * 2 + 1) throw Object.assign(new Error('Invalid blocks'), { sent: false });
+    const content = input.blocks.map(block => {
+      if (block && typeof block.text === 'string' && block.text.trim() && block.image === undefined) return block.text;
+      if (block && Number.isInteger(block.image) && block.image >= 0 && block.image < images.length && !used.has(block.image) && block.text === undefined) {
+        used.add(block.image);
+        return images[block.image];
+      }
+      throw Object.assign(new Error('Invalid blocks'), { sent: false });
+    });
+    if (used.size !== images.length) throw Object.assign(new Error('Invalid blocks'), { sent: false });
+    return content;
+  }
   const text = typeof input.body === 'string' && input.body.trim() ? [input.body] : [];
   return input.image_position === 'bottom' ? [...text, ...images] : [...images, ...text];
 }

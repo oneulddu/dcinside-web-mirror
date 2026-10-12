@@ -43,6 +43,45 @@ class InvalidImage(ValueError):
     pass
 
 
+class InvalidPhotoMarker(ValueError):
+    pass
+
+
+# 본문 한 줄이 "[사진 N]"뿐이면 그 자리에 N번째 사진을 넣는다.
+PHOTO_MARKER = re.compile(r"^[ \t]*\[사진[ ]?([0-9]{1,2})\][ \t]*$")
+
+
+def photo_blocks(body, count, position="top"):
+    """Split the body at photo markers into ordered text/image blocks.
+
+    Photos without a marker keep the old top/bottom placement so older clients still work.
+    """
+    blocks, used, lines = [], set(), []
+
+    def flush():
+        text = "\n".join(lines).strip("\n")
+        if text.strip():
+            blocks.append({"text": text})
+        lines.clear()
+
+    for line in body.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        match = PHOTO_MARKER.match(line)
+        if not match:
+            lines.append(line)
+            continue
+        number = int(match.group(1))
+        if not 1 <= number <= count:
+            raise InvalidPhotoMarker(f"본문의 [사진 {number}]에 맞는 사진이 없어요. 그 줄을 지우거나 사진을 넣어 주세요.")
+        if number in used:
+            raise InvalidPhotoMarker(f"본문에 [사진 {number}] 줄이 두 번 있어요. 하나만 남겨 주세요.")
+        used.add(number)
+        flush()
+        blocks.append({"image": number - 1})
+    flush()
+    rest = [{"image": index} for index in range(count) if index + 1 not in used]
+    return rest + blocks if position == "top" else blocks + rest
+
+
 def _image_format(data):
     if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg", "jpg"

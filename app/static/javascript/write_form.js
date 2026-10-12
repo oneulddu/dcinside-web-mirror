@@ -6,6 +6,8 @@
     var FIELDS = ["nickname", "password", "subject", "body", "images", "captcha"];
     var IMAGE_TYPES = { "image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true };
     var IMAGE_EXTENSION = /\.(jpe?g|png|gif|webp)$/i;
+    // 본문 한 줄이 "[사진 N]"뿐이면 그 자리에 N번째 사진이 들어간다. 서버(dc_write.PHOTO_MARKER)와 같은 규칙.
+    var MARKER_LINE = /^[ \t]*\[사진 ?([0-9]{1,2})\][ \t]*$/;
 
     function charLength(value) {
         return Array.from(String(value == null ? "" : value)).length;
@@ -61,6 +63,56 @@
         var item = copy.splice(from, 1)[0];
         copy.splice(to, 0, item);
         return copy;
+    }
+
+    function markerText(number) {
+        return "[사진 " + number + "]";
+    }
+
+    // 커서 자리에 사진 줄을 넣는다. 표시 줄은 항상 한 줄을 혼자 차지하고, 커서는 그 다음 줄로 간다.
+    function insertMarkers(text, start, end, numbers) {
+        var before = text.slice(0, start);
+        var after = text.slice(end);
+        var lead = before && before.charAt(before.length - 1) !== "\n" ? "\n" : "";
+        var tail = after.charAt(0) === "\n" ? "" : "\n";
+        var inserted = lead + numbers.map(markerText).join("\n") + tail;
+        var caret = before.length + inserted.length + (tail ? 0 : 1);
+        return { text: before + inserted + after, caret: Math.min(caret, (before + inserted + after).length) };
+    }
+
+    // 사진 순서가 바뀌거나 빠지면 본문의 표시 번호를 맞춘다. map 값이 0이면 그 줄을 지운다.
+    function renumberMarkers(text, map) {
+        var out = [];
+        String(text).split("\n").forEach(function (line) {
+            var match = MARKER_LINE.exec(line);
+            var number = match ? Number(match[1]) : 0;
+            if (!match || !Object.prototype.hasOwnProperty.call(map, number)) {
+                out.push(line);
+            } else if (map[number]) {
+                out.push(markerText(map[number]));
+            }
+        });
+        return out.join("\n");
+    }
+
+    function checkMarkers(text, count) {
+        var seen = {};
+        var lines = String(text).split("\n");
+        for (var i = 0; i < lines.length; i += 1) {
+            var match = MARKER_LINE.exec(lines[i]);
+            if (!match) {
+                continue;
+            }
+            var number = Number(match[1]);
+            if (number < 1 || number > count) {
+                return "본문의 " + markerText(number) + "에 맞는 사진이 없어요. 그 줄을 지우거나 사진을 넣어 주세요.";
+            }
+            if (seen[number]) {
+                return "본문에 " + markerText(number) + " 줄이 두 번 있어요. 하나만 남겨 주세요.";
+            }
+            seen[number] = true;
+        }
+        return null;
     }
 
     function validateFields(values, limits) {
@@ -135,6 +187,9 @@
         validateFields: validateFields,
         pickImages: pickImages,
         moveItem: moveItem,
+        insertMarkers: insertMarkers,
+        renumberMarkers: renumberMarkers,
+        checkMarkers: checkMarkers,
         readIdentity: readIdentity,
         writeIdentity: writeIdentity,
         IDENTITY_KEY: IDENTITY_KEY
@@ -170,7 +225,6 @@
         imageInput: document.getElementById("write-images-input"),
         imageList: document.getElementById("write-image-list"),
         imageCount: document.getElementById("write-images-count"),
-        imagePosition: document.getElementById("write-image-position"),
         imageLive: document.getElementById("write-images-live")
     };
     var limits = {
@@ -187,7 +241,7 @@
     var kind = form.getAttribute("data-kind") || "";
     var backUrl = post.safePath(form.getAttribute("data-back-url")) || "/";
     var captcha = post.createCaptcha("write-captcha", "article", board);
-    var state = { sending: false, retryUntil: 0, retryTimer: null, leaving: false, initial: "", images: [] };
+    var state = { sending: false, retryUntil: 0, retryTimer: null, leaving: false, initial: "", images: [], caret: null };
     var nextImageId = 1;
     var storage = null;
     try {
@@ -289,11 +343,6 @@
                 control.disabled = busy;
             });
         }
-        if (el.imagePosition) {
-            Array.prototype.forEach.call(el.imagePosition.querySelectorAll("input"), function (control) {
-                control.disabled = busy;
-            });
-        }
         if (captcha) {
             captcha.setDisabled(busy);
         }
@@ -382,11 +431,6 @@
         return (bytes / 1048576).toFixed(1).replace(/\.0$/, "") + "MB";
     }
 
-    function imagePosition() {
-        var checked = el.imagePosition ? el.imagePosition.querySelector("input:checked") : null;
-        return checked && checked.value === "bottom" ? "bottom" : "top";
-    }
-
     function imageButton(className, label, path, onClick) {
         var button = document.createElement("button");
         button.type = "button";
@@ -458,9 +502,6 @@
             el.imageList.appendChild(li);
         });
         el.imageList.hidden = count === 0;
-        if (el.imagePosition) {
-            el.imagePosition.hidden = count === 0;
-        }
         if (el.imageCount) {
             el.imageCount.textContent = count + "/" + limits.image_max_count;
         }
@@ -528,6 +569,22 @@
         });
     }
 
+    function rememberCaret() {
+        state.caret = { start: el.body.selectionStart, end: el.body.selectionEnd };
+    }
+
+    // 본문을 코드로 바꾼 뒤 글자 수·높이를 맞춘다. 본문에 초점이 있으면 커서도 옮긴다.
+    function setBody(text, caret) {
+        el.body.value = text;
+        var position = Math.min(caret, text.length);
+        if (document.activeElement === el.body) {
+            el.body.setSelectionRange(position, position);
+        }
+        state.caret = { start: position, end: position };
+        updateCount(el.body, el.bodyCount, limits.body_max);
+        fitBody();
+    }
+
     function addImages(files) {
         if (state.sending || !files || !files.length) {
             return;
@@ -536,16 +593,28 @@
             return item.file;
         });
         var picked = pickImages(current, files, limits);
+        var firstNumber = state.images.length + 1;
         picked.accepted.forEach(function (file) {
             var item = { id: nextImageId++, file: file, url: URL.createObjectURL(file), checked: false, broken: false };
             state.images.push(item);
             checkImage(item);
         });
+        if (picked.accepted.length) {
+            // 커서를 둔 적이 없으면 본문 끝에 넣는다.
+            var length = el.body.value.length;
+            var start = state.caret ? Math.min(state.caret.start, length) : length;
+            var end = state.caret ? Math.min(state.caret.end, length) : length;
+            var numbers = picked.accepted.map(function (file, offset) {
+                return firstNumber + offset;
+            });
+            var result = insertMarkers(el.body.value, start, end, numbers);
+            setBody(result.text, result.caret);
+        }
         el.imageAdd.removeAttribute("aria-invalid");
         showImageNote(picked.message);
         renderImages(null);
         if (picked.accepted.length) {
-            announce("사진 " + picked.accepted.length + "장을 넣었어요. 모두 " + state.images.length + "장이에요.");
+            announce("사진 " + picked.accepted.length + "장을 본문에 넣었어요. 모두 " + state.images.length + "장이에요.");
         }
     }
 
@@ -557,7 +626,13 @@
             return;
         }
         URL.revokeObjectURL(state.images[index].url);
+        var map = {};
+        map[index + 1] = 0;
+        for (var number = index + 2; number <= state.images.length; number += 1) {
+            map[number] = number - 1;
+        }
         state.images.splice(index, 1);
+        setBody(renumberMarkers(el.body.value, map), state.caret ? state.caret.start : el.body.value.length);
         showImageNote(brokenMessage());
         var neighbor = state.images[Math.min(index, state.images.length - 1)];
         renderImages(neighbor ? { id: neighbor.id, button: "is-remove" } : { id: 0, button: "" });
@@ -576,6 +651,7 @@
             return;
         }
         state.images = moved;
+        // 본문의 [사진 N] 줄은 그대로 두고 그 번호에 들어갈 사진만 바뀐다. 즉 글 속 두 사진의 자리가 서로 바뀐다.
         showImageNote(brokenMessage());
         renderImages({ id: id, button: delta < 0 ? "is-before" : "is-after" });
         announce("사진을 " + (index + delta + 1) + "번째로 옮겼어요.");
@@ -603,8 +679,12 @@
             var files = imageFiles(event.clipboardData && event.clipboardData.files);
             if (files.length) {
                 event.preventDefault();
+                rememberCaret();
                 addImages(files);
             }
+        });
+        ["select", "keyup", "click", "input", "blur"].forEach(function (name) {
+            el.body.addEventListener(name, rememberCaret);
         });
         [el.images, el.body].forEach(function (zone) {
             zone.addEventListener("dragover", function (event) {
@@ -668,6 +748,11 @@
             showFieldError("images", brokenMessage());
             return;
         }
+        var markerProblem = state.images.length ? checkMarkers(el.body.value, state.images.length) : null;
+        if (markerProblem) {
+            showFieldError("body", markerProblem);
+            return;
+        }
         var body = {
             board: board,
             subject: el.subject.value.trim(),
@@ -686,7 +771,8 @@
         setBusy(true);
         var request;
         if (state.images.length) {
-            body.image_position = imagePosition();
+            // 본문에서 [사진 N] 줄을 지운 사진은 글 맨 아래에 붙인다.
+            body.image_position = "bottom";
             var data = new FormData();
             data.append("payload", JSON.stringify(body));
             state.images.forEach(function (item) {

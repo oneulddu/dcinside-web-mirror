@@ -1389,6 +1389,12 @@ def write():
         if not minimum <= len(value) <= maximum or (minimum and not value.strip()):
             return _write_invalid(field, message)
         values[field] = value
+    blocks = None
+    if files:
+        try:
+            blocks = dc_write.photo_blocks(values["body"], len(files), image_position)
+        except dc_write.InvalidPhotoMarker as exc:
+            return _write_invalid("body", str(exc))
     try:
         head_id = _normalize_head_id(data.get("head_id"))
         head_name = data.get("head_name", "")
@@ -1406,7 +1412,8 @@ def write():
                                  session={"type": "anonymous", "nickname": values["nickname"], "password": values["password"]},
                                  subject=values["subject"], body=values["body"],
                                  head={"no": int(head_id), "name": head_name} if head_id is not None else None,
-                                 captcha=captcha, images=images, image_position=image_position)
+                                 captcha=captcha, images=images, image_position=image_position,
+                                 **({"blocks": blocks} if blocks is not None else {}))
     except dc_write.InvalidImage as exc:
         return _write_invalid("images", str(exc))
     except dc_write.WorkerUnavailable:

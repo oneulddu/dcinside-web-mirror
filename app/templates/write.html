@@ -89,14 +89,10 @@
                     <span>사진</span>
                     <span class="write-tool-count" id="write-images-count">0/{{ limits.image_max_count }}</span>
                 </button>
-                <div class="write-image-position" id="write-image-position" role="radiogroup" aria-label="사진 위치" hidden>
-                    <label class="write-segment"><input type="radio" name="image_position" value="top" checked><span>본문 위</span></label>
-                    <label class="write-segment"><input type="radio" name="image_position" value="bottom"><span>본문 아래</span></label>
-                </div>
                 <span class="write-count write-body-count" id="write-body-count" aria-hidden="true">0/{{ limits.body_max }}</span>
             </div>
         </div>
-        <p class="write-hint write-images-hint" id="write-images-hint">사진은 {{ limits.image_max_count }}장, 한 장 {{ limits.image_max_bytes // 1048576 }}MB까지 올려요. 본문에 붙여 넣거나 끌어 놓아도 돼요.</p>
+        <p class="write-hint write-images-hint" id="write-images-hint">사진을 넣으면 커서 자리에 <strong>[사진 1]</strong> 같은 줄이 생기고, 그 줄이 있는 곳에 사진이 들어가요. 줄을 옮기면 사진 자리도 바뀌어요. 사진은 {{ limits.image_max_count }}장, 한 장 {{ limits.image_max_bytes // 1048576 }}MB까지예요.</p>
 
         {{ captcha_box("write-captcha", "디시가 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 다시 등록해 주세요.") }}
 
