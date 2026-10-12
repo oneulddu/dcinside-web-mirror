@@ -263,21 +263,36 @@ def test_vote_outcome_is_logged_without_identity(setup, caplog):
     assert "dc downvote board=programming no=123 code=rejected reason=- cause=추천할 수 없습니다." in caplog.text
 
 
-def test_vote_options_are_read_once_per_gallery(setup):
+def test_vote_options_are_cached_per_post(setup):
     _, client, manager, _ = setup
     assert client.get("/read/vote/options?board=programming&pid=1").json == {"ok": False, "code": "locked"}
     unlock(client)
     response = client.get("/read/vote/options?board=programming&pid=12")
     assert response.json == {"ok": True, "down": False, "captcha": True}
     assert response.headers["Cache-Control"] == "no-store"
-    assert client.get("/read/vote/options?board=programming&pid=34").json["down"] is False
+    assert client.get("/read/vote/options?board=programming&pid=12").json["down"] is False
     assert manager.calls == [("vote_info", {"gallery": "programming", "no": 12})]
+    # 비추천은 말머리마다 꺼질 수 있어 같은 갤러리의 다른 글은 따로 읽는다.
+    manager.vote_info_result = {"ok": True, "data": {"down": True, "captcha": False}}
+    assert client.get("/read/vote/options?board=programming&pid=34").json["down"] is True
+    assert len(manager.calls) == 2
     assert client.get("/read/vote/options?board=programming&pid=0").status_code == 400
     assert client.get("/read/vote/options?board=../x&pid=1").status_code == 400
-    # 비추천을 끈 갤러리로 확인됐으면 디시에 보내지 않는다.
+    # 비추천을 끈 글로 확인됐으면 디시에 보내지 않는다. 다른 글의 비추천은 그대로 보낸다.
     response = post(client, "/read/vote", pid=12, direction="down")
-    assert response.json["reason"] == "down_disabled" and len(manager.calls) == 1
+    assert response.json["reason"] == "down_disabled" and len(manager.calls) == 2
+    assert post(client, "/read/vote", pid=34, direction="down").json["ok"] is True
+    service._last_success.clear()
     assert post(client, "/read/vote", pid=12, direction="up").json["ok"] is True
+
+
+def test_vote_options_cache_is_bounded(setup, monkeypatch):
+    _, client, manager, _ = setup
+    monkeypatch.setattr(service, "VOTE_OPTIONS_MAX", 3)
+    unlock(client)
+    for pid in range(1, 6):
+        client.get(f"/read/vote/options?board=programming&pid={pid}")
+    assert list(service._vote_options) == [("programming", 3), ("programming", 4), ("programming", 5)]
 
 
 @pytest.mark.parametrize("result", [
