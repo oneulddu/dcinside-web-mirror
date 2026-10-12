@@ -29,7 +29,10 @@
     var board = panel.getAttribute("data-board") || "";
     var kind = panel.getAttribute("data-kind") || "";
     var pid = panel.getAttribute("data-pid") || "";
-    var captcha = post.createCaptcha("vote-captcha", "recommend", board);
+    // 인물 갤러리 말고는 노이즈를 지운 PC 보안 문자를 쓴다. 답도 그 문자를 받은 PC 세션으로 보낸다.
+    var captchaKind = kind === "person" ? "recommend" : "vote";
+    var captchaExtra = captchaKind === "vote" ? { pid: pid, gallery_kind: kind } : null;
+    var captcha = post.createCaptcha("vote-captcha", captchaKind, board, captchaExtra);
     // pending: 캡챠를 요구받은 버튼. 캡챠 칸에서 Enter를 누르면 그 버튼으로 다시 보낸다.
     // options: 디시 앱 기준 갤러리 추천 설정. 모르면 null이고, 그때는 누른 뒤 디시 응답을 따른다.
     var state = { sending: "", done: {}, pending: "", retryUntil: 0, retryTimer: null, options: null };
@@ -136,7 +139,7 @@
             state.pending = direction;
             setStatus("이 갤러리는 " + NAMES[direction] + "할 때 보이는 문자를 입력해야 해요.", "error");
             status.classList.add("sr-only");
-            captcha.show({ key: key, image_url: post.captchaImageUrl("recommend", board, key) });
+            captcha.show({ key: key, image_url: post.captchaImageUrl(captchaKind, board, key, captchaExtra) });
             sync();
             return;
         }
@@ -150,6 +153,7 @@
             body.captcha_code = answer.code;
         }
         state.sending = direction;
+        state.sentAnswer = Boolean(answer);
         setStatus(NAMES[direction] + "을 보내고 있어요.", "busy");
         status.classList.add("sr-only");
         sync();
@@ -179,8 +183,13 @@
         if (outcome.action === "captcha") {
             state.pending = direction;
             setStatus(message || "보이는 문자를 입력하고 " + name + " 버튼을 다시 눌러 주세요.", "error");
-            // 캡챠 칸이 같은 안내를 보여 주므로 위 줄은 화면 낭독기에만 남긴다.
-            status.classList.add("sr-only");
+            // 처음 요구받을 때는 캡챠 칸이 같은 안내를 보여 주므로 화면 낭독기에만 남긴다.
+            // 입력한 문자가 틀렸을 때는 새 문자로 바뀐 이유를 눈으로도 보여 준다.
+            if (state.sentAnswer) {
+                setStatus("입력한 문자가 맞지 않아요. 새 문자를 입력하고 " + name + " 버튼을 다시 눌러 주세요.", "error");
+            } else {
+                status.classList.add("sr-only");
+            }
             captcha.show(payload.captcha);
             return;
         }

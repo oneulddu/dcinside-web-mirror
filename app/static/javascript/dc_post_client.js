@@ -18,11 +18,15 @@
         }).join("");
     }
 
-    function captchaImageUrl(kind, board, key) {
+    // extra: 추천 PC 보안 문자처럼 글 번호·갤러리 종류가 더 필요한 경우의 추가 값.
+    function captchaImageUrl(kind, board, key, extra) {
         var params = new URLSearchParams();
         params.set("kind", kind);
         params.set("board", board);
         params.set("key", key);
+        Object.keys(extra || {}).forEach(function (name) {
+            params.set(name, extra[name]);
+        });
         return "/write/captcha?" + params.toString();
     }
 
@@ -179,7 +183,7 @@
     }
 
     // 캡챠 칸 하나를 다룬다. 서버가 준 문제를 보여 주고, 새로고침은 새 키로 이미지만 다시 받는다.
-    function createCaptcha(prefix, kind, board) {
+    function createCaptcha(prefix, kind, board, extra) {
         var box = document.getElementById(prefix);
         if (!box) {
             return null;
@@ -195,7 +199,7 @@
             input.value = "";
             error.hidden = true;
             image.hidden = false;
-            image.src = url || captchaImageUrl(kind, board, nextKey);
+            image.src = url || captchaImageUrl(kind, board, nextKey, extra);
         }
 
         image.addEventListener("error", function () {

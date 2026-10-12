@@ -82,6 +82,7 @@ function run(requests, seed = false) {
     fs.writeFileSync(path.join(library, 'package.json'), JSON.stringify({ type: 'module', exports: './index.mjs' }));
     fs.writeFileSync(path.join(library, 'index.mjs'), fakeLibrary);
     fs.copyFileSync(path.resolve(__dirname, '../../dc_app/worker.mjs'), path.join(directory, 'worker.mjs'));
+    fs.copyFileSync(path.resolve(__dirname, '../../dc_app/pc_vote.mjs'), path.join(directory, 'pc_vote.mjs'));
     const state = path.join(directory, 'state/credentials.json');
     const tracePath = path.join(directory, 'trace.txt');
     if (seed) {

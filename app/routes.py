@@ -1320,8 +1320,13 @@ def _write_result(op, board, kind, **payload):
         result["message"] = f"디시가 {name}을 받지 않았어요." + (f" 디시 안내: {cause}" if cause else "")
     elif result["code"] == "captcha_required":
         key = secrets.token_hex(8)
-        result["captcha"] = {"key": key, "image_url": url_for(
-            "main.write_captcha", kind="article" if op == "write" else "recommend", board=board, key=key)}
+        if op != "write" and _pc_gall_type(kind):
+            # 추천 보안 문자는 노이즈를 지울 수 있는 PC 문자로 받고, 답도 PC 방식으로 보낸다.
+            image_url = url_for("main.write_captcha", kind="vote", board=board, key=key,
+                                pid=payload["no"], gallery_kind=kind or "")
+        else:
+            image_url = url_for("main.write_captcha", kind="article" if op == "write" else "recommend", board=board, key=key)
+        result["captcha"] = {"key": key, "image_url": image_url}
     response = jsonify(result)
     response.status_code = status
     if status == 429:
@@ -1453,7 +1458,19 @@ def read_vote():
     if direction == "down" and options and not options["down"]:
         # 비추천을 끈 갤러리다. 디시에 보내지 않는다.
         return jsonify(ok=False, code="rejected", reason="down_disabled", message="이 갤러리는 비추천을 받지 않아요.")
-    return _write_result("upvote" if direction == "up" else "downvote", board, kind, no=int(pid), captcha=captcha)
+    op = "upvote" if direction == "up" else "downvote"
+    gall_type = _pc_gall_type(kind)
+    if captcha and gall_type:
+        return _write_result(op, board, kind, no=int(pid), captcha=None, pc=dict(captcha, galltype=gall_type))
+    return _write_result(op, board, kind, no=int(pid), captcha=captcha)
+
+
+# PC 화면의 갤러리 종류 값(_GALLTYPE_). 인물 갤러리는 PC 추천을 쓰지 않고 앱 보안 문자를 그대로 쓴다.
+_PC_GALL_TYPES = {None: "G", "minor": "M", "mini": "MI"}
+
+
+def _pc_gall_type(kind):
+    return _PC_GALL_TYPES.get(kind)
 
 
 @bp.route("/read/vote/options")
@@ -1473,12 +1490,22 @@ def write_captcha():
     try:
         board = _normalize_board_id(request.args.get("board"), default="")
         kind, key = request.args.get("kind"), request.args.get("key", "")
-        if kind not in {"article", "recommend"} or not dc_write.CAPTCHA_KEY.fullmatch(key):
+        if kind not in {"article", "recommend", "vote"} or not dc_write.CAPTCHA_KEY.fullmatch(key):
             raise ValueError()
+        if kind == "vote":
+            pid = request.args.get("pid", "")
+            gall_type = _pc_gall_type(_normalize_gallery_kind(request.args.get("gallery_kind")))
+            if not re.fullmatch(r"[1-9][0-9]{0,14}", pid) or gall_type is None:
+                raise ValueError()
     except (ValueError, BadRequest):
         return _write_invalid("captcha", "올바른 보안 코드 이미지를 요청해 주세요.")
     try:
-        result = dc_write.get_manager().request("captcha", deadline=time.monotonic() + 10, kind=kind, gallery=board, key=key)
+        if kind == "vote":
+            # 글 PC 화면과 문자 이미지를 차례로 받으므로 조금 더 기다린다.
+            result = dc_write.get_manager().request("pc_vote_captcha", deadline=time.monotonic() + 20,
+                                                    gallery=board, no=int(pid), galltype=gall_type, key=key)
+        else:
+            result = dc_write.get_manager().request("captcha", deadline=time.monotonic() + 10, kind=kind, gallery=board, key=key)
         data = result.get("data", {})
         content_type = data.get("content_type", "")
         encoded = data.get("base64", "")

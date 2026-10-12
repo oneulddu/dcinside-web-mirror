@@ -314,7 +314,9 @@ def test_captcha_new_key_and_retry_payload(setup, path, kind):
     _, client, manager, _ = setup
     unlock(client)
     manager.result = {"ok": False, "error": {"name": "CaptchaRequiredError", "cause": "보안 코드 입력"}}
-    response = post(client, path, pid=123, captcha_key="a" * 16, captcha_code="answer")
+    # 인물 갤러리 추천은 앱 보안 문자를 그대로 쓴다.
+    extra = {"kind": "person"} if path == "/read/vote" else {}
+    response = post(client, path, pid=123, captcha_key="a" * 16, captcha_code="answer", **extra)
     assert response.status_code == 200 and response.json["code"] == "captcha_required"
     captcha = response.json["captcha"]
     assert service.CAPTCHA_KEY.fullmatch(captcha["key"]) and captcha["key"] != "a" * 16
@@ -946,3 +948,33 @@ def test_relay_reachable_uses_proxy_host_and_port(monkeypatch):
     assert service.relay_reachable("http://relay:secret@100.64.0.2:1") is False
     assert service.relay_reachable("not a url") is False
     assert seen[0] == (("100.64.0.2", 8899), 2)
+
+@pytest.mark.parametrize("kind,galltype,query_kind", [(None, "G", ""), ("minor", "M", "minor"), ("mini", "MI", "mini")])
+def test_vote_captcha_uses_pc_session(setup, kind, galltype, query_kind):
+    _, client, manager, _ = setup
+    unlock(client)
+    extra = {"kind": kind} if kind else {}
+    manager.result = {"ok": False, "error": {"name": "CaptchaRequiredError", "cause": ""}}
+    response = post(client, "/read/vote", pid=123, **extra)
+    captcha = response.json["captcha"]
+    assert captcha["image_url"] == (f'/write/captcha?kind=vote&board=programming&key={captcha["key"]}'
+                                    f'&pid=123&gallery_kind={query_kind}')
+    service._last_success.clear()
+    manager.result = {"ok": True, "data": {"result": True, "count": 4}}
+    response = post(client, "/read/vote", pid=123, direction="down", captcha_key="b" * 16, captcha_code=" ab12 ", **extra)
+    assert response.json == {"ok": True, "message": "비추천했어요."}
+    assert manager.calls[-1] == ("downvote", {"gallery": "programming", "no": 123, "captcha": None,
+                                              "pc": {"key": "b" * 16, "code": "ab12", "galltype": galltype}})
+
+
+def test_pc_vote_captcha_image_route(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": True, "data": {"content_type": "image/png", "base64": base64.b64encode(b"png").decode()}}
+    response = client.get("/write/captcha?kind=vote&board=ai_utilize&key=" + "c" * 16 + "&pid=126474&gallery_kind=minor")
+    assert response.status_code == 200 and response.data == b"png"
+    assert response.headers["Cache-Control"] == "no-store"
+    assert manager.calls == [("pc_vote_captcha", {"gallery": "ai_utilize", "no": 126474, "galltype": "M", "key": "c" * 16})]
+    for query in ["pid=0&gallery_kind=minor", "pid=1&gallery_kind=person", "gallery_kind=minor", "pid=1&gallery_kind=bad"]:
+        assert client.get("/write/captcha?kind=vote&board=ai_utilize&key=" + "c" * 16 + "&" + query).status_code == 400
+    assert len(manager.calls) == 1
