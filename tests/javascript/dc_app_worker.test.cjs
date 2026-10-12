@@ -50,6 +50,7 @@ export class DCInside {
         return {result:'true',subject:options.subject};
       },
       upvote: async () => { if (this.session !== null) throw new Error('Leaked session'); return {result:'true'}; },
+      downvote: async () => { if (this.session !== null) throw new Error('Leaked session'); return {result:'true',direction:'down'}; },
     };
     this.http = { fetch: async url => {
       if (url.includes('badtype')) return new Response('html', {headers:{'content-type':'text/html'}});
@@ -97,8 +98,9 @@ function run(requests, seed = false) {
 const write = subject => ({ op:'write', session:{type:'anonymous', nickname:'private-nickname', password:'private-password'}, gallery:'programming', subject, body:'line1\nline2 <script>', validateOnly:true });
 
 test('worker serializes sessions, preserves text and validateOnly, and writes credentials atomically', () => {
-  const result = run([write('one'), write('two'), { op:'upvote', gallery:'programming', no:1 }]);
+  const result = run([write('one'), write('two'), { op:'upvote', gallery:'programming', no:1 }, { op:'downvote', gallery:'programming', no:1 }]);
   assert(result.replies.every(reply => reply.ok));
+  assert.equal(result.replies[3].data.direction, 'down');
   assert.deepEqual(result.replies.slice(0, 2).map(reply => reply.data.subject), ['one', 'two']);
   assert.equal(result.mode, 0o600);
   assert.deepEqual(result.temporary, []);

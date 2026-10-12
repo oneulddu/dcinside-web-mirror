@@ -102,7 +102,7 @@ async function handle(input) {
       await saveCredentials().catch(() => process.stderr.write('DC credential save failed\n'));
     }
   }
-  if (!['write', 'upvote'].includes(input.op)) throw new Error('Unsupported operation');
+  if (!['write', 'upvote', 'downvote'].includes(input.op)) throw new Error('Unsupported operation');
   let content;
   if (input.op === 'write') {
     // Future login support belongs here; never reuse the preceding writer's session.
@@ -114,7 +114,9 @@ async function handle(input) {
     await settled();
     const send = () => input.op === 'write'
       ? dc.articles.write({ gallery: input.gallery, subject: input.subject, content, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true })
-      : dc.articles.upvote(input.gallery, input.no, input.captcha);
+      : input.op === 'upvote'
+        ? dc.articles.upvote(input.gallery, input.no, input.captcha)
+        : dc.articles.downvote(input.gallery, input.no, input.captcha);
     try {
       return await send();
     } catch (error) {

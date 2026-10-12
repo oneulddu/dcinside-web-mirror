@@ -164,6 +164,7 @@
         rememberStatus: document.getElementById("write-remember-status"),
         subjectCount: document.getElementById("write-subject-count"),
         bodyCount: document.getElementById("write-body-count"),
+        rememberNote: document.getElementById("write-remember-password-note"),
         images: document.getElementById("write-images"),
         imageAdd: document.getElementById("write-images-add"),
         imageInput: document.getElementById("write-images-input"),
@@ -196,7 +197,7 @@
     }
 
     function draftSnapshot() {
-        return [el.subject.value, el.body.value, el.head ? el.head.value : "", state.images.length].join("\u0000");
+        return [el.subject.value, el.body.value, headValue(), state.images.length].join("\u0000");
     }
 
     function isDirty() {
@@ -275,10 +276,13 @@
     function setBusy(busy) {
         state.sending = busy;
         form.setAttribute("aria-busy", busy ? "true" : "false");
-        [el.nickname, el.password, el.subject, el.body, el.head, el.rememberNickname, el.rememberPassword, el.imageAdd].forEach(function (input) {
+        [el.nickname, el.password, el.subject, el.body, el.rememberNickname, el.rememberPassword, el.imageAdd].forEach(function (input) {
             if (input) {
                 input.disabled = busy;
             }
+        });
+        headInputs().forEach(function (input) {
+            input.disabled = busy;
         });
         if (el.imageList) {
             Array.prototype.forEach.call(el.imageList.querySelectorAll("button, input"), function (control) {
@@ -342,12 +346,33 @@
         }
     }
 
+    function headInputs() {
+        return el.head ? Array.prototype.slice.call(el.head.querySelectorAll("input[type=radio]")) : [];
+    }
+
+    function checkedHead() {
+        return headInputs().filter(function (input) {
+            return input.checked;
+        })[0] || null;
+    }
+
+    function headValue() {
+        var input = checkedHead();
+        return input ? input.value : "";
+    }
+
     function headPayload() {
-        if (!el.head || !el.head.value) {
+        var input = checkedHead();
+        if (!input || !input.value) {
             return {};
         }
-        var option = el.head.options[el.head.selectedIndex];
-        return { head_id: el.head.value, head_name: option ? option.getAttribute("data-head-name") || option.textContent : "" };
+        return { head_id: input.value, head_name: input.getAttribute("data-head-name") || "" };
+    }
+
+    // 본문 칸은 쓴 만큼 늘어난다. 줄어들 때도 따라가도록 먼저 높이를 풀었다가 잰다.
+    function fitBody() {
+        el.body.style.height = "auto";
+        el.body.style.height = el.body.scrollHeight + "px";
     }
 
     function formatSize(bytes) {
@@ -404,6 +429,7 @@
             badge.className = "write-image-order";
             badge.setAttribute("aria-hidden", "true");
             badge.textContent = String(index + 1);
+            frame.title = formatSize(item.file.size);
             frame.appendChild(img);
             var broken = document.createElement("span");
             broken.className = "write-image-broken";
@@ -419,9 +445,6 @@
             var before = imageButton("is-before", (index + 1) + "번째 사진 앞으로", "M14.5 6l-6 6 6 6", function () {
                 shiftImage(item.id, -1);
             });
-            var size = document.createElement("span");
-            size.className = "write-image-size";
-            size.textContent = formatSize(item.file.size);
             var after = imageButton("is-after", (index + 1) + "번째 사진 뒤로", "M9.5 6l6 6-6 6", function () {
                 shiftImage(item.id, 1);
             });
@@ -429,7 +452,6 @@
             after.disabled = index === count - 1 || state.sending;
             remove.disabled = state.sending;
             bar.appendChild(before);
-            bar.appendChild(size);
             bar.appendChild(after);
             li.appendChild(frame);
             li.appendChild(bar);
@@ -711,6 +733,8 @@
         }
         if (outcome.action === "captcha") {
             setStatus(message || "보이는 문자를 입력하고 다시 등록해 주세요.", "error");
+            // 캡챠 칸이 같은 안내를 보여 주므로 상태 줄은 화면 낭독기에만 남긴다.
+            el.status.classList.add("sr-only");
             captcha.show(payload.captcha);
             return;
         }
@@ -739,17 +763,30 @@
     }
 
     restoreIdentity();
+    // 고른 말머리가 이 갤러리에 없으면 "말머리 없음"을 고른 상태로 둔다.
+    if (el.head && !checkedHead() && headInputs().length) {
+        headInputs()[0].checked = true;
+    }
+    function syncRememberNote() {
+        if (el.rememberNote) {
+            el.rememberNote.hidden = !el.rememberPassword.checked;
+        }
+    }
+    syncRememberNote();
     state.initial = draftSnapshot();
     updateCount(el.subject, el.subjectCount, limits.subject_max);
     updateCount(el.body, el.bodyCount, limits.body_max);
+    fitBody();
     el.subject.addEventListener("input", function () {
         updateCount(el.subject, el.subjectCount, limits.subject_max);
     });
     el.body.addEventListener("input", function () {
         updateCount(el.body, el.bodyCount, limits.body_max);
+        fitBody();
     });
     el.rememberNickname.addEventListener("change", saveIdentity);
     el.rememberPassword.addEventListener("change", saveIdentity);
+    el.rememberPassword.addEventListener("change", syncRememberNote);
     bindImageInputs();
     form.addEventListener("submit", submit);
     root.addEventListener("beforeunload", function (event) {

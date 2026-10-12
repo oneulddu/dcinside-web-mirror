@@ -13,7 +13,7 @@
             {{ author_text(data) }}
             {{ post_time(data.time, "full") }}
             {% if data.view_count is number %}<span>조회 {{ number(data.view_count) }}</span>{% endif %}
-            <span>추천 {{ number(data.voteup_count) }}</span>
+            <span>추천 <span data-vote-meta="up">{{ number(data.voteup_count) }}</span></span>
         </div>
     </div>
 
@@ -26,13 +26,26 @@
     </article>
 
     {% if write_enabled|default(false) %}
+    {#- 비추천 수가 없으면 그 갤러리는 비추천을 막아 둔 것이라 버튼을 내지 않는다. -#}
+    {% set votes = [("up", "추천", data.voteup_count)] %}
+    {% if data.votedown_count is number %}{% set votes = votes + [("down", "비추천", data.votedown_count)] %}{% endif %}
     <div class="vote-panel" id="vote-panel" data-board="{{ board }}" data-kind="{{ kind or '' }}" data-pid="{{ pid }}">
-        <button class="vote-btn" id="vote-submit" type="button" aria-describedby="vote-status">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 10v10H4V10h3z"/><path d="M7 10l4-7c1.4 0 2.3 1.1 2 2.4L12.4 9H18a2 2 0 0 1 2 2.3l-1.2 6.4A2.5 2.5 0 0 1 16.3 20H7"/></svg>
-            <span class="vote-label" data-vote-label>추천</span>
-        </button>
+        <div class="vote-row" role="group" aria-label="이 글 평가">
+            {% for direction, label, count in votes %}
+            <button class="vote-btn" type="button" data-vote="{{ direction }}" data-count="{{ count if count is number else '' }}" aria-pressed="false" aria-describedby="vote-status">
+                <span class="vote-icon" aria-hidden="true">
+                    <svg class="ui-icon vote-icon-line" viewBox="0 0 24 24" focusable="false"><path d="M7 10v10H4V10h3z"/><path d="M7 10l4-7c1.4 0 2.3 1.1 2 2.4L12.4 9H18a2 2 0 0 1 2 2.3l-1.2 6.4A2.5 2.5 0 0 1 16.3 20H7"/></svg>
+                    <svg class="ui-icon vote-icon-fill" viewBox="0 0 24 24" focusable="false"><path d="M7 10v10H4V10h3z"/><path d="M7 10l4-7c1.4 0 2.3 1.1 2 2.4L12.4 9H18a2 2 0 0 1 2 2.3l-1.2 6.4A2.5 2.5 0 0 1 16.3 20H7z"/></svg>
+                </span>
+                <span class="vote-text">
+                    <span class="vote-label">{{ label }}</span>
+                    {% if count is number %}<span class="vote-count" data-vote-count>{{ number(count) }}</span>{% endif %}
+                </span>
+            </button>
+            {% endfor %}
+        </div>
         <p class="vote-status" id="vote-status" role="status" aria-live="polite"></p>
-        {{ captcha_box("vote-captcha", "디시가 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 다시 추천해 주세요.") }}
+        {{ captcha_box("vote-captcha", "디시가 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 같은 버튼을 다시 눌러 주세요.") }}
     </div>
     {% endif %}
 

@@ -783,6 +783,7 @@ async def _read_document_with_api(api, api_id, board, kind=None, recommend=0, se
         "author_search_name": author_search_name,
         "time": format_display_time(doc.time),
         "voteup_count": doc.voteup_count,
+        "votedown_count": getattr(doc, "votedown_count", None),
         "contents": getattr(doc, "contents", ""),
         "html": doc.html,
         "related_posts": [] if notice else [_index_item_to_dict(item) for item in getattr(doc, "related_posts", [])],

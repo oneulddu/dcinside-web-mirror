@@ -191,6 +191,20 @@ def test_vote_interval_independent(setup, monkeypatch):
     assert post(client, "/read/vote", pid=124).json["ok"]
 
 
+def test_downvote_uses_its_own_op_and_message(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    assert post(client, "/read/vote", pid=123, direction="down").json == {"ok": True, "message": "비추천했어요."}
+    assert manager.calls[-1] == ("downvote", {"gallery": "programming", "no": 123, "captcha": None})
+    assert post(client, "/read/vote", pid=124, direction="sideways").json["field"] == "direction"
+    assert len(manager.calls) == 1
+    service._last_success.clear()
+    manager.result = service.WorkerUnavailable(sent=True)
+    response = post(client, "/read/vote", pid=125, direction="down")
+    assert response.status_code == 503 and response.json["code"] == "uncertain"
+    assert response.json["message"].startswith("비추천 결과를")
+
+
 @pytest.mark.parametrize("result,code,status", [
     ({"ok": False, "error": {"name": "ApiError", "cause": "권한 오류"}}, "rejected", 200),
     ({"ok": False, "error": {"name": "ApiError", "cause": ""}}, "rejected", 200),
@@ -423,7 +437,7 @@ def test_upstream_throttle_retries_after_30_seconds(setup, cause, path, is_error
     assert service._last_success == {}
 
 
-@pytest.mark.parametrize("op", ["write", "upvote"])
+@pytest.mark.parametrize("op", ["write", "upvote", "downvote"])
 def test_action_lock_deadline_does_not_send(setup, monkeypatch, op):
     app, _, manager, _ = setup
 

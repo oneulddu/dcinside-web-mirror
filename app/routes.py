@@ -1307,7 +1307,7 @@ def _write_result(op, board, kind, **payload):
             if not isinstance(number, bool) and re.fullmatch(r"[1-9][0-9]*", str(number or "")):
                 result["read_url"] = read_url(board, int(number), kind=kind)
         else:
-            result["message"] = "추천했어요."
+            result["message"] = "추천했어요." if op == "upvote" else "비추천했어요."
     elif result["code"] == "captcha_required":
         key = secrets.token_hex(8)
         result["captcha"] = {"key": key, "image_url": url_for(
@@ -1429,7 +1429,10 @@ def read_vote():
         captcha = _write_captcha_answer(data)
     except ValueError:
         return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
-    return _write_result("upvote", board, kind, no=int(pid), captcha=captcha)
+    direction = data.get("direction", "up")
+    if direction not in ("up", "down"):
+        return _write_invalid("direction", "추천 또는 비추천을 골라 주세요.")
+    return _write_result("upvote" if direction == "up" else "downvote", board, kind, no=int(pid), captcha=captcha)
 
 
 @bp.route("/write/captcha")

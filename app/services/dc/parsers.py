@@ -1031,8 +1031,11 @@ class ParserMixin:
             m = re.search(r"추천\s*([0-9,]+)", meta_text)
             voteup_count = to_int(m.group(1), 0) if m else 0
         if votedown_count < 0:
+            votedown_count = to_int(self.__first_text(parsed, f"//*[@id='recommend_view_down_{document_id}']"), default=-1)
+        if votedown_count < 0:
             m = re.search(r"(?:비추|비추천)\s*([0-9,]+)", meta_text)
-            votedown_count = to_int(m.group(1), 0) if m else 0
+            # 비추천을 막은 갤러리는 비추천 칸이 없다. 0과 구분해 둔다.
+            votedown_count = to_int(m.group(1), 0) if m else None
         if logined_voteup_count < 0:
             logined_voteup_count = 0
 

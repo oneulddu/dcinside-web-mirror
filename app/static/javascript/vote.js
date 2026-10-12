@@ -1,7 +1,20 @@
 (function (root) {
     "use strict";
 
-    // 글 보기 추천 버튼. 서버가 새 추천 수를 주지 않으므로 화면의 숫자는 바꾸지 않는다.
+    // 글 보기 추천·비추천 버튼. 한 번에 하나만 보내고, 결과를 모르면 다시 보내라고 하지 않는다.
+    var NAMES = { up: "추천", down: "비추천" };
+
+    // 성공하면 디시 수가 하나 늘어난다. 원래 수를 모르면(빈 값) 그대로 둔다.
+    function nextCount(raw) {
+        var text = String(raw == null ? "" : raw);
+        if (!/^[0-9]+$/.test(text)) {
+            return null;
+        }
+        return Number(text) + 1;
+    }
+
+    root.MirrorVote = { nextCount: nextCount };
+
     var document = root.document;
     var post = root.MirrorDcPost;
     if (!document || !post || typeof post.postJson !== "function") {
@@ -11,19 +24,25 @@
     if (!panel) {
         return;
     }
-    var button = document.getElementById("vote-submit");
-    var label = button.querySelector("[data-vote-label]");
+    var buttons = Array.prototype.slice.call(panel.querySelectorAll("[data-vote]"));
     var status = document.getElementById("vote-status");
     var board = panel.getAttribute("data-board") || "";
     var kind = panel.getAttribute("data-kind") || "";
     var pid = panel.getAttribute("data-pid") || "";
     var captcha = post.createCaptcha("vote-captcha", "recommend", board);
-    var state = { sending: false, done: false, retryUntil: 0, retryTimer: null };
+    // pending: 캡챠를 요구받은 버튼. 캡챠 칸에서 Enter를 누르면 그 버튼으로 다시 보낸다.
+    var state = { sending: "", done: {}, pending: "", retryUntil: 0, retryTimer: null };
+
+    function buttonFor(direction) {
+        return buttons.filter(function (button) {
+            return button.getAttribute("data-vote") === direction;
+        })[0] || null;
+    }
 
     function setStatus(text, tone, link) {
         status.textContent = text || "";
         status.className = "vote-status" + (tone ? " is-" + tone : "");
-        // 성공은 버튼 글자가 이미 보여 주므로 화면 낭독기에만 알린다.
+        // 성공은 버튼 모양과 숫자가 이미 보여 주므로 화면 낭독기에만 알린다.
         status.classList.toggle("sr-only", tone === "success");
         if (link) {
             status.appendChild(document.createTextNode(" "));
@@ -35,20 +54,43 @@
     }
 
     function sync() {
-        button.disabled = state.sending || state.done || state.retryUntil > Date.now();
-        button.setAttribute("aria-busy", state.sending ? "true" : "false");
-        button.classList.toggle("is-done", state.done);
-        label.textContent = state.done ? "추천했어요" : state.sending ? "추천 중…" : "추천";
+        var waiting = state.retryUntil > Date.now();
+        buttons.forEach(function (button) {
+            var direction = button.getAttribute("data-vote");
+            var done = state.done[direction] === true;
+            button.disabled = Boolean(state.sending) || done || waiting;
+            button.setAttribute("aria-busy", state.sending === direction ? "true" : "false");
+            button.setAttribute("aria-pressed", done ? "true" : "false");
+            button.classList.toggle("is-done", done);
+        });
         if (captcha) {
-            captcha.setDisabled(state.sending);
+            captcha.setDisabled(Boolean(state.sending));
         }
     }
 
-    function send() {
-        if (state.sending || state.done || state.retryUntil > Date.now()) {
+    function bumpCount(direction) {
+        var button = buttonFor(direction);
+        var next = button ? nextCount(button.getAttribute("data-count")) : null;
+        if (next === null) {
             return;
         }
-        var body = { board: board, pid: pid };
+        var text = next.toLocaleString("ko-KR");
+        button.setAttribute("data-count", String(next));
+        var count = button.querySelector("[data-vote-count]");
+        if (count) {
+            count.textContent = text;
+        }
+        var meta = document.querySelector('[data-vote-meta="' + direction + '"]');
+        if (meta) {
+            meta.textContent = text;
+        }
+    }
+
+    function send(direction) {
+        if (!NAMES[direction] || state.sending || state.done[direction] || state.retryUntil > Date.now()) {
+            return;
+        }
+        var body = { board: board, pid: pid, direction: direction };
         if (kind) {
             body.kind = kind;
         }
@@ -62,36 +104,43 @@
             body.captcha_key = answer.key;
             body.captcha_code = answer.code;
         }
-        state.sending = true;
-        setStatus("");
+        state.sending = direction;
+        setStatus(NAMES[direction] + "을 보내고 있어요.", "busy");
+        status.classList.add("sr-only");
         sync();
         post.postJson("/read/vote", body, 45000).then(function (result) {
-            state.sending = false;
+            state.sending = "";
             sync();
             // 캡챠 입력칸을 다시 켠 뒤에 결과를 다뤄야 포커스가 들어간다.
-            handle(post.interpret(result.status, result.payload));
+            handle(direction, post.interpret(result.status, result.payload));
             sync();
         });
     }
 
-    function handle(outcome) {
+    function handle(direction, outcome) {
         var payload = outcome.payload || {};
         var message = typeof payload.message === "string" ? payload.message : "";
+        var name = NAMES[direction];
         if (outcome.action !== "captcha" && captcha) {
             captcha.hide();
+            state.pending = "";
         }
         if (outcome.action === "success") {
-            state.done = true;
-            setStatus(message || "추천했어요.", "success");
+            state.done[direction] = true;
+            bumpCount(direction);
+            setStatus(message || name + "했어요.", "success");
             return;
         }
         if (outcome.action === "captcha") {
-            setStatus(message || "보이는 문자를 입력하고 다시 추천해 주세요.", "error");
+            state.pending = direction;
+            setStatus(message || "보이는 문자를 입력하고 " + name + " 버튼을 다시 눌러 주세요.", "error");
+            // 캡챠 칸이 같은 안내를 보여 주므로 위 줄은 화면 낭독기에만 남긴다.
+            status.classList.add("sr-only");
             captcha.show(payload.captcha);
             return;
         }
         if (outcome.action === "rejected" || outcome.action === "invalid") {
-            setStatus(message || "디시에서 추천을 받지 않았어요.", "error");
+            setStatus(message || "디시에서 " + name + "을 받지 않았어요.", "error");
             return;
         }
         if (outcome.action === "retry") {
@@ -112,16 +161,20 @@
             setStatus(message, "error");
             return;
         }
-        setStatus("추천 결과를 확인하지 못했어요. 잠시 뒤 글을 새로 열어 추천 수를 확인해 주세요.", "error");
+        setStatus(name + " 결과를 확인하지 못했어요. 잠시 뒤 글을 새로 열어 수를 확인해 주세요.", "error");
     }
 
-    button.addEventListener("click", send);
+    buttons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            send(button.getAttribute("data-vote"));
+        });
+    });
     var code = document.getElementById("vote-captcha-code");
     if (code) {
         code.addEventListener("keydown", function (event) {
             if (event.key === "Enter" && !event.isComposing) {
                 event.preventDefault();
-                send();
+                send(state.pending || "up");
             }
         });
     }

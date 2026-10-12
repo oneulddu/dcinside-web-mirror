@@ -74,11 +74,11 @@ pm2 logs dc-mirror
 
 ### DC write/vote backend and configuration
 
-- DC anonymous writing (`GET/POST /write`) and upvoting (`POST /read/vote`) are opt-in.
+- DC anonymous writing (`GET/POST /write`) and voting (`POST /read/vote`, `direction` `up`|`down`) are opt-in.
   `MIRROR_WRITE_KEY` unset disables every write route; `/write/unlock` issues a signed,
   HttpOnly 180-day cookie, and `/write/lock` clears it. POSTs require same-origin headers.
   Five failed unlock attempts per process per minute are allowed; successful writes/votes
-  have process-wide 20s/3s intervals. Never log nicknames, passwords, unlock keys or captcha answers.
+  have process-wide 20s/3s intervals (up and down votes keep separate intervals). Never log nicknames, passwords, unlock keys or captcha answers.
 - `app/services/dc_write.py` serializes a lazy Node worker with a shared 40s deadline (55s for image writes) including both lock waits and discards
   it on crash/timeout/protocol failure without replaying a potentially completed write.
   Write/vote transport failures after sending return HTTP 503 with code `uncertain`; failures before sending return `unavailable`.
@@ -169,7 +169,10 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   (`_bits.captcha_box`). Never auto-resend a write or vote; an unknown result tells the user to check the list.
   Captcha refresh makes a new random 16-hex key client-side and only re-fetches `/write/captcha`.
   Nickname/password are saved in `localStorage["mirror_write_identity_v1"]` only after opt-in checkboxes.
-  Vote success does not change displayed counts. The board masthead `#write-entry` and footer unlock/lock links
+  The read page shows a downvote button only when the scraped `votedown_count` is a number (galleries that
+  disable downvotes have no count). Vote success adds one to that button's count and the header up count.
+  The write page lays title/body/photo strip out as one document between lines; 말머리 are radios in a text row.
+  The board masthead `#write-entry` and footer unlock/lock links
   appear only when `write_configured`; Poker pages never show them. Error styling uses `--fg`, never `--hot`.
   Images: `#write-images` keeps an ordered client list (`pickImages`/`moveItem` are pure and tested), sends
   multipart (`payload` JSON + ordered `images` + `image_position`) through `MirrorDcPost.postForm` (XHR progress;

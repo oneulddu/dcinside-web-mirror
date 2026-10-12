@@ -242,6 +242,12 @@ def check_key(candidate):
 
 
 _action_lock = threading.Lock()
+# 디시에 보낸 뒤 결과를 모르면 다시 보내지 않도록 안내할 동작과 그 문구.
+SENDS = {
+    "write": "디시에 보냈지만 결과를 확인하지 못했어요. 다시 보내기 전에 목록을 확인해 주세요.",
+    "upvote": "추천 결과를 확인하지 못했어요. 글을 새로 열어 확인해 주세요.",
+    "downvote": "비추천 결과를 확인하지 못했어요. 글을 새로 열어 확인해 주세요.",
+}
 _last_success = {}
 
 
@@ -262,10 +268,8 @@ def perform(op, **payload):
         try:
             result = get_manager().request(op, deadline=deadline, **payload)
         except WorkerUnavailable as exc:
-            if exc.sent and op in {"write", "upvote"}:
-                message = ("디시에 보냈지만 결과를 확인하지 못했어요. 다시 보내기 전에 목록을 확인해 주세요."
-                           if op == "write" else "추천 결과를 확인하지 못했어요. 글을 새로 열어 확인해 주세요.")
-                return {"ok": False, "code": "uncertain", "message": message}, 503
+            if exc.sent and op in SENDS:
+                return {"ok": False, "code": "uncertain", "message": SENDS[op]}, 503
             return unavailable(), 503
         data = result.get("data", {})
         error = result.get("error", {})
@@ -287,10 +291,8 @@ def perform(op, **payload):
         if name == "ApiError" or (result.get("ok") and data.get("result") in (False, "false")):
             return {"ok": False, "code": "rejected", "message": cause or "디시에서 글을 받지 않았어요."}, 200
         # 워커가 디시와 통신하다 실패했으면 디시가 이미 받았을 수 있다.
-        if op in {"write", "upvote"}:
-            message = ("디시에 보냈지만 결과를 확인하지 못했어요. 다시 보내기 전에 목록을 확인해 주세요."
-                       if op == "write" else "추천 결과를 확인하지 못했어요. 글을 새로 열어 확인해 주세요.")
-            return {"ok": False, "code": "uncertain", "message": message}, 503
+        if op in SENDS:
+            return {"ok": False, "code": "uncertain", "message": SENDS[op]}, 503
         return unavailable(), 503
     finally:
         _action_lock.release()
