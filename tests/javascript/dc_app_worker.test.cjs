@@ -225,8 +225,9 @@ test('invalid image metadata and file failures precede anonymous session and DC 
 
 test('vote_info reads gallery vote settings without voting', () => {
   const result = run([{op:'vote_info',gallery:'vanced',no:34645}, {op:'vote_info',gallery:'thesingularity',no:1}, {op:'vote_info',gallery:'deleted',no:1}, {op:'vote_info',gallery:'x',no:0}]);
-  assert.deepEqual(result.replies[0].data, {down:false,captcha:false});
-  assert.deepEqual(result.replies[1].data, {down:true,captcha:true});
+  // nonrecomm_use가 true면 비추천을 끈 갤러리다.
+  assert.deepEqual(result.replies[0].data, {down:true,captcha:false});
+  assert.deepEqual(result.replies[1].data, {down:false,captcha:true});
   assert.deepEqual(result.replies[2].error, {name:'ApiError',cause:'삭제된 글',status:null});
   assert.equal(result.replies[3].error.name, 'WorkerError');
   assert.deepEqual(result.trace, ['read', 'read', 'read']);

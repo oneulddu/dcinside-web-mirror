@@ -112,7 +112,8 @@ async function handle(input) {
       const info = response.view_info || {};
       const main = response.view_main || {};
       return {
-        down: main.nonrecomm_use === true,
+        // 이름과 달리 nonrecomm_use가 true면 비추천을 끈 갤러리다(PC 화면의 비추천 버튼과 대조함).
+        down: main.nonrecomm_use !== true,
         captcha: info.recommend_captcha === true,
       };
     } finally {

@@ -14,12 +14,14 @@ import re
 import secrets
 import selectors
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
 import time
 from collections import deque
 from contextlib import contextmanager
+from urllib.parse import urlsplit
 
 from flask import current_app, request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -133,11 +135,12 @@ def prepared_images(files):
 
 
 class WorkerManager:
-    def __init__(self, node=None, directory=None, state=None, timeout=40):
+    def __init__(self, node=None, directory=None, state=None, timeout=40, proxy=None):
         self.node = node if node is not None else shutil.which("node")
         self.directory = Path(directory or Path(__file__).resolve().parents[2] / "dc_app")
         self.state = str(state or self.directory.parent / "instance/dc_app_credentials.json")
         self.timeout = timeout
+        self.proxy = proxy
         self._lock = threading.Lock()
         self._process = None
         atexit.register(self.close)
@@ -170,7 +173,7 @@ class WorkerManager:
                     self._discard()
                     if not self.node:
                         raise WorkerUnavailable()
-                    env = dict(os.environ, MIRROR_DC_APP_STATE=self.state)
+                    env = worker_env(self.state, self.proxy)
                     # Worker stderr is deliberately discarded, including dependency crashes.
                     self._process = subprocess.Popen(
                         [self.node, str(self.directory / "worker.mjs")],
@@ -219,13 +222,41 @@ class WorkerManager:
             self._lock.release()
 
 
+_PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "NODE_USE_ENV_PROXY")
+
+
+def worker_env(state, proxy=None):
+    """Worker environment. With a proxy, every worker request (DC and app_id issuance) goes through it."""
+    env = {key: value for key, value in os.environ.items() if key not in _PROXY_ENV}
+    env["MIRROR_DC_APP_STATE"] = state
+    if proxy:
+        env.update(NODE_USE_ENV_PROXY="1", HTTPS_PROXY=proxy, HTTP_PROXY=proxy)
+    return env
+
+
+RELAY_DOWN = "집 중계기에 연결할 수 없어 지금은 디시에 보낼 수 없어요. 잠시 후 다시 시도해 주세요."
+
+
+def relay_reachable(proxy, timeout=2):
+    """Quick TCP check so an offline relay is reported as not sent instead of uncertain."""
+    try:
+        parts = urlsplit(proxy)
+        if not parts.hostname:
+            return False
+        with socket.create_connection((parts.hostname, parts.port or 80), timeout=timeout):
+            return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 _manager_lock = threading.Lock()
 _managers = {}
 
 
 def get_manager():
     config = current_app.config
-    options = (config.get("DC_APP_NODE", shutil.which("node")), config.get("DC_APP_DIR"), config.get("DC_APP_STATE"))
+    options = (config.get("DC_APP_NODE", shutil.which("node")), config.get("DC_APP_DIR"), config.get("DC_APP_STATE"),
+               40, config.get("DC_APP_PROXY"))
     with _manager_lock:
         if options not in _managers:
             _managers[options] = WorkerManager(*options)
@@ -304,6 +335,9 @@ def perform(op, **payload):
         wait = interval - (time.monotonic() - previous) if previous is not None else 0
         if wait > 0:
             return {"ok": False, "code": "retry", "message": "잠시 후 다시 시도해 주세요.", "retry_after": math.ceil(wait)}, 429
+        proxy = current_app.config.get("DC_APP_PROXY")
+        if proxy and not relay_reachable(proxy):
+            return {"ok": False, "code": "unavailable", "reason": "relay_down", "message": RELAY_DOWN}, 503
         try:
             result = get_manager().request(op, deadline=deadline, **payload)
         except WorkerUnavailable as exc:
