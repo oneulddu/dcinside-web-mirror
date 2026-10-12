@@ -104,6 +104,13 @@ pm2 logs dc-mirror
   `com.oneul.dc-relay` running a copy at `~/Library/Application Support/dc-relay/` (copy the script again after
   changes), log `~/Library/Logs/dc-relay.log`. A repeated upvote answers "추천은 1일 1회만 가능합니다.", which
   verifies the route without adding a vote.
+- Votes that carry a captcha answer use the PC web flow (`dc_app/pc_vote.mjs`) for normal/minor/mini galleries:
+  `pc_vote_captcha` opens the PC view page, keeps its cookies and `_view_form_` values under the client's 16-hex key
+  (5 minutes, one use), and returns `/kcaptcha/image_v3/` with translucent noise palette entries turned opaque white.
+  The answer is POSTed to `/board/recommend/vote` with `ci_t`, `mode` U/D, `code_recommend` and the
+  `<gall><no>_Firstcheck[_down]` cookie. A wrong code or expired key becomes `captcha_required` with a new key.
+  App captchas stay for writes and person galleries because their noise is opaque. Vote captcha image URLs are
+  `/write/captcha?kind=vote&board&key&pid&gallery_kind`.
 
 ### Pokergosu Mirror
 

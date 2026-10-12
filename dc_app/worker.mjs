@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
+import { pcVote, pcVoteCaptcha } from './pc_vote.mjs';
 
 const statePath = process.env.MIRROR_DC_APP_STATE || resolve(dirname(fileURLToPath(import.meta.url)), '../instance/dc_app_credentials.json');
 const dc = new DCInside({ http: { timeout: 45000 } });
@@ -104,6 +105,7 @@ async function writeContent(input) {
 async function handle(input) {
   if (input.op === 'ping') return { ready: true };
   if (input.op === 'captcha') return captchaImage(input);
+  if (input.op === 'pc_vote_captcha') return pcVoteCaptcha(input);
   // 글 하나를 앱 API로 열어 이 갤러리의 추천 설정만 읽는다. 투표는 보내지 않는다.
   if (input.op === 'vote_info') {
     if (!/^[A-Za-z0-9_]{1,80}$/.test(input.gallery) || !Number.isSafeInteger(input.no) || input.no < 1) throw new Error('Invalid vote info request');
@@ -134,6 +136,8 @@ async function handle(input) {
     }
   }
   if (!['write', 'upvote', 'downvote'].includes(input.op)) throw new Error('Unsupported operation');
+  // 보안 문자 답이 있는 추천·비추천은 그 문자를 받은 PC 쿠키 세션으로 보낸다.
+  if (input.pc !== undefined && input.op !== 'write') return pcVote(input, input.op === 'upvote' ? 'U' : 'D');
   let content;
   if (input.op === 'write') {
     // Future login support belongs here; never reuse the preceding writer's session.
