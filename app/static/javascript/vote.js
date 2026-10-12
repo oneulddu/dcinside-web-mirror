@@ -93,6 +93,11 @@
         if (button) {
             button.hidden = !visible;
         }
+        // 비추천을 끈 갤러리면 제목 아래 비추천 수도 함께 숨긴다.
+        var meta = document.querySelector('[data-vote-meta-row="down"]');
+        if (meta) {
+            meta.hidden = !visible;
+        }
     }
 
     function loadOptions() {

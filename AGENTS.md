@@ -187,7 +187,8 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   scraped `votedown_count`. A cached `down: false` makes `/read/vote` reject downvotes without contacting DC, and
   `captcha: true` opens the captcha box on the first press instead of sending. Rejected votes show DC's own cause
   after "디시 안내:"; `carrier_vpn_ban` becomes `reason: ip_blocked`. Vote and write outcomes are logged as
-  op/board/no/code/reason/cause only. Vote success adds one to that button's count and the header up count.
+  op/board/no/code/reason/cause only. The article meta line shows 비추천 N next to 추천 when the scraped count is a number and hides it
+  together with the button. Vote success adds one to that button's count and the matching meta count.
   The write page lays title/body/photo strip out as one document between lines; 말머리 are radios in a text row.
   Adding photos inserts `[사진 N]` lines at the last body caret; removing renumbers them, while strip arrows swap
   which photo fills each marker (photos trade places in the post). The client sends `image_position: bottom`.
