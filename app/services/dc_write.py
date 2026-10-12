@@ -328,7 +328,11 @@ def perform(op, **payload):
         if re.fullmatch(r"잠시\s?후\s?다시\s?시도해\s?주세요\.?", cause):
             return {"ok": False, "code": "retry", "message": cause, "retry_after": 30}, 429
         if name == "ApiError" or (result.get("ok") and data.get("result") in (False, "false")):
-            return {"ok": False, "code": "rejected", "message": cause or "디시에서 글을 받지 않았어요."}, 200
+            rejected = {"ok": False, "code": "rejected", "message": cause or "디시에서 글을 받지 않았어요.", "cause": cause}
+            # 디시가 접속 위치(서버 IP)를 VPN·통신사 차단 대상으로 본 경우다. 다시 눌러도 같다.
+            if error.get("vpn_ban") is True or data.get("carrier_vpn_ban") in (True, "true"):
+                rejected.update(reason="ip_blocked", message="디시가 이 미러 서버의 접속 위치(IP)를 막아서 받지 않았어요.")
+            return rejected, 200
         # 워커가 디시와 통신하다 실패했으면 디시가 이미 받았을 수 있다.
         if op in SENDS:
             return {"ok": False, "code": "uncertain", "message": SENDS[op]}, 503
@@ -339,3 +343,35 @@ def perform(op, **payload):
 
 def unavailable():
     return {"ok": False, "code": "unavailable", "message": "디시 연결을 사용할 수 없어요. 잠시 후 다시 시도해 주세요."}
+
+
+# 갤러리의 추천 설정(비추천 사용, 추천 보안 문자). 앱 API의 글 보기 응답이 기준이다.
+VOTE_OPTIONS_TTL = 30 * 60
+_vote_options = {}
+_vote_options_lock = threading.Lock()
+
+
+def cached_vote_options(board):
+    with _vote_options_lock:
+        entry = _vote_options.get(board)
+        if entry and entry[0] > time.monotonic():
+            return entry[1]
+    return None
+
+
+def vote_options(board, no):
+    """Return {"down", "captcha"} for a gallery, or None when DC could not be read."""
+    cached = cached_vote_options(board)
+    if cached is not None:
+        return cached
+    try:
+        result = get_manager().request("vote_info", deadline=time.monotonic() + 8, gallery=board, no=no)
+    except WorkerUnavailable:
+        return None
+    data = result.get("data") if result.get("ok") else None
+    if not isinstance(data, dict) or not all(isinstance(data.get(key), bool) for key in ("down", "captcha")):
+        return None
+    options = {"down": data["down"], "captcha": data["captcha"]}
+    with _vote_options_lock:
+        _vote_options[board] = (time.monotonic() + VOTE_OPTIONS_TTL, options)
+    return options

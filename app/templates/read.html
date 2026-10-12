@@ -26,13 +26,13 @@
     </article>
 
     {% if write_enabled|default(false) %}
-    {#- 비추천 수가 없으면 그 갤러리는 비추천을 막아 둔 것이라 버튼을 내지 않는다. -#}
-    {% set votes = [("up", "추천", data.voteup_count)] %}
-    {% if data.votedown_count is number %}{% set votes = votes + [("down", "비추천", data.votedown_count)] %}{% endif %}
+    {#- 비추천 버튼은 처음엔 모바일 페이지의 비추천 수가 있을 때만 보인다.
+        vote.js가 디시 앱의 갤러리 설정을 읽어 최종으로 보이거나 숨긴다. -#}
+    {% set votes = [("up", "추천", data.voteup_count), ("down", "비추천", data.votedown_count)] %}
     <div class="vote-panel" id="vote-panel" data-board="{{ board }}" data-kind="{{ kind or '' }}" data-pid="{{ pid }}">
         <div class="vote-row" role="group" aria-label="이 글 평가">
             {% for direction, label, count in votes %}
-            <button class="vote-btn" type="button" data-vote="{{ direction }}" data-count="{{ count if count is number else '' }}" aria-pressed="false" aria-describedby="vote-status">
+            <button class="vote-btn" type="button" data-vote="{{ direction }}" data-count="{{ count if count is number else '' }}" aria-pressed="false" aria-describedby="vote-status"{% if direction == "down" and count is not number %} hidden{% endif %}>
                 <span class="vote-icon" aria-hidden="true">
                     <svg class="ui-icon vote-icon-line" viewBox="0 0 24 24" focusable="false"><path d="M7 10v10H4V10h3z"/><path d="M7 10l4-7c1.4 0 2.3 1.1 2 2.4L12.4 9H18a2 2 0 0 1 2 2.3l-1.2 6.4A2.5 2.5 0 0 1 16.3 20H7"/></svg>
                     <svg class="ui-icon vote-icon-fill" viewBox="0 0 24 24" focusable="false"><path d="M7 10v10H4V10h3z"/><path d="M7 10l4-7c1.4 0 2.3 1.1 2 2.4L12.4 9H18a2 2 0 0 1 2 2.3l-1.2 6.4A2.5 2.5 0 0 1 16.3 20H7z"/></svg>
@@ -45,7 +45,7 @@
             {% endfor %}
         </div>
         <p class="vote-status" id="vote-status" role="status" aria-live="polite"></p>
-        {{ captcha_box("vote-captcha", "디시가 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 같은 버튼을 다시 눌러 주세요.") }}
+        {{ captcha_box("vote-captcha", "이 글을 평가하려면 자동 입력 방지 문자가 필요해요. 보이는 문자를 입력하고 같은 버튼을 다시 눌러 주세요.") }}
     </div>
     {% endif %}
 

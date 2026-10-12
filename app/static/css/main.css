@@ -4550,6 +4550,10 @@ html[data-theme="dark"] .board-updates-btn {
     transition: background-color var(--dur) ease-out, color var(--dur) ease-out, opacity var(--dur) ease-out, transform var(--dur-fast) ease-out;
 }
 
+.vote-btn[hidden] {
+    display: none;
+}
+
 .vote-btn:hover:not(:disabled) {
     background: var(--surface-strong);
 }

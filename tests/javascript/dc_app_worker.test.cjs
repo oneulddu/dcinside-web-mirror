@@ -49,7 +49,18 @@ export class DCInside {
         if (options.subject === 'unknown') throw new Error('private-password');
         return {result:'true',subject:options.subject};
       },
-      upvote: async () => { if (this.session !== null) throw new Error('Leaked session'); return {result:'true'}; },
+      read: async (gallery, no) => {
+        trace('read');
+        if (gallery === 'deleted') throw Object.assign(new Error('x'), {name:'ApiError',cause:'삭제된 글'});
+        return gallery === 'vanced'
+          ? {view_info:{no},view_main:{nonrecomm_use:false}}
+          : {view_info:{recommend_captcha:true},view_main:{nonrecomm_use:true}};
+      },
+      upvote: async gallery => {
+        if (this.session !== null) throw new Error('Leaked session');
+        if (gallery === 'vpn') throw Object.assign(new Error('x'), {name:'ApiError',cause:'추천할 수 없습니다.',response:[{result:false,carrier_vpn_ban:true}]});
+        return {result:'true'};
+      },
       downvote: async () => { if (this.session !== null) throw new Error('Leaked session'); return {result:'true',direction:'down'}; },
     };
     this.http = { fetch: async url => {
@@ -210,4 +221,18 @@ test('invalid image metadata and file failures precede anonymous session and DC 
   } finally {
     fs.rmSync(directory, {recursive:true,force:true});
   }
+});
+
+test('vote_info reads gallery vote settings without voting', () => {
+  const result = run([{op:'vote_info',gallery:'vanced',no:34645}, {op:'vote_info',gallery:'thesingularity',no:1}, {op:'vote_info',gallery:'deleted',no:1}, {op:'vote_info',gallery:'x',no:0}]);
+  assert.deepEqual(result.replies[0].data, {down:false,captcha:false});
+  assert.deepEqual(result.replies[1].data, {down:true,captcha:true});
+  assert.deepEqual(result.replies[2].error, {name:'ApiError',cause:'삭제된 글',status:null});
+  assert.equal(result.replies[3].error.name, 'WorkerError');
+  assert.deepEqual(result.trace, ['read', 'read', 'read']);
+});
+
+test('vote errors report a carrier or VPN ban flag', () => {
+  const result = run([write('one'), {op:'upvote',gallery:'vpn',no:1}]);
+  assert.deepEqual(result.replies[1].error, {name:'ApiError',cause:'추천할 수 없습니다.',status:null,vpn_ban:true});
 });

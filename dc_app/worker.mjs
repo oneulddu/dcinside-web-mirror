@@ -104,6 +104,21 @@ async function writeContent(input) {
 async function handle(input) {
   if (input.op === 'ping') return { ready: true };
   if (input.op === 'captcha') return captchaImage(input);
+  // 글 하나를 앱 API로 열어 이 갤러리의 추천 설정만 읽는다. 투표는 보내지 않는다.
+  if (input.op === 'vote_info') {
+    if (!/^[A-Za-z0-9_]{1,80}$/.test(input.gallery) || !Number.isSafeInteger(input.no) || input.no < 1) throw new Error('Invalid vote info request');
+    try {
+      const response = await dc.articles.read(input.gallery, input.no);
+      const info = response.view_info || {};
+      const main = response.view_main || {};
+      return {
+        down: main.nonrecomm_use === true,
+        captcha: info.recommend_captcha === true,
+      };
+    } finally {
+      await saveCredentials().catch(() => process.stderr.write('DC credential save failed\n'));
+    }
+  }
   if (input.op === 'gallery_info') {
     if (!/^[A-Za-z0-9_]{1,80}$/.test(input.gallery)) throw new Error('Invalid gallery request');
     try {
@@ -156,10 +171,13 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
     result = { id: input.id, ok: true, data: await handle(input) };
   } catch (error) {
     const apiError = ['ApiError', 'CaptchaRequiredError', 'AuthExpiredError'].includes(error.name);
+    const raw = Array.isArray(error.response) ? error.response[0] : error.response;
+    const vpnBan = apiError && raw && typeof raw === 'object' && [true, 'true', 1, '1'].includes(raw.carrier_vpn_ban);
     result = { id: input?.id ?? null, ok: false, error: {
       name: apiError || error.name === 'HTTPError' ? error.name : 'WorkerError',
       cause: apiError && typeof error.cause === 'string' ? error.cause : '',
       status: Number.isInteger(error.status) ? error.status : null,
+      ...(vpnBan ? { vpn_ban: true } : {}),
       ...(error.sent === false ? { sent: false } : {}),
     } };
   }

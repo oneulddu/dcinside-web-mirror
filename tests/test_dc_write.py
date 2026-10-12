@@ -21,11 +21,12 @@ class FakeManager:
         self.deadlines = []
         self.result = {"ok": True, "data": {"result": "true"}}
         self.gallery_result = {"ok": True, "data": {"heads": [{"no": 0, "name": "일반", "level": 0}], "no_write": False, "captcha": False}}
+        self.vote_info_result = {"ok": True, "data": {"down": False, "captcha": True}}
 
     def request(self, op, deadline=None, **payload):
         self.calls.append((op, payload))
         self.deadlines.append(deadline)
-        result = self.gallery_result if op == "gallery_info" else self.result
+        result = {"gallery_info": self.gallery_result, "vote_info": self.vote_info_result}.get(op, self.result)
         if isinstance(result, Exception):
             raise result
         return result
@@ -39,6 +40,7 @@ def setup(monkeypatch):
     monkeypatch.setattr(service, "get_manager", lambda: manager)
     monkeypatch.setattr(service, "_unlock_failures", service.deque())
     monkeypatch.setattr(service, "_last_success", {})
+    monkeypatch.setattr(service, "_vote_options", {})
     contexts = []
 
     def render(template, **context):
@@ -229,9 +231,67 @@ def test_worker_mapping(setup, result, code, status, path):
             if path == "/write" else "추천 결과를 확인하지 못했어요. 글을 새로 열어 확인해 주세요.")
     assert len(manager.calls) == 1
     if code == "rejected":
-        assert response.json["message"] == (result.get("error", result.get("data", {})).get("cause") or "디시에서 글을 받지 않았어요.")
+        cause = result.get("error", result.get("data", {})).get("cause")
+        if path == "/write":
+            assert response.json["message"] == (cause or "디시에서 글을 받지 않았어요.")
+        else:
+            assert response.json["message"] == "디시가 추천을 받지 않았어요." + (f" 디시 안내: {cause}" if cause else "")
+        assert "cause" not in response.json
     assert response.headers["Cache-Control"] == "no-store"
     assert service._last_success == {}
+
+
+@pytest.mark.parametrize("result", [
+    {"ok": False, "error": {"name": "ApiError", "cause": "추천할 수 없습니다.", "vpn_ban": True}},
+    {"ok": True, "data": {"result": False, "cause": "추천할 수 없습니다.", "carrier_vpn_ban": True}},
+])
+def test_vote_rejected_for_server_ip_is_explained(setup, result):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = result
+    response = post(client, "/read/vote", pid=123)
+    assert response.json == {"ok": False, "code": "rejected", "reason": "ip_blocked",
+                             "message": "디시가 이 미러 서버의 접속 위치(IP)를 막아서 받지 않았어요."}
+
+
+def test_vote_outcome_is_logged_without_identity(setup, caplog):
+    app, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "ApiError", "cause": "추천할 수 없습니다."}}
+    with caplog.at_level("INFO", logger=app.logger.name):
+        post(client, "/read/vote", pid=123, direction="down")
+    assert "dc downvote board=programming no=123 code=rejected reason=- cause=추천할 수 없습니다." in caplog.text
+
+
+def test_vote_options_are_read_once_per_gallery(setup):
+    _, client, manager, _ = setup
+    assert client.get("/read/vote/options?board=programming&pid=1").json == {"ok": False, "code": "locked"}
+    unlock(client)
+    response = client.get("/read/vote/options?board=programming&pid=12")
+    assert response.json == {"ok": True, "down": False, "captcha": True}
+    assert response.headers["Cache-Control"] == "no-store"
+    assert client.get("/read/vote/options?board=programming&pid=34").json["down"] is False
+    assert manager.calls == [("vote_info", {"gallery": "programming", "no": 12})]
+    assert client.get("/read/vote/options?board=programming&pid=0").status_code == 400
+    assert client.get("/read/vote/options?board=../x&pid=1").status_code == 400
+    # 비추천을 끈 갤러리로 확인됐으면 디시에 보내지 않는다.
+    response = post(client, "/read/vote", pid=12, direction="down")
+    assert response.json["reason"] == "down_disabled" and len(manager.calls) == 1
+    assert post(client, "/read/vote", pid=12, direction="up").json["ok"] is True
+
+
+@pytest.mark.parametrize("result", [
+    {"ok": False, "error": {"name": "ApiError", "cause": "삭제된 글"}},
+    {"ok": True, "data": {"down": "false", "captcha": True}},
+    service.WorkerUnavailable(),
+])
+def test_vote_options_failure_is_not_cached(setup, result):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.vote_info_result = result
+    assert client.get("/read/vote/options?board=programming&pid=1").status_code == 503
+    manager.vote_info_result = {"ok": True, "data": {"down": True, "captcha": False}}
+    assert client.get("/read/vote/options?board=programming&pid=1").json == {"ok": True, "down": True, "captcha": False}
 
 
 @pytest.mark.parametrize("path,kind", [("/write", "article"), ("/read/vote", "recommend")])

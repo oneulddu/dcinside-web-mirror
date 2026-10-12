@@ -31,7 +31,8 @@
     var pid = panel.getAttribute("data-pid") || "";
     var captcha = post.createCaptcha("vote-captcha", "recommend", board);
     // pending: 캡챠를 요구받은 버튼. 캡챠 칸에서 Enter를 누르면 그 버튼으로 다시 보낸다.
-    var state = { sending: "", done: {}, pending: "", retryUntil: 0, retryTimer: null };
+    // options: 디시 앱 기준 갤러리 추천 설정. 모르면 null이고, 그때는 누른 뒤 디시 응답을 따른다.
+    var state = { sending: "", done: {}, pending: "", retryUntil: 0, retryTimer: null, options: null };
 
     function buttonFor(direction) {
         return buttons.filter(function (button) {
@@ -86,6 +87,35 @@
         }
     }
 
+    // 비추천 버튼은 디시 앱의 갤러리 설정을 따른다. 모바일 페이지의 버튼·수는 이 설정과 다를 때가 있다.
+    function showDown(visible) {
+        var button = buttonFor("down");
+        if (button) {
+            button.hidden = !visible;
+        }
+    }
+
+    function loadOptions() {
+        if (typeof root.fetch !== "function") {
+            return;
+        }
+        var params = new URLSearchParams({ board: board, pid: pid });
+        root.fetch("/read/vote/options?" + params.toString(), {
+            credentials: "same-origin",
+            headers: { Accept: "application/json" }
+        }).then(function (response) {
+            return response.ok ? response.json() : null;
+        }).then(function (data) {
+            if (!data || data.ok !== true) {
+                return;
+            }
+            state.options = { down: data.down === true, captcha: data.captcha === true };
+            showDown(state.options.down);
+        }).catch(function () {
+            // 설정을 못 읽어도 버튼은 그대로 쓴다.
+        });
+    }
+
     function send(direction) {
         if (!NAMES[direction] || state.sending || state.done[direction] || state.retryUntil > Date.now()) {
             return;
@@ -95,6 +125,16 @@
             body.kind = kind;
         }
         var answer = captcha ? captcha.answer() : null;
+        // 보안 문자가 필요한 갤러리면 디시에 헛걸음하지 않도록 먼저 문자 칸을 연다.
+        if (!answer && captcha && state.options && state.options.captcha) {
+            var key = post.newCaptchaKey();
+            state.pending = direction;
+            setStatus("이 갤러리는 " + NAMES[direction] + "할 때 보이는 문자를 입력해야 해요.", "error");
+            status.classList.add("sr-only");
+            captcha.show({ key: key, image_url: post.captchaImageUrl("recommend", board, key) });
+            sync();
+            return;
+        }
         if (answer) {
             if (answer.imageFailed || !answer.code) {
                 setStatus(answer.imageFailed ? "문자 이미지를 불러온 뒤 입력해 주세요." : "보이는 문자를 입력해 주세요.", "error");
@@ -140,6 +180,9 @@
             return;
         }
         if (outcome.action === "rejected" || outcome.action === "invalid") {
+            if (payload.reason === "down_disabled") {
+                showDown(false);
+            }
             setStatus(message || "디시에서 " + name + "을 받지 않았어요.", "error");
             return;
         }
@@ -179,4 +222,5 @@
         });
     }
     sync();
+    loadOptions();
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1205,7 +1205,8 @@ def dc_write_context():
             "write_enabled": is_dc and dc_write.enabled()}
 
 
-_WRITE_ENDPOINTS = {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote"}
+_WRITE_ENDPOINTS = {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote",
+                    "main.read_vote_options"}
 
 
 @bp.before_request
@@ -1297,6 +1298,10 @@ def _write_json_request():
 
 def _write_result(op, board, kind, **payload):
     result, status = dc_write.perform(op, gallery=board, **payload)
+    cause = result.pop("cause", "")
+    # 디시가 준 결과 코드와 거절 사유만 남긴다. 닉네임·비밀번호·보안 문자 답은 남기지 않는다.
+    current_app.logger.info("dc %s board=%s no=%s code=%s reason=%s cause=%s", op, board, payload.get("no", "-"),
+                            "ok" if result["ok"] else result["code"], result.get("reason", "-"), (cause or "-")[:200])
     if result["ok"]:
         data = result.pop("data")
         if op == "write":
@@ -1308,6 +1313,9 @@ def _write_result(op, board, kind, **payload):
                 result["read_url"] = read_url(board, int(number), kind=kind)
         else:
             result["message"] = "추천했어요." if op == "upvote" else "비추천했어요."
+    elif op != "write" and result["code"] == "rejected" and "reason" not in result:
+        name = "추천" if op == "upvote" else "비추천"
+        result["message"] = f"디시가 {name}을 받지 않았어요." + (f" 디시 안내: {cause}" if cause else "")
     elif result["code"] == "captcha_required":
         key = secrets.token_hex(8)
         result["captcha"] = {"key": key, "image_url": url_for(
@@ -1439,7 +1447,23 @@ def read_vote():
     direction = data.get("direction", "up")
     if direction not in ("up", "down"):
         return _write_invalid("direction", "추천 또는 비추천을 골라 주세요.")
+    options = dc_write.cached_vote_options(board)
+    if direction == "down" and options and not options["down"]:
+        # 비추천을 끈 갤러리다. 디시에 보내지 않는다.
+        return jsonify(ok=False, code="rejected", reason="down_disabled", message="이 갤러리는 비추천을 받지 않아요.")
     return _write_result("upvote" if direction == "up" else "downvote", board, kind, no=int(pid), captcha=captcha)
+
+
+@bp.route("/read/vote/options")
+def read_vote_options():
+    board = _normalize_board_id(request.args.get("board"), default="")
+    pid = request.args.get("pid", "")
+    if not re.fullmatch(r"[1-9][0-9]{0,14}", pid):
+        return _write_invalid("board", "올바른 갤러리와 글 번호를 선택해 주세요.")
+    options = dc_write.vote_options(board, int(pid))
+    if options is None:
+        return jsonify(dc_write.unavailable()), 503
+    return jsonify(ok=True, **options)
 
 
 @bp.route("/write/captcha")
