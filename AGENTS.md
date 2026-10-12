@@ -171,8 +171,13 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   (`_bits.captcha_box`). Never auto-resend a write or vote; an unknown result tells the user to check the list.
   Captcha refresh makes a new random 16-hex key client-side and only re-fetches `/write/captcha`.
   Nickname/password are saved in `localStorage["mirror_write_identity_v1"]` only after opt-in checkboxes.
-  The read page shows a downvote button only when the scraped `votedown_count` is a number (galleries that
-  disable downvotes have no count). Vote success adds one to that button's count and the header up count.
+  `vote.js` reads `GET /read/vote/options` (worker `vote_info`: app API `view_main.nonrecomm_use` and
+  `view_info.recommend_captcha`, cached per board for 30 minutes) and shows or hides the downvote button from it;
+  mobile HTML may show a downvote button for galleries that disable it. Before options load, the button follows the
+  scraped `votedown_count`. A cached `down: false` makes `/read/vote` reject downvotes without contacting DC, and
+  `captcha: true` opens the captcha box on the first press instead of sending. Rejected votes show DC's own cause
+  after "디시 안내:"; `carrier_vpn_ban` becomes `reason: ip_blocked`. Vote and write outcomes are logged as
+  op/board/no/code/reason/cause only. Vote success adds one to that button's count and the header up count.
   The write page lays title/body/photo strip out as one document between lines; 말머리 are radios in a text row.
   Adding photos inserts `[사진 N]` lines at the last body caret; removing renumbers them, while strip arrows swap
   which photo fills each marker (photos trade places in the post). The client sends `image_position: bottom`.

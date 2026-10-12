@@ -107,6 +107,7 @@ def test_screen_and_service_route_map_contract():
         "/read": "main.read",
         "/read/related": "main.read_related",
         "/read/vote": "main.read_vote",
+        "/read/vote/options": "main.read_vote_options",
         "/recent": "main.recent",
         "/recent/clear": "main.recent_clear",
         "/recent/remove": "main.recent_remove",
