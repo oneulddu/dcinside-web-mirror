@@ -13,6 +13,7 @@ const MAX_IMAGE = 200 * 1024;
 const MAX_UPLOAD = 10 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 const IMAGE_NAME = /^[A-Za-z0-9_-]+\.(jpg|png|gif|webp)$/;
+const COMMENT_MAX = 400;
 try {
   const credentials = JSON.parse(await readFile(statePath, 'utf8'));
   dc.auth.importCredentials(credentials);
@@ -48,7 +49,7 @@ async function settled() {
 }
 
 async function captchaImage(input) {
-  if (!['article', 'recommend'].includes(input.kind) || !/^[0-9a-f]{16}$/.test(input.key) || !/^[A-Za-z0-9_]{1,80}$/.test(input.gallery)) throw new Error('Invalid captcha request');
+  if (!['article', 'comment', 'recommend'].includes(input.kind) || !/^[0-9a-f]{16}$/.test(input.key) || !/^[A-Za-z0-9_]{1,80}$/.test(input.gallery)) throw new Error('Invalid captcha request');
   const response = await dc.http.fetch(captchaUrl(input.kind, input.key, input.gallery), { redirect: 'error' });
   const contentType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (!response.ok || !/^image\/[a-z0-9.+-]+$/.test(contentType) || Number(response.headers.get('content-length')) > MAX_IMAGE) {
@@ -102,6 +103,17 @@ async function writeContent(input) {
   return input.image_position === 'bottom' ? [...text, ...images] : [...images, ...text];
 }
 
+// 댓글 요청을 디시에 보내기 전에 확인한다. 답글은 부모 댓글 번호와 그 작성자 아이디(유동은 빈 값)를 쓴다.
+function commentArgs(input) {
+  const invalid = () => Object.assign(new Error('Invalid comment'), { sent: false });
+  if (!/^[A-Za-z0-9_]{1,80}$/.test(input.gallery) || !Number.isSafeInteger(input.no) || input.no < 1) throw invalid();
+  if (typeof input.content !== 'string' || !input.content.trim() || [...input.content].length > COMMENT_MAX) throw invalid();
+  if (input.parent === undefined || input.parent === null) return { content: input.content, parent: undefined };
+  const { comment_no: commentNo, user_id: userId } = input.parent;
+  if (!Number.isSafeInteger(commentNo) || commentNo < 1 || typeof userId !== 'string' || !/^[A-Za-z0-9_]{0,40}$/.test(userId)) throw invalid();
+  return { content: input.content, parent: { comment_no: commentNo, user_id: userId } };
+}
+
 async function handle(input) {
   if (input.op === 'ping') return { ready: true };
   if (input.op === 'captcha') return captchaImage(input);
@@ -135,23 +147,27 @@ async function handle(input) {
       await saveCredentials().catch(() => process.stderr.write('DC credential save failed\n'));
     }
   }
-  if (!['write', 'upvote', 'downvote'].includes(input.op)) throw new Error('Unsupported operation');
+  if (!['write', 'comment', 'upvote', 'downvote'].includes(input.op)) throw new Error('Unsupported operation');
   // 보안 문자 답이 있는 추천·비추천은 그 문자를 받은 PC 쿠키 세션으로 보낸다.
-  if (input.pc !== undefined && input.op !== 'write') return pcVote(input, input.op === 'upvote' ? 'U' : 'D');
+  if (input.pc !== undefined && ['upvote', 'downvote'].includes(input.op)) return pcVote(input, input.op === 'upvote' ? 'U' : 'D');
   let content;
-  if (input.op === 'write') {
+  let comment;
+  if (input.op === 'write' || input.op === 'comment') {
     // Future login support belongs here; never reuse the preceding writer's session.
     if (input.session?.type !== 'anonymous') throw new Error('Unsupported session');
-    content = await writeContent(input);
+    if (input.op === 'write') content = await writeContent(input);
+    else comment = commentArgs(input);
     dc.useAnonymous(input.session.nickname, input.session.password);
   }
   try {
     await settled();
-    const send = () => input.op === 'write'
-      ? dc.articles.write({ gallery: input.gallery, subject: input.subject, content, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true })
-      : input.op === 'upvote'
+    const send = () => {
+      if (input.op === 'write') return dc.articles.write({ gallery: input.gallery, subject: input.subject, content, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true });
+      if (input.op === 'comment') return dc.comments.write(input.gallery, input.no, comment.content, { parent: comment.parent, captcha: input.captcha ?? undefined });
+      return input.op === 'upvote'
         ? dc.articles.upvote(input.gallery, input.no, input.captcha)
         : dc.articles.downvote(input.gallery, input.no, input.captcha);
+    };
     try {
       return await send();
     } catch (error) {

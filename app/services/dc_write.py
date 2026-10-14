@@ -28,7 +28,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 COOKIE = "mirror_write"
 COOKIE_AGE = 180 * 24 * 60 * 60
-LIMITS = dict(subject_max=40, body_max=10000, nickname_max=20, password_min=2, password_max=20,
+LIMITS = dict(subject_max=40, body_max=10000, comment_max=400, nickname_max=20, password_min=2, password_max=20,
               image_max_count=10, image_max_bytes=10 * 1024 * 1024, image_total_bytes=30 * 1024 * 1024)
 IMAGE_TOTAL_MESSAGE = "사진은 모두 합쳐 30MB까지 올릴 수 있어요."
 CAPTCHA_KEY = re.compile(r"^[0-9a-f]{16}$")
@@ -315,10 +315,13 @@ _action_lock = threading.Lock()
 # 디시에 보낸 뒤 결과를 모르면 다시 보내지 않도록 안내할 동작과 그 문구.
 SENDS = {
     "write": "디시에 보냈지만 결과를 확인하지 못했어요. 다시 보내기 전에 목록을 확인해 주세요.",
+    "comment": "댓글을 보냈지만 결과를 확인하지 못했어요. 다시 쓰기 전에 글을 새로 열어 댓글을 확인해 주세요.",
     "upvote": "추천 결과를 확인하지 못했어요. 글을 새로 열어 확인해 주세요.",
     "downvote": "비추천 결과를 확인하지 못했어요. 글을 새로 열어 확인해 주세요.",
 }
 _last_success = {}
+# 성공한 뒤 같은 동작을 다시 보낼 수 있을 때까지 기다리는 시간(초).
+INTERVALS = {"write": 20, "comment": 10}
 
 
 def perform(op, **payload):
@@ -330,7 +333,7 @@ def perform(op, **payload):
     try:
         if time.monotonic() >= deadline:
             return unavailable(), 503
-        interval = 20 if op == "write" else 3
+        interval = INTERVALS.get(op, 3)
         previous = _last_success.get(op)
         wait = interval - (time.monotonic() - previous) if previous is not None else 0
         if wait > 0:

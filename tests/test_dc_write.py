@@ -367,13 +367,13 @@ def test_metadata_failure_and_no_recent_cookie(setup, monkeypatch):
 def test_context_globals(setup):
     app, client, _, _ = setup
     with app.test_request_context("/write"):
-        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": False}
+        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": False, "write_limits": service.LIMITS}
     unlock(client)
     cookie = client.get_cookie(service.COOKIE).value
     with app.test_request_context("/write", headers={"Cookie": f"mirror_write={cookie}"}):
-        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": True}
+        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": True, "write_limits": service.LIMITS}
     with app.test_request_context("/poker"):
-        assert routes.dc_write_context() == {"write_configured": False, "write_enabled": False}
+        assert routes.dc_write_context() == {"write_configured": False, "write_enabled": False, "write_limits": service.LIMITS}
 
 
 @pytest.fixture
@@ -978,3 +978,86 @@ def test_pc_vote_captcha_image_route(setup):
     for query in ["pid=0&gallery_kind=minor", "pid=1&gallery_kind=person", "gallery_kind=minor", "pid=1&gallery_kind=bad"]:
         assert client.get("/write/captcha?kind=vote&board=ai_utilize&key=" + "c" * 16 + "&" + query).status_code == 400
     assert len(manager.calls) == 1
+
+# ----- 댓글 쓰기 -----
+
+COMMENT = dict(board="programming", pid=123, content="첫 줄\n둘째 줄 <b>", nickname=" ㅇㅇ ", password="pw")
+
+
+def comment(client, **changes):
+    return client.post("/read/comment", json={**COMMENT, **changes}, headers=ORIGIN)
+
+
+def test_comment_requires_unlock_and_same_origin(setup):
+    _, client, manager, _ = setup
+    assert comment(client).status_code == 403
+    unlock(client)
+    assert client.post("/read/comment", json=COMMENT, headers={"Origin": "https://evil.test"}).status_code == 403
+    assert not manager.calls
+
+
+def test_comment_success_payload_and_interval(setup, monkeypatch):
+    _, client, manager, _ = setup
+    unlock(client)
+    now = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+    response = comment(client, kind="minor")
+    assert response.json == {"ok": True, "message": "댓글을 달았어요."}
+    assert response.headers["Cache-Control"] == "no-store"
+    assert manager.calls == [("comment", {"gallery": "programming", "no": 123, "content": COMMENT["content"], "parent": None,
+                                          "captcha": None, "session": {"type": "anonymous", "nickname": "ㅇㅇ", "password": "pw"}})]
+    response = comment(client)
+    assert response.status_code == 429 and response.json["retry_after"] == 10
+    now[0] += 10
+    assert comment(client).json["ok"] and len(manager.calls) == 2
+
+
+@pytest.mark.parametrize("code,user_id", [("abc_12", "abc_12"), ("118.235", ""), (None, ""), ("", "")])
+def test_comment_reply_parent(setup, code, user_id):
+    _, client, manager, _ = setup
+    unlock(client)
+    assert comment(client, parent_id="456", parent_author_code=code).json["ok"]
+    assert manager.calls[0][1]["parent"] == {"comment_no": 456, "user_id": user_id}
+
+
+@pytest.mark.parametrize("field,value,expected", [
+    ("pid", None, "board"), ("pid", "0", "board"), ("board", "../x", "board"),
+    ("content", " ", "content"), ("content", "x" * 401, "content"), ("content", 3, "content"),
+    ("nickname", "", "nickname"), ("nickname", "x" * 21, "nickname"),
+    ("password", "x", "password"), ("password", "  ", "password"), ("password", "x" * 21, "password"),
+    ("parent_id", "abc", "parent"), ("parent_id", True, "parent"), ("parent_author_code", 5, "parent"),
+    ("captcha_key", "oops", "captcha"),
+])
+def test_comment_validation(setup, field, value, expected):
+    _, client, manager, _ = setup
+    unlock(client)
+    extra = {"parent_id": "1"} if field == "parent_author_code" else {}
+    response = comment(client, **{field: value}, **extra)
+    assert response.status_code == 400 and response.json["field"] == expected
+    assert not manager.calls
+
+
+def test_comment_outcomes(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "CaptchaRequiredError", "cause": "보안 코드 입력"}}
+    response = comment(client, kind="minor", captcha_key="a" * 16, captcha_code=" ab ")
+    captcha = response.json["captcha"]
+    assert response.json["code"] == "captcha_required"
+    assert captcha["image_url"] == f'/write/captcha?kind=comment&board=programming&key={captcha["key"]}'
+    assert manager.calls[-1][1]["captcha"] == {"key": "a" * 16, "code": "ab"}
+    manager.result = {"ok": False, "error": {"name": "ApiError", "cause": "댓글 작성이 제한되었습니다."}}
+    assert comment(client).json == {"ok": False, "code": "rejected",
+                                    "message": "디시가 댓글을 받지 않았어요. 디시 안내: 댓글 작성이 제한되었습니다."}
+    manager.result = service.WorkerUnavailable(sent=True)
+    response = comment(client)
+    assert response.status_code == 503 and response.json["code"] == "uncertain"
+    assert response.json["message"].startswith("댓글을 보냈지만")
+
+
+def test_comment_captcha_image_kind(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": True, "data": {"content_type": "image/png", "base64": base64.b64encode(b"x").decode()}}
+    assert client.get("/write/captcha?kind=comment&board=programming&key=" + "a" * 16).status_code == 200
+    assert manager.calls[-1] == ("captcha", {"kind": "comment", "gallery": "programming", "key": "a" * 16})

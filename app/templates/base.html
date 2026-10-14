@@ -164,11 +164,11 @@
                 <span>개인 미러 · 글쓰기 켜짐</span>
                 <form id="write-lock-form" method="post" action="/write/lock">
                     <input type="hidden" name="next" value="{{ write_next }}">
-                    <button class="site-foot-link" type="submit">글쓰기·추천 잠그기</button>
+                    <button class="site-foot-link" type="submit">글쓰기·댓글·추천 잠그기</button>
                 </form>
                 {% else %}
                 <span>개인 미러</span>
-                <a class="site-foot-link" href="/write/unlock?{{ {'next': write_next}|urlencode }}">글쓰기·추천 잠금 해제</a>
+                <a class="site-foot-link" href="/write/unlock?{{ {'next': write_next}|urlencode }}">글쓰기·댓글·추천 잠금 해제</a>
                 {% endif %}
             </div>
             {% else %}

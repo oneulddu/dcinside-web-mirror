@@ -79,6 +79,12 @@ pm2 logs dc-mirror
   HttpOnly 180-day cookie, and `/write/lock` clears it. POSTs require same-origin headers.
   Five failed unlock attempts per process per minute are allowed; successful writes/votes
   have process-wide 20s/3s intervals (up and down votes keep separate intervals). Never log nicknames, passwords, unlock keys or captcha answers.
+- DC comments (`POST /read/comment`: board, kind, pid, content 1-400 chars, nickname, password, optional
+  `parent_id` + `parent_author_code`, captcha) use the worker `comment` op, which calls app API
+  `comments.write` (`comment_ok.php`) through an anonymous session like `write`. Replies send
+  `{comment_no, user_id}`; `user_id` is the parent's author code only when it is a DC id (`[A-Za-z0-9_]{1,40}`),
+  otherwise empty (anonymous/IP parents). Comment captchas use the app image `/write/captcha?kind=comment`.
+  Successful comments have a 10s process-wide interval; an unknown result after sending is `uncertain`.
 - `app/services/dc_write.py` serializes a lazy Node worker with a shared 40s deadline (55s for image writes) including both lock waits and discards
   it on crash/timeout/protocol failure without replaying a potentially completed write.
   Write/vote transport failures after sending return HTTP 503 with code `uncertain`; failures before sending return `unavailable`.
@@ -188,6 +194,10 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   (`_bits.captcha_box`). Never auto-resend a write or vote; an unknown result tells the user to check the list.
   Captcha refresh makes a new random 16-hex key client-side and only re-fetches `/write/captcha`.
   Nickname/password are saved in `localStorage["mirror_write_identity_v1"]` only after opt-in checkboxes.
+  The read page comment composer (`#comment-form` + `static/javascript/comment_form.js`, only when `write_enabled`;
+  `write_configured` alone shows an unlock link) shares that identity key. Top-level comments with numeric ids get a
+  "답글" button that moves the form into a `li.comment-reply-slot` after the thread; replies to replies are not offered.
+  Success appends the comment client-side with time "방금" and bumps `.comment-count` instead of reloading.
   `vote.js` reads `GET /read/vote/options` (worker `vote_info`: app API `view_main.nonrecomm_use` and
   `view_info.recommend_captcha`, cached per post for 10 minutes because galleries can disable downvotes per 말머리) and shows or hides the downvote button from it.
   Despite its name, `nonrecomm_use: true` means downvotes are disabled (checked against PC view pages). Before options load, the button follows the

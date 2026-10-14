@@ -56,7 +56,7 @@
         <h2 id="comment-title">댓글 <span class="comment-count">{{ comments|length }}</span></h2>
         <ul class="comment-list">
             {% for comment in comments %}
-            <li class="comment-item{% if comment.is_reply %} is-reply{% endif %}"{% if comment.parent_id %} data-parent-id="{{ comment.parent_id }}"{% endif %}>
+            <li class="comment-item{% if comment.is_reply %} is-reply{% endif %}"{% if comment.id %} data-comment-id="{{ comment.id }}"{% endif %}{% if comment.parent_id %} data-parent-id="{{ comment.parent_id }}"{% endif %}>
                 {% if comment.is_reply %}
                 <span class="reply-mark" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M6 5v6a4 4 0 0 0 4 4h8"/><path d="M15 12l3 3-3 3"/></svg></span>
                 {% endif %}
@@ -75,12 +75,50 @@
                 <div class="comment-meta">
                     {{ author_text(comment) }}
                     {{ post_time(comment.time) }}
+                    {%- if write_enabled|default(false) and not comment.is_reply and comment.id is string and comment.id.isdigit() %}
+                    <button class="comment-reply-btn" type="button" data-comment-reply aria-expanded="false" aria-controls="comment-form" aria-label="{{ comment.author }}의 댓글에 답글 달기">답글</button>
+                    {%- endif %}
                 </div>
             </li>
             {% else %}
             <li class="empty-row">아직 댓글이 없어요.</li>
             {% endfor %}
         </ul>
+        {% if write_enabled|default(false) %}
+        <form class="comment-form" id="comment-form" data-board="{{ board }}" data-kind="{{ kind or '' }}" data-pid="{{ pid }}"
+              data-comment-max="{{ write_limits.comment_max }}" data-nickname-max="{{ write_limits.nickname_max }}"
+              data-password-min="{{ write_limits.password_min }}" data-password-max="{{ write_limits.password_max }}" novalidate>
+            <div class="comment-form-target" id="comment-form-target" hidden>
+                <span id="comment-form-target-text"></span>
+                <button class="comment-form-cancel" id="comment-form-cancel" type="button">답글 취소</button>
+            </div>
+            <div class="comment-form-identity">
+                <label class="sr-only" for="comment-nickname">닉네임</label>
+                <input class="write-input comment-form-field" id="comment-nickname" type="text" autocomplete="nickname" placeholder="닉네임" maxlength="{{ write_limits.nickname_max * 2 }}" aria-describedby="comment-identity-error">
+                <label class="sr-only" for="comment-password">비밀번호</label>
+                <input class="write-input comment-form-field" id="comment-password" type="password" autocomplete="new-password" placeholder="비밀번호" maxlength="{{ write_limits.password_max * 2 }}" aria-describedby="comment-password-hint comment-identity-error">
+            </div>
+            <p class="write-error" id="comment-identity-error" hidden></p>
+            <label class="sr-only" for="comment-content">댓글</label>
+            <textarea class="write-input comment-form-input" id="comment-content" rows="3" placeholder="댓글을 입력하세요" aria-describedby="comment-content-error comment-length"></textarea>
+            <p class="write-error" id="comment-content-error" hidden></p>
+            {{ captcha_box("comment-captcha", "이 갤러리는 댓글을 쓸 때 자동 입력 방지 문자가 필요해요. 보이는 문자를 입력하고 다시 등록해 주세요.") }}
+            <div class="comment-form-footer">
+                <div class="comment-form-remember" role="group" aria-label="이 브라우저에 기억">
+                    <label class="write-check"><input type="checkbox" id="comment-remember-nickname"> 닉네임 기억</label>
+                    <label class="write-check"><input type="checkbox" id="comment-remember-password" aria-describedby="comment-password-hint"> 비밀번호 기억</label>
+                </div>
+                <div class="comment-form-send">
+                    <span class="write-count comment-form-count" id="comment-length" aria-live="off">0/{{ write_limits.comment_max }}</span>
+                    <button class="write-submit comment-form-submit" id="comment-submit" type="submit">등록</button>
+                </div>
+            </div>
+            <p class="write-hint" id="comment-password-hint" hidden>비밀번호는 댓글을 지울 때 써요. 기억하면 암호화하지 않고 이 브라우저에 저장돼요.</p>
+            <p class="write-status" id="comment-status" role="status" aria-live="polite"></p>
+        </form>
+        {% elif write_configured|default(false) %}
+        <p class="comment-form-locked"><a href="{{ url_for('main.write_unlock', next=request.full_path.rstrip('?')) }}">잠금을 풀면 댓글을 쓸 수 있어요</a></p>
+        {% endif %}
     </section>
 
     <div class="section-band" aria-hidden="true"></div>
@@ -154,5 +192,6 @@
 {% if write_enabled|default(false) %}
 <script src="{{ static_url('javascript/dc_post_client.js') }}"></script>
 <script src="{{ static_url('javascript/vote.js') }}"></script>
+<script src="{{ static_url('javascript/comment_form.js') }}"></script>
 {% endif %}
 {% endblock %}

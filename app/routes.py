@@ -1202,11 +1202,12 @@ def register_routes(app):
 def dc_write_context():
     is_dc = request.blueprint == "main"
     return {"write_configured": is_dc and dc_write.configured(),
-            "write_enabled": is_dc and dc_write.enabled()}
+            "write_enabled": is_dc and dc_write.enabled(),
+            "write_limits": dc_write.LIMITS}
 
 
 _WRITE_ENDPOINTS = {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote",
-                    "main.read_vote_options"}
+                    "main.read_vote_options", "main.read_comment"}
 
 
 @bp.before_request
@@ -1313,19 +1314,22 @@ def _write_result(op, board, kind, **payload):
             number = data.get("no")
             if not isinstance(number, bool) and re.fullmatch(r"[1-9][0-9]*", str(number or "")):
                 result["read_url"] = read_url(board, int(number), kind=kind)
+        elif op == "comment":
+            result["message"] = "댓글을 달았어요."
         else:
             result["message"] = "추천했어요." if op == "upvote" else "비추천했어요."
     elif op != "write" and result["code"] == "rejected" and "reason" not in result:
-        name = "추천" if op == "upvote" else "비추천"
+        name = {"comment": "댓글", "upvote": "추천"}.get(op, "비추천")
         result["message"] = f"디시가 {name}을 받지 않았어요." + (f" 디시 안내: {cause}" if cause else "")
     elif result["code"] == "captcha_required":
         key = secrets.token_hex(8)
-        if op != "write" and _pc_gall_type(kind):
+        if op in ("upvote", "downvote") and _pc_gall_type(kind):
             # 추천 보안 문자는 노이즈를 지울 수 있는 PC 문자로 받고, 답도 PC 방식으로 보낸다.
             image_url = url_for("main.write_captcha", kind="vote", board=board, key=key,
                                 pid=payload["no"], gallery_kind=kind or "")
         else:
-            image_url = url_for("main.write_captcha", kind="article" if op == "write" else "recommend", board=board, key=key)
+            captcha_kind = {"write": "article", "comment": "comment"}.get(op, "recommend")
+            image_url = url_for("main.write_captcha", kind=captcha_kind, board=board, key=key)
         result["captcha"] = {"key": key, "image_url": image_url}
     response = jsonify(result)
     response.status_code = status
@@ -1465,6 +1469,48 @@ def read_vote():
     return _write_result(op, board, kind, no=int(pid), captcha=captcha)
 
 
+# 답글 대상의 디시 아이디. 유동(IP 앞자리)이나 알 수 없는 값은 빈 값으로 보낸다(디시 앱과 같다).
+_COMMENT_USER_ID = re.compile(r"[A-Za-z0-9_]{1,40}")
+
+
+@bp.route("/read/comment", methods=["POST"])
+def read_comment():
+    data = _write_json_request()
+    if data is None:
+        return _write_invalid("board", "JSON 형식으로 요청해 주세요.")
+    try:
+        board, kind = _write_board(data)
+        pid = data.get("pid")
+        if isinstance(pid, bool) or not re.fullmatch(r"[1-9][0-9]{0,14}", str(pid or "")):
+            raise ValueError()
+    except (ValueError, BadRequest):
+        return _write_invalid("board", "올바른 갤러리와 글 번호를 선택해 주세요.")
+    limits = dc_write.LIMITS
+    content, nickname, password = data.get("content"), data.get("nickname"), data.get("password")
+    if not isinstance(content, str) or not content.strip() or len(content) > limits["comment_max"]:
+        return _write_invalid("content", f"댓글은 1~{limits['comment_max']}자로 입력해 주세요.")
+    nickname = nickname.strip() if isinstance(nickname, str) else ""
+    if not 1 <= len(nickname) <= limits["nickname_max"]:
+        return _write_invalid("nickname", "닉네임은 1~20자로 입력해 주세요.")
+    if not isinstance(password, str) or not password.strip() or not limits["password_min"] <= len(password) <= limits["password_max"]:
+        return _write_invalid("password", "비밀번호는 2~20자로 입력해 주세요.")
+    parent = None
+    parent_id = data.get("parent_id")
+    if parent_id is not None:
+        author = data.get("parent_author_code")
+        if (isinstance(parent_id, bool) or not re.fullmatch(r"[1-9][0-9]{0,14}", str(parent_id))
+                or not isinstance(author, (str, type(None))) or len(author or "") > 80):
+            return _write_invalid("parent", "답글을 달 댓글을 다시 골라 주세요.")
+        parent = {"comment_no": int(parent_id),
+                  "user_id": author if author and _COMMENT_USER_ID.fullmatch(author) else ""}
+    try:
+        captcha = _write_captcha_answer(data)
+    except ValueError:
+        return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
+    return _write_result("comment", board, kind, no=int(pid), content=content, parent=parent, captcha=captcha,
+                         session={"type": "anonymous", "nickname": nickname, "password": password})
+
+
 # PC 화면의 갤러리 종류 값(_GALLTYPE_). 인물 갤러리는 PC 추천을 쓰지 않고 앱 보안 문자를 그대로 쓴다.
 _PC_GALL_TYPES = {None: "G", "minor": "M", "mini": "MI"}
 
@@ -1490,7 +1536,7 @@ def write_captcha():
     try:
         board = _normalize_board_id(request.args.get("board"), default="")
         kind, key = request.args.get("kind"), request.args.get("key", "")
-        if kind not in {"article", "recommend", "vote"} or not dc_write.CAPTCHA_KEY.fullmatch(key):
+        if kind not in {"article", "comment", "recommend", "vote"} or not dc_write.CAPTCHA_KEY.fullmatch(key):
             raise ValueError()
         if kind == "vote":
             pid = request.args.get("pid", "")

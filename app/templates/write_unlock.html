@@ -9,12 +9,12 @@
 <section class="write-shell">
     <div class="board-head page-head">
         <div class="page-head-copy">
-            <h1 id="write-unlock-title">글쓰기·추천</h1>
-            <p class="board-head-note">이 브라우저에서 개인용 글쓰기와 추천을 켜요.</p>
+            <h1 id="write-unlock-title">글쓰기·댓글·추천</h1>
+            <p class="board-head-note">이 브라우저에서 개인용 글쓰기, 댓글, 추천을 켜요.</p>
         </div>
     </div>
     {% if unlocked %}
-    <p class="write-status is-success">이 브라우저에서 글쓰기와 추천을 쓸 수 있어요.</p>
+    <p class="write-status is-success">이 브라우저에서 글쓰기, 댓글, 추천을 쓸 수 있어요.</p>
     <div class="write-actions">
         <form method="post" action="/write/lock">
             <input type="hidden" name="next" value="{{ next or '/' }}">

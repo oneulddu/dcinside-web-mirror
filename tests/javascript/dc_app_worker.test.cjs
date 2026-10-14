@@ -63,6 +63,15 @@ export class DCInside {
       },
       downvote: async () => { if (this.session !== null) throw new Error('Leaked session'); return {result:'true',direction:'down'}; },
     };
+    this.comments = {
+      write: async (gallery, no, content, options) => {
+        trace('comment');
+        const session = this.session;
+        if (!session || session.type !== 'anonymous' || session.password !== 'private-password') throw new Error('Wrong session');
+        if (gallery === 'captcha') throw Object.assign(new Error('x'), {name:'CaptchaRequiredError',cause:'보안 코드 입력'});
+        return {result:'true', gallery, no, content, parent: options.parent ?? null, captcha: options.captcha ?? null};
+      },
+    };
     this.http = { fetch: async url => {
       if (url.includes('badtype')) return new Response('html', {headers:{'content-type':'text/html'}});
       if (url.includes('oversize')) return new Response(new Uint8Array(204801), {headers:{'content-type':'image/png'}});
@@ -237,4 +246,34 @@ test('vote_info reads gallery vote settings without voting', () => {
 test('vote errors report a carrier or VPN ban flag', () => {
   const result = run([write('one'), {op:'upvote',gallery:'vpn',no:1}]);
   assert.deepEqual(result.replies[1].error, {name:'ApiError',cause:'추천할 수 없습니다.',status:null,vpn_ban:true});
+});
+
+const comment = extra => ({ op:'comment', session:{type:'anonymous', nickname:'private-nickname', password:'private-password'}, gallery:'programming', no:7, content:'첫 줄\n<b>둘째</b>', ...extra });
+
+test('comment op sends text and reply parent through an anonymous session, then clears it', () => {
+  const result = run([
+    comment({}),
+    comment({ parent:{comment_no:45, user_id:''}, captcha:{key:'a'.repeat(16), code:'ab'} }),
+    { op:'upvote', gallery:'programming', no:1 },
+    comment({ gallery:'captcha' }),
+  ]);
+  assert.deepEqual(result.replies[0].data, {result:'true', gallery:'programming', no:7, content:'첫 줄\n<b>둘째</b>', parent:null, captcha:null});
+  assert.deepEqual(result.replies[1].data.parent, {comment_no:45, user_id:''});
+  assert.deepEqual(result.replies[1].data.captcha, {key:'a'.repeat(16), code:'ab'});
+  assert.equal(result.replies[2].ok, true);
+  assert.deepEqual(result.replies[3].error, { name:'CaptchaRequiredError', cause:'보안 코드 입력', status:null });
+});
+
+test('invalid comments are rejected before any DC call', () => {
+  const result = run([
+    comment({ content:'x'.repeat(401) }),
+    comment({ content:'  ' }),
+    comment({ no:0 }),
+    comment({ parent:{comment_no:'1', user_id:''} }),
+    comment({ parent:{comment_no:1, user_id:'1.2'} }),
+    { ...comment({}), session:{type:'login'} },
+  ]);
+  result.replies.slice(0, 5).forEach(reply => assert.deepEqual(reply.error, { name:'WorkerError', cause:'', status:null, sent:false }));
+  assert.equal(result.replies[5].ok, false);
+  assert(!result.trace.includes('comment') && !result.trace.includes('anonymous'));
 });
