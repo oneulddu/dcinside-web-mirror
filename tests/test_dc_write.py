@@ -395,7 +395,8 @@ def test_manager_restarts_without_replay(tmp_path, node, failure):
         assert error.value.sent is True
         assert manager._process is None
         worker.write_text("import {createInterface} from 'node:readline';\nfor await (const line of createInterface({input:process.stdin})) {const r=JSON.parse(line);console.log(JSON.stringify({id:r.id,ok:true,data:{ready:true}}));}\n")
-        manager.timeout = 3
+        # 느린 CI에서는 첫 Node 실행만으로 몇 초가 걸린다.
+        manager.timeout = 10
         assert manager.request("ping")["data"]["ready"] is True
     finally:
         manager.close()
