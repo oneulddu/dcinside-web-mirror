@@ -2730,6 +2730,12 @@ html[data-media-block-mode="all"] .article-body:not([data-body-media-ready="true
     font-weight: 600;
 }
 
+/* 이름과 식별 코드가 "익명(" / "코드)"로 갈라지지 않게 한 줄로 묶는다. */
+.article-meta .author-text,
+.comment-meta .author-text {
+    white-space: nowrap;
+}
+
 .comment-meta .author-text.author-role-manager {
     color: var(--role-manager);
     font-weight: 650;
