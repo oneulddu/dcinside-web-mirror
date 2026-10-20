@@ -357,7 +357,7 @@ def perform(op, **payload):
         name = error.get("name")
         if name == "WorkerError" and error.get("sent") is False:
             return unavailable(), 503
-        if name == "CaptchaRequiredError" or (cause and re.search(r"captcha|보안\s?코드|자동\s?입력", cause, re.I)):
+        if name == "CaptchaRequiredError" or (cause and re.search(r"captcha|보안\s?코드|자동\s?입력|코드가\s?설정된\s?갤러리", cause, re.I)):
             return {"ok": False, "code": "captcha_required", "message": cause or "보안 코드를 입력해 주세요."}, 200
         if cause == "잠시후 다시 이용해주세요.":
             return {"ok": False, "code": "retry", "message": cause, "retry_after": 30}, 429

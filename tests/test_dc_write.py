@@ -1047,6 +1047,11 @@ def test_comment_outcomes(setup):
     assert response.json["code"] == "captcha_required"
     assert captcha["image_url"] == f'/write/captcha?kind=comment&board=programming&key={captcha["key"]}'
     assert manager.calls[-1][1]["captcha"] == {"key": "a" * 16, "code": "ab"}
+    # 코드를 설정한 갤러리는 보안 코드 없이 보내면 이 문구로 거절한다. 입력창을 띄워야 한다.
+    manager.result = {"ok": False, "error": {"name": "ApiError", "cause": "코드가 설정된 갤러리 입니다. 코드를 확인해 주십시오."}}
+    response = comment(client)
+    assert response.json["code"] == "captcha_required"
+    assert response.json["captcha"]["image_url"] == f'/write/captcha?kind=comment&board=programming&key={response.json["captcha"]["key"]}'
     manager.result = {"ok": False, "error": {"name": "ApiError", "cause": "댓글 작성이 제한되었습니다."}}
     assert comment(client).json == {"ok": False, "code": "rejected",
                                     "message": "디시가 댓글을 받지 않았어요. 디시 안내: 댓글 작성이 제한되었습니다."}
