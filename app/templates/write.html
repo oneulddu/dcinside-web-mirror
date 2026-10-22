@@ -9,12 +9,13 @@
 <section class="write-shell">
     <div class="board-head page-head write-head-copy">
         <div class="page-head-copy">
+            {% set account_modify = modify_pid and account_configured|default(false) and request.args.get('mode') == 'account' %}
             {% if modify_pid %}
             <h1 id="write-title">글 수정</h1>
-            <p class="board-head-note">글을 쓸 때 정한 비밀번호로 원래 글을 불러와요.</p>
+            <p class="board-head-note">{% if account_modify %}디시 계정으로 쓴 글을 불러와요.{% else %}글을 쓸 때 정한 비밀번호로 원래 글을 불러와요.{% endif %}</p>
             {% else %}
             <h1 id="write-title">글쓰기</h1>
-            <p class="board-head-note">유동닉으로 올라가요. 서버 IP로 기록돼요.</p>
+            <p class="board-head-note" id="write-mode-note">유동닉으로 올라가요. 서버 IP로 기록돼요.</p>
             {% endif %}
         </div>
     </div>
@@ -27,9 +28,20 @@
           data-subject-max="{{ limits.subject_max }}" data-body-max="{{ limits.body_max }}"
           data-nickname-max="{{ limits.nickname_max }}" data-password-min="{{ limits.password_min }}" data-password-max="{{ limits.password_max }}"
           data-image-max-count="{{ limits.image_max_count }}" data-image-max-bytes="{{ limits.image_max_bytes }}" data-image-total-bytes="{{ limits.image_total_bytes }}"
-          {%- if modify_pid %} data-modify-pid="{{ modify_pid }}" data-modify-author="{{ request.args.get('author', '')[:limits.nickname_max] }}"{% endif %}>
+          {%- if modify_pid %} data-modify-pid="{{ modify_pid }}" data-modify-author="{{ request.args.get('author', '')[:limits.nickname_max] }}"{% endif %}
+          {%- if account_modify %} data-mode="account"{% endif %}>
         <fieldset class="write-author">
             <legend class="sr-only">작성자</legend>
+            {#- 수정은 연 방식(유동 또는 계정)을 바꾸지 않는다. -#}
+            {% if account_configured|default(false) and not modify_pid %}
+            <div class="write-mode" role="radiogroup" aria-label="작성자">
+                <label class="write-mode-option"><input type="radio" name="write-mode" value="anonymous" checked><span>유동</span></label>
+                <label class="write-mode-option"><input type="radio" name="write-mode" value="account"><span>디시 계정</span></label>
+            </div>
+            {% endif %}
+            {% if account_configured|default(false) and (account_modify or not modify_pid) %}
+            <p class="write-hint" id="write-account-note"{% if not account_modify %} hidden{% endif %}>서버에 설정한 디시 계정으로 {{ "고쳐요" if modify_pid else "올려요" }}. 로그인이 필요하면 <a href="{{ url_for('main.write_account') }}" target="_blank" rel="noopener">계정 화면</a>에서 해 주세요.</p>
+            {% endif %}
             <div class="write-identity">
                 <div class="write-field">
                     <label class="write-label" for="write-nickname">닉네임</label>

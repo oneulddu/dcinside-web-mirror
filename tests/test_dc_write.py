@@ -34,6 +34,8 @@ class FakeManager:
 
 @pytest.fixture
 def setup(monkeypatch):
+    monkeypatch.delenv("MIRROR_DC_LOGIN_ID", raising=False)
+    monkeypatch.delenv("MIRROR_DC_LOGIN_PASSWORD", raising=False)
     app = create_app()
     app.config.update(TESTING=True, WRITE_KEY="비밀-key", SECRET_KEY="test-secret")
     manager = FakeManager()
@@ -340,7 +342,7 @@ def test_captcha_proxy(setup, content_type, size, status):
 def test_captcha_invalid_and_failure(setup, sent):
     _, client, manager, _ = setup
     unlock(client)
-    assert client.get("/write/captcha?kind=login&board=x&key=" + "a" * 16).status_code == 400
+    assert client.get("/write/captcha?kind=unknown&board=x&key=" + "a" * 16).status_code == 400
     assert client.get("/write/captcha?kind=article&board=../x&key=" + "a" * 16).status_code == 400
     assert not manager.calls
     manager.result = service.WorkerUnavailable(sent=sent)
@@ -367,13 +369,218 @@ def test_metadata_failure_and_no_recent_cookie(setup, monkeypatch):
 def test_context_globals(setup):
     app, client, _, _ = setup
     with app.test_request_context("/write"):
-        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": False, "write_limits": service.LIMITS}
+        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": False, "account_configured": False, "write_limits": service.LIMITS}
     unlock(client)
     cookie = client.get_cookie(service.COOKIE).value
     with app.test_request_context("/write", headers={"Cookie": f"mirror_write={cookie}"}):
-        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": True, "write_limits": service.LIMITS}
+        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": True, "account_configured": False, "write_limits": service.LIMITS}
     with app.test_request_context("/poker"):
-        assert routes.dc_write_context() == {"write_configured": False, "write_enabled": False, "write_limits": service.LIMITS}
+        assert routes.dc_write_context() == {"write_configured": False, "write_enabled": False, "account_configured": False, "write_limits": service.LIMITS}
+
+
+ACCOUNT_STATUS = {"configured": True, "logged_in": True, "user_id": "public-user",
+                  "name": "고정닉", "blocked": False, "reason": None}
+ACCOUNT_ROUTES = [("get", "/write/account"), ("get", "/write/account/status"),
+                  ("post", "/write/account/login")]
+
+
+@pytest.mark.parametrize("method,path", ACCOUNT_ROUTES)
+@pytest.mark.parametrize("gate", ["disabled", "locked", "origin"])
+def test_account_route_gates(setup, method, path, gate):
+    app, client, manager, _ = setup
+    if gate == "disabled":
+        app.config["WRITE_KEY"] = ""
+    elif gate == "origin":
+        unlock(client)
+    response = getattr(client, method)(path, json={}, headers={
+        "Origin": "https://elsewhere.test", "Sec-Fetch-Site": "cross-site",
+    })
+    assert response.status_code == (404 if gate == "disabled" else 403)
+    assert response.headers["Cache-Control"] == "no-store"
+    assert not manager.calls
+
+
+def test_account_page_opens_from_address_bar(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": True, "data": ACCOUNT_STATUS}
+    response = client.get("/write/account", headers={"Sec-Fetch-Site": "none"})
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize("path,site", [(path, site) for path in ("/write/account", "/write/account/status")
+                                       for site in ("cross-site", "same-site", "")]
+                         + [("/write/account/status", "none")])
+def test_account_get_rejects_non_same_origin_fetch_metadata(setup, path, site):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = client.get(path, headers={"Sec-Fetch-Site": site})
+    assert response.status_code == 403
+    assert response.headers["Cache-Control"] == "no-store"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("headers", [{}, {"Origin": "https://elsewhere.test"}, {"Referer": "https://elsewhere.test/form"}])
+def test_account_login_requires_same_origin(setup, headers):
+    _, client, manager, _ = setup
+    unlock(client)
+    assert client.post("/write/account/login", json={}, headers=headers).status_code == 403
+    assert not manager.calls
+
+
+def test_account_status_page_and_context_are_allowlisted(setup, monkeypatch):
+    app, client, manager, contexts = setup
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID", "secret-login-id")
+    assert not service.account_configured()
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD", "secret-login-password")
+    assert service.account_configured()
+    with app.test_request_context("/write"):
+        assert routes.dc_write_context()["account_configured"] is True
+    unlock(client)
+    manager.result = {"ok": True, "data": {**ACCOUNT_STATUS, "id": "secret-login-id",
+                                          "password": "secret-login-password", "otp_token": "secret-token"}}
+    response = client.get("/write/account/status", headers={"Sec-Fetch-Site": "same-origin"})
+    assert response.json == {"ok": True, **ACCOUNT_STATUS}
+    assert response.headers["Cache-Control"] == "no-store"
+    assert client.get("/write/account").status_code == 200
+    assert contexts[-1] == ("write_account.html", {"account": {"ok": True, **ACCOUNT_STATUS}})
+    assert manager.calls == [("account_status", {}), ("account_status", {})]
+
+
+@pytest.mark.parametrize("reason", ["otp", "captcha", "failed", "expired"])
+def test_account_login_failure_contract_and_worker_cooldown(setup, reason):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "LoginNeeded", "reason": reason, "sent": False,
+                                           "cause": "secret-login-id secret-login-password", "captcha_key": "a" * 16}}
+    response = client.post("/write/account/login", json={}, headers=ORIGIN)
+    expected = {"ok": False, "code": "login_needed", "reason": reason, "message": service.LOGIN_MESSAGES[reason]}
+    if reason == "captcha":
+        expected["captcha_key"] = "a" * 16
+    assert response.json == expected
+    assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
+    assert manager.calls == [("account_login", {"otp": None, "captcha": None})]
+    manager.result = {"ok": False, "error": {"name": "LoginCooldown", "retry_after": 10, "sent": False}}
+    limited = client.post("/write/account/login", json={}, headers=ORIGIN)
+    assert limited.status_code == 429
+    assert limited.json == {"ok": False, "code": "retry", "message": "잠시 후 다시 시도해 주세요.", "retry_after": 10}
+    assert limited.headers["Retry-After"] == "10"
+    assert len(manager.calls) == 2
+    manager.result = {"ok": True, "data": {"result": True, **ACCOUNT_STATUS, "password": "secret-login-password"}}
+    response = client.post("/write/account/login", json={"otp": "123456", "captcha": {"key": "b" * 16, "code": " ab "},
+                                                       "id": "do-not-forward", "password": "do-not-forward"}, headers=ORIGIN)
+    assert response.json == {"ok": True, **ACCOUNT_STATUS}
+    assert manager.calls[-1] == ("account_login", {"otp": "123456", "captcha": {"key": "b" * 16, "code": "ab"}})
+    # Even an immediate second success must reach the worker: Python owns no login clock.
+    assert client.post("/write/account/login", json={}, headers=ORIGIN).json["ok"]
+    assert len(manager.calls) == 4
+    assert "account_login" not in service._last_success
+
+
+@pytest.mark.parametrize("data,field", [
+    ({"otp": "１２３４５６"}, "otp"), ({"otp": 123456}, "otp"), ({"otp": "12345"}, "otp"),
+    ({"otp": ""}, "otp"), ({"captcha": {}}, "captcha"), ({"captcha": "x"}, "captcha"),
+    ({"captcha": {"key": "bad", "code": "a"}}, "captcha"),
+    ({"captcha": {"key": "a" * 16, "code": ""}}, "captcha"),
+])
+def test_account_login_validation_never_calls_worker(setup, data, field):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = client.post("/write/account/login", json=data, headers=ORIGIN)
+    assert response.status_code == 400 and response.json["field"] == field
+    assert not manager.calls
+
+
+def test_login_captcha_image_without_gallery(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": True, "data": {"content_type": "image/png", "base64": "AQID"}}
+    response = client.get("/write/captcha?kind=login&key=" + "a" * 16)
+    assert response.status_code == 200 and response.data == b"\x01\x02\x03"
+    assert response.headers["Cache-Control"] == "no-store"
+    assert manager.calls == [("captcha", {"kind": "login", "key": "a" * 16, "gallery": ""})]
+
+
+ACCOUNT_ACTIONS = [
+    ("/write", "write", {"subject": "제목", "body": "본문"}),
+    ("/read/comment", "comment", {"pid": 123, "content": "댓글"}),
+    ("/read/delete", "delete", {"pid": 123}),
+    ("/read/comment/delete", "comment_delete", {"pid": 123, "comment_id": 456}),
+    ("/write/modify/load", "modify_info", {"pid": 123}),
+    ("/write", "modify", {"pid": 123, "subject": "제목", "body": "수정", "fingerprint": "a" * 64}),
+]
+
+
+@pytest.mark.parametrize("path,op,fields", ACCOUNT_ACTIONS)
+def test_account_actions_use_only_session_marker(setup, path, op, fields):
+    _, client, manager, _ = setup
+    unlock(client)
+    data = {"result": True, "data": "456", "author": {"name": "고정닉", "user_id": "public-user", "password": "secret"}}
+    if op == "modify_info":
+        data = MODIFY_INFO
+    manager.result = {"ok": True, "data": data}
+    response = client.post(path, json={"board": "programming", "mode": "account", **fields}, headers=ORIGIN)
+    assert response.status_code == 200 and response.json["ok"]
+    assert manager.calls[0][0] == op
+    assert manager.calls[0][1]["session"] == {"type": "login"}
+    assert "password" not in response.get_data(as_text=True)
+    if op == "comment":
+        assert response.json["author"] == {"name": "고정닉", "user_id": "public-user"}
+        assert response.json["comment_id"] == 456
+    if op == "modify_info":
+        assert response.json["mode"] == "account"
+
+
+@pytest.mark.parametrize("path,op,fields", ACCOUNT_ACTIONS + [("/write/account/login", "account_login", {})])
+@pytest.mark.parametrize("seconds", [1, 7, 10])
+def test_account_login_cooldown_maps_to_retry_for_every_route(setup, path, op, fields, seconds):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "LoginCooldown", "retry_after": seconds, "sent": False}}
+    response = client.post(path, json={"board": "programming", "mode": "account", **fields}, headers=ORIGIN)
+    assert response.status_code == 429
+    assert response.json == {"ok": False, "code": "retry", "message": "잠시 후 다시 시도해 주세요.",
+                             "retry_after": seconds}
+    assert response.headers["Retry-After"] == str(seconds)
+    assert response.headers["Cache-Control"] == "no-store"
+    assert manager.calls[0][0] == op and len(manager.calls) == 1
+    assert service._last_success == {}
+
+
+@pytest.mark.parametrize("path,op,fields", ACCOUNT_ACTIONS)
+@pytest.mark.parametrize("reason", ["otp", "captcha", "failed", "expired"])
+def test_account_action_login_needed_is_not_uncertain(setup, path, op, fields, reason, caplog):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "LoginNeeded", "reason": reason, "sent": False,
+                                           "cause": "secret-login-id secret-login-password", "captcha_key": "a" * 16}}
+    response = client.post(path, json={"board": "programming", "mode": "account", **fields}, headers=ORIGIN)
+    assert response.status_code == 200
+    assert response.json == {"ok": False, "code": "login_needed", "reason": reason,
+                             "message": service.LOGIN_MESSAGES[reason], "account_url": "/write/account"}
+    assert len(manager.calls) == 1
+    assert "secret-login" not in response.get_data(as_text=True) + caplog.text
+
+
+@pytest.mark.parametrize("failure", [service.WorkerUnavailable(sent=True),
+                                   {"ok": False, "error": {"name": "WorkerError", "cause": "", "status": None}}])
+def test_account_mutation_timeout_stays_uncertain(setup, failure):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = failure
+    response = post(client, mode="account", nickname=None, password=None)
+    assert response.status_code == 503 and response.json["code"] == "uncertain"
+    assert len(manager.calls) == 1
+
+
+def test_account_rejection_does_not_leak_upstream_identity(setup, caplog):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "ApiError", "cause": "secret-login-id secret-login-password"}}
+    response = post(client, mode="account")
+    assert response.json["code"] == "rejected"
+    assert "secret-login" not in response.get_data(as_text=True) + caplog.text
 
 
 @pytest.fixture
@@ -1100,7 +1307,7 @@ def test_mutation_success_and_process_interval(setup, monkeypatch, path, op):
     expected = {
         "delete": {"ok": True, "message": "글을 삭제했어요.", "board_url": "/board?board=programming&kind=minor&refresh=1"},
         "comment_delete": {"ok": True, "message": "댓글을 삭제했어요."},
-        "modify_info": {"ok": True, **{key: MODIFY_INFO[key] for key in ("subject", "head_id", "head_name", "blocks", "fingerprint")}},
+        "modify_info": {"ok": True, "mode": "anonymous", **{key: MODIFY_INFO[key] for key in ("subject", "head_id", "head_name", "blocks", "fingerprint")}},
         "modify": {"ok": True, "board_url": "/board?board=programming&kind=minor&refresh=1",
                    "read_url": "/read?board=programming&pid=123&kind=minor"},
     }

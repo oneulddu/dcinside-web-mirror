@@ -152,14 +152,17 @@
         var password = String(values.password || "");
         var subject = String(values.subject || "").trim();
         var body = String(values.body || "");
-        if (!nickname) {
-            return { field: "nickname", message: "닉네임을 입력해 주세요." };
-        }
-        if (charLength(nickname) > limits.nickname_max) {
-            return { field: "nickname", message: "닉네임은 " + limits.nickname_max + "자까지 쓸 수 있어요." };
-        }
-        if (charLength(password) < limits.password_min || charLength(password) > limits.password_max) {
-            return { field: "password", message: "글 비밀번호는 " + limits.password_min + "~" + limits.password_max + "자로 입력해 주세요." };
+        // 디시 계정으로 쓰면 닉네임·비밀번호를 보내지 않는다.
+        if (!values.account) {
+            if (!nickname) {
+                return { field: "nickname", message: "닉네임을 입력해 주세요." };
+            }
+            if (charLength(nickname) > limits.nickname_max) {
+                return { field: "nickname", message: "닉네임은 " + limits.nickname_max + "자까지 쓸 수 있어요." };
+            }
+            if (charLength(password) < limits.password_min || charLength(password) > limits.password_max) {
+                return { field: "password", message: "글 비밀번호는 " + limits.password_min + "~" + limits.password_max + "자로 입력해 주세요." };
+            }
         }
         if (!subject) {
             return { field: "subject", message: "제목을 입력해 주세요." };
@@ -262,7 +265,13 @@
         editor: document.getElementById("write-editor"),
         modifyLoad: document.getElementById("write-modify-load"),
         originals: document.getElementById("write-originals"),
-        originalList: document.getElementById("write-original-list")
+        originalList: document.getElementById("write-original-list"),
+        modeInputs: Array.prototype.slice.call(form.querySelectorAll('input[name="write-mode"]')),
+        identity: form.querySelector(".write-identity"),
+        remember: form.querySelector(".write-remember"),
+        passwordHint: document.getElementById("write-password-hint"),
+        accountNote: document.getElementById("write-account-note"),
+        modeNote: document.getElementById("write-mode-note")
     };
     // 수정 화면이면 원래 글 번호. 비밀번호로 원래 글을 불러온 뒤에만 수정을 보낼 수 있다.
     var modifyPid = form.getAttribute("data-modify-pid") || "";
@@ -291,6 +300,9 @@
     } catch (err) {
         storage = null;
     }
+    // 수정 화면은 연 방식(주소의 mode)을 끝까지 쓴다. 새 글은 마지막으로 고른 값을 쓴다.
+    state.mode = form.getAttribute("data-mode") === "account" ? "account"
+        : (el.modeInputs.length ? post.readMode(storage) : "anonymous");
 
     function draftSnapshot() {
         return [el.subject.value, el.body.value, headValue(), state.images.length, state.originals.length].join("\u0000");
@@ -378,7 +390,7 @@
     function setBusy(busy) {
         state.sending = busy;
         form.setAttribute("aria-busy", busy ? "true" : "false");
-        [el.nickname, el.password, el.subject, el.body, el.rememberNickname, el.rememberPassword, el.imageAdd, el.modifyLoad].forEach(function (input) {
+        [el.nickname, el.password, el.subject, el.body, el.rememberNickname, el.rememberPassword, el.imageAdd, el.modifyLoad].concat(el.modeInputs).forEach(function (input) {
             if (input) {
                 input.disabled = busy;
             }
@@ -841,12 +853,15 @@
             return;
         }
         clearErrors();
-        var password = el.password.value;
-        if (charLength(password) < limits.password_min || charLength(password) > limits.password_max || !password.trim()) {
-            showFieldError("password", "글 비밀번호는 " + limits.password_min + "~" + limits.password_max + "자로 입력해 주세요.");
-            return;
+        var body = { board: board, pid: modifyPid, mode: "account" };
+        if (state.mode !== "account") {
+            var password = el.password.value;
+            if (charLength(password) < limits.password_min || charLength(password) > limits.password_max || !password.trim()) {
+                showFieldError("password", "글 비밀번호는 " + limits.password_min + "~" + limits.password_max + "자로 입력해 주세요.");
+                return;
+            }
+            body = { board: board, pid: modifyPid, password: password };
         }
-        var body = { board: board, pid: modifyPid, password: password };
         if (kind) {
             body.kind = kind;
         }
@@ -867,6 +882,8 @@
                 startRetryWait(outcome.seconds, message);
             } else if (outcome.action === "locked") {
                 setStatus("이 브라우저의 글쓰기가 잠겨 있어요.", "error", { href: post.unlockUrl(), text: "새 탭에서 잠금 해제", newTab: true });
+            } else if (outcome.action === "login_needed") {
+                setStatus(message || "디시 계정에 다시 로그인해야 해요.", "error", post.accountLink(payload));
             } else {
                 // 불러오기는 글을 바꾸지 않으므로 다시 눌러도 된다.
                 setStatus(message || "원래 글을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.", "error");
@@ -960,7 +977,8 @@
             subject: el.subject.value,
             body: el.body.value,
             imageCount: state.images.length + state.originals.length,
-            captcha: answer
+            captcha: answer,
+            account: state.mode === "account"
         }, limits);
         if (problem) {
             showFieldError(problem.field, problem.message);
@@ -979,10 +997,14 @@
         var body = {
             board: board,
             subject: el.subject.value.trim(),
-            body: el.body.value,
-            nickname: el.nickname.value.trim(),
-            password: el.password.value
+            body: el.body.value
         };
+        if (state.mode === "account") {
+            body.mode = "account";
+        } else {
+            body.nickname = el.nickname.value.trim();
+            body.password = el.password.value;
+        }
         if (kind) {
             body.kind = kind;
         }
@@ -1053,7 +1075,9 @@
             captcha.hide();
         }
         if (outcome.action === "success") {
-            saveIdentity();
+            if (state.mode !== "account") {
+                saveIdentity();
+            }
             state.leaving = true;
             setStatus(modifyPid ? "수정했어요. 글로 이동해요." : "등록했어요. 목록으로 이동해요.", "success");
             root.location.assign(post.safePath(payload.read_url) || post.safePath(payload.board_url) || backUrl);
@@ -1080,6 +1104,10 @@
         }
         if (outcome.action === "locked") {
             setStatus("이 브라우저의 글쓰기가 잠겨 있어요.", "error", { href: post.unlockUrl(), text: "새 탭에서 잠금 해제", newTab: true });
+            return;
+        }
+        if (outcome.action === "login_needed") {
+            setStatus(message || "디시 계정에 다시 로그인해야 해요. 글은 보내지 않았어요.", "error", post.accountLink(payload));
             return;
         }
         if (outcome.action === "unavailable" && message) {
@@ -1111,10 +1139,40 @@
     }
     function syncRememberNote() {
         if (el.rememberNote) {
-            el.rememberNote.hidden = !el.rememberPassword.checked;
+            el.rememberNote.hidden = state.mode === "account" || !el.rememberPassword.checked;
         }
     }
-    syncRememberNote();
+    // 계정으로 쓰면 닉네임·비밀번호 칸과 기억 선택을 숨긴다.
+    function applyMode() {
+        var account = state.mode === "account";
+        el.modeInputs.forEach(function (input) {
+            input.checked = input.value === state.mode;
+        });
+        [el.identity, el.remember, el.passwordHint].forEach(function (node) {
+            if (node) {
+                node.hidden = account;
+            }
+        });
+        if (el.accountNote) {
+            el.accountNote.hidden = !account;
+        }
+        if (el.modeNote && el.modeInputs.length) {
+            el.modeNote.textContent = account ? "디시 계정으로 올라가요." : "유동닉으로 올라가요. 서버 IP로 기록돼요.";
+        }
+        syncRememberNote();
+    }
+    el.modeInputs.forEach(function (input) {
+        input.addEventListener("change", function () {
+            if (!input.checked) {
+                return;
+            }
+            state.mode = input.value === "account" ? "account" : "anonymous";
+            post.saveMode(storage, state.mode);
+            clearErrors();
+            applyMode();
+        });
+    });
+    applyMode();
     state.initial = draftSnapshot();
     updateCount(el.subject, el.subjectCount, limits.subject_max);
     updateCount(el.body, el.bodyCount, limits.body_max);

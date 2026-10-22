@@ -74,6 +74,31 @@ pm2 logs dc-mirror
 
 ### DC write/vote backend and configuration
 
+- Optional fixed-nickname account mode uses `MIRROR_DC_LOGIN_ID` and `MIRROR_DC_LOGIN_PASSWORD`
+  from the worker's startup environment. Python checks presence only; never send credentials in
+  worker stdin, logs or responses. `/write/account`, `/write/account/status` and `/write/account/login`
+  share the unlock/no-store gate. `/write/account/status` rejects any supplied non-same-origin
+  Sec-Fetch-Site; the `/write/account` page also accepts `none` (address bar, bookmark).
+  Explicit and lazy login attempts (including failures) share one worker-owned 10s interval, counted
+  at attempt start. Cooldown returns `retry`/HTTP 429 without contacting DC. OTP and login captcha
+  failures block lazy login until an explicit login succeeds. Status never contacts DC.
+  Login sessions and OTP tokens are memory-only: account login requires a single web process
+  (`MIRROR_WORKERS=1`), because each process owns its worker. Worker restart loses login state.
+  Account write/comment/delete/modify use `mode: "account"`; modify-load returns the mode for submit.
+  Login expiry disables library automatic relogin/resend and returns `login_needed`/`expired` only
+  after DC answers `certification_login` (not an ambiguous transport failure). Never auto-resubmit.
+  Explicit decision: retain the existing library app_id refresh and worker
+  “잠시후 다시 이용해주세요.” app_id-settling retry behavior unchanged.
+- Account frontend: write and comment forms show a 유동/디시 계정 toggle only when
+  `account_configured`; the last choice is shared in localStorage `mirror_write_mode_v1`
+  (`MirrorDcPost.readMode/saveMode`). Account mode sends `mode: "account"` and no nickname/password.
+  Modify keeps the mode it was opened with (`/write?...&mode=account`); the toggle is hidden there.
+  The read page fetches `/write/account/status` once (never contacts DC) and, only when logged in,
+  adds password-free 수정·삭제 (`data-owner="account"`) to the post/comments whose author code equals
+  `user_id`. This is display only; DC decides ownership. `login_needed` is not `uncertain`: show the
+  message with a new-tab link to `/write/account` and keep the draft. `account_login.js` logs in only
+  on explicit submit and asks for OTP/login captcha only when DC requires them.
+
 - DC anonymous writing (`GET/POST /write`) and voting (`POST /read/vote`, `direction` `up`|`down`) are opt-in.
   `MIRROR_WRITE_KEY` unset disables every write route; `/write/unlock` issues a signed,
   HttpOnly 180-day cookie, and `/write/lock` clears it. POSTs require same-origin headers.

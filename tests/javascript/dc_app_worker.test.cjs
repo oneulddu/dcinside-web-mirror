@@ -21,21 +21,52 @@ const fingerprint = createHash('sha256').update(JSON.stringify({file:[],memo:sna
 // A local package double makes accidental network access impossible.
 const fakeLibrary = `
 import { appendFileSync } from 'node:fs';
+import { Http } from ${JSON.stringify(require('node:url').pathToFileURL(path.resolve(__dirname, '../../dc_app/node_modules/@green-1052/dcinside.js/dist/index.js')).href)};
+// Test-only clock control at the mocked package boundary: advance time when a
+// request line is decoded, without a worker option or a real ten-second wait.
+let now = Date.now();
+Date.now = () => now;
+const parse = JSON.parse;
+JSON.parse = (text, ...args) => {
+  const value = parse(text, ...args);
+  if (value && typeof value === 'object' && typeof value.testAdvanceMs === 'number') {
+    now += value.testAdvanceMs;
+    delete value.testAdvanceMs;
+  }
+  return value;
+};
 export const decodeHtml = value => value.replace(/&(lt|gt|amp|quot|apos|nbsp);/g, (_, key) => ({lt:'<',gt:'>',amp:'&',quot:'"',apos:"'",nbsp:' '})[key]);
 const trace = operation => appendFileSync(process.env.WORKER_TEST_TRACE, operation + '\\n');
 export class DCInside {
   constructor(options) {
+    this.session = null;
     if (options.http.timeout !== 45000) throw new Error('Wrong HTTP timeout');
     this.credentials = {androidId:'123',securityToken:'456',fid:'private-fid',refreshToken:'private-refresh',clientToken:'private-token',appId:'private-app',appIdIssuedAt:Date.now()-30000};
     this.auth = {
       appId: async () => { trace('appId'); return 'private-app'; },
       exportCredentials: () => this.credentials,
       importCredentials: value => { this.credentials = value; },
+      login: async (id, password, options) => {
+        trace('login');
+        if (id !== 'private-login-id' || password !== 'private-password') throw new Error('Wrong credentials');
+        if (options.otpToken) {
+          if (options.otpToken !== 'private-otp-token') throw new Error('Wrong OTP token');
+          trace('otpToken');
+        }
+        const failure = process.env.WORKER_TEST_LOGIN;
+        if (failure !== 'success' && options.otp !== '123456' && options.captcha?.code !== 'answer') {
+          throw Object.assign(new Error(id + password), {
+            name: {otp:'OtpRequiredError',captcha:'CaptchaRequiredError',failed:'ApiError'}[failure] || 'Error',
+            cause: id + password,
+          });
+        }
+        return {type:'login', id, password, userId:'public-user', result:{name:'고정닉',otp_token:'private-otp-token'}};
+      },
     };
     this.articles = {
       delete: async (gallery, no) => {
         trace('delete');
-        if (this.session?.type !== 'anonymous') throw new Error('Wrong session');
+        if (!['anonymous','login'].includes(this.session?.type)) throw new Error('Wrong session');
         if (this.session.password !== 'private-password') throw Object.assign(new Error('x'), {name:'ApiError',cause:'비밀번호 오류'});
         if (gallery === 'throttle') {
           this.credentials.appIdIssuedAt = Date.now();
@@ -45,7 +76,7 @@ export class DCInside {
       },
       modifyInfo: async (gallery, no) => {
         trace('modifyInfo');
-        if (this.session?.type !== 'anonymous') throw new Error('Wrong session');
+        if (!['anonymous','login'].includes(this.session?.type)) throw new Error('Wrong session');
         if (this.session.password !== 'private-password') throw Object.assign(new Error('x'), {name:'ApiError',cause:'비밀번호 오류'});
         if (gallery === 'failure') throw new Error('snapshot transport');
         const info = ${JSON.stringify(snapshot)};
@@ -65,7 +96,17 @@ export class DCInside {
         const session = this.session;
         await new Promise(resolve => setTimeout(resolve, 5));
         if (this.session !== session) throw new Error('Session race');
-        if (session.type !== 'anonymous' || session.password !== 'private-password') throw new Error('Wrong session');
+        if (!['anonymous','login'].includes(session.type) || session.password !== 'private-password') throw new Error('Wrong session');
+        if (session.type === 'login' && options.useGalleryNickname !== false) throw new Error('Gallery nickname');
+        if (options.subject === 'expired') {
+          const http = new Http({fetch: async () => {
+            trace('http_write');
+            return new Response(JSON.stringify({result:false,cause:'certification_login'}));
+          }});
+          http.context = this.http.context;
+          return http.post('https://invalid.test/write', {}, {appId:false});
+        }
+        if (options.subject === 'timeout') throw Object.assign(new Error('private-password'), {name:'TimeoutError'});
         if (options.articleNo) {
           if (options.subject === 'captcha') throw Object.assign(new Error('x'), {name:'CaptchaRequiredError',cause:'보안 코드 입력'});
           if (options.subject === 'unknown') throw new Error('private-password');
@@ -108,19 +149,20 @@ export class DCInside {
     this.comments = {
       delete: async (gallery, no, commentNo) => {
         trace('comment_delete');
-        if (this.session?.type !== 'anonymous') throw new Error('Wrong session');
+        if (!['anonymous','login'].includes(this.session?.type)) throw new Error('Wrong session');
         if (this.session.password !== 'private-password') throw Object.assign(new Error('x'), {name:'ApiError',cause:'비밀번호가 틀립니다.'});
         return {result:'true', gallery, no, commentNo};
       },
       write: async (gallery, no, content, options) => {
         trace('comment');
         const session = this.session;
-        if (!session || session.type !== 'anonymous' || session.password !== 'private-password') throw new Error('Wrong session');
+        if (!session || !['anonymous','login'].includes(session.type) || session.password !== 'private-password') throw new Error('Wrong session');
+        if (session.type === 'login' && options.useGalleryNickname !== false) throw new Error('Gallery nickname');
         if (gallery === 'captcha') throw Object.assign(new Error('x'), {name:'CaptchaRequiredError',cause:'보안 코드 입력'});
         return {result:'true', gallery, no, content, parent: options.parent ?? null, captcha: options.captcha ?? null};
       },
     };
-    this.http = { fetch: async url => {
+    this.http = { context: {relogin: async () => { trace('automaticRelogin'); return true; }}, fetch: async url => {
       if (url.includes('badtype')) return new Response('html', {headers:{'content-type':'text/html'}});
       if (url.includes('oversize')) return new Response(new Uint8Array(204801), {headers:{'content-type':'image/png'}});
       return new Response(new Uint8Array([1,2,3]), {headers:{'content-type':'image/png'}});
@@ -131,7 +173,7 @@ export class DCInside {
 export const captchaUrl = (kind,key,gallery) => 'https://invalid.test/' + gallery;
 `;
 
-function run(requests, seed = false) {
+function run(requests, seed = false, login = '') {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-worker-test-'));
   try {
     const library = path.join(directory, 'node_modules/@green-1052/dcinside.js');
@@ -147,7 +189,9 @@ function run(requests, seed = false) {
       fs.writeFileSync(state, JSON.stringify({ restored: true, appIdIssuedAt: Date.now() - 30000 }), { mode: 0o644 });
     }
     const child = spawnSync(process.execPath, [path.join(directory, 'worker.mjs')], {
-      env: { ...process.env, MIRROR_DC_APP_STATE: state, WORKER_TEST_TRACE: tracePath },
+      env: { ...process.env, MIRROR_DC_APP_STATE: state, WORKER_TEST_TRACE: tracePath,
+        MIRROR_DC_LOGIN_ID: login ? 'private-login-id' : '', MIRROR_DC_LOGIN_PASSWORD: login ? 'private-password' : '',
+        WORKER_TEST_LOGIN: login },
       input: requests.map((request, index) => JSON.stringify({ id: index, ...request })).join('\n') + '\n',
       encoding: 'utf8', timeout: 5000,
     });
@@ -181,7 +225,7 @@ test('credential restore restricts existing file permissions', () => {
   assert.equal(result.state.restored, true);
 });
 
-test('only known API errors expose causes; unsupported login is rejected', () => {
+test('only known anonymous API errors expose causes; unconfigured login is rejected', () => {
   const result = run([write('captcha'), write('unknown'), { ...write('login'), session:{type:'login'} }]);
   assert.deepEqual(result.replies[0].error, { name:'CaptchaRequiredError', cause:'보안 코드 입력', status:null });
   assert.deepEqual(result.replies[1].error, { name:'WorkerError', cause:'', status:null });
@@ -328,6 +372,149 @@ test('invalid comments are rejected before any DC call', () => {
 
 const mutation = (op, extra = {}) => ({op, gallery:'programming', no:7, session:write('').session, ...extra});
 const modify = (extra = {}) => mutation('modify', {subject:'수정 제목', fingerprint, blocks:[{keep:1},{text:'새 본문'}], ...extra});
+
+const accountWrite = subject => ({...write(subject), session:{type:'login'}});
+const sessionProbe = {op:'upvote',gallery:'programming',no:1};
+
+test('account status is allowlisted and offline; explicit login never persists its secrets', () => {
+  const result = run([{op:'account_status'},{op:'account_login'},sessionProbe,{op:'account_status'}], false, 'success');
+  assert.deepEqual(result.replies[0].data, {configured:true,logged_in:false,user_id:null,name:null,blocked:false,reason:null});
+  assert.deepEqual(result.replies[3].data, {configured:true,logged_in:true,user_id:'public-user',name:'고정닉',blocked:false,reason:null});
+  assert(result.replies.every(reply => reply.ok));
+  assert.equal(result.trace.filter(item => item === 'login').length, 1);
+  assert(!JSON.stringify(result.state).includes('private-password'));
+  assert(!JSON.stringify(result.state).includes('private-otp-token'));
+  assert(!JSON.stringify(result.state).includes('private-login-id'));
+  const offline = run([{op:'account_status'}], false, 'success');
+  assert.deepEqual(offline.trace, []);
+  assert.equal(offline.state, null);
+});
+
+for (const reason of ['otp','captcha','failed']) {
+  test('explicit login ' + reason + ' blocks all lazy DC calls until explicit success', () => {
+    const result = run([
+      {op:'account_login'}, sessionProbe, {op:'account_status'},
+      accountWrite('blocked'), sessionProbe,
+      {op:'account_login',otp:'123456',testAdvanceMs:10000}, sessionProbe, accountWrite('one'), sessionProbe,
+    ], false, reason);
+    assert.deepEqual(Object.keys(result.replies[0].error).sort(),
+      (reason === 'captcha' ? ['name','reason','sent','captcha_key'] : ['name','reason','sent']).sort());
+    assert.equal(result.replies[0].error.reason, reason);
+    assert.equal(result.replies[0].error.sent, false);
+    assert.equal(result.replies[2].data.blocked, true);
+    assert.equal(result.replies[2].data.reason, reason);
+    assert.equal(result.replies[3].error.reason, reason);
+    if (reason === 'captcha') {
+      assert.match(result.replies[0].error.captcha_key, /^[a-f0-9]{16}$/);
+      assert.notEqual(result.replies[0].error.captcha_key, result.replies[3].error.captcha_key);
+    }
+    assert(result.replies.slice(5).every(reply => reply.ok));
+    assert.equal(result.trace.filter(item => item === 'login').length, 2);
+    assert.equal(result.trace.filter(item => item === 'write').length, 1);
+    const blocked = run([{op:'account_login'}, accountWrite('blocked'), {op:'account_status'}], false, reason);
+    const failureOnly = run([{op:'account_login'}], false, reason);
+    assert.deepEqual(blocked.trace, failureOnly.trace);
+  });
+}
+
+test('lazy account login, expiry rejection with exactly one real Http send, and OTP-token reuse', () => {
+  const result = run([
+    accountWrite('expired'), sessionProbe, {op:'account_status'},
+    {...accountWrite('one'),testAdvanceMs:10000}, sessionProbe, {op:'account_status'},
+  ], false, 'success');
+  assert.deepEqual(result.replies[0].error, {name:'LoginNeeded',reason:'expired',sent:false});
+  assert.equal(result.replies[2].data.logged_in, false);
+  assert.equal(result.replies[2].data.reason, 'expired');
+  assert.equal(result.replies[3].ok, true);
+  assert.equal(result.trace.filter(item => item === 'http_write').length, 1);
+  assert(!result.trace.includes('automaticRelogin'));
+  assert.equal(result.trace.filter(item => item === 'login').length, 2);
+  assert.equal(result.trace.filter(item => item === 'otpToken').length, 1);
+  assert.equal(result.replies[1].ok, true);
+  assert.equal(result.replies[4].ok, true);
+});
+
+test('lazy login failure blocks immediate explicit login without another DC call', () => {
+  const requests = [accountWrite('one'), {op:'account_login',otp:'123456'}, sessionProbe, {op:'account_status'}];
+  const blocked = run(requests, false, 'otp');
+  assert.equal(blocked.replies[0].error.reason, 'otp');
+  assert.deepEqual(blocked.replies[1].error, {name:'LoginCooldown',retry_after:10,sent:false});
+  assert.equal(blocked.replies[2].ok, true);
+  assert.equal(blocked.replies[3].data.blocked, true);
+  assert.equal(blocked.replies[3].data.reason, 'otp');
+  // The session probe is an upvote, which performs its own settled() appId call.
+  assert.deepEqual(blocked.trace, ['appId','login','appId']);
+  const recovered = run([...requests, {op:'account_login',otp:'123456',testAdvanceMs:10000},
+    sessionProbe, accountWrite('one')], false, 'otp');
+  assert(recovered.replies.slice(4).every(reply => reply.ok));
+  assert.equal(recovered.trace.filter(item => item === 'login').length, 2);
+  assert.equal(recovered.trace.filter(item => item === 'write').length, 1);
+});
+
+test('expiry lazy-login cooldown sends nothing, preserves state, and expires at ten seconds', () => {
+  const requests = [accountWrite('expired'), accountWrite('one'), sessionProbe, {op:'account_status'}];
+  const blocked = run(requests, false, 'success');
+  assert.equal(blocked.replies[0].error.reason, 'expired');
+  assert.deepEqual(blocked.replies[1].error, {name:'LoginCooldown',retry_after:10,sent:false});
+  assert.equal(blocked.replies[2].ok, true);
+  assert.deepEqual(blocked.replies[3].data,
+    {configured:true,logged_in:false,user_id:null,name:null,blocked:false,reason:'expired'});
+  // The final appId call belongs to the session probe, not the blocked write.
+  assert.deepEqual(blocked.trace, ['appId','login','appId','write','http_write','appId']);
+  const recovered = run([...requests,
+    {...accountWrite('one'),testAdvanceMs:9999}, sessionProbe,
+    {...accountWrite('one'),testAdvanceMs:1}, sessionProbe, {op:'account_status'},
+  ], false, 'success');
+  assert.deepEqual(recovered.replies[4].error, {name:'LoginCooldown',retry_after:1,sent:false});
+  assert(recovered.replies.slice(5).every(reply => reply.ok));
+  assert.equal(recovered.replies[8].data.blocked, false);
+  assert.equal(recovered.replies[8].data.reason, null);
+  assert.equal(recovered.trace.filter(item => item === 'login').length, 2);
+  assert.equal(recovered.trace.filter(item => item === 'write').length, 2);
+  assert.equal(recovered.trace.filter(item => item === 'http_write').length, 1);
+});
+
+test('successful explicit login also starts the shared cooldown without losing its session', () => {
+  const result = run([{op:'account_login'}, {op:'account_login'}, sessionProbe,
+    {op:'account_status'}, accountWrite('one'), sessionProbe,
+    {op:'account_login',testAdvanceMs:10000}, sessionProbe], false, 'success');
+  assert.deepEqual(result.replies[1].error, {name:'LoginCooldown',retry_after:10,sent:false});
+  assert.equal(result.replies[3].data.logged_in, true);
+  assert.equal(result.replies[3].data.blocked, false);
+  assert.equal(result.replies[3].data.reason, null);
+  assert(result.replies.slice(2).every(reply => reply.ok));
+  assert.equal(result.trace.filter(item => item === 'login').length, 2);
+});
+
+test('account timeout is not marked unsent or retried, and every path clears dc.session', () => {
+  const result = run([
+    accountWrite('timeout'), sessionProbe, accountWrite('captcha'), sessionProbe,
+    {...accountWrite('one'), images:[{path:'bad'}]}, sessionProbe,
+    mutation('delete',{session:{type:'login'}}), sessionProbe,
+    mutation('comment_delete',{session:{type:'login'},comment_no:3}), sessionProbe,
+    mutation('modify_info',{session:{type:'login'}}), sessionProbe,
+    modify({session:{type:'login'}}), sessionProbe,
+    {...comment({}),session:{type:'login'}}, sessionProbe,
+  ], false, 'success');
+  assert.deepEqual(result.replies[0].error, {name:'WorkerError',cause:'',status:null});
+  assert.equal(result.replies[2].error.name, 'CaptchaRequiredError');
+  assert.equal(result.replies[4].error.sent, false);
+  assert(result.replies.filter((_, index) => index % 2).every(reply => reply.ok));
+  assert(result.replies.slice(6).every(reply => reply.ok));
+  assert.deepEqual(result.replies[14].data.author, {name:'고정닉',user_id:'public-user'});
+  assert.equal(result.trace.filter(item => item === 'login').length, 1);
+});
+
+test('login captcha needs no gallery and its answer is sent only to explicit login', () => {
+  const result = run([
+    {op:'account_login'},
+    {op:'captcha',kind:'login',key:'a'.repeat(16)},
+    {op:'account_login',captcha:{key:'a'.repeat(16),code:'answer'},testAdvanceMs:10000},
+    sessionProbe,
+  ], false, 'captcha');
+  assert.equal(result.replies[0].error.reason, 'captcha');
+  assert(result.replies.slice(1).every(reply => reply.ok));
+});
 
 test('delete and comment_delete use anonymous passwords and clear sessions on success and rejection', () => {
   const bad = {...write('').session, password:'wrong'};

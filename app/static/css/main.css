@@ -3973,6 +3973,74 @@ html[data-theme="dark"] .board-updates-btn {
     display: none;
 }
 
+/* 작성자 선택: 유동과 디시 계정 중 하나를 고른다. */
+.write-mode {
+    display: inline-flex;
+    align-self: flex-start;
+    gap: 2px;
+    padding: 3px;
+    border-radius: var(--radius-m);
+    background: var(--surface);
+}
+
+.write-mode-option {
+    position: relative;
+    display: inline-flex;
+}
+
+.write-mode-option input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.write-mode-option span {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 var(--space-4);
+    border-radius: calc(var(--radius-m) - 3px);
+    color: var(--muted);
+    font: var(--type-label);
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background-color var(--dur) ease-out, color var(--dur) ease-out;
+}
+
+.write-mode-option input:checked + span {
+    background: var(--bg);
+    color: var(--fg);
+    font-weight: 700;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+
+.write-mode-option input:focus-visible + span {
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: -2px;
+}
+
+.write-mode-option input:disabled {
+    cursor: not-allowed;
+}
+
+/* 계정 글의 수정·삭제는 글 정보 줄에 다른 정보처럼 이어 붙는다. */
+.article-owner-slot {
+    display: contents;
+}
+
+.write-identity[hidden],
+.write-remember[hidden],
+.write-field[hidden],
+.comment-form-identity[hidden],
+.comment-form-remember[hidden],
+.article-owner-slot[hidden] {
+    display: none;
+}
+
 /* 말머리: 분류 줄처럼 글자만 가로로 늘어놓고, 고른 것만 굵게 한다. */
 .write-heads {
     display: flex;

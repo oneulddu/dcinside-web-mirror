@@ -165,7 +165,7 @@ for (const type of ["post", "comment"]) {
             h.node("[data-post-delete]").fire("click");
         } else {
             const item = { getAttribute: () => "99" };
-            const button = { closest: () => item };
+            const button = { closest: () => item, getAttribute: () => null };
             h.node("comment-list").fire("click", { target: { closest: () => button } });
         }
         h.node("#owner-password").value = "secret";

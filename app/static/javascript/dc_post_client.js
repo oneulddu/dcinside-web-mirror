@@ -58,7 +58,8 @@
         if (code === "captcha_required" && payload.captcha && CAPTCHA_KEY_PATTERN.test(String(payload.captcha.key || ""))) {
             return { action: "captcha", payload: payload };
         }
-        if (code === "invalid" || code === "rejected" || code === "locked" || code === "unavailable") {
+        // 디시 계정 로그인이 필요해 보내지 않은 요청. 계정 화면에서 로그인한 뒤 다시 하면 된다.
+        if (code === "invalid" || code === "rejected" || code === "locked" || code === "unavailable" || code === "login_needed") {
             return { action: code, payload: payload };
         }
         if (code === "retry") {
@@ -73,13 +74,43 @@
         return "/write/unlock?" + new URLSearchParams({ next: next }).toString();
     }
 
+    // 글·댓글을 유동과 디시 계정 중 무엇으로 쓸지 마지막으로 고른 값. 글쓰기와 댓글이 함께 쓴다.
+    var MODE_KEY = "mirror_write_mode_v1";
+
+    function readMode(storage) {
+        try {
+            return storage && storage.getItem(MODE_KEY) === "account" ? "account" : "anonymous";
+        } catch (err) {
+            return "anonymous";
+        }
+    }
+
+    function saveMode(storage, mode) {
+        try {
+            if (storage) {
+                storage.setItem(MODE_KEY, mode === "account" ? "account" : "anonymous");
+            }
+        } catch (err) {
+            // 기억하지 못해도 지금 고른 값으로 쓴다.
+        }
+    }
+
+    // 입력한 글이 사라지지 않게 계정 화면은 새 탭으로 연다.
+    function accountLink(payload) {
+        return { href: safePath(payload && payload.account_url) || "/write/account", text: "새 탭에서 계정 화면 열기", newTab: true };
+    }
+
     root.MirrorDcPost = {
         charLength: charLength,
         newCaptchaKey: newCaptchaKey,
         captchaImageUrl: captchaImageUrl,
         safePath: safePath,
         interpret: interpret,
-        unlockUrl: unlockUrl
+        unlockUrl: unlockUrl,
+        readMode: readMode,
+        saveMode: saveMode,
+        accountLink: accountLink,
+        MODE_KEY: MODE_KEY
     };
 
     var document = root.document;

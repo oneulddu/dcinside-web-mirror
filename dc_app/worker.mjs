@@ -8,6 +8,55 @@ import { pcVote, pcVoteCaptcha } from './pc_vote.mjs';
 
 const statePath = process.env.MIRROR_DC_APP_STATE || resolve(dirname(fileURLToPath(import.meta.url)), '../instance/dc_app_credentials.json');
 const dc = new DCInside({ http: { timeout: 45000 } });
+// certification_login is an answered rejection, not a transport failure.
+// Returning false makes Http.send throw rather than replay the mutation.
+dc.http.context.relogin = async () => false;
+const loginId = process.env.MIRROR_DC_LOGIN_ID || '';
+const loginPassword = process.env.MIRROR_DC_LOGIN_PASSWORD || '';
+let loginSession = null;
+let otpToken;
+let loginBlocked = false;
+let loginReason = null;
+let lastLoginAttempt = null;
+const LOGIN_INTERVAL_MS = 10000;
+function accountStatus() {
+  return { configured: Boolean(loginId && loginPassword), logged_in: loginSession !== null,
+    user_id: loginSession?.userId ?? null, name: loginSession?.result?.name ?? null,
+    blocked: loginBlocked, reason: loginReason };
+}
+function loginNeeded(reason) {
+  return Object.assign(new Error('Login needed'), { name: 'LoginNeeded', reason, sent: false,
+    ...(reason === 'captcha' ? { captcha_key: randomBytes(8).toString('hex') } : {}) });
+}
+async function accountLogin(input = {}) {
+  // Both explicit and lazy login share this clock. Rejection must not change
+  // the session/failure state or extend the interval.
+  if (loginId && loginPassword) {
+    const now = Date.now();
+    const remaining = lastLoginAttempt === null ? 0 : LOGIN_INTERVAL_MS - (now - lastLoginAttempt);
+    if (remaining > 0) throw Object.assign(new Error('Login cooldown'), {
+      name: 'LoginCooldown', retry_after: Math.ceil(remaining / 1000), sent: false,
+    });
+    lastLoginAttempt = now;
+  }
+  loginSession = null;
+  try {
+    if (!loginId || !loginPassword) throw new Error('Not configured');
+    await settled();
+    loginSession = await dc.auth.login(loginId, loginPassword, {
+      otp: input.otp, captcha: input.captcha, otpToken,
+    });
+    otpToken = loginSession.result?.otp_token ?? otpToken;
+    loginBlocked = false;
+    loginReason = null;
+    return { result: true, ...accountStatus() };
+  } catch (error) {
+    loginBlocked = true;
+    loginReason = error.name === 'OtpRequiredError' ? 'otp'
+      : error.name === 'CaptchaRequiredError' ? 'captcha' : 'failed';
+    throw loginNeeded(loginReason);
+  }
+}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const MAX_IMAGE = 200 * 1024;
 const MAX_UPLOAD = 10 * 1024 * 1024;
@@ -49,7 +98,8 @@ async function settled() {
 }
 
 async function captchaImage(input) {
-  if (!['article', 'comment', 'recommend'].includes(input.kind) || !/^[0-9a-f]{16}$/.test(input.key) || !/^[A-Za-z0-9_]{1,80}$/.test(input.gallery)) throw new Error('Invalid captcha request');
+  if (!['article', 'comment', 'recommend', 'login'].includes(input.kind) || !/^[0-9a-f]{16}$/.test(input.key)
+      || (input.kind !== 'login' && !/^[A-Za-z0-9_]{1,80}$/.test(input.gallery))) throw new Error('Invalid captcha request');
   const response = await dc.http.fetch(captchaUrl(input.kind, input.key, input.gallery), { redirect: 'error' });
   const contentType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (!response.ok || !/^image\/[a-z0-9.+-]+$/.test(contentType) || Number(response.headers.get('content-length')) > MAX_IMAGE) {
@@ -126,10 +176,10 @@ function mutationArgs(input) {
   const session = input.session;
   if (typeof input.gallery !== 'string' || !/^[A-Za-z0-9_]{1,80}$/.test(input.gallery)
       || !Number.isSafeInteger(input.no) || input.no < 1
-      || session?.type !== 'anonymous' || typeof session.nickname !== 'string'
+      || (session?.type !== 'login' && (session?.type !== 'anonymous' || typeof session.nickname !== 'string'
       || !session.nickname.trim() || [...session.nickname].length > 20
       || typeof session.password !== 'string' || !session.password.trim()
-      || [...session.password].length < 2 || [...session.password].length > 20) throw invalidMutation();
+      || [...session.password].length < 2 || [...session.password].length > 20))) throw invalidMutation();
   if (input.op === 'comment_delete' && (!Number.isSafeInteger(input.comment_no) || input.comment_no < 1)) throw invalidMutation();
   if (input.op !== 'modify') return;
   if (typeof input.subject !== 'string' || !input.subject.trim() || [...input.subject].length > 40
@@ -222,7 +272,24 @@ async function modifyContent(input, images) {
 }
 
 async function handle(input) {
+  try {
+    return await dispatch(input);
+  } catch (error) {
+    if (input.session?.type === 'login' && error.name === 'AuthExpiredError' && error.kind === 'login') {
+      loginSession = null;
+      loginReason = 'expired';
+      throw loginNeeded('expired');
+    }
+    throw error;
+  } finally {
+    dc.session = null;
+  }
+}
+
+async function dispatch(input) {
   if (input.op === 'ping') return { ready: true };
+  if (input.op === 'account_status') return accountStatus();
+  if (input.op === 'account_login') return accountLogin(input);
   if (input.op === 'captcha') return captchaImage(input);
   if (input.op === 'pc_vote_captcha') return pcVoteCaptcha(input);
   // 글 하나를 앱 API로 열어 이 갤러리의 추천 설정만 읽는다. 투표는 보내지 않는다.
@@ -266,11 +333,14 @@ async function handle(input) {
     if (input.op === 'modify') images = await uploadedImages(input);
   }
   if (input.op === 'write' || input.op === 'comment' || mutation) {
-    // Future login support belongs here; never reuse the preceding writer's session.
-    if (input.session?.type !== 'anonymous') throw new Error('Unsupported session');
+    if (!['anonymous', 'login'].includes(input.session?.type)) throw new Error('Unsupported session');
     if (input.op === 'write') content = await writeContent(input);
     else if (input.op === 'comment') comment = commentArgs(input);
-    dc.useAnonymous(input.session.nickname, input.session.password);
+    if (input.session.type === 'login') {
+      if (loginBlocked) throw loginNeeded(loginReason);
+      if (!loginSession) await accountLogin();
+      dc.session = loginSession;
+    } else dc.useAnonymous(input.session.nickname, input.session.password);
   }
   try {
     try {
@@ -293,13 +363,15 @@ async function handle(input) {
       }
       if (prepared.rejection) return prepared.rejection;
       return await dc.articles.write({ gallery: input.gallery, articleNo: input.no, subject: input.subject,
-        headText: input.head, captcha: input.captcha, ...prepared });
+        headText: input.head, captcha: input.captcha, useGalleryNickname: false, ...prepared });
     }
     const send = () => {
       if (input.op === 'delete') return dc.articles.delete(input.gallery, input.no);
       if (input.op === 'comment_delete') return dc.comments.delete(input.gallery, input.no, input.comment_no);
-      if (input.op === 'write') return dc.articles.write({ gallery: input.gallery, subject: input.subject, content, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true });
-      if (input.op === 'comment') return dc.comments.write(input.gallery, input.no, comment.content, { parent: comment.parent, captcha: input.captcha ?? undefined });
+      if (input.op === 'write') return dc.articles.write({ gallery: input.gallery, subject: input.subject, content, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true, useGalleryNickname: false });
+      if (input.op === 'comment') return dc.comments.write(input.gallery, input.no, comment.content, { parent: comment.parent, captcha: input.captcha ?? undefined, useGalleryNickname: false })
+        .then(result => input.session?.type === 'login'
+          ? { ...result, author: { name: loginSession.result?.name ?? null, user_id: loginSession.userId } } : result);
       return input.op === 'upvote'
         ? dc.articles.upvote(input.gallery, input.no, input.captcha)
         : dc.articles.downvote(input.gallery, input.no, input.captcha);
@@ -331,6 +403,7 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
     const apiError = ['ApiError', 'CaptchaRequiredError', 'AuthExpiredError'].includes(error.name);
     const raw = Array.isArray(error.response) ? error.response[0] : error.response;
     const vpnBan = apiError && raw && typeof raw === 'object' && [true, 'true', 1, '1'].includes(raw.carrier_vpn_ban);
+    const account = input?.session?.type === 'login';
     result = { id: input?.id ?? null, ok: false, error: {
       name: apiError || error.name === 'HTTPError' ? error.name : 'WorkerError',
       cause: apiError && typeof error.cause === 'string' ? error.cause
@@ -339,6 +412,16 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       ...(vpnBan ? { vpn_ban: true } : {}),
       ...(error.sent === false ? { sent: false } : {}),
     } };
+    if (account && apiError && !['잠시후 다시 이용해주세요.', '잠시 후 다시 시도해 주세요.'].includes(result.error.cause)) {
+      result.error.cause = error.name === 'CaptchaRequiredError' ? '보안 코드를 입력해 주세요.' : '디시에서 요청을 받지 않았어요.';
+    }
+    if (error.name === 'LoginNeeded') result.error = {
+      name: 'LoginNeeded', reason: error.reason, sent: false,
+      ...(error.captcha_key ? { captcha_key: error.captcha_key } : {}),
+    };
+    if (error.name === 'LoginCooldown') result.error = {
+      name: 'LoginCooldown', retry_after: error.retry_after, sent: false,
+    };
   }
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

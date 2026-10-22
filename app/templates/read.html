@@ -11,7 +11,7 @@
 {%- set code = item.author_code if item.author_code is string else '' -%}
 {%- if code.count('.') == 1 and code.replace('.', '').isdigit() -%}1{%- endif -%}
 {%- endmacro %}
-<section class="read-shell" data-board-context data-board="{{ board }}" data-kind="{{ kind or '' }}" data-gallery-name="{{ gallery_name or '' }}" data-pid="{{ pid }}"{% if write_enabled|default(false) %} data-password-min="{{ write_limits.password_min }}" data-password-max="{{ write_limits.password_max }}"{% endif %}>
+<section class="read-shell" data-board-context data-board="{{ board }}" data-kind="{{ kind or '' }}" data-gallery-name="{{ gallery_name or '' }}" data-pid="{{ pid }}"{% if write_enabled|default(false) %} data-password-min="{{ write_limits.password_min }}" data-password-max="{{ write_limits.password_max }}"{% if account_configured|default(false) %} data-account-configured{% endif %}{% endif %}>
     <div class="article-head">
         <h1>{{ data.title }}</h1>
         <div class="article-meta">
@@ -23,6 +23,9 @@
             {%- if write_enabled|default(false) and not notice and is_guest(data) %}
             <a class="comment-reply-btn article-owner-action" href="{{ url_for('main.write', board=board, kind=kind or None, pid=pid, author=data.author or None) }}">수정</a>
             <button class="comment-reply-btn article-owner-action" type="button" data-post-delete aria-haspopup="dialog">삭제</button>
+            {%- elif write_enabled|default(false) and account_configured|default(false) and not notice %}
+            {#- 디시 계정 글이면 post_manage.js가 계정 상태를 확인한 뒤 수정·삭제를 채운다. -#}
+            <span class="article-owner-slot" data-account-owner-slot hidden></span>
             {%- endif %}
         </div>
     </div>
@@ -111,6 +114,13 @@
                 <span id="comment-form-target-text"></span>
                 <button class="comment-form-cancel" id="comment-form-cancel" type="button">답글 취소</button>
             </div>
+            {% if account_configured|default(false) %}
+            <div class="write-mode comment-form-mode" role="radiogroup" aria-label="작성자">
+                <label class="write-mode-option"><input type="radio" name="comment-mode" value="anonymous" checked><span>유동</span></label>
+                <label class="write-mode-option"><input type="radio" name="comment-mode" value="account"><span>디시 계정</span></label>
+            </div>
+            <p class="write-hint" id="comment-account-note" hidden>서버에 설정한 디시 계정으로 달아요. 지울 때 비밀번호가 필요 없어요.</p>
+            {% endif %}
             <div class="comment-form-identity">
                 <label class="sr-only" for="comment-nickname">닉네임</label>
                 <input class="write-input comment-form-field" id="comment-nickname" type="text" autocomplete="nickname" placeholder="닉네임" maxlength="{{ write_limits.nickname_max * 2 }}" aria-describedby="comment-identity-error">

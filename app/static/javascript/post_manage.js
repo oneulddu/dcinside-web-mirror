@@ -67,6 +67,10 @@
             var anchor = document.createElement("a");
             anchor.href = link.href;
             anchor.textContent = link.text;
+            if (link.newTab) {
+                anchor.target = "_blank";
+                anchor.rel = "noopener";
+            }
             box.appendChild(anchor);
         }
     }
@@ -76,6 +80,9 @@
         var input = part("#owner-password");
         box.textContent = message || "";
         box.hidden = !message;
+        if (message && input.hidden) {
+            return;
+        }
         if (message) {
             input.setAttribute("aria-invalid", "true");
             input.focus();
@@ -157,9 +164,15 @@
         state.target = target;
         state.opener = opener || null;
         var isPost = target.type === "post";
-        part("#owner-dialog-title").textContent = isPost ? "글 삭제" : "댓글 삭제";
-        part("#owner-hint").textContent = (isPost ? "글" : "댓글") + "을 쓸 때 정한 비밀번호를 입력하세요. 삭제하면 되돌릴 수 없어요.";
-        part("#owner-password").value = savedPassword();
+        var noun = isPost ? "글" : "댓글";
+        var input = part("#owner-password");
+        part("#owner-dialog-title").textContent = noun + " 삭제";
+        // 디시 계정으로 쓴 글·댓글은 비밀번호 없이 확인만 받는다. 내 것인지는 디시가 판단한다.
+        part("#owner-hint").textContent = target.account
+            ? "디시 계정으로 쓴 " + noun + "이에요. 삭제하면 되돌릴 수 없어요."
+            : noun + "을 쓸 때 정한 비밀번호를 입력하세요. 삭제하면 되돌릴 수 없어요.";
+        input.hidden = Boolean(target.account);
+        input.value = target.account ? "" : savedPassword();
         setError("");
         setStatus("");
         sync();
@@ -170,8 +183,12 @@
                 dialog.setAttribute("open", "");
             }
         }
-        part("#owner-password").focus();
-        part("#owner-password").select();
+        if (target.account) {
+            part(".owner-submit").focus();
+            return;
+        }
+        input.focus();
+        input.select();
     }
 
     function adjustCount(delta) {
@@ -267,7 +284,13 @@
         }
         if (outcome.action === "rejected") {
             setStatus(message || "디시가 " + noun + " 삭제를 받지 않았어요.", "error");
-            part("#owner-password").focus();
+            if (!target.account) {
+                part("#owner-password").focus();
+            }
+            return;
+        }
+        if (outcome.action === "login_needed") {
+            setStatus(message || "디시 계정에 다시 로그인해야 해요. " + noun + "은 지우지 않았어요.", "error", post.accountLink(payload));
             return;
         }
         if (outcome.action === "retry") {
@@ -289,15 +312,18 @@
         if (state.sending || state.retryUntil > Date.now() || !state.target) {
             return;
         }
-        var password = part("#owner-password").value;
-        var problem = validatePassword(password, limits);
-        if (problem) {
-            setError(problem);
-            return;
+        var target = state.target;
+        var body = { board: board, pid: pid, mode: "account" };
+        if (!target.account) {
+            var password = part("#owner-password").value;
+            var problem = validatePassword(password, limits);
+            if (problem) {
+                setError(problem);
+                return;
+            }
+            body = { board: board, pid: pid, password: password };
         }
         setError("");
-        var target = state.target;
-        var body = { board: board, pid: pid, password: password };
         if (kind) {
             body.kind = kind;
         }
@@ -316,11 +342,15 @@
         });
     }
 
+    function bindPostButton(button) {
+        button.addEventListener("click", function () {
+            open({ type: "post", account: button.getAttribute("data-owner") === "account" }, button);
+        });
+    }
+
     var postButton = document.querySelector("[data-post-delete]");
     if (postButton) {
-        postButton.addEventListener("click", function () {
-            open({ type: "post" }, postButton);
-        });
+        bindPostButton(postButton);
     }
     if (list) {
         list.addEventListener("click", function (event) {
@@ -330,7 +360,72 @@
             if (!item || !/^[1-9][0-9]*$/.test(id)) {
                 return;
             }
-            open({ type: "comment", id: id, item: item }, button);
+            open({ type: "comment", id: id, item: item, account: button.getAttribute("data-owner") === "account" }, button);
+        });
+    }
+
+    function ownerButton(className, label, ariaLabel) {
+        var button = document.createElement("button");
+        button.className = className;
+        button.type = "button";
+        button.setAttribute("data-owner", "account");
+        button.setAttribute("aria-haspopup", "dialog");
+        if (ariaLabel) {
+            button.setAttribute("aria-label", ariaLabel);
+        }
+        button.textContent = label;
+        return button;
+    }
+
+    // 식별 코드가 로그인한 계정 아이디와 같은 글·댓글에 수정·삭제를 붙인다.
+    // 화면에 보이는 것일 뿐, 실제로 지우거나 고칠 수 있는지는 디시가 판단한다.
+    function markOwned(userId) {
+        var slot = document.querySelector("[data-account-owner-slot]");
+        var postAuthor = document.querySelector(".article-meta .author-text");
+        if (slot && postAuthor && postAuthor.getAttribute("data-author-code") === userId) {
+            var params = new URLSearchParams({ board: board, pid: pid, mode: "account" });
+            if (kind) {
+                params.set("kind", kind);
+            }
+            var edit = document.createElement("a");
+            edit.className = "comment-reply-btn article-owner-action";
+            edit.href = "/write?" + params.toString();
+            edit.textContent = "수정";
+            var remove = ownerButton("comment-reply-btn article-owner-action", "삭제");
+            remove.setAttribute("data-post-delete", "");
+            slot.appendChild(edit);
+            slot.appendChild(remove);
+            slot.hidden = false;
+            bindPostButton(remove);
+        }
+        if (!list) {
+            return;
+        }
+        Array.prototype.forEach.call(list.querySelectorAll(".comment-item[data-comment-id]"), function (item) {
+            var author = item.querySelector(".comment-meta .author-text");
+            var meta = item.querySelector(".comment-meta");
+            if (!author || !meta || item.classList.contains("is-deleted") || meta.querySelector("[data-comment-delete]")
+                    || author.getAttribute("data-author-code") !== userId
+                    || !/^[1-9][0-9]*$/.test(item.getAttribute("data-comment-id") || "")) {
+                return;
+            }
+            var button = ownerButton("comment-reply-btn", "삭제", "내 댓글 삭제");
+            button.setAttribute("data-comment-delete", "");
+            meta.appendChild(button);
+        });
+    }
+
+    // 상태 조회는 디시에 요청하지 않는다. 로그인한 적이 없으면 계정 글 버튼은 보이지 않는다.
+    if (shell.getAttribute("data-account-configured") !== null && typeof root.fetch === "function") {
+        root.fetch("/write/account/status", { credentials: "same-origin", headers: { "Accept": "application/json" } }).then(function (response) {
+            return response.ok ? response.json() : null;
+        }).then(function (status) {
+            var userId = status && status.ok === true && status.logged_in === true ? String(status.user_id || "") : "";
+            if (/^[A-Za-z0-9_]{1,40}$/.test(userId)) {
+                markOwned(userId);
+            }
+        }, function () {
+            // 상태를 모르면 계정 글 버튼을 붙이지 않는다.
         });
     }
 })(typeof window !== "undefined" ? window : globalThis);

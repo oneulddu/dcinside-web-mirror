@@ -295,6 +295,25 @@ def configured():
     return bool(current_app.config.get("WRITE_KEY"))
 
 
+def account_configured():
+    return bool(os.environ.get("MIRROR_DC_LOGIN_ID") and os.environ.get("MIRROR_DC_LOGIN_PASSWORD"))
+
+
+def account_fields(data):
+    """Only public session metadata can cross the worker boundary."""
+    return {key: data.get(key) for key in ("configured", "logged_in", "user_id", "name", "blocked", "reason")}
+
+
+def account_status():
+    try:
+        result = get_manager().request("account_status", deadline=time.monotonic() + 8)
+    except WorkerUnavailable:
+        return unavailable(), 503
+    if not result.get("ok"):
+        return unavailable(), 503
+    return {"ok": True, **account_fields(result["data"])}, 200
+
+
 def _key():
     return str(current_app.config.get("WRITE_KEY") or "")
 
@@ -353,6 +372,12 @@ SENDS = {
 _last_success = {}
 # 성공한 뒤 같은 동작을 다시 보낼 수 있을 때까지 기다리는 시간(초).
 INTERVALS = {"write": 20, "comment": 10, "modify": 20, "delete": 3, "comment_delete": 3, "modify_info": 1}
+LOGIN_MESSAGES = {
+    "otp": "디시 OTP 6자리를 입력해 주세요.",
+    "captcha": "로그인 보안 문자를 입력해 주세요.",
+    "failed": "디시 계정에 로그인하지 못했어요. 계정 설정을 확인하고 다시 로그인해 주세요.",
+    "expired": "디시 로그인이 만료됐어요. 계정 화면에서 다시 로그인해 주세요.",
+}
 
 
 def perform(op, **payload):
@@ -364,11 +389,13 @@ def perform(op, **payload):
     try:
         if time.monotonic() >= deadline:
             return unavailable(), 503
-        interval = INTERVALS.get(op, 3)
-        previous = _last_success.get(op)
-        wait = interval - (time.monotonic() - previous) if previous is not None else 0
-        if wait > 0:
-            return {"ok": False, "code": "retry", "message": "잠시 후 다시 시도해 주세요.", "retry_after": math.ceil(wait)}, 429
+        # Login pacing belongs solely to the worker, which also owns lazy login.
+        if op != "account_login":
+            interval = INTERVALS.get(op, 3)
+            previous = _last_success.get(op)
+            wait = interval - (time.monotonic() - previous) if previous is not None else 0
+            if wait > 0:
+                return {"ok": False, "code": "retry", "message": "잠시 후 다시 시도해 주세요.", "retry_after": math.ceil(wait)}, 429
         proxy = current_app.config.get("DC_APP_PROXY")
         if proxy and not relay_reachable(proxy):
             return {"ok": False, "code": "unavailable", "reason": "relay_down", "message": RELAY_DOWN}, 503
@@ -380,12 +407,26 @@ def perform(op, **payload):
             return unavailable(), 503
         data = result.get("data", {})
         error = result.get("error", {})
+        if error.get("name") == "LoginCooldown":
+            return {"ok": False, "code": "retry", "message": "잠시 후 다시 시도해 주세요.",
+                    "retry_after": error["retry_after"]}, 429
+        if error.get("name") == "LoginNeeded":
+            reason = error.get("reason")
+            reason = reason if reason in LOGIN_MESSAGES else "failed"
+            failure = {"ok": False, "code": "login_needed", "reason": reason, "message": LOGIN_MESSAGES[reason]}
+            if reason == "captcha" and isinstance(error.get("captcha_key"), str) and CAPTCHA_KEY.fullmatch(error["captcha_key"]):
+                failure["captcha_key"] = error["captcha_key"]
+            return failure, 200
         if result.get("ok") and data.get("result") in (True, "true"):
-            _last_success[op] = time.monotonic()
+            if op != "account_login":
+                _last_success[op] = time.monotonic()
             return {"ok": True, "data": data}, 200
         cause = error.get("cause") if not result.get("ok") else data.get("cause")
         cause = cause if isinstance(cause, str) else ""
         name = error.get("name")
+        if payload.get("session", {}).get("type") == "login" and cause and cause not in (
+                "stale", "잠시후 다시 이용해주세요.", "잠시 후 다시 시도해 주세요."):
+            cause = "보안 코드를 입력해 주세요." if name == "CaptchaRequiredError" else "디시에서 요청을 받지 않았어요."
         if op == "modify" and name == "WorkerError" and error.get("sent") is False and cause == "stale":
             return {"ok": False, "code": "rejected", "reason": "stale",
                     "message": "글이 그사이 바뀌었어요. 수정 화면을 다시 열어 주세요."}, 200

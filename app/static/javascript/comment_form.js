@@ -15,6 +15,10 @@
         if (!content.trim() || charLength(content) > limits.comment_max) {
             return { field: "content", message: content.trim() ? "댓글은 " + limits.comment_max + "자까지 쓸 수 있어요." : "댓글을 입력해 주세요." };
         }
+        // 디시 계정으로 쓰면 닉네임·비밀번호를 보내지 않는다.
+        if (values.account) {
+            return null;
+        }
         var nickname = String(values.nickname || "").trim();
         if (!nickname || charLength(nickname) > limits.nickname_max) {
             return { field: "nickname", message: "닉네임은 1~" + limits.nickname_max + "자로 입력해 주세요." };
@@ -64,7 +68,11 @@
         status: document.getElementById("comment-status"),
         target: document.getElementById("comment-form-target"),
         targetText: document.getElementById("comment-form-target-text"),
-        cancel: document.getElementById("comment-form-cancel")
+        cancel: document.getElementById("comment-form-cancel"),
+        modeInputs: Array.prototype.slice.call(form.querySelectorAll('input[name="comment-mode"]')),
+        identity: form.querySelector(".comment-form-identity"),
+        remember: form.querySelector(".comment-form-remember"),
+        accountNote: document.getElementById("comment-account-note")
     };
     var captcha = post.createCaptcha("comment-captcha", "comment", board, null);
     var storage = null;
@@ -74,7 +82,9 @@
         storage = null;
     }
     // parent: 답글을 다는 댓글({id, authorCode, author, item}). 없으면 일반 댓글.
-    var state = { sending: false, retryUntil: 0, retryTimer: null, parent: null, sentAnswer: false };
+    // mode: 계정 선택이 있을 때만 마지막으로 고른 값을 쓴다.
+    var state = { sending: false, retryUntil: 0, retryTimer: null, parent: null, sentAnswer: false,
+        mode: el.modeInputs.length ? post.readMode(storage) : "anonymous" };
 
     function setStatus(text, tone, link) {
         el.status.textContent = text || "";
@@ -84,8 +94,29 @@
             var anchor = document.createElement("a");
             anchor.href = link.href;
             anchor.textContent = link.text;
+            if (link.newTab) {
+                anchor.target = "_blank";
+                anchor.rel = "noopener";
+            }
             el.status.appendChild(anchor);
         }
+    }
+
+    // 계정으로 쓰면 닉네임·비밀번호 칸과 기억 선택을 숨긴다.
+    function applyMode() {
+        var account = state.mode === "account";
+        el.modeInputs.forEach(function (input) {
+            input.checked = input.value === state.mode;
+        });
+        [el.identity, el.remember].forEach(function (node) {
+            if (node) {
+                node.hidden = account;
+            }
+        });
+        if (el.accountNote) {
+            el.accountNote.hidden = !account;
+        }
+        el.passwordHint.hidden = account || !el.rememberPassword.checked;
     }
 
     function showError(field, message) {
@@ -117,7 +148,7 @@
 
     function sync() {
         var waiting = state.retryUntil > Date.now();
-        [el.nickname, el.password, el.content, el.cancel].forEach(function (input) {
+        [el.nickname, el.password, el.content, el.cancel].concat(el.modeInputs).forEach(function (input) {
             input.disabled = state.sending;
         });
         el.submit.disabled = state.sending || waiting;
@@ -232,7 +263,8 @@
 
     // 디시에 올라간 댓글을 새로 읽지 않고 목록에 바로 붙인다. 시각은 '방금'으로 둔다.
     // commentId: 디시가 돌려준 새 댓글 번호. 있을 때만 바로 지울 수 있게 한다.
-    function appendComment(content, nickname, commentId) {
+    // who: {name, code, account}. 계정 댓글은 식별 코드(아이디)를 함께 보이고 비밀번호 없이 지운다.
+    function appendComment(content, who, commentId) {
         if (!list) {
             return;
         }
@@ -262,8 +294,12 @@
         meta.className = "comment-meta";
         var author = document.createElement("span");
         author.className = "author-text";
-        author.setAttribute("data-author", nickname);
-        author.textContent = nickname;
+        author.setAttribute("data-author", who.name);
+        author.textContent = who.name;
+        if (who.code) {
+            author.setAttribute("data-author-code", who.code);
+            author.textContent = who.name + "(" + who.code + ")";
+        }
         var time = document.createElement("span");
         time.textContent = "방금";
         meta.appendChild(author);
@@ -275,6 +311,9 @@
             remove.setAttribute("data-comment-delete", "");
             remove.setAttribute("aria-haspopup", "dialog");
             remove.setAttribute("aria-label", "내 댓글 삭제");
+            if (who.account) {
+                remove.setAttribute("data-owner", "account");
+            }
             remove.textContent = "삭제";
             meta.appendChild(remove);
         }
@@ -314,7 +353,13 @@
         }
         if (outcome.action === "success") {
             var newId = /^[1-9][0-9]{0,14}$/.test(String(payload.comment_id)) ? String(payload.comment_id) : "";
-            appendComment(sent.content, sent.nickname, newId);
+            var who = { name: sent.nickname, code: "", account: false };
+            if (sent.account) {
+                var author = payload.author && typeof payload.author === "object" ? payload.author : {};
+                var code = String(author.user_id || "");
+                who = { name: String(author.name || "").trim() || "내 계정", code: /^[A-Za-z0-9_]{1,40}$/.test(code) ? code : "", account: true };
+            }
+            appendComment(sent.content, who, newId);
             el.content.value = "";
             updateLength();
             setParent(null);
@@ -351,6 +396,10 @@
             setStatus("이 브라우저의 댓글 쓰기가 잠겨 있어요.", "error", { href: post.unlockUrl(), text: "잠금 해제" });
             return;
         }
+        if (outcome.action === "login_needed") {
+            setStatus(message || "디시 계정에 다시 로그인해야 해요. 댓글은 보내지 않았어요.", "error", post.accountLink(payload));
+            return;
+        }
         if (outcome.action === "unavailable" && message) {
             setStatus(message, "error");
             return;
@@ -363,13 +412,16 @@
             return;
         }
         clearErrors();
-        var values = { content: el.content.value, nickname: el.nickname.value, password: el.password.value };
+        var account = state.mode === "account";
+        var values = { content: el.content.value, nickname: el.nickname.value, password: el.password.value, account: account };
         var problem = validateComment(values, limits);
         if (problem) {
             showError(problem.field, problem.message);
             return;
         }
-        var body = { board: board, pid: pid, content: values.content, nickname: values.nickname.trim(), password: values.password };
+        var body = account
+            ? { board: board, pid: pid, content: values.content, mode: "account" }
+            : { board: board, pid: pid, content: values.content, nickname: values.nickname.trim(), password: values.password };
         if (kind) {
             body.kind = kind;
         }
@@ -387,7 +439,9 @@
             body.captcha_key = answer.key;
             body.captcha_code = answer.code;
         }
-        saveIdentity();
+        if (!account) {
+            saveIdentity();
+        }
         state.sending = true;
         state.sentAnswer = Boolean(answer);
         setStatus("댓글을 보내고 있어요.", "busy");
@@ -395,7 +449,7 @@
         post.postJson("/read/comment", body, 45000).then(function (result) {
             state.sending = false;
             sync();
-            handle(post.interpret(result.status, result.payload), { content: values.content, nickname: body.nickname });
+            handle(post.interpret(result.status, result.payload), { content: values.content, nickname: body.nickname, account: account });
             sync();
         });
     }
@@ -459,8 +513,19 @@
             setParent(null);
         }
     });
+    el.modeInputs.forEach(function (input) {
+        input.addEventListener("change", function () {
+            if (!input.checked) {
+                return;
+            }
+            state.mode = input.value === "account" ? "account" : "anonymous";
+            post.saveMode(storage, state.mode);
+            clearErrors();
+            applyMode();
+        });
+    });
     restoreIdentity();
-    el.passwordHint.hidden = !el.rememberPassword.checked;
+    applyMode();
     updateLength();
     sync();
 })(typeof window !== "undefined" ? window : globalThis);
