@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
 
 import aiohttp
 import lxml.html
+from yarl import URL
 
 from .search import normalize_search_pos, search_pagination
 
@@ -122,6 +124,17 @@ from .models import Comment, Document, DocumentIndex, Image
 from .parsers import ParserMixin, has_gallery_image_icon, has_gallery_video_icon, to_int
 
 
+class _SessionCookieJar(aiohttp.CookieJar):
+    """Only allowlisted session cookies may accompany an outgoing request."""
+
+    def filter_cookies(self, request_url=URL()):
+        cookies = super().filter_cookies(request_url)
+        for name in tuple(cookies):
+            if name not in DC_SESSION_COOKIE_ALLOWLIST:
+                del cookies[name]
+        return cookies
+
+
 class API(ParserMixin):
     __parse_gallery_name = ParserMixin._ParserMixin__parse_gallery_name
     __parse_mobile_headtext_tabs = ParserMixin._ParserMixin__parse_mobile_headtext_tabs
@@ -188,9 +201,11 @@ class API(ParserMixin):
         self.session = aiohttp.ClientSession(
             headers=GET_HEADERS,
             cookies={"_ga": "GA1.2.693521455.1588839880"},
+            cookie_jar=_SessionCookieJar(),
             timeout=timeout,
             connector=connector,
         )
+        self.__request_slots = asyncio.Semaphore(DC_CONN_LIMIT)
         self.last_board_headtexts = []
     async def close(self):
         await self.session.close()
@@ -524,13 +539,6 @@ class API(ParserMixin):
             return float(DC_RATE_LIMIT_COOLDOWN)
         return min(max(delay, 0.0), float(DC_RATE_LIMIT_MAX_COOLDOWN))
 
-    def __prune_session_cookies(self):
-        cookie_jar = getattr(self.session, "cookie_jar", None)
-        clear = getattr(cookie_jar, "clear", None)
-        if not callable(clear):
-            return
-        clear(lambda morsel: morsel.key not in DC_SESSION_COOKIE_ALLOWLIST)
-
     async def __request_text(
         self,
         method,
@@ -547,7 +555,13 @@ class API(ParserMixin):
 
         request_headers = self.__prepare_headers(url, headers)
 
-        try:
+        # API.__new__ test doubles also need instance-local admission. There is
+        # no await during initialization, so requests on the shared loop agree.
+        if getattr(self, "_API__request_slots", None) is None:
+            self.__request_slots = asyncio.Semaphore(DC_CONN_LIMIT)
+        async with self.__request_slots:
+            if self.__cooldown_active(cooldown_scope):
+                raise RateLimitCooldownError("rate limited: cooldown")
             async with self.session.request(
                 method,
                 url,
@@ -559,26 +573,25 @@ class API(ParserMixin):
                 text = await res.text()
                 status = res.status
                 response_headers = dict(res.headers)
-        finally:
-            self.__prune_session_cookies()
 
-        if self.__is_rate_limited_response(status, text[:1000]):
-            retry_delay = max(
-                float(DC_RATE_LIMIT_COOLDOWN),
-                self.__retry_after_delay(response_headers),
-            )
-            self.__start_cooldown_for(cooldown_scope, retry_delay)
-            logger.warning(
-                "rate limited: status=%s host=%s path=%s scope=%s retry_after=%.0f",
-                status,
-                host,
-                parsed_url.path or "/",
-                cooldown_scope or "none",
-                retry_delay,
-            )
-            raise RateLimitError(f"rate limited: {status}")
+            # Publish cooldown before releasing admission to queued requests.
+            if self.__is_rate_limited_response(status, text[:1000]):
+                retry_delay = max(
+                    float(DC_RATE_LIMIT_COOLDOWN),
+                    self.__retry_after_delay(response_headers),
+                )
+                self.__start_cooldown_for(cooldown_scope, retry_delay)
+                logger.warning(
+                    "rate limited: status=%s host=%s path=%s scope=%s retry_after=%.0f",
+                    status,
+                    host,
+                    parsed_url.path or "/",
+                    cooldown_scope or "none",
+                    retry_delay,
+                )
+                raise RateLimitError(f"rate limited: {status}")
 
-        return status, response_headers, text
+            return status, response_headers, text
 
     def __normalize_head_id(self, head_id):
         if head_id is None:

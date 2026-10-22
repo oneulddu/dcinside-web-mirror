@@ -2,10 +2,11 @@ import asyncio
 import threading
 import time
 
-from aiohttp import CookieJar
+import aiohttp
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 import lxml.html
 import pytest
-from yarl import URL
 
 from app.services.dc import api as dc_api
 from app.services.dc.api import API
@@ -422,6 +423,76 @@ async def test_scoped_requests_do_not_wait_for_slow_request_in_same_scope():
     assert (await slow)[2] == "slow"
 
 
+@pytest.mark.asyncio
+async def test_capacity_queued_requests_recheck_cooldown_before_sending(monkeypatch):
+    monkeypatch.setattr(dc_api, "DC_CONN_LIMIT", 2)
+    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 30)
+    received = []
+    at_capacity = asyncio.Event()
+    all_started = asyncio.Event()
+    release_limited = asyncio.Event()
+    release_slow = asyncio.Event()
+    started = 0
+
+    async def handle(request):
+        received.append(request.path)
+        if len(received) == 2:
+            at_capacity.set()
+        if request.path == "/0":
+            await release_limited.wait()
+            return web.Response(status=429, text="Too Many Requests")
+        if request.path == "/1":
+            await release_slow.wait()
+        return web.Response(text="ok")
+
+    app = web.Application()
+    app.router.add_get("/{index}", handle)
+    async with TestServer(app) as server, API() as api:
+        async def request(index):
+            nonlocal started
+            started += 1
+            if started == 6:
+                all_started.set()
+            return await api._API__request_text(
+                "GET", str(server.make_url(f"/{index}")),
+                cooldown_scope="document:local",
+            )
+
+        tasks = [asyncio.create_task(request(index)) for index in range(6)]
+        try:
+            await asyncio.wait_for(all_started.wait(), timeout=2)
+            await asyncio.wait_for(at_capacity.wait(), timeout=2)
+            assert set(received) == {"/0", "/1"}
+            assert not any(task.done() for task in tasks)
+
+            release_limited.set()
+            with pytest.raises(dc_api.RateLimitError, match="rate limited: 429"):
+                await asyncio.wait_for(tasks[0], timeout=2)
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks[2:], return_exceptions=True), timeout=2,
+            )
+            assert all(isinstance(result, dc_api.RateLimitCooldownError) for result in results)
+            assert set(received) == {"/0", "/1"}
+            assert not tasks[1].done()
+
+            # Rejected waiters release admission; other scopes can still use it.
+            status, _, text = await asyncio.wait_for(
+                api._API__request_text(
+                    "GET", str(server.make_url("/healthy")), cooldown_scope="board:local",
+                ),
+                timeout=2,
+            )
+            assert (status, text) == (200, "ok")
+            release_slow.set()
+            assert (await asyncio.wait_for(tasks[1], timeout=2))[2] == "ok"
+        finally:
+            release_limited.set()
+            release_slow.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -666,83 +737,72 @@ async def test_comment_rate_limit_keeps_incomplete_status():
 
 
 @pytest.mark.asyncio
-async def test_request_text_prunes_shared_session_cookies():
-    class FakeResponse:
-        status = 200
-        headers = {}
+@pytest.mark.parametrize("fail_body", [False, True])
+async def test_concurrent_requests_never_send_disallowed_session_cookies(monkeypatch, fail_body):
+    reading_body = asyncio.Event()
+    release_body = asyncio.Event()
+    received_cookies = []
+    original_text = aiohttp.ClientResponse.text
 
-        async def __aenter__(self):
-            return self
+    async def text(response, *args, **kwargs):
+        if response.url.path == "/set":
+            # aiohttp has already processed Set-Cookie before entering text().
+            reading_body.set()
+        return await original_text(response, *args, **kwargs)
 
-        async def __aexit__(self, *args):
-            return None
+    monkeypatch.setattr(aiohttp.ClientResponse, "text", text)
 
-        async def text(self):
-            return "ok"
+    async def set_cookies(request):
+        response = web.StreamResponse()
+        for name, value in {
+            "_ga": "ga-value", "ci_c": "ci-value",
+            "penalty-box": "rate-limit", "tracking": "drop-me",
+        }.items():
+            response.set_cookie(name, value)
+        await response.prepare(request)
+        await release_body.wait()
+        if fail_body:
+            request.transport.close()
+        else:
+            await response.write(b"ok")
+            await response.write_eof()
+        return response
 
-    class FakeSession:
-        def __init__(self):
-            self.cookie_jar = CookieJar(unsafe=True)
-            self.cookie_jar.update_cookies(
-                {
-                    "_ga": "ga-value",
-                    "ci_c": "ci-value",
-                    "penalty-box": "rate-limit",
-                    "tracking": "drop-me",
-                },
-                URL("https://gall.dcinside.com/"),
-            )
+    async def echo(request):
+        received_cookies.append(dict(request.cookies))
+        return web.Response(text="ok")
 
-        def request(self, *args, **kwargs):
-            return FakeResponse()
+    app = web.Application()
+    app.router.add_get("/set", set_cookies)
+    app.router.add_get("/echo", echo)
+    async with TestServer(app) as server, API() as api:
+        # Use a DNS hostname: the production cookie jar rejects IP-origin cookies.
+        base = server.make_url("/").with_host("localhost")
+        slow = asyncio.create_task(api._API__request_text("GET", str(base / "set")))
+        expected = {"_ga": "ga-value", "ci_c": "ci-value"}
+        try:
+            await asyncio.wait_for(reading_body.wait(), timeout=2)
+            for explicit in (dc_api.GALLERY_POSTS_COOKIES, None):
+                status, _, body = await asyncio.wait_for(
+                    api._API__request_text("GET", str(base / "echo"), cookies=explicit),
+                    timeout=2,
+                )
+                assert (status, body) == (200, "ok")
+                assert received_cookies[-1] == {**expected, **(explicit or {})}
+                assert not slow.done()
 
-    api = API.__new__(API)
-    api.session = FakeSession()
-
-    status, _, text = await api._API__request_text("GET", "https://gall.dcinside.com/m")
-    cookies = api.session.cookie_jar.filter_cookies(URL("https://gall.dcinside.com/"))
-
-    assert status == 200
-    assert text == "ok"
-    assert set(cookies) == {"_ga", "ci_c"}
-    assert cookies["_ga"].value == "ga-value"
-    assert cookies["ci_c"].value == "ci-value"
-
-
-@pytest.mark.asyncio
-async def test_request_text_prunes_shared_session_cookies_when_body_read_fails():
-    class FakeResponse:
-        status = 200
-        headers = {}
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def text(self):
-            raise OSError("body read failed")
-
-    class FakeSession:
-        def __init__(self):
-            self.cookie_jar = CookieJar(unsafe=True)
-            self.cookie_jar.update_cookies(
-                {"_ga": "ga-value", "tracking": "drop-me"},
-                URL("https://gall.dcinside.com/"),
-            )
-
-        def request(self, *args, **kwargs):
-            return FakeResponse()
-
-    api = API.__new__(API)
-    api.session = FakeSession()
-
-    with pytest.raises(OSError, match="body read failed"):
-        await api._API__request_text("GET", "https://gall.dcinside.com/m")
-
-    cookies = api.session.cookie_jar.filter_cookies(URL("https://gall.dcinside.com/"))
-    assert set(cookies) == {"_ga"}
+            release_body.set()
+            if fail_body:
+                with pytest.raises(aiohttp.ClientPayloadError):
+                    await asyncio.wait_for(slow, timeout=2)
+            else:
+                assert (await asyncio.wait_for(slow, timeout=2))[2] == "ok"
+            await api._API__request_text("GET", str(base / "echo"))
+            assert received_cookies[-1] == expected
+        finally:
+            release_body.set()
+            slow.cancel()
+            await asyncio.gather(slow, return_exceptions=True)
 
 
 def test_list_urls_prefer_mobile_before_pc():
