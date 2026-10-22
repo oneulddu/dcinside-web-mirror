@@ -66,6 +66,8 @@ function createHarness(options) {
             };
         },
         fetch(url, init) {
+            assert.equal(init.headers["X-Mirror-Fetch"], "1");
+            assert.equal(init.headers.Accept, "text/html");
             signals.push(init.signal);
             requestedUrls.push(url);
             return new Promise((resolve, reject) => {

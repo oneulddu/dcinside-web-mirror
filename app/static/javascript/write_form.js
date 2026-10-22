@@ -859,6 +859,8 @@
             var message = typeof payload.message === "string" ? payload.message : "";
             if (outcome.action === "success") {
                 fillModify(payload);
+            } else if (outcome.action === "visitor_check_required") {
+                setStatus(message || "아무것도 전송하지 않았어요. 입력을 보관한 뒤 페이지를 새로고침해 주세요.", "error");
             } else if (outcome.action === "invalid") {
                 showFieldError(String(payload.field || ""), message || "입력한 내용을 확인해 주세요.");
             } else if (outcome.action === "retry") {
@@ -1042,6 +1044,10 @@
     function handle(outcome) {
         var payload = outcome.payload || {};
         var message = typeof payload.message === "string" ? payload.message : "";
+        if (outcome.action === "visitor_check_required") {
+            setStatus(message || "아무것도 전송하지 않았어요. 입력을 보관한 뒤 페이지를 새로고침해 주세요.", "error");
+            return;
+        }
         // 한 번 보낸 캡챠 답은 다시 쓰지 않는다. 다시 필요하면 서버가 새 문제를 준다.
         if (outcome.action !== "captcha" && captcha) {
             captcha.hide();

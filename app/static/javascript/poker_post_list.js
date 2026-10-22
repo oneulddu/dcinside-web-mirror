@@ -141,6 +141,9 @@
         }
 
         function load(page, moveFocus, fallbackHref) {
+            if (section.dataset.state === "visitor-check") {
+                return;
+            }
             serial += 1;
             var mine = serial;
             if (controller) {
@@ -186,6 +189,9 @@
                     if (!payload || typeof payload !== "object") {
                         return { failed: GENERIC_ERROR };
                     }
+                    if (payload.code === "visitor_check_required") {
+                        return { refresh: true };
+                    }
                     if (!response.ok) {
                         var text = typeof payload.error === "string" && payload.error.trim()
                             ? payload.error.trim()
@@ -207,6 +213,14 @@
                 }
                 stopTimer();
                 controller = null;
+                if (result.refresh) {
+                    fail(page, fallbackHref, "방문 확인이 필요해요. 페이지를 새로고침해 주세요.");
+                    setState("visitor-check");
+                    if (retryButton) {
+                        retryButton.textContent = "페이지 새로고침";
+                    }
+                    return;
+                }
                 if (result.failed) {
                     fail(page, fallbackHref, result.failed);
                     return;
@@ -239,6 +253,10 @@
 
         if (retryButton) {
             retryButton.addEventListener("click", function () {
+                if (section.dataset.state === "visitor-check") {
+                    window.location.reload();
+                    return;
+                }
                 if (failedPage === null || section.dataset.state === "loading") {
                     return;
                 }

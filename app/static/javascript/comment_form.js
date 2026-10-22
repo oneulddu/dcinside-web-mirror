@@ -305,6 +305,10 @@
     function handle(outcome, sent) {
         var payload = outcome.payload || {};
         var message = typeof payload.message === "string" ? payload.message : "";
+        if (outcome.action === "visitor_check_required") {
+            setStatus(message || "아무것도 전송하지 않았어요. 입력을 보관한 뒤 페이지를 새로고침해 주세요.", "error");
+            return;
+        }
         if (outcome.action !== "captcha" && captcha) {
             captcha.hide();
         }

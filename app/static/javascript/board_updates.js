@@ -90,6 +90,7 @@
     }
 
     var state = {
+        visitorCheck: false,
         timer: null,
         controller: null,
         failures: 0,
@@ -112,6 +113,9 @@
 
     // 전체 글 1페이지(검색·분류·추천·공지가 아닐 때)에서만 동작한다.
     function eligible() {
+        if (state.visitorCheck) {
+            return false;
+        }
         var list = boardList();
         if (!list) {
             return false;
@@ -181,6 +185,13 @@
         }
         var button = bar.querySelector(".board-updates-btn");
         var status = bar.querySelector("[role=status]");
+        if (state.visitorCheck) {
+            bar.hidden = false;
+            button.disabled = false;
+            button.textContent = "페이지 새로고침";
+            status.textContent = "방문 확인이 필요해요. 페이지를 새로고침해 주세요.";
+            return;
+        }
         var result = state.lastItems ? computeNew(baseline(), currentIds(), state.lastItems, isBlocked) : { count: 0, more: false };
         var label = result.count ? "새 글 " + result.count + "개" + (result.more ? " 이상" : "") : "";
         bar.hidden = !result.count;
@@ -273,6 +284,10 @@
         })
             .then(function (response) {
                 return response.json().then(function (payload) {
+                    if (payload && payload.code === "visitor_check_required") {
+                        state.visitorCheck = true;
+                        render();
+                    }
                     if (!response.ok || !payload || payload.ok !== true || !Array.isArray(payload.items)) {
                         throw new Error("updates failed");
                     }
@@ -311,6 +326,10 @@
     }
 
     function refreshList() {
+        if (state.visitorCheck) {
+            root.location.reload();
+            return;
+        }
         if (state.refreshing) {
             return;
         }
@@ -335,12 +354,18 @@
         }, REQUEST_TIMEOUT_MS);
         fetch(url.toString(), {
             credentials: "same-origin",
-            headers: { "Accept": "text/html" },
+            headers: { "Accept": "text/html", "X-Mirror-Fetch": "1" },
             signal: controller ? controller.signal : undefined
         })
             .then(function (response) {
                 if (!response.ok) {
-                    throw new Error("refresh failed");
+                    return response.json().then(function (payload) {
+                        if (payload && payload.code === "visitor_check_required") {
+                            state.visitorCheck = true;
+                            clearTimeout(state.timer);
+                        }
+                        throw new Error("refresh failed");
+                    });
                 }
                 return response.text();
             })
@@ -370,6 +395,9 @@
                 }
                 button.disabled = false;
                 button.textContent = "새로고침하지 못했어요. 다시 시도";
+                if (state.visitorCheck) {
+                    render();
+                }
             })
             .then(function () {
                 clearTimeout(timeout);

@@ -111,6 +111,22 @@ const row = id => ({id,html:'<li class="comment-item" data-comment-id="'+id+'"><
 const payload=(page,ids,total=49)=>({page,next_page:page>1?page-1:null,total,comments:ids.map(row)});
 const cases=[]; const test=(name,fn)=>cases.push({name,fn});
 
+test('visitor check stops automatic loading and turns retry into page refresh', async()=>{
+  const h=harness({next:2,total:3,ids:['C3']});
+  let reloads=0; h.window.location.reload=()=>reloads++;
+  await h.resolve(0,{code:'visitor_check_required',sent:false},{status:403});
+  assert.equal(h.section.dataset.commentsState,'visitor-check');
+  assert.match(h.progress.textContent,/새로고침/);
+  assert.match(h.retry.textContent,/새로고침/);
+  await h.advance(60000);
+  h.document.dispatchEvent({type:'visibilitychange'});
+  assert.equal(h.requests.length,1);
+  h.click();
+  assert.equal(reloads,1);
+  assert.equal(h.requests.length,1);
+  assert.deepEqual(h.ids(),['C3']);
+});
+
 test('automatic merge deduplicates IDs, keeps oldest page first and completes49 without focus changes',async()=>{
   const h=harness(); assert.equal(h.requests.length,1); assert.match(h.requests[0].url,/cpage=1/);
   const ids=Array.from({length:28},(_,i)=>'C'+(i+1));

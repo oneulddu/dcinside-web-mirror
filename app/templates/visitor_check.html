@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>확인 중</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: system-ui, sans-serif; }
+  p { margin: 0; padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+{% if terminal %}
+<p>{{ message }} <a href="{{ back_url }}">목록으로 돌아가기</a></p>
+{% else %}
+<p id="visitor-check-message" role="status"
+   data-cookie="{{ cookie }}" data-token="{{ token }}"
+   data-max-age="{{ max_age }}" data-secure="{{ '1' if secure else '0' }}">잠시만 기다려 주세요.</p>
+<noscript><p>이 사이트는 JavaScript를 켜야 볼 수 있어요.</p></noscript>
+<script src="{{ url_for('static', filename='javascript/visitor_check.js') }}" defer></script>
+{% endif %}
+</body>
+</html>

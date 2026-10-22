@@ -178,6 +178,25 @@ pm2 logs dc-mirror
   Only successful article views mark Poker posts read; footer list updates must reapply read state.
   Upstream `file.gif` means an attachment, not necessarily a photo. Keep that label distinction.
 
+### Visitor check
+
+- `app/services/visitor_check.py` implements an opportunistic JS-cookie gate before protected views.
+  HTML GET navigations get a 200/no-store challenge (`app/templates/visitor_check.html`);
+  `app/static/javascript/visitor_check.js` stores the signed, constant `v1` cookie for 180 days
+  and reloads, with at most two automatic attempts per tab. HEAD stays bodyless and does not
+  set cookies or call upstream. Only static files, healthz and favicon are exempt.
+- `MIRROR_VISITOR_CHECK=1` enables it (production default); development/tests default off.
+  `0` or `off` disables it. It does not bind tokens to IP or UA and uses no ProxyFix.
+- JSON/JS requests receive 403 with `ok: false`, `code: "visitor_check_required"`,
+  Korean `message`/`error` and `sent: false`: nothing reached the protected view.
+  Preserve input, ask the user to refresh, never auto-resubmit or label this `uncertain`.
+  Loaders offer a refresh action and board polling stops. Form POSTs get a terminal 403
+  with a safe GET link, never a challenge or POST replay; media gets a non-HTML 403.
+- HTML fetches from page routes must send `X-Mirror-Fetch: 1` (board updates/return refresh);
+  marked requests get JSON errors rather than an HTML challenge. No UA/Referer heuristics.
+- This is a deterrent, **not bot authentication**: a scraper can extract the token from
+  the challenge HTML without running JavaScript. There is deliberately no obfuscation.
+
 ### Async Bridge Pattern
 
 Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with async scraping. It detects an active event loop and either uses `asyncio.run()` or a `ThreadPoolExecutor` fallback.

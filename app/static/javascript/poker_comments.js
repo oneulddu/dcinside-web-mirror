@@ -418,6 +418,9 @@
                     return { failed: GENERIC_ERROR };
                 }
                 return response.json().then(function (payload) {
+                    if (payload && payload.code === "visitor_check_required") {
+                        return { refresh: true };
+                    }
                     if (!response.ok) {
                         var text = response.status !== 429 && payload && typeof payload.error === "string"
                             ? payload.error.trim().slice(0, 200)
@@ -438,6 +441,12 @@
                 }
                 stopRequestTimer();
                 controller = null;
+                if (result.refresh) {
+                    fail("방문 확인이 필요해요. 페이지를 새로고침해 주세요.");
+                    setState("visitor-check");
+                    setText(retryButton, "페이지 새로고침");
+                    return;
+                }
                 if (result.failed) {
                     if (result.final) {
                         cursor = null;
@@ -476,6 +485,10 @@
 
         if (retryButton) {
             retryButton.addEventListener("click", function () {
+                if (state === "visitor-check") {
+                    window.location.reload();
+                    return;
+                }
                 if (state !== "error" || cursor === null) {
                     return;
                 }

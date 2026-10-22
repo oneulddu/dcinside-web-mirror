@@ -249,7 +249,7 @@ function createHarness(options) {
             getElementById: (id) => body.descendants().find((node) => node.getAttribute("id") === id) || null,
             addEventListener() {},
         },
-        window: { location: { href: BASE_HREF } },
+        window: { location: { href: BASE_HREF, reload() { config.onReload(); } } },
         setTimeout(handler, delay) {
             timerId += 1;
             timers.set(timerId, { handler: handler, at: clock + (delay || 0) });
@@ -308,6 +308,21 @@ const tests = [];
 function test(name, fn) {
     tests.push({ name, fn });
 }
+
+test("visitor check offers a page refresh without retrying the JSON fetch", async () => {
+    let reloads = 0;
+    const h = createHarness({ onReload: () => reloads++ });
+    h.fetchCalls[0].resolve(jsonResponse({ ok: false, code: "visitor_check_required", sent: false }, 403));
+    await flush();
+    assert.equal(h.buttonState(), "visitor-check");
+    assert.equal(h.busy(), "false");
+    assert.match(h.live(), /새로고침/);
+    h.advance(60000);
+    assert.equal(h.fetchCalls.length, 1);
+    h.click();
+    assert.equal(reloads, 1);
+    assert.equal(h.fetchCalls.length, 1);
+});
 
 test("빈 목록이고 has_more 미확정이면 바인딩 직후 한 번만 자동으로 불러온다", async () => {
     const harness = createHarness({

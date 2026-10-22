@@ -234,6 +234,10 @@
     function handle(outcome, target) {
         var payload = outcome.payload || {};
         var message = typeof payload.message === "string" ? payload.message : "";
+        if (outcome.action === "visitor_check_required") {
+            setStatus(message || "아무것도 전송하지 않았어요. 입력을 보관한 뒤 페이지를 새로고침해 주세요.", "error");
+            return;
+        }
         var noun = target.type === "post" ? "글" : "댓글";
         if (outcome.action === "success") {
             if (target.type === "post") {

@@ -12,6 +12,7 @@ from .config import DevelopmentConfig, ProductionConfig
 from .routes import register_routes
 from .services.highlight import highlight_search_term, linkify_comment_text
 from .services.time_labels import post_time_info
+from .services.visitor_check import init_visitor_check
 
 compress = Compress()
 
@@ -116,6 +117,7 @@ def create_app():
     from .poker_routes import bp as poker_bp
     app.register_blueprint(poker_bp)
     _init_request_logging(app)
+    init_visitor_check(app)
     _init_static_cache_busting(app)
     _init_response_compression(app)
     return app

@@ -162,7 +162,7 @@ function createHarness(options) {
             addEventListener() {},
             dispatchEvent(event) { events.push(event); },
         },
-        window: { location: { href: BASE_HREF } },
+        window: { location: { href: BASE_HREF, reload() { config.onReload(); } } },
         setTimeout(handler, delay) {
             timerId += 1;
             timers.set(timerId, { handler, at: clock + (delay || 0) });
@@ -234,6 +234,25 @@ const tests = [];
 function test(name, fn) {
     tests.push({ name, fn });
 }
+
+test("visitor check preserves the list and offers refresh instead of JSON retry", async () => {
+    let reloads = 0;
+    const h = await loadedHarness({ onReload: () => reloads++ });
+    h.pagerLink(4).click();
+    h.fetchCalls[1].resolve(json({ code: "visitor_check_required", sent: false }, 403));
+    await flush();
+    assert.equal(h.state(), "visitor-check");
+    assert.equal(h.busy(), "false");
+    assert.match(h.message.textContent, /새로고침/);
+    assert.match(h.retry.textContent, /새로고침/);
+    assert.equal(h.listBody.innerHTML, "<ul>3페이지</ul>");
+    h.advance(60000);
+    h.pagerLink(5).click();
+    assert.equal(h.fetchCalls.length, 2);
+    h.retry.click();
+    assert.equal(reloads, 1);
+    assert.equal(h.fetchCalls.length, 2);
+});
 
 test("화면에서 멀면 요청하지 않고, 800px 안으로 들어오면 출발 페이지와 현재 글로 한 번만 요청한다", async () => {
     const harness = createHarness();

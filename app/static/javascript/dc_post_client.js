@@ -48,6 +48,9 @@
             return { action: "success", payload: payload };
         }
         var code = String(payload.code || "");
+        if (code === "visitor_check_required") {
+            return { action: code, sent: false, payload: payload };
+        }
         // 디시에 보냈지만 결과를 모르는 경우. 다시 보내면 중복될 수 있다.
         if (code === "uncertain") {
             return { action: "unknown", payload: payload };

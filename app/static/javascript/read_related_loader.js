@@ -421,6 +421,11 @@
             setButtonLabel(button, "다시 시도");
             return;
         }
+        if (state === "visitor-check") {
+            button.disabled = false;
+            setButtonLabel(button, "페이지 새로고침");
+            return;
+        }
 
         button.disabled = false;
         setButtonLabel(button, button.dataset.defaultLabel || "더보기");
@@ -602,7 +607,7 @@
             throw createError("related_fetch_failed");
         }
         if (!response.ok || payload.ok === false) {
-            throw createError(payload.error || "related_fetch_failed");
+            throw createError(payload.code || payload.error || "related_fetch_failed");
         }
         if (!Array.isArray(payload.items)) {
             throw createError("related_fetch_failed");
@@ -663,6 +668,13 @@
             if (requestId !== state.requestId) {
                 return;
             }
+            if (err.code === "visitor_check_required") {
+                state.terminal = true;
+                state.visitorCheck = true;
+                showStatus(state, "방문 확인이 필요해요. 페이지를 새로고침해 주세요.");
+                setButtonState(button, "visitor-check");
+                return;
+            }
             showStatus(state, failureMessage(err));
             setButtonState(button, "retry");
         } finally {
@@ -701,6 +713,10 @@
             button.dataset.defaultLabel = "더보기";
         }
         button.addEventListener("click", function () {
+            if (state.visitorCheck) {
+                window.location.reload();
+                return;
+            }
             loadRelated(state);
         });
         setListBusy(state, false);

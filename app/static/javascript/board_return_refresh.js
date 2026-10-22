@@ -155,7 +155,8 @@
             signal: controller ? controller.signal : undefined,
             credentials: "same-origin",
             headers: {
-                "Accept": "text/html"
+                "Accept": "text/html",
+                "X-Mirror-Fetch": "1"
             }
         })
             .then(function (response) {

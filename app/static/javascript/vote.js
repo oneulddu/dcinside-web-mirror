@@ -112,8 +112,12 @@
             credentials: "same-origin",
             headers: { Accept: "application/json" }
         }).then(function (response) {
-            return response.ok ? response.json() : null;
+            return response.json();
         }).then(function (data) {
+            if (data && data.code === "visitor_check_required") {
+                setStatus(data.message || "아무것도 전송하지 않았어요. 페이지를 새로고침해 주세요.", "error");
+                return;
+            }
             if (!data || data.ok !== true) {
                 return;
             }
@@ -169,6 +173,10 @@
     function handle(direction, outcome) {
         var payload = outcome.payload || {};
         var message = typeof payload.message === "string" ? payload.message : "";
+        if (outcome.action === "visitor_check_required") {
+            setStatus(message || "아무것도 전송하지 않았어요. 페이지를 새로고침해 주세요.", "error");
+            return;
+        }
         var name = NAMES[direction];
         if (outcome.action !== "captcha" && captcha) {
             captcha.hide();

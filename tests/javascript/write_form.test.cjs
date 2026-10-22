@@ -170,3 +170,11 @@ test("결과를 모르는 uncertain은 다시 보내라고 하지 않는 unknown
     assert.equal(post.interpret(503, { ok: false, code: "uncertain", message: "x" }).action, "unknown");
     assert.equal(post.interpret(503, { ok: false, code: "unavailable", message: "x" }).action, "unavailable");
 });
+
+test("visitor check is explicitly not sent, never uncertain or retryable", () => {
+    const payload = { ok: false, code: "visitor_check_required", sent: false, message: "새로고침해 주세요." };
+    const outcome = post.interpret(403, payload);
+    assert.equal(outcome.action, "visitor_check_required");
+    assert.equal(outcome.sent, false);
+    assert.equal(outcome.payload, payload);
+});
