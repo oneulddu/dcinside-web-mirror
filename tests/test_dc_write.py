@@ -223,7 +223,7 @@ def test_worker_mapping(setup, result, code, status, path):
     _, client, manager, _ = setup
     unlock(client)
     manager.result = result
-    response = post(client, path, pid=123)
+    response = post(client, path, **({"pid": 123} if path == "/read/vote" else {}))
     assert response.status_code == status and response.json["code"] == code
     if code == "uncertain":
         assert response.json["message"] == (
@@ -315,8 +315,8 @@ def test_captcha_new_key_and_retry_payload(setup, path, kind):
     unlock(client)
     manager.result = {"ok": False, "error": {"name": "CaptchaRequiredError", "cause": "보안 코드 입력"}}
     # 인물 갤러리 추천은 앱 보안 문자를 그대로 쓴다.
-    extra = {"kind": "person"} if path == "/read/vote" else {}
-    response = post(client, path, pid=123, captcha_key="a" * 16, captcha_code="answer", **extra)
+    extra = {"kind": "person", "pid": 123} if path == "/read/vote" else {}
+    response = post(client, path, captcha_key="a" * 16, captcha_code="answer", **extra)
     assert response.status_code == 200 and response.json["code"] == "captcha_required"
     captcha = response.json["captcha"]
     assert service.CAPTCHA_KEY.fullmatch(captcha["key"]) and captcha["key"] != "a" * 16
@@ -508,7 +508,7 @@ def test_upstream_throttle_retries_after_30_seconds(setup, cause, path, is_error
     manager.result = ({"ok": False, "error": {"name": "ApiError", "cause": cause}} if is_error
                       else {"ok": True, "data": {"result": "false", "cause": cause}})
     unlock(client)
-    response = post(client, path, pid=123)
+    response = post(client, path, **({"pid": 123} if path == "/read/vote" else {}))
     assert response.status_code == 429
     assert response.json == {"ok": False, "code": "retry", "message": cause, "retry_after": 30}
     assert response.headers["Retry-After"] == "30"
@@ -920,12 +920,12 @@ def test_offline_relay_is_reported_as_not_sent(setup, monkeypatch, path):
     app.config["DC_APP_PROXY"] = "http://relay:secret@100.64.0.2:8899"
     monkeypatch.setattr(service, "relay_reachable", lambda proxy: False)
     unlock(client)
-    response = post(client, path, pid=123)
+    response = post(client, path, **({"pid": 123} if path == "/read/vote" else {}))
     assert response.status_code == 503
     assert response.json["code"] == "unavailable" and response.json["message"] == service.RELAY_DOWN
     assert manager.calls == []
     monkeypatch.setattr(service, "relay_reachable", lambda proxy: True)
-    assert post(client, path, pid=124).json["ok"] is True
+    assert post(client, path, **({"pid": 124} if path == "/read/vote" else {})).json["ok"] is True
 
 
 def test_relay_reachable_uses_proxy_host_and_port(monkeypatch):
@@ -1067,3 +1067,305 @@ def test_comment_captcha_image_kind(setup):
     manager.result = {"ok": True, "data": {"content_type": "image/png", "base64": base64.b64encode(b"x").decode()}}
     assert client.get("/write/captcha?kind=comment&board=programming&key=" + "a" * 16).status_code == 200
     assert manager.calls[-1] == ("captcha", {"kind": "comment", "gallery": "programming", "key": "a" * 16})
+
+
+MUTATION_PATHS = [
+    ("/read/delete", "delete"),
+    ("/read/comment/delete", "comment_delete"),
+    ("/write/modify/load", "modify_info"),
+    ("/write", "modify"),
+]
+MODIFY_INFO = {"result": True, "subject": "제목", "head_id": None, "head_name": None,
+               "blocks": [{"kind": "text", "text": "본문"}], "fingerprint": "a" * 64,
+               "editable": True, "reason": None}
+
+
+def mutation_post(client, path, **changes):
+    return client.post(path, json={**BODY, "pid": 123, "comment_id": 456,
+                                  "fingerprint": "a" * 64, "photos": [], "originals": [], **changes},
+                       headers=ORIGIN)
+
+
+@pytest.mark.parametrize("path,op", MUTATION_PATHS)
+def test_mutation_success_and_process_interval(setup, monkeypatch, path, op):
+    app, client, manager, _ = setup
+    unlock(client)
+    now = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+    if op == "modify_info":
+        manager.result = {"ok": True, "data": MODIFY_INFO}
+    response = mutation_post(client, path, kind="minor")
+    assert response.status_code == 200 and response.json["ok"]
+    assert response.headers["Cache-Control"] == "no-store"
+    expected = {
+        "delete": {"ok": True, "message": "글을 삭제했어요.", "board_url": "/board?board=programming&kind=minor&refresh=1"},
+        "comment_delete": {"ok": True, "message": "댓글을 삭제했어요."},
+        "modify_info": {"ok": True, **{key: MODIFY_INFO[key] for key in ("subject", "head_id", "head_name", "blocks", "fingerprint")}},
+        "modify": {"ok": True, "board_url": "/board?board=programming&kind=minor&refresh=1",
+                   "read_url": "/read?board=programming&pid=123&kind=minor"},
+    }
+    assert response.json == expected[op]
+    assert manager.calls[0][0] == op
+    payload = manager.calls[0][1]
+    assert payload["gallery"] == "programming" and payload["no"] == 123
+    assert payload["session"] == {"type": "anonymous", "nickname": "ㅇㅇ", "password": "pw"}
+    if op == "comment_delete":
+        assert payload["comment_no"] == 456
+    # A second client in the same process shares the interval.
+    second = app.test_client()
+    unlock(second)
+    response = mutation_post(second, path)
+    assert response.status_code == 429
+    assert response.json["retry_after"] == service.INTERVALS[op]
+    assert response.headers["Retry-After"] == str(service.INTERVALS[op])
+    now[0] += service.INTERVALS[op]
+    assert mutation_post(client, path).json["ok"]
+    assert len(manager.calls) == 2
+
+
+@pytest.mark.parametrize("path,op", MUTATION_PATHS)
+@pytest.mark.parametrize("gate", ["disabled", "locked", "origin", "missing_origin"])
+def test_mutation_gates_before_worker(setup, path, op, gate):
+    app, client, manager, _ = setup
+    if gate == "disabled":
+        app.config["WRITE_KEY"] = ""
+    elif gate in ("origin", "missing_origin"):
+        unlock(client)
+    headers = {} if gate == "missing_origin" else {"Origin": "https://evil.test"} if gate == "origin" else ORIGIN
+    response = client.post(path, json={}, headers=headers)
+    assert response.status_code == (404 if gate == "disabled" else 403)
+    assert response.headers["Cache-Control"] == "no-store"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("path,op", MUTATION_PATHS)
+@pytest.mark.parametrize("field,value", [("pid", None), ("pid", True), ("pid", ""), ("pid", 0),
+                                        ("pid", "1x"), ("pid", "1" * 16), ("board", "../x"),
+                                        ("kind", []), ("password", "x"), ("password", " " * 2),
+                                        ("password", None), ("password", "x" * 21)])
+def test_mutation_invalid_input_never_creates_or_sends(setup, path, op, field, value):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = mutation_post(client, path, **{field: value})
+    assert response.status_code == 400
+    assert response.json["field"] == ("password" if field == "password" else "board")
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("path,op", MUTATION_PATHS)
+def test_mutation_requires_json(setup, path, op):
+    _, client, manager, _ = setup
+    unlock(client)
+    assert client.post(path, data={"pid": 123}, headers=ORIGIN).status_code == 400
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("value", [None, True, 0, "0", "x", "1" * 16])
+def test_comment_delete_invalid_id(setup, value):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = mutation_post(client, "/read/comment/delete", comment_id=value)
+    assert response.status_code == 400 and response.json["field"] == "comment_id"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("path,op", MUTATION_PATHS)
+def test_mutation_wrong_password_and_private_logging(setup, caplog, path, op):
+    _, client, manager, _ = setup
+    unlock(client)
+    cause = "비밀번호가 틀립니다." if op == "comment_delete" else "비밀번호 오류"
+    manager.result = {"ok": False, "error": {"name": "ApiError", "cause": cause}}
+    response = mutation_post(client, path, nickname="private-name", password="private-password",
+                             captcha_key="a" * 16, captcha_code="secret")
+    assert response.status_code == 200 and response.json["code"] == "rejected"
+    assert cause in response.json["message"]
+    assert f"dc {op}" in caplog.text
+    assert all(secret not in caplog.text for secret in ("private-name", "private-password", "secret"))
+
+
+@pytest.mark.parametrize("path,op", MUTATION_PATHS)
+def test_mutation_captcha_response(setup, path, op):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "CaptchaRequiredError", "cause": "보안 코드 입력"}}
+    response = mutation_post(client, path)
+    assert response.json["code"] == "captcha_required"
+    kind = "comment" if op == "comment_delete" else "article"
+    captcha = response.json["captcha"]
+    assert captcha["image_url"] == f'/write/captcha?kind={kind}&board=programming&key={captcha["key"]}'
+
+
+@pytest.mark.parametrize("path,op", MUTATION_PATHS)
+@pytest.mark.parametrize("failure", ["sent", "not_sent", "worker"])
+def test_mutation_transport_never_replays(setup, path, op, failure):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = ({"ok": False, "error": {"name": "WorkerError"}} if failure == "worker"
+                      else service.WorkerUnavailable(sent=failure == "sent"))
+    response = mutation_post(client, path)
+    assert response.status_code == 503
+    assert response.json["code"] == ("unavailable" if op == "modify_info" or failure == "not_sent" else "uncertain")
+    assert len(manager.calls) == 1
+
+
+@pytest.mark.parametrize("reason", ["secret", "poll", "movie", "ai_image"])
+def test_modify_load_not_editable(setup, reason):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": True, "data": {**MODIFY_INFO, "editable": False, "reason": reason}}
+    response = mutation_post(client, "/write/modify/load")
+    assert response.json["ok"] is False
+    assert response.json["code"] == "rejected" and response.json["reason"] == "not_editable"
+    assert "수정할 수 없어요" in response.json["message"]
+    assert "fingerprint" not in response.json and "password" not in response.json
+
+
+def test_modify_load_proxies_only_allowed_photo_urls(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    urls = ["https://dcimg1.dcinside.com/viewimage.php?id=1&no=2", "https://evil.test/img.jpg",
+            "javascript:alert(1)", None, "https://user:pass@dcimg1.dcinside.com/x"]
+    manager.result = {"ok": True, "data": {**MODIFY_INFO, "blocks": [
+        {"kind": "photo", "index": index, "url": url} for index, url in enumerate(urls)]}}
+    response = mutation_post(client, "/write/modify/load", kind="minor")
+    from urllib.parse import parse_qs, urlsplit
+    url = urlsplit(response.json["blocks"][0]["url"])
+    assert url.path == "/media"
+    assert parse_qs(url.query) == {"src": [urls[0]], "board": ["programming"], "pid": ["123"], "kind": ["minor"]}
+    assert all(block["url"] is None for block in response.json["blocks"][1:])
+
+
+def test_modify_get_context_and_invalid_pid(setup):
+    _, client, manager, contexts = setup
+    unlock(client)
+    assert client.get("/write?board=programming&pid=123").status_code == 200
+    assert contexts[-1][0] == "write.html" and contexts[-1][1]["modify_pid"] == 123
+    manager.calls.clear()
+    for pid in ("", "0", "-1", "x", "1" * 16):
+        assert client.get(f"/write?board=programming&pid={pid}").status_code == 400
+    assert not manager.calls
+
+
+def test_modify_multipart_interleaves_kept_and_new_blocks_and_cleans_files(setup, tmp_path):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    unlock(client)
+    response = multipart(client, [PNG, JPEG], pid=123, fingerprint="A" * 64,
+                         body="앞\n[사진 2]\n[원본 2]\n뒤", photos=[{"keep": 2}, {"new": 1}, {"new": 0}],
+                         originals=[1, 3], captcha_key="a" * 16, captcha_code=" ab ")
+    assert response.json["ok"]
+    op, payload = manager.calls[0]
+    assert op == "modify" and payload["no"] == 123 and payload["fingerprint"] == "a" * 64
+    assert payload["blocks"] == [{"text": "앞"}, {"image": 1}, {"keep": 3}, {"text": "뒤"},
+                                 {"keep": 2}, {"image": 0}, {"keep": 1}]
+    assert payload["captcha"] == {"key": "a" * 16, "code": "ab"}
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("changes", [
+    {"fingerprint": "bad"}, {"fingerprint": None}, {"body": "", "photos": [], "originals": []},
+    {"body": "[사진 1]"}, {"body": "[원본 1]"}, {"body": "[사진 10]"},
+    {"body": "[사진 1]\n[사진 1]", "photos": [{"keep": 1}]},
+    {"body": "[원본 1]\n[원본 1]", "originals": [1]},
+    {"photos": None}, {"photos": {}}, {"originals": None}, {"originals": {}},
+    {"photos": [{"keep": -1}]}, {"photos": [{"keep": True}]}, {"photos": [{"new": 0}]},
+    {"photos": [{"keep": 1, "html": "<b>bad</b>"}]},
+    {"photos": [{"keep": 1}, {"keep": 1}]}, {"photos": [{"keep": 1}], "originals": [1]},
+    {"originals": [1, 1]}, {"originals": ["1"]}, {"originals": [-1]},
+])
+def test_modify_invalid_block_input(setup, changes):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = mutation_post(client, "/write", **changes)
+    assert response.status_code == 400 and response.json["field"] == "body"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("photos", [[], [{"new": 1}], [{"new": 0}, {"new": 0}]])
+def test_modify_requires_each_upload_exactly_once(setup, photos):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = multipart(client, [PNG], pid=123, fingerprint="a" * 64, photos=photos)
+    assert response.status_code == 400 and response.json["field"] == "body"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("changes,blocks", [
+    ({"photos": [{"keep": 2}]}, [{"keep": 2}]),
+    ({"originals": [1]}, [{"keep": 1}]),
+])
+def test_modify_empty_body_with_retained_blocks(setup, changes, blocks):
+    _, client, manager, _ = setup
+    unlock(client)
+    assert mutation_post(client, "/write", body="", **changes).json["ok"]
+    assert manager.calls[0][1]["blocks"] == blocks
+
+
+def test_modify_three_digit_markers_stay_text(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = mutation_post(client, "/write", body="[사진 001]\n[원본 001]",
+                             photos=[{"keep": 2}], originals=[1])
+    assert response.json["ok"]
+    assert manager.calls[0][1]["blocks"] == [
+        {"text": "[사진 001]\n[원본 001]"}, {"keep": 2}, {"keep": 1}]
+
+
+def test_modify_stale_is_rejected_not_uncertain(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "WorkerError", "cause": "stale", "sent": False}}
+    response = mutation_post(client, "/write")
+    assert response.json == {"ok": False, "code": "rejected", "reason": "stale",
+                             "message": "글이 그사이 바뀌었어요. 수정 화면을 다시 열어 주세요."}
+    assert len(manager.calls) == 1
+
+
+def test_modify_image_deadline(setup, monkeypatch):
+    _, client, manager, _ = setup
+    unlock(client)
+    monkeypatch.setattr(service.time, "monotonic", lambda: 100)
+    assert multipart(client, [PNG], pid=123, fingerprint="a" * 64, photos=[{"new": 0}]).json["ok"]
+    assert manager.deadlines == [155]
+
+
+@pytest.mark.parametrize("number,expected", [(1054, 1054), ("1054", 1054), (None, None), (True, None), ("bad", None)])
+def test_comment_success_returns_numeric_id(setup, number, expected):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": True, "data": {"result": "true", "data": number}}
+    response = comment(client)
+    assert response.json.get("comment_id") == expected
+
+
+def test_plain_write_contract_unchanged(setup):
+    _, client, manager, contexts = setup
+    unlock(client)
+    assert client.get("/write?board=programming").status_code == 200
+    assert "modify_pid" not in contexts[-1][1]
+    manager.calls.clear()
+    manager.result = {"ok": True, "data": {"result": "true", "no": 789}}
+    response = post(client, body="[원본 1]\n[사진 1]")
+    assert response.json["read_url"] == "/read?board=programming&pid=789"
+    op, payload = manager.calls[0]
+    assert op == "write" and payload["body"] == "[원본 1]\n[사진 1]"
+    assert "blocks" not in payload and "no" not in payload and "fingerprint" not in payload
+
+
+@pytest.mark.parametrize("complete", [True, False, None])
+def test_read_passes_comments_complete_to_template(setup, monkeypatch, complete):
+    _, client, manager, contexts = setup
+
+    async def read_stub(*args, **kwargs):
+        data = {"title": "제목", "html": "<div>본문</div>"}
+        if complete is not None:
+            data["_comments_complete"] = complete
+        return data, [], []
+
+    monkeypatch.setattr(routes, "async_read", read_stub)
+    response = client.get("/read?board=programming&pid=123")
+    assert response.status_code == 200
+    assert contexts[-1][0] == "read.html"
+    assert contexts[-1][1]["comments_complete"] is bool(complete)
+    assert "_comments_complete" not in contexts[-1][1]["data"]
+    assert not manager.calls

@@ -80,6 +80,41 @@ test("사진을 옮기거나 빼면 본문 번호를 맞추고, 문제 있는 �
     assert.equal(form.checkMarkers("글 속 [사진 9] 언급", 1), null);
 });
 
+test("수정할 글의 블록은 본문 글자와 [사진 N]·[원본 N] 줄로 바뀐다", () => {
+    const draft = form.modifyDraft([
+        { kind: "text", text: "첫 줄\n둘째 줄" },
+        { kind: "photo", index: 1, url: "/media?src=a" },
+        { kind: "html", index: 2, preview: "굵은 블록" },
+        { kind: "photo", index: 3, url: null },
+        { kind: "text", text: "끝" },
+        { kind: "photo" },
+        null
+    ]);
+    assert.equal(draft.body, "첫 줄\n둘째 줄\n[사진 1]\n[원본 1]\n[사진 2]\n끝");
+    assert.equal(JSON.stringify(draft.photos), JSON.stringify([{ keep: 1, url: "/media?src=a" }, { keep: 3, url: "" }]));
+    assert.equal(JSON.stringify(draft.originals), JSON.stringify([{ index: 2, preview: "굵은 블록" }]));
+});
+
+test("[원본 N] 줄도 사진 줄과 따로 번호를 맞추고 확인한다", () => {
+    const text = "[사진 1]\n[원본 1]\n[원본 2]";
+    assert.equal(form.renumberMarkers(text, { 1: 0, 2: 1 }, "원본"), "[사진 1]\n[원본 1]");
+    assert.equal(form.renumberMarkers(text, { 1: 0 }), "[원본 1]\n[원본 2]");
+    assert.equal(form.checkMarkers(text, 2, "원본"), null);
+    assert.match(form.checkMarkers(text, 1, "원본"), /\[원본 2\]에 맞는 원본이 없어요/);
+    assert.match(form.checkMarkers("[원본 1]\n[원본 1]", 1, "원본"), /두 번/);
+});
+
+test("표시 번호는 사진과 원본 모두 1~2자리만 인정하고 세 자리는 글자로 둔다", () => {
+    const text = "[사진 001]\n[원본 001]";
+    assert.equal(form.renumberMarkers(text, { 1: 2 }), text);
+    assert.equal(form.renumberMarkers(text, { 1: 2 }, "원본"), text);
+    assert.equal(form.checkMarkers(text, 1), null);
+    assert.equal(form.checkMarkers(text, 1, "원본"), null);
+    // 앞의 0은 지금처럼 사진 1을 뜻한다.
+    assert.equal(form.checkMarkers("[사진 01]\n[원본 01]", 1), null);
+    assert.equal(form.checkMarkers("[사진 01]\n[원본 01]", 1, "원본"), null);
+});
+
 test("사진 순서는 범위 안에서만 옮긴다", () => {
     assert.equal(JSON.stringify(form.moveItem([1, 2, 3], 0, 1)), JSON.stringify([2, 1, 3]));
     assert.equal(JSON.stringify(form.moveItem([1, 2, 3], 2, 1)), JSON.stringify([1, 3, 2]));

@@ -4,10 +4,24 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
+const { createHash } = require('node:crypto');
+
+const snapshot = {
+  subject: '원래 제목',
+  memo: [
+    {memo_block_0:'&lt;div&gt;첫 &amp;amp; 줄&lt;br&gt;둘째&lt;/div&gt;'},
+    {memo_block_1:'&lt;b&gt;굵은&lt;/b&gt; 블록'},
+    {memo_block_2:'&lt;div&gt;&lt;img src=&quot;https://dcimg1.dcinside.com/viewimage.php?id=1&amp;amp;no=2&quot;&gt;&lt;/div&gt;'},
+  ],
+  file: [],
+};
+// Independent fixture: explicit sorted keys, rather than calling the worker's canonicalizer.
+const fingerprint = createHash('sha256').update(JSON.stringify({file:[],memo:snapshot.memo,subject:snapshot.subject})).digest('hex');
 
 // A local package double makes accidental network access impossible.
 const fakeLibrary = `
 import { appendFileSync } from 'node:fs';
+export const decodeHtml = value => value.replace(/&(lt|gt|amp|quot|apos|nbsp);/g, (_, key) => ({lt:'<',gt:'>',amp:'&',quot:'"',apos:"'",nbsp:' '})[key]);
 const trace = operation => appendFileSync(process.env.WORKER_TEST_TRACE, operation + '\\n');
 export class DCInside {
   constructor(options) {
@@ -19,6 +33,26 @@ export class DCInside {
       importCredentials: value => { this.credentials = value; },
     };
     this.articles = {
+      delete: async (gallery, no) => {
+        trace('delete');
+        if (this.session?.type !== 'anonymous') throw new Error('Wrong session');
+        if (this.session.password !== 'private-password') throw Object.assign(new Error('x'), {name:'ApiError',cause:'비밀번호 오류'});
+        if (gallery === 'throttle') {
+          this.credentials.appIdIssuedAt = Date.now();
+          throw Object.assign(new Error('x'), {name:'ApiError',cause:'잠시후 다시 이용해주세요.'});
+        }
+        return {result:'true',gallery,no};
+      },
+      modifyInfo: async (gallery, no) => {
+        trace('modifyInfo');
+        if (this.session?.type !== 'anonymous') throw new Error('Wrong session');
+        if (this.session.password !== 'private-password') throw Object.assign(new Error('x'), {name:'ApiError',cause:'비밀번호 오류'});
+        if (gallery === 'failure') throw new Error('snapshot transport');
+        const info = ${JSON.stringify(snapshot)};
+        if (['secret','poll','movie','aiImg'].includes(gallery)) info[gallery] = gallery === 'secret' ? true : [{}];
+        if (gallery === 'pinned') info.fix = 'true';
+        return {...info, headid:3, head_text:[{no:0,name:'일반',level:0},{no:3,name:'기록',level:9}], auto_del_time:'24'};
+      },
       list: async options => {
         if (options.page !== 1) throw new Error('Wrong page');
         if (options.gallery === 'failure') throw Object.assign(new Error('failure'), {name:'ApiError',cause:'권한 오류'});
@@ -32,6 +66,14 @@ export class DCInside {
         await new Promise(resolve => setTimeout(resolve, 5));
         if (this.session !== session) throw new Error('Session race');
         if (session.type !== 'anonymous' || session.password !== 'private-password') throw new Error('Wrong session');
+        if (options.articleNo) {
+          if (options.subject === 'captcha') throw Object.assign(new Error('x'), {name:'CaptchaRequiredError',cause:'보안 코드 입력'});
+          if (options.subject === 'unknown') throw new Error('private-password');
+          const content = await Promise.all(options.content.map(async block => block?.type === 'image'
+            ? {type:'image', name:block.file.name, bytes:Array.from(new Uint8Array(await block.file.arrayBuffer()))} : block));
+          return {result:'true', articleNo:options.articleNo, content, deleteFiles:options.deleteFiles,
+            autoDeleteTime:options.autoDeleteTime, head:options.headText, captcha:options.captcha, fix:options.fix};
+        }
         if (!options.validateOnly) throw new Error('Expected validateOnly');
         if (options.subject === 'images') {
           const blocks = [];
@@ -64,6 +106,12 @@ export class DCInside {
       downvote: async () => { if (this.session !== null) throw new Error('Leaked session'); return {result:'true',direction:'down'}; },
     };
     this.comments = {
+      delete: async (gallery, no, commentNo) => {
+        trace('comment_delete');
+        if (this.session?.type !== 'anonymous') throw new Error('Wrong session');
+        if (this.session.password !== 'private-password') throw Object.assign(new Error('x'), {name:'ApiError',cause:'비밀번호가 틀립니다.'});
+        return {result:'true', gallery, no, commentNo};
+      },
       write: async (gallery, no, content, options) => {
         trace('comment');
         const session = this.session;
@@ -276,4 +324,123 @@ test('invalid comments are rejected before any DC call', () => {
   result.replies.slice(0, 5).forEach(reply => assert.deepEqual(reply.error, { name:'WorkerError', cause:'', status:null, sent:false }));
   assert.equal(result.replies[5].ok, false);
   assert(!result.trace.includes('comment') && !result.trace.includes('anonymous'));
+});
+
+const mutation = (op, extra = {}) => ({op, gallery:'programming', no:7, session:write('').session, ...extra});
+const modify = (extra = {}) => mutation('modify', {subject:'수정 제목', fingerprint, blocks:[{keep:1},{text:'새 본문'}], ...extra});
+
+test('delete and comment_delete use anonymous passwords and clear sessions on success and rejection', () => {
+  const bad = {...write('').session, password:'wrong'};
+  const result = run([
+    mutation('delete'), mutation('comment_delete',{comment_no:45}),
+    mutation('delete',{session:bad}), mutation('comment_delete',{comment_no:45,session:bad}),
+    {op:'upvote',gallery:'programming',no:7},
+  ]);
+  assert.deepEqual(result.replies[0].data, {result:'true',gallery:'programming',no:7});
+  assert.deepEqual(result.replies[1].data, {result:'true',gallery:'programming',no:7,commentNo:45});
+  assert.equal(result.replies[2].error.cause, '비밀번호 오류');
+  assert.equal(result.replies[3].error.cause, '비밀번호가 틀립니다.');
+  assert.equal(result.replies[4].ok, true);
+});
+
+test('modify_info decodes ordered memo blocks, computes fingerprint, and refuses unsupported content', () => {
+  const result = run([
+    mutation('modify_info'),
+    ...['secret','poll','movie','aiImg'].map(gallery => mutation('modify_info',{gallery})),
+    mutation('modify_info',{session:{...write('').session,password:'wrong'}}),
+    {op:'upvote',gallery:'programming',no:7},
+  ]);
+  assert.deepEqual(result.replies[0].data, {
+    result:true, subject:snapshot.subject, head_id:3, head_name:'기록', fingerprint, editable:true, reason:null,
+    blocks:[
+      {kind:'text',text:'첫 & 줄\n둘째'},
+      {kind:'html',index:1,preview:'굵은 블록'},
+      {kind:'photo',index:2,url:'https://dcimg1.dcinside.com/viewimage.php?id=1&no=2'},
+    ],
+  });
+  assert.deepEqual(result.replies.slice(1,5).map(reply => [reply.data.editable,reply.data.reason]),
+    [[false,'secret'],[false,'poll'],[false,'movie'],[false,'ai_image']]);
+  assert.equal(result.replies[5].error.cause, '비밀번호 오류');
+  assert.equal(result.replies[6].ok, true);
+});
+
+test('modify re-fetches original HTML, preserves options, and never accepts HTML from a client', () => {
+  const result = run([
+    modify({head:{no:3,name:'일반'},captcha:{key:'a'.repeat(16),code:'ab'}}),
+    modify({blocks:[{keep:1,html:'<script>bad</script>'}]}),
+    {op:'upvote',gallery:'programming',no:7},
+  ]);
+  assert.deepEqual(result.replies[0].data, {result:'true',articleNo:7,
+    content:[{type:'html',html:'<b>굵은</b> 블록'},'새 본문'],deleteFiles:[],autoDeleteTime:'24',
+    head:{no:3,name:'일반'},captcha:{key:'a'.repeat(16),code:'ab'}});
+  assert.equal(result.replies[1].error.sent, false);
+  assert.deepEqual(result.trace, ['anonymous','appId','modifyInfo','write','appId']);
+  assert.equal(result.replies[2].ok, true);
+});
+
+test('modify rejects stale fingerprints, forbidden content and nonexistent keeps without a write', () => {  const result = run([
+    modify({fingerprint:'0'.repeat(64)}), modify({gallery:'poll'}),
+    modify({blocks:[{keep:99}]}), modify({gallery:'failure'}),
+    {op:'upvote',gallery:'programming',no:7},
+  ]);
+  result.replies.slice(0,2).forEach(reply => assert.deepEqual(reply.error,
+    {name:'WorkerError',cause:'stale',status:null,sent:false}));
+  result.replies.slice(2,4).forEach(reply => assert.equal(reply.error.sent,false));
+  assert(!result.trace.includes('write'));
+  assert.equal(result.replies[4].ok, true);
+});
+
+test('modify preserves the pinned setting from the fresh snapshot', () => {
+  const result = run([modify({gallery:'pinned'}), modify()]);
+  assert.equal(result.replies[0].data.fix, true);
+  // A non-pinned snapshot omits fix entirely rather than sending false.
+  assert.equal(result.replies[1].data.fix, undefined);
+});
+
+test('all mutation inputs are validated before any DC call', () => {
+  const requests = ['delete','comment_delete','modify_info','modify'].flatMap(op => [
+    mutation(op,{gallery:'../x'}), mutation(op,{no:0}),
+    mutation(op,{session:{type:'login'}}),
+    mutation(op,{session:{...write('').session,password:'x'}}),
+  ]);
+  requests.push(mutation('comment_delete',{comment_no:0}),
+    modify({fingerprint:'x'}), modify({subject:''}), modify({blocks:[]}),
+    modify({blocks:[{keep:1},{keep:1}]}), modify({blocks:[{keep:-1}]}),
+    modify({blocks:[{image:0}]}), modify({blocks:[{text:'x',keep:0}]}),
+    modify({captcha:{key:'bad',code:'x'}}), modify({head:{no:'3',name:'x'}}));
+  const result = run(requests);
+  result.replies.forEach(reply => assert.equal(reply.error.sent,false));
+  assert.deepEqual(result.trace, []);
+});
+
+test('modify uses each upload once in block order and cleans its session after send failure', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(),'dc-modify-test-'));
+  try {
+    const image = {path:path.join(directory,'image.png'),name:'image.png',type:'image/png'};
+    const bytes = [137,80,78,71,13,10,26,10];
+    fs.writeFileSync(image.path,Buffer.from(bytes));
+    const result = run([
+      modify({images:[image],blocks:[{image:0},{keep:1},{text:'끝'}]}),
+      modify({images:[image],blocks:[{image:0},{image:0}]}),
+      modify({images:[image],blocks:[{keep:1}]}),
+      modify({subject:'captcha'}), modify({subject:'unknown'}),
+      {op:'upvote',gallery:'programming',no:7},
+    ]);
+    assert.deepEqual(result.replies[0].data.content,
+      [{type:'image',name:'image.png',bytes},{type:'html',html:'<b>굵은</b> 블록'},'끝']);
+    result.replies.slice(1,3).forEach(reply => assert.equal(reply.error.sent,false));
+    assert.equal(result.replies[3].error.name,'CaptchaRequiredError');
+    assert.equal(result.replies[4].error.name,'WorkerError');
+    assert.equal(result.replies[4].error.sent,undefined);
+    assert.equal(result.replies[5].ok,true);
+  } finally {
+    fs.rmSync(directory,{recursive:true,force:true});
+  }
+});
+
+// 새 app_id가 자리 잡기 전의 이 거절은 디시가 받지 않은 것이라 기존 글쓰기처럼 한 번만 다시 보낸다.
+test('a fresh app-ID throttle rejection is retried exactly once', () => {
+  const result = run([mutation('delete',{gallery:'throttle'})]);
+  assert.equal(result.replies[0].error.cause,'잠시후 다시 이용해주세요.');
+  assert.equal(result.trace.filter(item => item === 'delete').length,2);
 });

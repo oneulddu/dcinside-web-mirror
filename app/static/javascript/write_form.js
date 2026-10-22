@@ -65,8 +65,35 @@
         return copy;
     }
 
-    function markerText(number) {
-        return "[사진 " + number + "]";
+    // label: "사진" 또는 수정 화면의 "원본"(사진이 아닌 원래 블록). 서버(dc_write.MODIFY_MARKER)와 같은 규칙.
+    function markerText(number, label) {
+        return "[" + (label || "사진") + " " + number + "]";
+    }
+
+    function markerPattern(label) {
+        return label && label !== "사진" ? new RegExp("^[ \\t]*\\[" + label + " ?([0-9]{1,2})\\][ \\t]*$") : MARKER_LINE;
+    }
+
+    // 수정할 글의 블록을 본문 글자와 사진·원본 목록으로 바꾼다. 사진과 원본은 본문에 표시 줄로 남는다.
+    function modifyDraft(blocks) {
+        var lines = [];
+        var photos = [];
+        var originals = [];
+        (blocks || []).forEach(function (block) {
+            if (!block || typeof block !== "object") {
+                return;
+            }
+            if (block.kind === "text" && typeof block.text === "string") {
+                lines.push(block.text);
+            } else if (block.kind === "photo" && Number.isInteger(block.index)) {
+                photos.push({ keep: block.index, url: typeof block.url === "string" ? block.url : "" });
+                lines.push(markerText(photos.length, "사진"));
+            } else if (block.kind === "html" && Number.isInteger(block.index)) {
+                originals.push({ index: block.index, preview: typeof block.preview === "string" ? block.preview : "" });
+                lines.push(markerText(originals.length, "원본"));
+            }
+        });
+        return { body: lines.join("\n"), photos: photos, originals: originals };
     }
 
     // 커서 자리에 사진 줄을 넣는다. 표시 줄은 항상 한 줄을 혼자 차지하고, 커서는 그 다음 줄로 간다.
@@ -75,40 +102,45 @@
         var after = text.slice(end);
         var lead = before && before.charAt(before.length - 1) !== "\n" ? "\n" : "";
         var tail = after.charAt(0) === "\n" ? "" : "\n";
-        var inserted = lead + numbers.map(markerText).join("\n") + tail;
+        var inserted = lead + numbers.map(function (number) {
+            return markerText(number);
+        }).join("\n") + tail;
         var caret = before.length + inserted.length + (tail ? 0 : 1);
         return { text: before + inserted + after, caret: Math.min(caret, (before + inserted + after).length) };
     }
 
     // 사진 순서가 바뀌거나 빠지면 본문의 표시 번호를 맞춘다. map 값이 0이면 그 줄을 지운다.
-    function renumberMarkers(text, map) {
+    function renumberMarkers(text, map, label) {
+        var pattern = markerPattern(label);
         var out = [];
         String(text).split("\n").forEach(function (line) {
-            var match = MARKER_LINE.exec(line);
+            var match = pattern.exec(line);
             var number = match ? Number(match[1]) : 0;
             if (!match || !Object.prototype.hasOwnProperty.call(map, number)) {
                 out.push(line);
             } else if (map[number]) {
-                out.push(markerText(map[number]));
+                out.push(markerText(map[number], label));
             }
         });
         return out.join("\n");
     }
 
-    function checkMarkers(text, count) {
+    function checkMarkers(text, count, label) {
+        var pattern = markerPattern(label);
+        var name = label || "사진";
         var seen = {};
         var lines = String(text).split("\n");
         for (var i = 0; i < lines.length; i += 1) {
-            var match = MARKER_LINE.exec(lines[i]);
+            var match = pattern.exec(lines[i]);
             if (!match) {
                 continue;
             }
             var number = Number(match[1]);
             if (number < 1 || number > count) {
-                return "본문의 " + markerText(number) + "에 맞는 사진이 없어요. 그 줄을 지우거나 사진을 넣어 주세요.";
+                return "본문의 " + markerText(number, label) + "에 맞는 " + name + "이 없어요. 그 줄을 지우거나 " + name + "을 넣어 주세요.";
             }
             if (seen[number]) {
-                return "본문에 " + markerText(number) + " 줄이 두 번 있어요. 하나만 남겨 주세요.";
+                return "본문에 " + markerText(number, label) + " 줄이 두 번 있어요. 하나만 남겨 주세요.";
             }
             seen[number] = true;
         }
@@ -190,6 +222,7 @@
         insertMarkers: insertMarkers,
         renumberMarkers: renumberMarkers,
         checkMarkers: checkMarkers,
+        modifyDraft: modifyDraft,
         readIdentity: readIdentity,
         writeIdentity: writeIdentity,
         IDENTITY_KEY: IDENTITY_KEY
@@ -225,8 +258,14 @@
         imageInput: document.getElementById("write-images-input"),
         imageList: document.getElementById("write-image-list"),
         imageCount: document.getElementById("write-images-count"),
-        imageLive: document.getElementById("write-images-live")
+        imageLive: document.getElementById("write-images-live"),
+        editor: document.getElementById("write-editor"),
+        modifyLoad: document.getElementById("write-modify-load"),
+        originals: document.getElementById("write-originals"),
+        originalList: document.getElementById("write-original-list")
     };
+    // 수정 화면이면 원래 글 번호. 비밀번호로 원래 글을 불러온 뒤에만 수정을 보낼 수 있다.
+    var modifyPid = form.getAttribute("data-modify-pid") || "";
     var limits = {
         subject_max: Number(form.getAttribute("data-subject-max")) || 40,
         body_max: Number(form.getAttribute("data-body-max")) || 10000,
@@ -241,7 +280,10 @@
     var kind = form.getAttribute("data-kind") || "";
     var backUrl = post.safePath(form.getAttribute("data-back-url")) || "/";
     var captcha = post.createCaptcha("write-captcha", "article", board);
-    var state = { sending: false, retryUntil: 0, retryTimer: null, leaving: false, initial: "", images: [], caret: null };
+    // images: 새 사진({file, url})과 수정할 글의 원래 사진({keep, url})이 본문 순서대로 섞인다.
+    // originals: 수정할 글의 사진이 아닌 원래 블록({index, preview}).
+    var state = { sending: false, retryUntil: 0, retryTimer: null, leaving: false, initial: "", images: [], caret: null,
+        originals: [], fingerprint: "", originalHead: null, loaded: !modifyPid };
     var nextImageId = 1;
     var storage = null;
     try {
@@ -251,7 +293,13 @@
     }
 
     function draftSnapshot() {
-        return [el.subject.value, el.body.value, headValue(), state.images.length].join("\u0000");
+        return [el.subject.value, el.body.value, headValue(), state.images.length, state.originals.length].join("\u0000");
+    }
+
+    function newImages() {
+        return state.images.filter(function (item) {
+            return item.file;
+        });
     }
 
     function isDirty() {
@@ -330,11 +378,16 @@
     function setBusy(busy) {
         state.sending = busy;
         form.setAttribute("aria-busy", busy ? "true" : "false");
-        [el.nickname, el.password, el.subject, el.body, el.rememberNickname, el.rememberPassword, el.imageAdd].forEach(function (input) {
+        [el.nickname, el.password, el.subject, el.body, el.rememberNickname, el.rememberPassword, el.imageAdd, el.modifyLoad].forEach(function (input) {
             if (input) {
                 input.disabled = busy;
             }
         });
+        if (el.originalList) {
+            Array.prototype.forEach.call(el.originalList.querySelectorAll("button"), function (control) {
+                control.disabled = busy;
+            });
+        }
         headInputs().forEach(function (input) {
             input.disabled = busy;
         });
@@ -351,14 +404,15 @@
 
     function syncSubmit() {
         var waiting = state.retryUntil > Date.now();
-        el.submit.disabled = state.sending || waiting;
-        el.submit.textContent = state.sending ? "등록 중…" : "등록";
+        var verb = modifyPid ? "수정" : "등록";
+        el.submit.disabled = state.sending || waiting || !state.loaded;
+        el.submit.textContent = state.sending ? verb + " 중…" : verb;
     }
 
     function startRetryWait(seconds, message) {
         clearTimeout(state.retryTimer);
         state.retryUntil = Date.now() + seconds * 1000;
-        setStatus((message ? message + " " : "") + seconds + "초 뒤에 다시 등록할 수 있어요.", "error");
+        setStatus((message ? message + " " : "") + seconds + "초 뒤에 다시 " + (state.loaded ? (modifyPid ? "수정할" : "등록할") : "불러올") + " 수 있어요.", "error");
         syncSubmit();
         state.retryTimer = setTimeout(function () {
             state.retryUntil = 0;
@@ -413,6 +467,10 @@
     function headPayload() {
         var input = checkedHead();
         if (!input || !input.value) {
+            // 말머리 목록에 없는 원래 말머리도 "말머리 없음"으로 조용히 바꾸지 않는다.
+            if (!el.head && modifyPid && state.originalHead) {
+                return { head_id: state.originalHead.id, head_name: state.originalHead.name };
+            }
             return {};
         }
         return { head_id: input.value, head_name: input.getAttribute("data-head-name") || "" };
@@ -455,17 +513,27 @@
             var frame = document.createElement("div");
             frame.className = "write-image-frame";
             var img = document.createElement("img");
-            img.alt = (index + 1) + "번째 사진";
+            var kept = !item.file;
+            img.alt = (index + 1) + "번째 사진" + (kept ? "(원래 사진)" : "");
             img.decoding = "async";
             // 브라우저가 열지 못하는 파일은 디시에서도 사진이 아니므로 미리 알려 준다.
+            // 원래 사진은 디시에 이미 있으니 미리보기만 못 하는 것으로 보고 등록을 막지 않는다.
             img.addEventListener("error", function () {
+                if (kept) {
+                    li.classList.add("is-unpreviewable");
+                    return;
+                }
                 if (!item.broken) {
                     item.broken = true;
                     showImageNote(brokenMessage());
                 }
                 li.classList.add("is-broken");
             });
-            img.src = item.url;
+            if (item.url) {
+                img.src = item.url;
+            } else {
+                li.classList.add("is-unpreviewable");
+            }
             if (item.broken) {
                 li.classList.add("is-broken");
             }
@@ -473,11 +541,11 @@
             badge.className = "write-image-order";
             badge.setAttribute("aria-hidden", "true");
             badge.textContent = String(index + 1);
-            frame.title = formatSize(item.file.size);
+            frame.title = kept ? "원래 글의 사진" : formatSize(item.file.size);
             frame.appendChild(img);
             var broken = document.createElement("span");
             broken.className = "write-image-broken";
-            broken.textContent = "열 수 없는 파일";
+            broken.textContent = kept ? "원래 사진" : "열 수 없는 파일";
             frame.appendChild(broken);
             frame.appendChild(badge);
             var remove = imageButton("is-remove", (index + 1) + "번째 사진 빼기", "M7 7l10 10M17 7L7 17", function () {
@@ -502,10 +570,12 @@
             el.imageList.appendChild(li);
         });
         el.imageList.hidden = count === 0;
+        // 한 번에 올리는 새 사진만 장수 제한에 센다. 원래 사진은 디시에 이미 있다.
+        var uploads = newImages().length;
         if (el.imageCount) {
-            el.imageCount.textContent = count + "/" + limits.image_max_count;
+            el.imageCount.textContent = uploads + "/" + limits.image_max_count;
         }
-        el.imageAdd.disabled = state.sending || count >= limits.image_max_count;
+        el.imageAdd.disabled = state.sending || uploads >= limits.image_max_count;
         if (focus) {
             var target = null;
             var row = el.imageList.querySelector('[data-image-id="' + focus.id + '"]');
@@ -589,7 +659,7 @@
         if (state.sending || !files || !files.length) {
             return;
         }
-        var current = state.images.map(function (item) {
+        var current = newImages().map(function (item) {
             return item.file;
         });
         var picked = pickImages(current, files, limits);
@@ -625,7 +695,9 @@
         if (index < 0 || state.sending) {
             return;
         }
-        URL.revokeObjectURL(state.images[index].url);
+        if (state.images[index].file) {
+            URL.revokeObjectURL(state.images[index].url);
+        }
         var map = {};
         map[index + 1] = 0;
         for (var number = index + 2; number <= state.images.length; number += 1) {
@@ -655,6 +727,149 @@
         showImageNote(brokenMessage());
         renderImages({ id: id, button: delta < 0 ? "is-before" : "is-after" });
         announce("사진을 " + (index + delta + 1) + "번째로 옮겼어요.");
+    }
+
+    // 수정할 글에서 고칠 수 없는 원래 블록. 본문의 [원본 N] 줄로 자리를 정하고, 빼면 글에서 사라진다.
+    function renderOriginals(focusIndex) {
+        if (!el.originals || !el.originalList) {
+            return;
+        }
+        el.originalList.textContent = "";
+        state.originals.forEach(function (item, index) {
+            var li = document.createElement("li");
+            li.className = "write-original";
+            var label = document.createElement("span");
+            label.className = "write-original-label";
+            label.textContent = markerText(index + 1, "원본");
+            var preview = document.createElement("span");
+            preview.className = "write-original-preview";
+            preview.textContent = item.preview || "글자가 없는 블록";
+            var remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "comment-reply-btn write-original-remove";
+            remove.textContent = "빼기";
+            remove.setAttribute("aria-label", markerText(index + 1, "원본") + " 빼기");
+            remove.disabled = state.sending;
+            remove.addEventListener("click", function () {
+                removeOriginal(index);
+            });
+            li.appendChild(label);
+            li.appendChild(preview);
+            li.appendChild(remove);
+            el.originalList.appendChild(li);
+        });
+        el.originals.hidden = state.originals.length === 0;
+        if (focusIndex !== undefined) {
+            var buttons = el.originalList.querySelectorAll(".write-original-remove");
+            var target = buttons[Math.min(focusIndex, buttons.length - 1)];
+            (target || el.body).focus();
+        }
+    }
+
+    function removeOriginal(index) {
+        if (state.sending || index < 0 || index >= state.originals.length) {
+            return;
+        }
+        var map = {};
+        map[index + 1] = 0;
+        for (var number = index + 2; number <= state.originals.length; number += 1) {
+            map[number] = number - 1;
+        }
+        state.originals.splice(index, 1);
+        setBody(renumberMarkers(el.body.value, map, "원본"), state.caret ? state.caret.start : el.body.value.length);
+        renderOriginals(index);
+        announce("원본 " + (index + 1) + "을 뺐어요.");
+    }
+
+    function selectHead(headId) {
+        var inputs = headInputs();
+        var match = inputs.filter(function (input) {
+            return headId !== null && headId !== undefined && input.value === String(headId);
+        })[0];
+        if (match) {
+            match.checked = true;
+        } else if (el.head && state.originalHead) {
+            // 지금 갤러리에 없는 원래 말머리도 화면에 보이게 두고, 필요하면 다른 것을 고를 수 있게 한다.
+            var label = document.createElement("label");
+            label.className = "write-head";
+            var input = document.createElement("input");
+            input.type = "radio";
+            input.name = "head_id";
+            input.value = state.originalHead.id;
+            input.setAttribute("data-head-name", state.originalHead.name);
+            input.checked = true;
+            var text = document.createElement("span");
+            text.textContent = state.originalHead.name;
+            label.appendChild(input);
+            label.appendChild(text);
+            el.head.appendChild(label);
+        } else if (inputs.length) {
+            inputs[0].checked = true;
+        }
+    }
+
+    function fillModify(payload) {
+        var draft = modifyDraft(payload.blocks);
+        state.fingerprint = String(payload.fingerprint || "");
+        state.images = draft.photos.map(function (photo) {
+            return { id: nextImageId++, keep: photo.keep, url: photo.url, checked: true, broken: false };
+        });
+        state.originals = draft.originals;
+        el.subject.value = typeof payload.subject === "string" ? payload.subject : "";
+        state.originalHead = typeof payload.head_id === "number"
+            ? { id: String(payload.head_id), name: typeof payload.head_name === "string" ? payload.head_name : "" }
+            : null;
+        selectHead(payload.head_id);
+        state.loaded = true;
+        el.password.readOnly = true;
+        if (el.modifyLoad) {
+            el.modifyLoad.hidden = true;
+        }
+        el.editor.hidden = false;
+        setBody(draft.body, draft.body.length);
+        updateCount(el.subject, el.subjectCount, limits.subject_max);
+        renderImages(null);
+        renderOriginals();
+        state.initial = draftSnapshot();
+        setStatus("원래 글을 불러왔어요. 고친 뒤 수정을 눌러 주세요.", "success");
+        syncSubmit();
+        el.subject.focus();
+    }
+
+    function loadModify() {
+        if (state.sending || state.loaded || state.retryUntil > Date.now()) {
+            return;
+        }
+        clearErrors();
+        var password = el.password.value;
+        if (charLength(password) < limits.password_min || charLength(password) > limits.password_max || !password.trim()) {
+            showFieldError("password", "글 비밀번호는 " + limits.password_min + "~" + limits.password_max + "자로 입력해 주세요.");
+            return;
+        }
+        var body = { board: board, pid: modifyPid, password: password };
+        if (kind) {
+            body.kind = kind;
+        }
+        setBusy(true);
+        setStatus("원래 글을 불러오고 있어요.");
+        post.postJson("/write/modify/load", body, 45000).then(function (result) {
+            setBusy(false);
+            var outcome = post.interpret(result.status, result.payload);
+            var payload = outcome.payload || {};
+            var message = typeof payload.message === "string" ? payload.message : "";
+            if (outcome.action === "success") {
+                fillModify(payload);
+            } else if (outcome.action === "invalid") {
+                showFieldError(String(payload.field || ""), message || "입력한 내용을 확인해 주세요.");
+            } else if (outcome.action === "retry") {
+                startRetryWait(outcome.seconds, message);
+            } else if (outcome.action === "locked") {
+                setStatus("이 브라우저의 글쓰기가 잠겨 있어요.", "error", { href: post.unlockUrl(), text: "새 탭에서 잠금 해제", newTab: true });
+            } else {
+                // 불러오기는 글을 바꾸지 않으므로 다시 눌러도 된다.
+                setStatus(message || "원래 글을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.", "error");
+            }
+        });
     }
 
     function imageFiles(list) {
@@ -710,6 +925,11 @@
 
     function submit(event) {
         event.preventDefault();
+        if (!state.loaded) {
+            // 수정 화면에서 비밀번호 칸의 Enter는 원래 글 불러오기다.
+            loadModify();
+            return;
+        }
         if (state.sending || state.retryUntil > Date.now()) {
             return;
         }
@@ -737,7 +957,7 @@
             password: el.password.value,
             subject: el.subject.value,
             body: el.body.value,
-            imageCount: state.images.length,
+            imageCount: state.images.length + state.originals.length,
             captcha: answer
         }, limits);
         if (problem) {
@@ -748,7 +968,8 @@
             showFieldError("images", brokenMessage());
             return;
         }
-        var markerProblem = state.images.length ? checkMarkers(el.body.value, state.images.length) : null;
+        var markerProblem = (state.images.length ? checkMarkers(el.body.value, state.images.length) : null)
+            || (state.originals.length ? checkMarkers(el.body.value, state.originals.length, "원본") : null);
         if (markerProblem) {
             showFieldError("body", markerProblem);
             return;
@@ -768,14 +989,27 @@
             body.captcha_key = answer.key;
             body.captcha_code = answer.code;
         }
+        var uploads = newImages();
+        if (modifyPid) {
+            // 사진 순서: 원래 사진은 원래 블록 번호, 새 사진은 올리는 순서로 가리킨다.
+            var nextUpload = 0;
+            body.pid = modifyPid;
+            body.fingerprint = state.fingerprint;
+            body.photos = state.images.map(function (item) {
+                return item.file ? { "new": nextUpload++ } : { keep: item.keep };
+            });
+            body.originals = state.originals.map(function (item) {
+                return item.index;
+            });
+        }
         setBusy(true);
         var request;
-        if (state.images.length) {
+        if (uploads.length) {
             // 본문에서 [사진 N] 줄을 지운 사진은 글 맨 아래에 붙인다.
             body.image_position = "bottom";
             var data = new FormData();
             data.append("payload", JSON.stringify(body));
-            state.images.forEach(function (item) {
+            uploads.forEach(function (item) {
                 data.append("images", item.file, item.file.name || "image");
             });
             setStatus("사진을 올리고 있어요. 0%");
@@ -784,11 +1018,11 @@
                     setStatus("사진을 올리고 있어요. " + Math.min(99, Math.floor(ratio * 100)) + "%");
                 },
                 onUploaded: function () {
-                    setStatus("등록하고 있어요.");
+                    setStatus(modifyPid ? "수정하고 있어요." : "등록하고 있어요.");
                 }
             });
         } else {
-            setStatus("등록하고 있어요.");
+            setStatus(modifyPid ? "수정하고 있어요." : "등록하고 있어요.");
             request = post.postJson("/write", body, 45000);
         }
         request.then(function (result) {
@@ -796,7 +1030,9 @@
             renderImages(null);
             if (result.notSent) {
                 // 서버가 요청을 다 받지 못했으니 보이는 캡챠 답도 아직 쓰이지 않았다.
-                setStatus("사진을 다 올리기 전에 연결이 끊겼어요. 글은 등록되지 않았어요. 다시 등록해 주세요.", "error");
+                setStatus(modifyPid
+                    ? "사진을 다 올리기 전에 연결이 끊겼어요. 글은 바뀌지 않았어요. 다시 수정해 주세요."
+                    : "사진을 다 올리기 전에 연결이 끊겼어요. 글은 등록되지 않았어요. 다시 등록해 주세요.", "error");
                 return;
             }
             handle(post.interpret(result.status, result.payload));
@@ -813,7 +1049,7 @@
         if (outcome.action === "success") {
             saveIdentity();
             state.leaving = true;
-            setStatus("등록했어요. 목록으로 이동해요.", "success");
+            setStatus(modifyPid ? "수정했어요. 글로 이동해요." : "등록했어요. 목록으로 이동해요.", "success");
             root.location.assign(post.safePath(payload.read_url) || post.safePath(payload.board_url) || backUrl);
             return;
         }
@@ -829,7 +1065,7 @@
             return;
         }
         if (outcome.action === "rejected") {
-            setStatus(message || "디시에서 글을 받지 않았어요.", "error");
+            setStatus(message || (modifyPid ? "디시가 글 수정을 받지 않았어요." : "디시에서 글을 받지 않았어요."), "error");
             return;
         }
         if (outcome.action === "retry") {
@@ -845,10 +1081,24 @@
             return;
         }
         // 응답을 받지 못했으면 글이 올라갔는지 알 수 없으므로 다시 보내라고 하지 않는다.
+        if (modifyPid) {
+            setStatus(message || "수정 여부를 확인하지 못했어요. 글을 먼저 확인해 주세요.", "error", { href: backUrl, text: "글 보기", newTab: true });
+            return;
+        }
         setStatus("등록 여부를 확인하지 못했어요. 목록에서 먼저 확인해 주세요.", "error", { href: backUrl, text: "목록 보기", newTab: true });
     }
 
     restoreIdentity();
+    if (modifyPid) {
+        // 수정할 때 보내는 닉네임이 글쓴이 이름이 될 수 있어서 원래 이름을 먼저 채운다.
+        var author = form.getAttribute("data-modify-author") || "";
+        if (author) {
+            el.nickname.value = author;
+        }
+        if (el.modifyLoad) {
+            el.modifyLoad.addEventListener("click", loadModify);
+        }
+    }
     // 고른 말머리가 이 갤러리에 없으면 "말머리 없음"을 고른 상태로 둔다.
     if (el.head && !checkedHead() && headInputs().length) {
         headInputs()[0].checked = true;

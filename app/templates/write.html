@@ -9,8 +9,13 @@
 <section class="write-shell">
     <div class="board-head page-head write-head-copy">
         <div class="page-head-copy">
+            {% if modify_pid %}
+            <h1 id="write-title">글 수정</h1>
+            <p class="board-head-note">글을 쓸 때 정한 비밀번호로 원래 글을 불러와요.</p>
+            {% else %}
             <h1 id="write-title">글쓰기</h1>
             <p class="board-head-note">유동닉으로 올라가요. 서버 IP로 기록돼요.</p>
+            {% endif %}
         </div>
     </div>
     {% if write_blocked|default(false) %}
@@ -18,10 +23,11 @@
     {% endif %}
 
     <form class="write-form" id="write-form" method="post" action="/write" novalidate aria-labelledby="write-title"
-          data-board="{{ board }}" data-kind="{{ kind or '' }}" data-back-url="{{ board_back_url }}"
+          data-board="{{ board }}" data-kind="{{ kind or '' }}" data-back-url="{{ read_url(board, modify_pid, kind=kind) if modify_pid else board_back_url }}"
           data-subject-max="{{ limits.subject_max }}" data-body-max="{{ limits.body_max }}"
           data-nickname-max="{{ limits.nickname_max }}" data-password-min="{{ limits.password_min }}" data-password-max="{{ limits.password_max }}"
-          data-image-max-count="{{ limits.image_max_count }}" data-image-max-bytes="{{ limits.image_max_bytes }}" data-image-total-bytes="{{ limits.image_total_bytes }}">
+          data-image-max-count="{{ limits.image_max_count }}" data-image-max-bytes="{{ limits.image_max_bytes }}" data-image-total-bytes="{{ limits.image_total_bytes }}"
+          {%- if modify_pid %} data-modify-pid="{{ modify_pid }}" data-modify-author="{{ request.args.get('author', '')[:limits.nickname_max] }}"{% endif %}>
         <fieldset class="write-author">
             <legend class="sr-only">작성자</legend>
             <div class="write-identity">
@@ -36,7 +42,12 @@
                     <p class="write-error" id="write-password-error" hidden></p>
                 </div>
             </div>
+            {% if modify_pid %}
+            <p class="write-hint" id="write-password-hint">글을 쓸 때 정한 비밀번호예요. 닉네임을 바꾸면 글쓴이 이름도 바뀔 수 있어요.</p>
+            <button class="write-cancel write-modify-load" id="write-modify-load" type="button">글 불러오기</button>
+            {% else %}
             <p class="write-hint" id="write-password-hint">비밀번호는 글을 지울 때 써요. {{ limits.password_min }}~{{ limits.password_max }}자</p>
+            {% endif %}
             <div class="write-remember">
                 <span class="write-remember-label" id="write-remember-label">이 브라우저에 기억</span>
                 <div class="write-remember-options" role="group" aria-labelledby="write-remember-label">
@@ -54,6 +65,7 @@
             <p class="write-hint write-remember-status" id="write-remember-status" role="status" aria-live="polite"></p>
         </fieldset>
 
+        <div class="write-editor" id="write-editor"{% if modify_pid %} hidden{% endif %}>
         {% set heads = (head_categories or [])|selectattr("head_id", "ne", none)|list %}
         {% if heads %}
         <div class="write-heads" id="write-head" role="radiogroup" aria-label="말머리">
@@ -76,6 +88,12 @@
             <textarea class="write-body" id="write-body" name="body" rows="9" placeholder="내용을 입력하세요" aria-describedby="write-body-error" required></textarea>
             <p class="write-error write-doc-error" id="write-body-error" hidden></p>
 
+            {% if modify_pid %}
+            <div class="write-originals" id="write-originals" hidden>
+                <p class="write-hint">사진이 아닌 원래 블록(링크·꾸민 글 등)은 고칠 수 없어서 <strong>[원본 N]</strong> 줄로 보여요. 줄을 옮기면 자리가 바뀌고, 빼면 글에서 사라져요.</p>
+                <ol class="write-original-list" id="write-original-list" aria-label="원래 블록"></ol>
+            </div>
+            {% endif %}
             <div class="write-images" id="write-images" role="group" aria-label="사진" aria-describedby="write-images-hint write-images-error">
                 <ol class="write-image-list" id="write-image-list" aria-label="넣은 사진" hidden></ol>
                 <input id="write-images-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple hidden>
@@ -92,15 +110,16 @@
                 <span class="write-count write-body-count" id="write-body-count" aria-hidden="true">0/{{ limits.body_max }}</span>
             </div>
         </div>
-        <p class="write-hint write-images-hint" id="write-images-hint">사진을 넣으면 커서 자리에 <strong>[사진 1]</strong> 같은 줄이 생기고, 그 줄이 있는 곳에 사진이 들어가요. 줄을 옮기면 사진 자리도 바뀌어요. 사진은 {{ limits.image_max_count }}장, 한 장 {{ limits.image_max_bytes // 1048576 }}MB까지예요.</p>
+        <p class="write-hint write-images-hint" id="write-images-hint">사진을 넣으면 커서 자리에 <strong>[사진 1]</strong> 같은 줄이 생기고, 그 줄이 있는 곳에 사진이 들어가요. 줄을 옮기면 사진 자리도 바뀌어요. {% if modify_pid %}원래 사진도 같은 줄로 보여요. 새 사진은{% else %}사진은{% endif %} {{ limits.image_max_count }}장, 한 장 {{ limits.image_max_bytes // 1048576 }}MB까지예요.</p>
+        </div>
 
         {{ captcha_box("write-captcha", "디시가 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 다시 등록해 주세요.") }}
 
         <p class="write-status" id="write-status" role="status" aria-live="polite"></p>
 
         <div class="write-actions">
-            <a class="write-cancel" id="write-back" href="{{ board_back_url }}">취소</a>
-            <button class="write-submit" id="write-submit" type="submit" disabled>등록</button>
+            <a class="write-cancel" id="write-back" href="{{ read_url(board, modify_pid, kind=kind) if modify_pid else board_back_url }}">취소</a>
+            <button class="write-submit" id="write-submit" type="submit" disabled>{{ "수정" if modify_pid else "등록" }}</button>
         </div>
         <noscript><p class="write-hint">글쓰기는 자바스크립트를 켜야 쓸 수 있어요.</p></noscript>
     </form>

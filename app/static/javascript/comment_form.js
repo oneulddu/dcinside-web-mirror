@@ -231,7 +231,8 @@
     }
 
     // 디시에 올라간 댓글을 새로 읽지 않고 목록에 바로 붙인다. 시각은 '방금'으로 둔다.
-    function appendComment(content, nickname) {
+    // commentId: 디시가 돌려준 새 댓글 번호. 있을 때만 바로 지울 수 있게 한다.
+    function appendComment(content, nickname, commentId) {
         if (!list) {
             return;
         }
@@ -241,6 +242,9 @@
         }
         var item = document.createElement("li");
         item.className = "comment-item is-new" + (state.parent ? " is-reply" : "");
+        if (commentId) {
+            item.setAttribute("data-comment-id", commentId);
+        }
         if (state.parent) {
             item.setAttribute("data-parent-id", state.parent.id);
             var mark = document.createElement("span");
@@ -258,11 +262,22 @@
         meta.className = "comment-meta";
         var author = document.createElement("span");
         author.className = "author-text";
+        author.setAttribute("data-author", nickname);
         author.textContent = nickname;
         var time = document.createElement("span");
         time.textContent = "방금";
         meta.appendChild(author);
         meta.appendChild(time);
+        if (commentId) {
+            var remove = document.createElement("button");
+            remove.className = "comment-reply-btn";
+            remove.type = "button";
+            remove.setAttribute("data-comment-delete", "");
+            remove.setAttribute("aria-haspopup", "dialog");
+            remove.setAttribute("aria-label", "내 댓글 삭제");
+            remove.textContent = "삭제";
+            meta.appendChild(remove);
+        }
         item.appendChild(main);
         item.appendChild(meta);
         if (state.parent && state.parent.item.isConnected) {
@@ -294,7 +309,8 @@
             captcha.hide();
         }
         if (outcome.action === "success") {
-            appendComment(sent.content, sent.nickname);
+            var newId = /^[1-9][0-9]{0,14}$/.test(String(payload.comment_id)) ? String(payload.comment_id) : "";
+            appendComment(sent.content, sent.nickname, newId);
             el.content.value = "";
             updateLength();
             setParent(null);
@@ -433,6 +449,12 @@
             setParent(item);
         });
     }
+    // 답글을 달던 댓글이 지워지면 입력칸을 원래 자리로 돌린다.
+    document.addEventListener("mirror:comment-removed", function (event) {
+        if (state.parent && event.detail && state.parent.item === event.detail.item) {
+            setParent(null);
+        }
+    });
     restoreIdentity();
     el.passwordHint.hidden = !el.rememberPassword.checked;
     updateLength();

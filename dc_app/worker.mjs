@@ -1,8 +1,8 @@
-import { DCInside, captchaUrl } from '@green-1052/dcinside.js';
+import { DCInside, captchaUrl, decodeHtml } from '@green-1052/dcinside.js';
 import { readFile, mkdir, open, rename, unlink, chmod } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { pcVote, pcVoteCaptcha } from './pc_vote.mjs';
 
@@ -67,7 +67,7 @@ async function captchaImage(input) {
   return { content_type: contentType, base64: Buffer.concat(chunks).toString('base64') };
 }
 
-async function writeContent(input) {
+async function uploadedImages(input) {
   const images = [];
   try {
     const uploads = input.images ?? [];
@@ -84,6 +84,11 @@ async function writeContent(input) {
     // No DC calls have happened. Do not expose filesystem paths or original errors.
     throw Object.assign(new Error('Invalid image'), { sent: false });
   }
+  return images;
+}
+
+async function writeContent(input) {
+  const images = await uploadedImages(input);
   // 서버가 본문의 [사진 N] 줄로 나눈 순서. 사진마다 정확히 한 번씩 써야 한다.
   if (input.blocks !== undefined) {
     const used = new Set();
@@ -112,6 +117,108 @@ function commentArgs(input) {
   const { comment_no: commentNo, user_id: userId } = input.parent;
   if (!Number.isSafeInteger(commentNo) || commentNo < 1 || typeof userId !== 'string' || !/^[A-Za-z0-9_]{0,40}$/.test(userId)) throw invalid();
   return { content: input.content, parent: { comment_no: commentNo, user_id: userId } };
+}
+
+const invalidMutation = () => Object.assign(new Error('Invalid request'), { sent: false });
+const staleMutation = () => Object.assign(new Error('Stale snapshot'), { name: 'WorkerError', cause: 'stale', sent: false });
+
+function mutationArgs(input) {
+  const session = input.session;
+  if (typeof input.gallery !== 'string' || !/^[A-Za-z0-9_]{1,80}$/.test(input.gallery)
+      || !Number.isSafeInteger(input.no) || input.no < 1
+      || session?.type !== 'anonymous' || typeof session.nickname !== 'string'
+      || !session.nickname.trim() || [...session.nickname].length > 20
+      || typeof session.password !== 'string' || !session.password.trim()
+      || [...session.password].length < 2 || [...session.password].length > 20) throw invalidMutation();
+  if (input.op === 'comment_delete' && (!Number.isSafeInteger(input.comment_no) || input.comment_no < 1)) throw invalidMutation();
+  if (input.op !== 'modify') return;
+  if (typeof input.subject !== 'string' || !input.subject.trim() || [...input.subject].length > 40
+      || typeof input.fingerprint !== 'string' || !/^[a-f0-9]{64}$/i.test(input.fingerprint)
+      || !Array.isArray(input.blocks) || !input.blocks.length) throw invalidMutation();
+  if (input.head != null && (!Number.isSafeInteger(input.head.no) || input.head.no < 0
+      || typeof input.head.name !== 'string' || input.head.name.length > 80)) throw invalidMutation();
+  if (input.captcha != null && (typeof input.captcha.key !== 'string' || !/^[a-f0-9]{16}$/.test(input.captcha.key)
+      || typeof input.captcha.code !== 'string' || !input.captcha.code.trim() || [...input.captcha.code].length > 10)) throw invalidMutation();
+  const keeps = new Set(), images = new Set();
+  let textLength = 0;
+  for (const block of input.blocks) {
+    if (!block || typeof block !== 'object' || Object.keys(block).length !== 1) throw invalidMutation();
+    if (typeof block.text === 'string' && block.text.trim()) textLength += [...block.text].length;
+    else if (Number.isSafeInteger(block.keep) && block.keep >= 0 && !keeps.has(block.keep)) keeps.add(block.keep);
+    else if (Number.isSafeInteger(block.image) && block.image >= 0 && !images.has(block.image)) images.add(block.image);
+    else throw invalidMutation();
+  }
+  const uploads = input.images ?? [];
+  if (textLength > 10000 || !Array.isArray(uploads) || images.size !== uploads.length
+      || [...images].some(index => index >= uploads.length)) throw invalidMutation();
+}
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
+  return value;
+}
+
+function isPhotoBlock(html, files) {
+  // Provisional: the live photo memo/file sample decides this format.
+  return /<img\b/i.test(html);
+}
+
+function deletedFiles(info, removedPhotoBlockIndexes) {
+  // Provisional: the live photo memo/file sample decides file IDs. Never guess deletions.
+  return [];
+}
+
+function modifySnapshot(info) {
+  const memo = info.memo ?? [], files = info.file ?? [];
+  const htmlBlocks = memo.flatMap(block => Object.entries(block))
+    .filter(([key]) => /^memo_block_\d+$/.test(key))
+    .sort(([a], [b]) => Number(a.slice(11)) - Number(b.slice(11)))
+    .map(([, value]) => decodeHtml(value));
+  const blocks = htmlBlocks.map((html, index) => {
+    if (isPhotoBlock(html, files)) {
+      const src = /<img\b[^>]*?\s+src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(html);
+      return { kind: 'photo', index, url: src ? decodeHtml(src[1] ?? src[2] ?? src[3]) : null };
+    }
+    const plain = /^<div>((?:[^<]|<br\s*\/?>)*)<\/div>$/i.exec(html);
+    if (plain) return { kind: 'text', text: decodeHtml(plain[1].replace(/<br\s*\/?>/gi, '\n')) };
+    return { kind: 'html', index, preview: [...decodeHtml(html.replace(/<[^>]*>/g, ''))].slice(0, 80).join('') };
+  });
+  const reason = [true, 'true', 1, '1'].includes(info.secret) ? 'secret'
+    : info.poll?.length ? 'poll' : info.movie?.length ? 'movie' : info.aiImg?.length ? 'ai_image' : null;
+  const fingerprint = createHash('sha256').update(JSON.stringify(canonical({ subject: info.subject ?? '', memo, file: files }))).digest('hex');
+  const head = Array.isArray(info.head_text) ? info.head_text.find(entry => entry?.no === info.headid) : null;
+  return {
+    htmlBlocks,
+    normalized: { result: true, subject: info.subject ?? '', head_id: Number.isInteger(info.headid) ? info.headid : null,
+      head_name: typeof head?.name === 'string' ? head.name : null,
+      blocks, fingerprint, editable: reason === null, reason },
+  };
+}
+
+async function modifyContent(input, images) {
+  let info;
+  try {
+    info = await dc.articles.modifyInfo(input.gallery, input.no);
+  } catch (error) {
+    // Loading the snapshot is not a mutation, even if its transport fails.
+    error.sent = false;
+    throw error;
+  }
+  if ([false, 'false'].includes(info.result)) return { rejection: info };
+  const snapshot = modifySnapshot(info);
+  if (!snapshot.normalized.editable || snapshot.normalized.fingerprint !== input.fingerprint.toLowerCase()) throw staleMutation();
+  const kept = new Set();
+  const content = input.blocks.map(block => {
+    if (block.text !== undefined) return block.text;
+    if (block.image !== undefined) return images[block.image];
+    if (block.keep >= snapshot.htmlBlocks.length) throw invalidMutation();
+    kept.add(block.keep);
+    return { type: 'html', html: snapshot.htmlBlocks[block.keep] };
+  });
+  const removed = snapshot.normalized.blocks.filter(block => block.kind === 'photo' && !kept.has(block.index)).map(block => block.index);
+  return { content, deleteFiles: deletedFiles(info, removed), autoDeleteTime: info.auto_del_time,
+    ...([true, 'true', 1, '1'].includes(info.fix) ? { fix: true } : {}) };
 }
 
 async function handle(input) {
@@ -147,21 +254,50 @@ async function handle(input) {
       await saveCredentials().catch(() => process.stderr.write('DC credential save failed\n'));
     }
   }
-  if (!['write', 'comment', 'upvote', 'downvote'].includes(input.op)) throw new Error('Unsupported operation');
+  const mutation = ['delete', 'comment_delete', 'modify_info', 'modify'].includes(input.op);
+  if (!['write', 'comment', 'upvote', 'downvote'].includes(input.op) && !mutation) throw new Error('Unsupported operation');
   // 보안 문자 답이 있는 추천·비추천은 그 문자를 받은 PC 쿠키 세션으로 보낸다.
   if (input.pc !== undefined && ['upvote', 'downvote'].includes(input.op)) return pcVote(input, input.op === 'upvote' ? 'U' : 'D');
   let content;
   let comment;
-  if (input.op === 'write' || input.op === 'comment') {
+  let images;
+  if (mutation) {
+    mutationArgs(input);
+    if (input.op === 'modify') images = await uploadedImages(input);
+  }
+  if (input.op === 'write' || input.op === 'comment' || mutation) {
     // Future login support belongs here; never reuse the preceding writer's session.
     if (input.session?.type !== 'anonymous') throw new Error('Unsupported session');
     if (input.op === 'write') content = await writeContent(input);
-    else comment = commentArgs(input);
+    else if (input.op === 'comment') comment = commentArgs(input);
     dc.useAnonymous(input.session.nickname, input.session.password);
   }
   try {
-    await settled();
+    try {
+      await settled();
+    } catch (error) {
+      error.sent = false;
+      throw error;
+    }
+    if (input.op === 'modify_info') {
+      const info = await dc.articles.modifyInfo(input.gallery, input.no);
+      return [false, 'false'].includes(info.result) ? info : modifySnapshot(info).normalized;
+    }
+    if (input.op === 'modify') {
+      let prepared;
+      try {
+        prepared = await modifyContent(input, images);
+      } catch (error) {
+        error.sent = false;
+        throw error;
+      }
+      if (prepared.rejection) return prepared.rejection;
+      return await dc.articles.write({ gallery: input.gallery, articleNo: input.no, subject: input.subject,
+        headText: input.head, captcha: input.captcha, ...prepared });
+    }
     const send = () => {
+      if (input.op === 'delete') return dc.articles.delete(input.gallery, input.no);
+      if (input.op === 'comment_delete') return dc.comments.delete(input.gallery, input.no, input.comment_no);
       if (input.op === 'write') return dc.articles.write({ gallery: input.gallery, subject: input.subject, content, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true });
       if (input.op === 'comment') return dc.comments.write(input.gallery, input.no, comment.content, { parent: comment.parent, captcha: input.captcha ?? undefined });
       return input.op === 'upvote'
@@ -171,6 +307,7 @@ async function handle(input) {
     try {
       return await send();
     } catch (error) {
+      // 새로 받은 app_id가 자리 잡기 전이면 디시가 이 문구로 거절한다. 받지 않은 요청이라 한 번만 다시 보낸다.
       const issued = dc.auth.exportCredentials()?.appIdIssuedAt;
       if (error.cause !== '잠시후 다시 이용해주세요.' || !issued || Date.now() - issued >= 20000) throw error;
       await sleep(3000);
@@ -196,7 +333,8 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
     const vpnBan = apiError && raw && typeof raw === 'object' && [true, 'true', 1, '1'].includes(raw.carrier_vpn_ban);
     result = { id: input?.id ?? null, ok: false, error: {
       name: apiError || error.name === 'HTTPError' ? error.name : 'WorkerError',
-      cause: apiError && typeof error.cause === 'string' ? error.cause : '',
+      cause: apiError && typeof error.cause === 'string' ? error.cause
+        : error.name === 'WorkerError' && error.sent === false && error.cause === 'stale' ? 'stale' : '',
       status: Number.isInteger(error.status) ? error.status : null,
       ...(vpnBan ? { vpn_ban: true } : {}),
       ...(error.sent === false ? { sent: false } : {}),

@@ -85,6 +85,18 @@ pm2 logs dc-mirror
   `{comment_no, user_id}`; `user_id` is the parent's author code only when it is a DC id (`[A-Za-z0-9_]{1,40}`),
   otherwise empty (anonymous/IP parents). Comment captchas use the app image `/write/captcha?kind=comment`.
   Successful comments have a 10s process-wide interval; an unknown result after sending is `uncertain`.
+- DC anonymous delete/modify reuse the same gate, same-origin check and `perform`: `POST /read/delete` (board, kind, pid,
+  password → `board_url`), `POST /read/comment/delete` (+ `comment_id`), `POST /write/modify/load` (worker `modify_info`,
+  app API `gall_modify.php` with the password; returns subject, head_id, ordered blocks `text`/`photo`/`html`, and a sha256
+  `fingerprint` of subject+memo+file), and `POST /write` with `pid` + `fingerprint` + `photos` (`{"keep": memo index}` |
+  `{"new": upload index}`) + `originals` (kept html-block indexes). Body lines `[사진 N]`/`[원본 N]` place photos[N-1] /
+  originals[N-1] (`dc_write.photo_blocks(..., photos=, originals=)`); unmarked ones go to the end. The worker `modify` op
+  re-fetches the snapshot, refuses (`stale`, not sent) when the fingerprint differs, and re-sends kept blocks only from that
+  fresh snapshot, never client HTML. Secret posts and posts with polls, videos or AI images are `not_editable` because the
+  app write would drop them. Live facts (gallery `prewriting`): memo values are entity-escaped HTML; wrong passwords answer
+  `비밀번호 오류` (modify/post delete) and `비밀번호가 틀립니다.` (comment delete); comment writes return the new number in
+  `data`, surfaced as `comment_id`. `isPhotoBlock`/`deletedFiles` in `dc_app/worker.mjs` hold the photo-memo format.
+  Intervals: modify 20s, delete/comment_delete 3s, modify_info 1s.
 - `app/services/dc_write.py` serializes a lazy Node worker with a shared 40s deadline (55s for image writes) including both lock waits and discards
   it on crash/timeout/protocol failure without replaying a potentially completed write.
   Write/vote transport failures after sending return HTTP 503 with code `uncertain`; failures before sending return `unavailable`.
@@ -216,6 +228,18 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   disconnect before upload completes is reported as not sent; bare 413 becomes an images error). Files the browser
   cannot preview block submission until removed. For browser QA, run the dev server with
   `MIRROR_DC_APP_NODE=/usr/bin/false` so an unstubbed submit can never reach DC.
+- DC delete/modify frontend (only when `write_enabled`): guest authors (author code like `1.234`, `is_guest` macro in
+  `read.html`) get "수정 · 삭제" in the article meta and "삭제" on comments with numeric ids. `static/javascript/post_manage.js`
+  opens one password `<dialog>` (prefilled from the saved identity) for post and comment deletes; post success navigates to
+  `board_url`, comment success removes the `li` (or leaves "삭제된 댓글이에요." when replies exist), decrements the count and
+  dispatches `mirror:comment-removed`, which `comment_form.js` uses to drop a stale reply target. New comments get their
+  `comment_id` and a delete button. `/write?pid=N&author=` is the modify mode of `write.html`/`write_form.js`: the editor stays
+  hidden until "글 불러오기" loads the post with the password (then read-only); kept photos share the photo strip with new
+  uploads (only new ones count toward the 10-photo limit and are uploaded), non-photo blocks are `[원본 N]` lines with a
+  removable list, and the nickname is prefilled from `author` because modify sends it as the post name.
+- `static/javascript/comment_search.js`: read-page comment filter over already loaded comments (body, nickname, author code;
+  no DC request). Hidden rows get `is-search-hidden`; counts skip spam/user-filtered rows; `data-partial` (from
+  `comments_complete`) adds a note that only loaded comments were searched. Esc clears.
 - `static/javascript/user_filter.js`: DC-only block filter (nickname, author code, guest IP, title word) stored in
   `localStorage["mirror_user_filter_v1"]`. It reads `data-author`/`data-author-code` from the `author_text` macro
   and the related loader; keep those attributes when changing author markup. Poker pages do not load it.

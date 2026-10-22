@@ -1064,7 +1064,7 @@ def read():
     served_stale = bool(data.pop("_served_stale", False))
     gallery_name = _clean_gallery_name(data.get("gallery_name")) or gallery_name
     gallery_display_name = _gallery_display_name(board, gallery_name)
-    data.pop("_comments_complete", None)
+    comments_complete = bool(data.pop("_comments_complete", False))
     data.pop("_comment_prefer_mobile", None)
     _format_read_payload_times(data, comments)
     embedded_related_posts = _serialize_related_posts(data.pop("related_posts", []))
@@ -1081,6 +1081,7 @@ def read():
             title="%s - 숨터" % (data.get("title") or board),
             data=data,
             comments=comments,
+            comments_complete=comments_complete,
             images=images,
             board=board,
             pid=pid,
@@ -1207,7 +1208,8 @@ def dc_write_context():
 
 
 _WRITE_ENDPOINTS = {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote",
-                    "main.read_vote_options", "main.read_comment"}
+                    "main.read_vote_options", "main.read_comment", "main.read_delete",
+                    "main.read_comment_delete", "main.write_modify_load"}
 
 
 @bp.before_request
@@ -1307,20 +1309,43 @@ def _write_result(op, board, kind, **payload):
         "ok" if result["ok"] else result["code"], result.get("reason", "-"), (cause or "-")[:200])
     if result["ok"]:
         data = result.pop("data")
-        if op == "write":
+        if op in ("write", "modify", "delete"):
             params = {"board": board}
             _add_kind_param(params, kind)
             result["board_url"] = url_for("main.board", **params, refresh=1)
-            number = data.get("no")
+            number = payload["no"] if op == "modify" else data.get("no") if op == "write" else None
             if not isinstance(number, bool) and re.fullmatch(r"[1-9][0-9]*", str(number or "")):
                 result["read_url"] = read_url(board, int(number), kind=kind)
+            if op == "delete":
+                result["message"] = "글을 삭제했어요."
         elif op == "comment":
             result["message"] = "댓글을 달았어요."
+            number = data.get("data")
+            if not isinstance(number, bool) and re.fullmatch(r"[1-9][0-9]*", str(number or "")):
+                result["comment_id"] = int(number)
+        elif op == "comment_delete":
+            result["message"] = "댓글을 삭제했어요."
+        elif op == "modify_info":
+            if not data["editable"]:
+                reasons = {"secret": "비밀글", "poll": "투표가 있는 글", "movie": "동영상이 있는 글", "ai_image": "AI 이미지가 있는 글"}
+                result = {"ok": False, "code": "rejected", "reason": "not_editable",
+                          "message": f"{reasons.get(data.get('reason'), '이 글')}은 여기서 수정할 수 없어요."}
+            else:
+                blocks = []
+                for block in data["blocks"]:
+                    block = dict(block)
+                    if block["kind"] == "photo":
+                        src = normalize_media_url_shape(block.get("url"))
+                        block["url"] = url_for("main.media", src=src, board=board, pid=payload["no"], kind=kind) if src else None
+                    blocks.append(block)
+                result.update(subject=data["subject"], head_id=data["head_id"], head_name=data.get("head_name"),
+                              blocks=blocks, fingerprint=data["fingerprint"])
         else:
             result["message"] = "추천했어요." if op == "upvote" else "비추천했어요."
     elif op != "write" and result["code"] == "rejected" and "reason" not in result:
-        name = {"comment": "댓글", "upvote": "추천"}.get(op, "비추천")
-        result["message"] = f"디시가 {name}을 받지 않았어요." + (f" 디시 안내: {cause}" if cause else "")
+        name = {"comment": "댓글을", "upvote": "추천을", "downvote": "비추천을", "delete": "글 삭제를",
+                "comment_delete": "댓글 삭제를", "modify": "글 수정을", "modify_info": "수정할 글 불러오기를"}[op]
+        result["message"] = f"디시가 {name} 받지 않았어요." + (f" 디시 안내: {cause}" if cause else "")
     elif result["code"] == "captcha_required":
         key = secrets.token_hex(8)
         if op in ("upvote", "downvote") and _pc_gall_type(kind):
@@ -1328,7 +1353,8 @@ def _write_result(op, board, kind, **payload):
             image_url = url_for("main.write_captcha", kind="vote", board=board, key=key,
                                 pid=payload["no"], gallery_kind=kind or "")
         else:
-            captcha_kind = {"write": "article", "comment": "comment"}.get(op, "recommend")
+            captcha_kind = {"write": "article", "modify": "article", "modify_info": "article",
+                            "delete": "article", "comment": "comment", "comment_delete": "comment"}.get(op, "recommend")
             image_url = url_for("main.write_captcha", kind=captcha_kind, board=board, key=key)
         result["captcha"] = {"key": key, "image_url": image_url}
     response = jsonify(result)
@@ -1341,6 +1367,11 @@ def _write_result(op, board, kind, **payload):
 @bp.route("/write", methods=["GET", "POST"])
 def write():
     if request.method == "GET":
+        modify_context = {}
+        if "pid" in request.args:
+            if not re.fullmatch(r"[1-9][0-9]{0,14}", request.args["pid"]):
+                abort(400)
+            modify_context["modify_pid"] = int(request.args["pid"])
         board = _normalize_board_id(request.args.get("board"))
         kind = _normalize_gallery_kind(request.args.get("kind"))
         selected = _normalize_head_id(request.args.get("head_id"))
@@ -1367,7 +1398,7 @@ def write():
                                gallery_name=_gallery_display_name(board, pagination.get("gallery_name")),
                                head_categories=categories, selected_head_id=selected,
                                write_blocked=write_blocked,
-                               board_back_url=board_url(board, kind=kind), limits=dc_write.LIMITS)
+                               board_back_url=board_url(board, kind=kind), limits=dc_write.LIMITS, **modify_context)
     files = []
     if request.mimetype == "multipart/form-data":
         try:
@@ -1384,6 +1415,11 @@ def write():
         data = _write_json_request()
     if data is None:
         return _write_invalid("board", "JSON 형식으로 요청해 주세요.")
+    modifying = "pid" in data
+    if modifying and (isinstance(data["pid"], bool) or not re.fullmatch(r"[1-9][0-9]{0,14}", str(data["pid"] or ""))):
+        return _write_invalid("board", "올바른 글 번호를 선택해 주세요.")
+    if modifying and (not isinstance(data.get("fingerprint"), str) or not re.fullmatch(r"[0-9a-fA-F]{64}", data["fingerprint"])):
+        return _write_invalid("body", "수정 화면을 다시 열어 주세요.")
     image_position = data.get("image_position", "top")
     if image_position not in ("top", "bottom"):
         return _write_invalid("images", "사진 위치는 위 또는 아래로 선택해 주세요.")
@@ -1395,12 +1431,12 @@ def write():
         return _write_invalid("board", "올바른 갤러리를 선택해 주세요.")
     values = {}
     rules = [("subject", 1, 40, "제목은 1~40자로 입력해 주세요."),
-             ("body", 0 if files else 1, 10000,
-              "본문은 10000자까지 입력해 주세요." if files else "본문은 1~10000자로 입력해 주세요."),
+             ("body", 0 if files or modifying else 1, 10000,
+              "본문은 10000자까지 입력해 주세요." if files or modifying else "본문은 1~10000자로 입력해 주세요."),
              ("nickname", 1, 20, "닉네임은 1~20자로 입력해 주세요."),
              ("password", 2, 20, "비밀번호는 2~20자로 입력해 주세요.")]
     for field, minimum, maximum, message in rules:
-        value = data.get(field)
+        value = data.get(field, "ㅇㅇ" if modifying and field == "nickname" else None)
         if not isinstance(value, str):
             return _write_invalid(field, message)
         if field in {"subject", "nickname"}:
@@ -1409,9 +1445,17 @@ def write():
             return _write_invalid(field, message)
         values[field] = value
     blocks = None
-    if files:
+    if files or modifying:
         try:
-            blocks = dc_write.photo_blocks(values["body"], len(files), image_position)
+            if modifying:
+                if not isinstance(data.get("photos", []), list) or not isinstance(data.get("originals", []), list):
+                    return _write_invalid("body", "사진과 원본 목록을 다시 확인해 주세요.")
+                blocks = dc_write.photo_blocks(values["body"], len(files), photos=data.get("photos", []),
+                                               originals=data.get("originals", []))
+                if not blocks:
+                    return _write_invalid("body", "본문이나 사진, 원본을 하나 이상 남겨 주세요.")
+            else:
+                blocks = dc_write.photo_blocks(values["body"], len(files), image_position)
         except dc_write.InvalidPhotoMarker as exc:
             return _write_invalid("body", str(exc))
     try:
@@ -1427,16 +1471,56 @@ def write():
         return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
     try:
         with dc_write.prepared_images(files) as images:
-            return _write_result("write", board, kind,
+            return _write_result("modify" if modifying else "write", board, kind,
                                  session={"type": "anonymous", "nickname": values["nickname"], "password": values["password"]},
                                  subject=values["subject"], body=values["body"],
                                  head={"no": int(head_id), "name": head_name} if head_id is not None else None,
                                  captcha=captcha, images=images, image_position=image_position,
+                                 **({"no": int(data["pid"]), "fingerprint": data["fingerprint"].lower()} if modifying else {}),
                                  **({"blocks": blocks} if blocks is not None else {}))
     except dc_write.InvalidImage as exc:
         return _write_invalid("images", str(exc))
     except dc_write.WorkerUnavailable:
         return jsonify(dc_write.unavailable()), 503
+
+
+def _anonymous_post_action(op):
+    data = _write_json_request()
+    if data is None:
+        return _write_invalid("board", "JSON 형식으로 요청해 주세요.")
+    try:
+        board, kind = _write_board(data)
+        pid = data.get("pid")
+        if isinstance(pid, bool) or not re.fullmatch(r"[1-9][0-9]{0,14}", str(pid or "")):
+            raise ValueError()
+    except (ValueError, BadRequest):
+        return _write_invalid("board", "올바른 갤러리와 글 번호를 선택해 주세요.")
+    password = data.get("password")
+    if not isinstance(password, str) or not password.strip() or not 2 <= len(password) <= 20:
+        return _write_invalid("password", "비밀번호는 2~20자로 입력해 주세요.")
+    extra = {}
+    if op == "comment_delete":
+        comment_id = data.get("comment_id")
+        if isinstance(comment_id, bool) or not re.fullmatch(r"[1-9][0-9]{0,14}", str(comment_id or "")):
+            return _write_invalid("comment_id", "삭제할 댓글을 다시 골라 주세요.")
+        extra["comment_no"] = int(comment_id)
+    return _write_result(op, board, kind, no=int(pid),
+                         session={"type": "anonymous", "nickname": "ㅇㅇ", "password": password}, **extra)
+
+
+@bp.route("/read/delete", methods=["POST"])
+def read_delete():
+    return _anonymous_post_action("delete")
+
+
+@bp.route("/read/comment/delete", methods=["POST"])
+def read_comment_delete():
+    return _anonymous_post_action("comment_delete")
+
+
+@bp.route("/write/modify/load", methods=["POST"])
+def write_modify_load():
+    return _anonymous_post_action("modify_info")
 
 
 @bp.route("/read/vote", methods=["POST"])

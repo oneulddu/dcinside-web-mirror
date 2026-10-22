@@ -51,13 +51,41 @@ class InvalidPhotoMarker(ValueError):
 
 # 본문 한 줄이 "[사진 N]"뿐이면 그 자리에 N번째 사진을 넣는다.
 PHOTO_MARKER = re.compile(r"^[ \t]*\[사진[ ]?([0-9]{1,2})\][ \t]*$")
+MODIFY_MARKER = re.compile(r"^[ \t]*\[(사진|원본)[ ]?([0-9]{1,2})\][ \t]*$")
 
 
-def photo_blocks(body, count, position="top"):
+def photo_blocks(body, count, position="top", *, photos=None, originals=None):
     """Split the body at photo markers into ordered text/image blocks.
 
     Photos without a marker keep the old top/bottom placement so older clients still work.
     """
+    modifying = photos is not None
+    if modifying:
+        originals = originals if originals is not None else []
+        if not isinstance(photos, list) or not isinstance(originals, list):
+            raise InvalidPhotoMarker("사진과 원본 목록을 다시 확인해 주세요.")
+        photo_entries, keeps, uploads = [], set(), set()
+        for photo in photos:
+            if not isinstance(photo, dict) or len(photo) != 1:
+                raise InvalidPhotoMarker("사진 목록을 다시 확인해 주세요.")
+            key = next(iter(photo))
+            index = photo[key]
+            if key not in ("keep", "new") or type(index) is not int or index < 0:
+                raise InvalidPhotoMarker("사진 목록을 다시 확인해 주세요.")
+            used_indexes = keeps if key == "keep" else uploads
+            if index in used_indexes:
+                raise InvalidPhotoMarker("같은 사진이나 원본을 두 번 넣을 수 없어요.")
+            used_indexes.add(index)
+            photo_entries.append({"keep" if key == "keep" else "image": index})
+        for index in originals:
+            if type(index) is not int or index < 0 or index in keeps:
+                raise InvalidPhotoMarker("원본 목록을 다시 확인해 주세요.")
+            keeps.add(index)
+        if uploads != set(range(count)):
+            raise InvalidPhotoMarker("새 사진 목록과 올린 파일이 맞지 않아요.")
+        entries = {"사진": photo_entries, "원본": [{"keep": index} for index in originals]}
+    else:
+        entries = {"사진": [{"image": index} for index in range(count)]}
     blocks, used, lines = [], set(), []
 
     def flush():
@@ -67,21 +95,21 @@ def photo_blocks(body, count, position="top"):
         lines.clear()
 
     for line in body.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        match = PHOTO_MARKER.match(line)
+        match = (MODIFY_MARKER if modifying else PHOTO_MARKER).match(line)
         if not match:
             lines.append(line)
             continue
-        number = int(match.group(1))
-        if not 1 <= number <= count:
-            raise InvalidPhotoMarker(f"본문의 [사진 {number}]에 맞는 사진이 없어요. 그 줄을 지우거나 사진을 넣어 주세요.")
-        if number in used:
-            raise InvalidPhotoMarker(f"본문에 [사진 {number}] 줄이 두 번 있어요. 하나만 남겨 주세요.")
-        used.add(number)
+        label, number = (match.group(1), int(match.group(2))) if modifying else ("사진", int(match.group(1)))
+        if not 1 <= number <= len(entries[label]):
+            raise InvalidPhotoMarker(f"본문의 [{label} {number}]에 맞는 {label}이 없어요. 그 줄을 지우거나 {label}을 넣어 주세요.")
+        if (label, number) in used:
+            raise InvalidPhotoMarker(f"본문에 [{label} {number}] 줄이 두 번 있어요. 하나만 남겨 주세요.")
+        used.add((label, number))
         flush()
-        blocks.append({"image": number - 1})
+        blocks.append(entries[label][number - 1])
     flush()
-    rest = [{"image": index} for index in range(count) if index + 1 not in used]
-    return rest + blocks if position == "top" else blocks + rest
+    rest = [entry for label, items in entries.items() for index, entry in enumerate(items) if (label, index + 1) not in used]
+    return rest + blocks if position == "top" and not modifying else blocks + rest
 
 
 def _image_format(data):
@@ -316,16 +344,19 @@ _action_lock = threading.Lock()
 SENDS = {
     "write": "디시에 보냈지만 결과를 확인하지 못했어요. 다시 보내기 전에 목록을 확인해 주세요.",
     "comment": "댓글을 보냈지만 결과를 확인하지 못했어요. 다시 쓰기 전에 글을 새로 열어 댓글을 확인해 주세요.",
+    "delete": "글 삭제 결과를 확인하지 못했어요. 다시 삭제하기 전에 목록을 확인해 주세요.",
+    "comment_delete": "댓글 삭제 결과를 확인하지 못했어요. 다시 삭제하기 전에 글을 새로 열어 댓글을 확인해 주세요.",
+    "modify": "글 수정 결과를 확인하지 못했어요. 다시 수정하기 전에 글을 새로 열어 확인해 주세요.",
     "upvote": "추천 결과를 확인하지 못했어요. 글을 새로 열어 확인해 주세요.",
     "downvote": "비추천 결과를 확인하지 못했어요. 글을 새로 열어 확인해 주세요.",
 }
 _last_success = {}
 # 성공한 뒤 같은 동작을 다시 보낼 수 있을 때까지 기다리는 시간(초).
-INTERVALS = {"write": 20, "comment": 10}
+INTERVALS = {"write": 20, "comment": 10, "modify": 20, "delete": 3, "comment_delete": 3, "modify_info": 1}
 
 
 def perform(op, **payload):
-    deadline = time.monotonic() + (55 if op == "write" and payload.get("images") else 40)
+    deadline = time.monotonic() + (55 if op in ("write", "modify") and payload.get("images") else 40)
     # The interval check and success timestamp must surround the serialized call.
     remaining = deadline - time.monotonic()
     if remaining <= 0 or not _action_lock.acquire(timeout=remaining):
@@ -355,6 +386,9 @@ def perform(op, **payload):
         cause = error.get("cause") if not result.get("ok") else data.get("cause")
         cause = cause if isinstance(cause, str) else ""
         name = error.get("name")
+        if op == "modify" and name == "WorkerError" and error.get("sent") is False and cause == "stale":
+            return {"ok": False, "code": "rejected", "reason": "stale",
+                    "message": "글이 그사이 바뀌었어요. 수정 화면을 다시 열어 주세요."}, 200
         if name == "WorkerError" and error.get("sent") is False:
             return unavailable(), 503
         if name == "CaptchaRequiredError" or (cause and re.search(r"captcha|보안\s?코드|자동\s?입력|코드가\s?설정된\s?갤러리", cause, re.I)):

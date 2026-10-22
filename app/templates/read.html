@@ -6,7 +6,12 @@
 {% block masthead_lead %}{{ back_link(board_url(board, recommend=recommend or 0, page=source_page or 1, kind=kind, search_type=search_type, search_keyword=search_keyword, search_pos=search_pos or '', head_id=head_id, gallery_name=gallery_name, refresh=true, notice=notice), label=gallery_display_name, extra_class="crumb-link") }}{% endblock %}
 
 {% block content %}
-<section class="read-shell" data-board-context data-board="{{ board }}" data-kind="{{ kind or '' }}" data-gallery-name="{{ gallery_name or '' }}">
+{#- 유동 작성자(식별 코드가 IP 앞자리 "1.234")만 비밀번호로 수정·삭제할 수 있다. 빈 값이면 아니다. -#}
+{% macro is_guest(item) -%}
+{%- set code = item.author_code if item.author_code is string else '' -%}
+{%- if code.count('.') == 1 and code.replace('.', '').isdigit() -%}1{%- endif -%}
+{%- endmacro %}
+<section class="read-shell" data-board-context data-board="{{ board }}" data-kind="{{ kind or '' }}" data-gallery-name="{{ gallery_name or '' }}" data-pid="{{ pid }}"{% if write_enabled|default(false) %} data-password-min="{{ write_limits.password_min }}" data-password-max="{{ write_limits.password_max }}"{% endif %}>
     <div class="article-head">
         <h1>{{ data.title }}</h1>
         <div class="article-meta">
@@ -15,6 +20,10 @@
             {% if data.view_count is number %}<span>조회 {{ number(data.view_count) }}</span>{% endif %}
             <span>추천 <span data-vote-meta="up">{{ number(data.voteup_count) }}</span></span>
             {% if data.votedown_count is number %}<span data-vote-meta-row="down">비추천 <span data-vote-meta="down">{{ number(data.votedown_count) }}</span></span>{% endif %}
+            {%- if write_enabled|default(false) and not notice and is_guest(data) %}
+            <a class="comment-reply-btn article-owner-action" href="{{ url_for('main.write', board=board, kind=kind or None, pid=pid, author=data.author or None) }}">수정</a>
+            <button class="comment-reply-btn article-owner-action" type="button" data-post-delete aria-haspopup="dialog">삭제</button>
+            {%- endif %}
         </div>
     </div>
 
@@ -54,7 +63,14 @@
 
     <section class="comment-shell" aria-labelledby="comment-title">
         <h2 id="comment-title">댓글 <span class="comment-count">{{ comments|length }}</span></h2>
-        <ul class="comment-list">
+        {% if comments %}
+        <div class="comment-search" role="search" aria-label="댓글 검색">
+            <label class="sr-only" for="comment-search-input">댓글에서 찾기</label>
+            <input class="write-input comment-search-input" id="comment-search-input" type="search" placeholder="댓글에서 찾기" autocomplete="off" enterkeyhint="search" aria-describedby="comment-search-status" aria-controls="comment-list" data-partial="{{ 'true' if comments_complete is sameas false else 'false' }}">
+            <p class="comment-search-status" id="comment-search-status" role="status" aria-live="polite"></p>
+        </div>
+        {% endif %}
+        <ul class="comment-list" id="comment-list">
             {% for comment in comments %}
             <li class="comment-item{% if comment.is_reply %} is-reply{% endif %}"{% if comment.id %} data-comment-id="{{ comment.id }}"{% endif %}{% if comment.parent_id %} data-parent-id="{{ comment.parent_id }}"{% endif %}>
                 {% if comment.is_reply %}
@@ -77,6 +93,9 @@
                     {{ post_time(comment.time) }}
                     {%- if write_enabled|default(false) and not comment.is_reply and comment.id is string and comment.id.isdigit() %}
                     <button class="comment-reply-btn" type="button" data-comment-reply aria-expanded="false" aria-controls="comment-form" aria-label="{{ comment.author }}의 댓글에 답글 달기">답글</button>
+                    {%- endif %}
+                    {%- if write_enabled|default(false) and comment.id is string and comment.id.isdigit() and is_guest(comment) %}
+                    <button class="comment-reply-btn" type="button" data-comment-delete aria-haspopup="dialog" aria-label="{{ comment.author }}의 댓글 삭제">삭제</button>
                     {%- endif %}
                 </div>
             </li>
@@ -189,9 +208,11 @@
 <script src="{{ static_url('javascript/comment_spam_filter.js') }}"></script>
 <script src="{{ static_url('javascript/back_to_top.js') }}"></script>
 <script src="{{ static_url('javascript/image_viewer.js') }}"></script>
+<script src="{{ static_url('javascript/comment_search.js') }}"></script>
 {% if write_enabled|default(false) %}
 <script src="{{ static_url('javascript/dc_post_client.js') }}"></script>
 <script src="{{ static_url('javascript/vote.js') }}"></script>
 <script src="{{ static_url('javascript/comment_form.js') }}"></script>
+<script src="{{ static_url('javascript/post_manage.js') }}"></script>
 {% endif %}
 {% endblock %}

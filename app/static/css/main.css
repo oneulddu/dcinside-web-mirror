@@ -4296,6 +4296,71 @@ html[data-theme="dark"] .board-updates-btn {
     box-shadow: inset 0 0 0 var(--rule-bold) var(--fg);
 }
 
+/* 수정 화면의 원래 사진 중 미리보기를 못 받은 것. 디시에는 있으니 오류로 칠하지 않는다. */
+.write-image.is-unpreviewable img {
+    visibility: hidden;
+}
+
+.write-image.is-unpreviewable .write-image-broken {
+    display: flex;
+}
+
+.write-modify-load {
+    align-self: flex-start;
+    margin-top: var(--space-2);
+}
+
+.write-modify-load[hidden] {
+    display: none;
+}
+
+.write-originals {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3) 0;
+    border-top: var(--rule) solid var(--line);
+}
+
+.write-originals[hidden] {
+    display: none;
+}
+
+.write-original-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.write-original {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    min-height: 40px;
+    padding: var(--space-2) 0;
+    font: var(--type-label);
+    font-weight: 500;
+}
+
+.write-original-label {
+    flex: none;
+    color: var(--fg);
+    font-weight: 600;
+}
+
+.write-original-preview {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.write-original-remove {
+    flex: none;
+}
+
 /* 본문 아래 도구 줄: 사진 넣기, 사진 위치, 글자 수. */
 .write-toolbar {
     display: flex;
@@ -4686,6 +4751,54 @@ html[data-theme="dark"] .board-updates-btn {
 .comment-reply-slot {
     list-style: none;
     padding: 4px 0 14px 26px;
+}
+
+/* ===== 댓글 찾기 · 글/댓글 삭제 ===== */
+
+.comment-search {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2) 0 var(--space-1);
+}
+
+.comment-search-input::-webkit-search-cancel-button {
+    cursor: pointer;
+}
+
+.comment-search-status {
+    margin: 0;
+    color: var(--muted);
+    font: var(--type-label);
+    font-weight: 500;
+    text-wrap: pretty;
+}
+
+.comment-search-status:empty {
+    display: none;
+}
+
+.comment-list > .comment-item.is-search-hidden {
+    display: none;
+}
+
+.comment-deleted {
+    color: var(--meta);
+}
+
+.owner-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding-top: var(--space-1);
+}
+
+.owner-actions {
+    margin-top: var(--space-1);
+}
+
+.owner-actions .write-submit {
+    flex: 1;
 }
 
 .comment-form {
