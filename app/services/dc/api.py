@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import re
@@ -193,7 +192,6 @@ class API(ParserMixin):
             connector=connector,
         )
         self.last_board_headtexts = []
-        self._cooldown_scope_locks = {}
     async def close(self):
         await self.session.close()
     async def __aenter__(self):
@@ -526,19 +524,6 @@ class API(ParserMixin):
             return float(DC_RATE_LIMIT_COOLDOWN)
         return min(max(delay, 0.0), float(DC_RATE_LIMIT_MAX_COOLDOWN))
 
-    def __cooldown_scope_lock(self, scope):
-        if not scope:
-            return None
-        locks = getattr(self, "_cooldown_scope_locks", None)
-        if locks is None:
-            locks = {}
-            self._cooldown_scope_locks = locks
-        lock = locks.get(scope)
-        if lock is None:
-            lock = asyncio.Lock()
-            locks[scope] = lock
-        return lock
-
     def __prune_session_cookies(self):
         cookie_jar = getattr(self.session, "cookie_jar", None)
         clear = getattr(cookie_jar, "clear", None)
@@ -557,50 +542,43 @@ class API(ParserMixin):
     ):
         parsed_url = urlparse(url)
         host = (parsed_url.hostname or "").lower()
-        scope_lock = self.__cooldown_scope_lock(cooldown_scope)
-        if scope_lock is not None:
-            await scope_lock.acquire()
+        if self.__cooldown_active(cooldown_scope):
+            raise RateLimitCooldownError("rate limited: cooldown")
+
+        request_headers = self.__prepare_headers(url, headers)
+
         try:
-            if self.__cooldown_active(cooldown_scope):
-                raise RateLimitCooldownError("rate limited: cooldown")
-
-            request_headers = self.__prepare_headers(url, headers)
-
-            try:
-                async with self.session.request(
-                    method,
-                    url,
-                    headers=request_headers,
-                    data=data,
-                    cookies=cookies,
-                    **({"allow_redirects": False} if self._is_notice_url(url) else {}),
-                ) as res:
-                    text = await res.text()
-                    status = res.status
-                    response_headers = dict(res.headers)
-            finally:
-                self.__prune_session_cookies()
-
-            if self.__is_rate_limited_response(status, text[:1000]):
-                retry_delay = max(
-                    float(DC_RATE_LIMIT_COOLDOWN),
-                    self.__retry_after_delay(response_headers),
-                )
-                self.__start_cooldown_for(cooldown_scope, retry_delay)
-                logger.warning(
-                    "rate limited: status=%s host=%s path=%s scope=%s retry_after=%.0f",
-                    status,
-                    host,
-                    parsed_url.path or "/",
-                    cooldown_scope or "none",
-                    retry_delay,
-                )
-                raise RateLimitError(f"rate limited: {status}")
-
-            return status, response_headers, text
+            async with self.session.request(
+                method,
+                url,
+                headers=request_headers,
+                data=data,
+                cookies=cookies,
+                **({"allow_redirects": False} if self._is_notice_url(url) else {}),
+            ) as res:
+                text = await res.text()
+                status = res.status
+                response_headers = dict(res.headers)
         finally:
-            if scope_lock is not None and scope_lock.locked():
-                scope_lock.release()
+            self.__prune_session_cookies()
+
+        if self.__is_rate_limited_response(status, text[:1000]):
+            retry_delay = max(
+                float(DC_RATE_LIMIT_COOLDOWN),
+                self.__retry_after_delay(response_headers),
+            )
+            self.__start_cooldown_for(cooldown_scope, retry_delay)
+            logger.warning(
+                "rate limited: status=%s host=%s path=%s scope=%s retry_after=%.0f",
+                status,
+                host,
+                parsed_url.path or "/",
+                cooldown_scope or "none",
+                retry_delay,
+            )
+            raise RateLimitError(f"rate limited: {status}")
+
+        return status, response_headers, text
 
     def __normalize_head_id(self, head_id):
         if head_id is None:

@@ -378,43 +378,48 @@ async def test_comment_cooldown_is_shared_but_does_not_block_document_lane(monke
 
 
 @pytest.mark.asyncio
-async def test_scoped_requests_atomically_limit_concurrent_probes(monkeypatch):
+async def test_scoped_requests_do_not_wait_for_slow_request_in_same_scope():
+    release_slow = asyncio.Event()
+
     class FakeResponse:
-        status = 429
+        status = 200
         headers = {}
 
+        def __init__(self, slow):
+            self.slow = slow
+
         async def __aenter__(self):
-            await asyncio.sleep(0.02)
+            if self.slow:
+                await release_slow.wait()
             return self
 
         async def __aexit__(self, *args):
             return None
 
         async def text(self):
-            return "Too Many Requests"
+            return "slow" if self.slow else "fast"
 
     class FakeSession:
-        calls = 0
-
         def request(self, method, url, **kwargs):
-            self.__class__.calls += 1
-            return FakeResponse()
+            return FakeResponse(url.endswith("/slow"))
 
-    monkeypatch.setattr(dc_api, "DC_RATE_LIMIT_COOLDOWN", 30)
     api = API.__new__(API)
     api.session = FakeSession()
     scope = "document:m.dcinside.com"
-    url = "https://m.dcinside.com/board/test/123"
 
-    results = await asyncio.gather(
-        api._API__request_text("GET", url, cooldown_scope=scope),
-        api._API__request_text("GET", url, cooldown_scope=scope),
-        return_exceptions=True,
+    slow = asyncio.create_task(
+        api._API__request_text("GET", "https://m.dcinside.com/board/test/slow", cooldown_scope=scope)
+    )
+    await asyncio.sleep(0)
+    status, _, text = await asyncio.wait_for(
+        api._API__request_text("GET", "https://m.dcinside.com/board/test/fast", cooldown_scope=scope),
+        timeout=1,
     )
 
-    assert FakeSession.calls == 1
-    assert sum(isinstance(result, dc_api.RateLimitError) for result in results) == 2
-    assert any(isinstance(result, dc_api.RateLimitCooldownError) for result in results)
+    assert (status, text) == (200, "fast")
+    assert not slow.done()
+    release_slow.set()
+    assert (await slow)[2] == "slow"
 
 
 @pytest.mark.parametrize(
