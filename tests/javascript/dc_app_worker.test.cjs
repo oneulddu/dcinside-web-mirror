@@ -239,9 +239,11 @@ globalThis.fetch = async (url, init = {}) => {
   const body = await request.text();
   appendFileSync(process.env.WORKER_TEST_POSTS, JSON.stringify({
     url:request.url, method:request.method, headers:Object.fromEntries(request.headers),
-    body, urlencoded:init.body instanceof URLSearchParams,
+    body, urlencoded:init.body instanceof URLSearchParams, multipart:init.body instanceof FormData,
   }) + '\\n');
   const target = new URL(url);
+  if (request.method === 'POST' && target.host === 'app.dcinside.com') return Response.json({result:'true'});
+  if (request.method === 'POST' && target.href === 'https://upload.dcinside.com/_app_write_api.php') return Response.json({result:'true'});
   if (request.method === 'POST' && target.href === 'https://android.apis.google.com/c2dm/register3') return new Response('token=offline-client');
   if (request.method === 'POST' && target.href === 'https://firebaseinstallations.googleapis.com/v1/projects/dcinside-b3f40/installations')
     return Response.json({fid:'offline-fid', refreshToken:'offline-refresh', authToken:{token:'offline-auth'}});
@@ -254,7 +256,7 @@ globalThis.fetch = async (url, init = {}) => {
 };
 `;
 
-function run(requests, seed = false, login = '', login2 = '', real = false) {
+function run(requests, seed = false, login = '', login2 = '', real = false, credentials) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-worker-test-'));
   try {
     const library = path.join(directory, 'node_modules/@green-1052/dcinside.js');
@@ -268,9 +270,9 @@ function run(requests, seed = false, login = '', login2 = '', real = false) {
     const postsPath = path.join(directory, 'posts.txt');
     if (seed) {
       fs.mkdirSync(path.dirname(state));
-      fs.writeFileSync(state, JSON.stringify(real
+      fs.writeFileSync(state, JSON.stringify(credentials ?? (real
         ? {androidId:'123',securityToken:'456',fid:null,refreshToken:null,clientToken:null,appId:null,appIdIssuedAt:null}
-        : { restored: true, appIdIssuedAt: Date.now() - 30000 }), { mode: 0o644 });
+        : { restored: true, appIdIssuedAt: Date.now() - 30000 }), { mode: 0o644 }));
     }
     const child = spawnSync(process.execPath, [path.join(directory, 'worker.mjs')], {
       env: { ...process.env, MIRROR_DC_APP_STATE: state, WORKER_TEST_TRACE: tracePath, WORKER_TEST_POSTS: postsPath,
@@ -338,6 +340,45 @@ test('real Auth propagates worker APP override into urlencoded app_id and every 
     assert.equal(body.get('app_ver'), '100190');
     assert.equal(body.get('X-app_ver'), '100190');
     assert.equal(body.get('X-app_ver_name'), '5.3.20');
+  }
+});
+
+test('real library sends app.dcinside.com POSTs urlencoded while upload writes stay multipart', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-app-body-test-'));
+  try {
+    const image = path.join(directory, 'image1.png');
+    fs.writeFileSync(image, Buffer.from([137,80,78,71,13,10,26,10]));
+    const credentials = {androidId:'123',securityToken:'456',fid:'offline-fid',refreshToken:'offline-refresh',
+      clientToken:'offline-client-token',appId:'offline-app',appIdIssuedAt:Date.now() - 30000};
+    const anonymous = {type:'anonymous',nickname:'offline-nick',password:'offline-pw'};
+    const result = run([
+      {op:'upvote', gallery:'programming', no:123},
+      {op:'comment', gallery:'programming', no:123, content:'offline comment', session:anonymous},
+      {op:'delete', gallery:'programming', no:123, session:anonymous},
+      {...write('offline image'), images:[{path:image,type:'image/png',name:'image1.png'}]},
+    ], true, '', '', true, credentials);
+    assert.deepEqual(result.replies.map(reply => reply.ok), [true, true, true, true]);
+    const appHost = result.posts.filter(post => new URL(post.url).host === 'app.dcinside.com');
+    assert.deepEqual(appHost.map(post => new URL(post.url).pathname).sort(),
+      ['/api/_recommend_up.php', '/api/comment_ok.php', '/api/gall_del.php']);
+    for (const post of appHost) {
+      assert.equal(post.urlencoded, true, post.url);
+      assert.equal(post.multipart, false, post.url);
+      assert.match(post.headers['content-type'], /^application\/x-www-form-urlencoded/);
+      const fields = new URLSearchParams(post.body);
+      assert.equal(fields.get('app_id'), 'offline-app', post.url);
+      assert.equal(fields.get('id'), 'programming');
+      assert.equal(fields.get('no'), '123');
+    }
+    assert.equal(new URLSearchParams(appHost.find(post => post.url.endsWith('/api/comment_ok.php')).body).get('comment_memo'), 'offline comment');
+    const upload = result.posts.filter(post => post.url === 'https://upload.dcinside.com/_app_write_api.php');
+    assert.equal(upload.length, 1);
+    assert.equal(upload[0].multipart, true);
+    assert.equal(upload[0].urlencoded, false);
+    assert.match(upload[0].headers['content-type'], /^multipart\/form-data; boundary=/);
+    assert.equal(new URL(appHost[0].url).host, 'app.dcinside.com');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 

@@ -14,11 +14,16 @@ const dc = new DCInside({ http: { timeout: 45000 } });
 // certification_login is an answered rejection, not a transport failure.
 // Returning false makes Http.send throw rather than replay the mutation.
 dc.http.context.relogin = async () => false;
-// 2026-10-23 앱 업데이트 이후 디시는 app_id 발급 요청의 multipart 본문을 거절한다.
-// 공식 앱과 같이 urlencoded 폼으로 보내도록 이 요청에만 옵션을 덧붙인다.
+// 2026-10-23 앱 업데이트 이후 디시는 multipart POST를 "최신 버전으로 업데이트" 로 거절한다.
+// 공식 앱 5.3.20은 app.dcinside.com POST를 urlencoded 폼으로 보낸다(업로드만 multipart).
+// app_id 발급 요청과 app.dcinside.com 요청에 옵션을 덧붙이고, Blob은 urlencoded 인코더가 버리므로 multipart로 남긴다.
 const sendPost = dc.http.post;
 dc.http.post = function (url, fields, options) {
-  return String(url).endsWith('/auth/mobile_app_verification')
+  const text = String(url);
+  const urlencoded = text.endsWith('/auth/mobile_app_verification')
+    || (new URL(text).host === 'app.dcinside.com'
+      && !Object.values(fields ?? {}).some(value => value instanceof Blob));
+  return urlencoded
     ? sendPost.call(this, url, fields, { ...options, urlencoded: true })
     : sendPost.call(this, url, fields, options);
 };

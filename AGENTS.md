@@ -160,6 +160,7 @@ pm2 logs dc-mirror
   are image-only, at most 200KB, and no-store. Never bypass upstream captcha.
   Before client construction it fixes `APP.versionCode="100190"` / `versionName="5.3.20"`
   for app_id issuance (urlencoded) and GCM registration; other identity constants are unchanged.
+  Like the official app, every `app.dcinside.com` POST also goes out urlencoded (upload writes stay multipart).
   The observed “최신 버전으로 업데이트” rejection is detected before sanitization, including
   app_id/login failures, and becomes fixed `update_required` JSON/message (HTTP 200), never raw
   upstream text or an automatic resend. Vote options and write metadata also show this warning.
