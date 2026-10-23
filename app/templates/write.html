@@ -134,24 +134,24 @@
             <div class="write-toolbar">
                 <button class="write-tool" id="write-images-add" type="button" aria-describedby="write-images-hint">
                     <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M20.5 15.5l-4.5-4.5-8 8"/></svg>
-                    <span>사진</span>
-                    <span class="write-tool-count" id="write-images-count">0/{{ limits.image_max_count }}</span>
+                    <span class="write-tool-label">사진</span>
+                    <span class="write-tool-count is-zero" id="write-images-count">0/{{ limits.image_max_count }}</span>
                 </button>
                 {% if not modify_pid %}
                 <button class="write-tool" id="write-videos-add" type="button" aria-describedby="write-images-hint">
                     <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10.5l5-3v9l-5-3"/></svg>
-                    <span>동영상</span>
-                    <span class="write-tool-count" id="write-videos-count">0/{{ limits.video_max_count }}</span>
+                    <span class="write-tool-label">동영상</span>
+                    <span class="write-tool-count is-zero" id="write-videos-count">0/{{ limits.video_max_count }}</span>
                 </button>
                 {% if account_configured|default(false) %}
                 <button class="write-tool" id="write-dccon-add" type="button" aria-expanded="false" aria-controls="write-dccon-panel" hidden>
                     <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 14c.9 1.3 2.1 2 3.5 2s2.6-.7 3.5-2"/><path d="M9 9.5h.01M15 9.5h.01"/></svg>
-                    <span>디시콘</span>
+                    <span class="write-tool-label">디시콘</span>
                 </button>
                 {% endif %}
                 <button class="write-tool" id="write-poll-add" type="button" aria-expanded="false" aria-controls="write-poll">
                     <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 19v-8M12 19V5M18 19v-6"/></svg>
-                    <span>투표</span>
+                    <span class="write-tool-label">투표</span>
                 </button>
                 <label class="write-check write-html-toggle">
                     <input type="checkbox" id="write-html" aria-describedby="write-html-hint">
@@ -161,7 +161,11 @@
                 <span class="write-count write-body-count" id="write-body-count" aria-hidden="true">0/{{ limits.body_max }}</span>
             </div>
         </div>
-        <p class="write-hint write-images-hint" id="write-images-hint">사진을 넣으면 커서 자리에 <strong>[사진 1]</strong> 같은 줄이 생기고, 그 줄이 있는 곳에 사진이 들어가요. 줄을 옮기면 사진 자리도 바뀌어요. {% if modify_pid %}원래 사진도 같은 줄로 보여요. 새 사진은{% else %}사진은{% endif %} {{ limits.image_max_count }}장, 한 장 {{ limits.image_max_bytes // 1048576 }}MB까지예요.{% if not modify_pid %} 동영상은 MP4만 {{ limits.video_max_count }}개, 한 개 {{ limits.video_max_bytes // 1048576 }}MB까지이고 사진과 합쳐 {{ limits.upload_total_bytes // 1048576 }}MB까지예요. 본문의 <strong>[동영상 N]</strong> 줄 자리에 들어가요. 유동으로 올린 동영상은 디시가 평일 9~18시에만 받아요.{% endif %}</p>
+        {% if modify_pid %}
+        <p class="write-hint write-images-hint" id="write-images-hint">사진을 넣으면 커서 자리에 <strong>[사진 1]</strong> 같은 줄이 생기고, 그 줄이 있는 곳에 사진이 들어가요. 줄을 옮기면 사진 자리도 바뀌어요. 원래 사진도 같은 줄로 보여요. 새 사진은 {{ limits.image_max_count }}장, 한 장 {{ limits.image_max_bytes // 1048576 }}MB까지예요.</p>
+        {% else %}
+        <p class="write-hint write-images-hint" id="write-images-hint">사진·동영상·디시콘은 커서 자리에 <strong>[사진 1]</strong> 같은 줄로 들어가요. 줄을 옮기면 자리도 바뀌어요. 사진 {{ limits.image_max_count }}장(장당 {{ limits.image_max_bytes // 1048576 }}MB), 동영상 MP4 {{ limits.video_max_count }}개(개당 {{ limits.video_max_bytes // 1048576 }}MB), 합쳐 {{ limits.upload_total_bytes // 1048576 }}MB까지예요. 유동 동영상은 평일 9~18시에만 올라가요.</p>
+        {% endif %}
         {% if not modify_pid %}
         <p class="write-hint" id="write-html-hint" hidden>HTML을 켜면 본문을 HTML로 보내요. 서식 단추로 태그를 넣을 수 있고, 줄을 바꾸려면 &lt;br&gt;을 써요. 스크립트·iframe·이벤트 속성·javascript 주소는 보낼 수 없어요.</p>
 

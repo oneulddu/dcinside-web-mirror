@@ -447,6 +447,7 @@
         originals: document.getElementById("write-originals"),
         originalList: document.getElementById("write-original-list"),
         identity: form.querySelector(".write-identity"),
+        author: form.querySelector(".write-author"),
         remember: form.querySelector(".write-remember"),
         passwordHint: document.getElementById("write-password-hint"),
         accountNote: document.getElementById("write-account-note"),
@@ -854,6 +855,7 @@
         var uploads = newImages().length;
         if (el.imageCount) {
             el.imageCount.textContent = uploads + "/" + limits.image_max_count;
+            el.imageCount.classList.toggle("is-zero", uploads === 0);
         }
         el.imageAdd.disabled = state.sending || uploads >= limits.image_max_count;
         if (focus) {
@@ -1308,6 +1310,7 @@
         el.videoList.hidden = state.videos.length === 0;
         if (el.videoCount) {
             el.videoCount.textContent = state.videos.length + "/" + limits.video_max_count;
+            el.videoCount.classList.toggle("is-zero", state.videos.length === 0);
         }
         if (el.videoAdd) {
             el.videoAdd.disabled = state.sending || state.videos.length >= limits.video_max_count;
@@ -2063,13 +2066,17 @@
                 node.hidden = account;
             }
         });
+        // 새 글은 위쪽 작성자 안내 한 줄로 충분하다. 계정이면 비어 버린 작성자 칸을 통째로 숨긴다.
         if (el.accountNote) {
-            el.accountNote.hidden = !account;
+            el.accountNote.hidden = !account || !modifyPid;
+        }
+        if (el.author && !modifyPid) {
+            el.author.hidden = account;
         }
         if (el.modeNote && !modifyPid) {
             var modes = post.authorModes();
             el.modeNote.textContent = !state.mode ? "작성자를 상단 작성자 메뉴에서 다시 골라 주세요. 전에 고른 계정이 서버에 없어요."
-                : account ? "작성자: " + post.authorLabel(state.mode, authorNames, modes.length === 2) + ". 상단 작성자 메뉴에서 바꿀 수 있어요."
+                : account ? "작성자: " + post.authorLabel(state.mode, authorNames, modes.length === 2) + ". 상단 작성자 메뉴에서 바꿀 수 있고, 로그인은 계정 화면에서 해요."
                 : "유동닉으로 올라가요. 서버 IP로 기록돼요." + (modes.length ? " 작성자는 상단 메뉴에서 바꿀 수 있어요." : "");
         }
         syncRememberNote();
