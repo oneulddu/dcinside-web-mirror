@@ -65,7 +65,7 @@
     }
 
     function overlayOpen() {
-        return !!document.querySelector("dialog[open], #media-block-menu:not([hidden]), #author-menu:not([hidden])");
+        return !!document.querySelector("dialog[open], #media-block-menu:not([hidden]), #author-menu:not([hidden]), #author-pick-menu:not([hidden])");
     }
 
     function currentIndex(links) {

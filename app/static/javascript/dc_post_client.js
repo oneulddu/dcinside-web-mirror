@@ -1,6 +1,11 @@
 (function (root) {
     "use strict";
 
+    // 상단 작성자 메뉴와 글·댓글 화면이 함께 싣는다. 두 번째로 실리면 아무것도 하지 않는다.
+    if (root.MirrorDcPost) {
+        return;
+    }
+
     // 글쓰기·추천이 함께 쓰는 요청·캡챠 도구. 원본 응답을 자동으로 다시 보내지 않는다.
     var CAPTCHA_KEY_PATTERN = /^[0-9a-f]{16}$/;
 
@@ -74,7 +79,7 @@
         return "/write/unlock?" + new URLSearchParams({ next: next }).toString();
     }
 
-    // 글·댓글 작성자로 마지막에 고른 값: "anonymous" 또는 "account:1"·"account:2". 글쓰기와 댓글이 함께 쓴다.
+    // 상단 작성자 메뉴에서 마지막에 고른 값: "anonymous" 또는 "account:1"·"account:2". 글쓰기·댓글·추천이 함께 쓴다.
     // 계정이 하나뿐이던 때 저장한 "account"는 계정 1로 읽는다.
     var MODE_KEY = "mirror_write_mode_v1";
     var MODE_PATTERN = /^(anonymous|account:[12])$/;
@@ -111,16 +116,26 @@
         return match ? match[1] : "";
     }
 
-    // 기억한 값이 지금 화면의 선택지에 없으면(서버에서 그 계정을 뺐으면) 빈 값을 돌려준다.
+    // 기억한 값이 지금 고를 수 있는 값(modes)에 없으면(서버에서 그 계정을 뺐으면) 빈 값을 돌려준다.
     // 다른 계정으로 바꿔 보내지 않고, 작성자를 다시 고르게 한다.
-    // 선택지가 아예 없으면(계정을 모두 뺐으면) 유동만 남지만, 계정을 기억하고 있었다면 한 번 알리고 다시 누르게 한다.
-    function pickMode(saved, inputs) {
-        if (!inputs.length) {
+    // 고를 값이 아예 없으면(계정을 모두 뺐으면) 유동만 남지만, 계정을 기억하고 있었다면 한 번 알리고 다시 누르게 한다.
+    function pickMode(saved, modes) {
+        if (!modes.length) {
             return modeAccount(saved) ? "" : "anonymous";
         }
-        return inputs.some(function (input) {
-            return input.value === saved;
-        }) ? saved : "";
+        return modes.indexOf(saved) >= 0 ? saved : "";
+    }
+
+    // 작성자 이름. 닉네임이 같을 수 있어 계정 번호는 남기고, 로그인 아이디는 쓰지 않는다.
+    // single: 서버에 계정이 하나뿐이면 번호 대신 "디시 계정"이라고 부른다.
+    function authorLabel(mode, names, single) {
+        var slot = modeAccount(mode);
+        if (!slot) {
+            return "유동";
+        }
+        var base = single ? "디시 계정" : "계정 " + slot;
+        var name = names && typeof names[slot] === "string" ? names[slot].trim() : "";
+        return name ? base + " · " + name : base;
     }
 
     // 상태 응답에서 계정 번호별 상태만 꺼낸다. 예전 응답(accounts 없음)은 계정 1로 본다.
@@ -155,12 +170,75 @@
         saveMode: saveMode,
         modeAccount: modeAccount,
         pickMode: pickMode,
+        authorLabel: authorLabel,
         accountList: accountList,
         accountLink: accountLink,
         MODE_KEY: MODE_KEY
     };
 
     var document = root.document;
+
+    // 상단 작성자 선택. 고를 수 있는 계정은 body의 data-author-slots에 있다(없으면 유동만).
+    // 다른 탭에서 바꾸면 storage 이벤트로 따라간다. 저장에 실패해도 이 탭에서는 고른 값을 쓴다.
+    var AUTHOR_EVENT = "mirror:author-change";
+    var localMode = null;
+
+    function modeStorage() {
+        try {
+            return root.localStorage;
+        } catch (err) {
+            return null;
+        }
+    }
+
+    function authorModes() {
+        var body = document && document.body;
+        var raw = body && typeof body.getAttribute === "function" ? body.getAttribute("data-author-slots") : null;
+        var slots = String(raw || "").split(/\s+/).filter(function (slot) {
+            return slot === "1" || slot === "2";
+        });
+        return slots.length ? ["anonymous"].concat(slots.map(function (slot) {
+            return "account:" + slot;
+        })) : [];
+    }
+
+    function authorMode() {
+        return pickMode(localMode !== null ? localMode : readMode(modeStorage()), authorModes());
+    }
+
+    function notifyAuthor() {
+        if (document && typeof document.dispatchEvent === "function" && typeof root.CustomEvent === "function") {
+            document.dispatchEvent(new root.CustomEvent(AUTHOR_EVENT));
+        }
+    }
+
+    function setAuthorMode(mode) {
+        localMode = normalizeMode(mode);
+        saveMode(modeStorage(), localMode);
+        notifyAuthor();
+    }
+
+    function onAuthorChange(listener) {
+        if (document && typeof document.addEventListener === "function") {
+            document.addEventListener(AUTHOR_EVENT, function () {
+                listener(authorMode());
+            });
+        }
+    }
+
+    if (document && typeof root.addEventListener === "function") {
+        root.addEventListener("storage", function (event) {
+            if (event.key === MODE_KEY || event.key === null) {
+                localMode = null;
+                notifyAuthor();
+            }
+        });
+    }
+
+    root.MirrorDcPost.authorModes = authorModes;
+    root.MirrorDcPost.authorMode = authorMode;
+    root.MirrorDcPost.setAuthorMode = setAuthorMode;
+    root.MirrorDcPost.onAuthorChange = onAuthorChange;
     if (!document || typeof root.fetch !== "function") {
         return;
     }
@@ -295,6 +373,11 @@
         });
 
         return {
+            // 작성자에 따라 문자 종류가 바뀐다(유동 추천은 PC 문자, 계정 추천은 앱 문자). 새로고침도 이 값을 쓴다.
+            setSource: function (nextKind, nextExtra) {
+                kind = nextKind;
+                extra = nextExtra;
+            },
             show: function (captcha) {
                 var url = safePath(captcha.image_url);
                 load(String(captcha.key), url && url.indexOf("/write/captcha?") === 0 ? url : "");
@@ -327,8 +410,9 @@
     // 계정 상태는 서버 메모리의 값만 읽는다(디시에 요청하지 않는다). 한 화면에서 한 번만 묻는다.
     var statusPromise = null;
 
-    function accountStatus() {
-        if (!statusPromise) {
+    // fresh: 다른 탭에서 로그인했을 수 있어 다시 묻는다(상단 메뉴를 열 때).
+    function accountStatus(fresh) {
+        if (!statusPromise || fresh) {
             statusPromise = root.fetch("/write/account/status", { credentials: "same-origin", headers: { "Accept": "application/json" } }).then(function (response) {
                 return response.ok ? response.json() : null;
             }).then(function (status) {
@@ -340,26 +424,24 @@
         return statusPromise;
     }
 
-    // 로그인한 계정은 선택지에 디시 닉네임을 붙인다. 닉네임이 같을 수 있어 번호는 남기고, 로그인 아이디는 쓰지 않는다.
-    function labelModes(inputs) {
-        accountStatus().then(function (status) {
+    // 로그인한 계정의 디시 닉네임({계정 번호: 닉네임}). 작성자 이름에 붙인다.
+    function authorNames(fresh) {
+        return accountStatus(fresh).then(function (status) {
             var accounts = accountList(status);
-            inputs.forEach(function (input) {
-                var slot = modeAccount(input.value);
+            var names = {};
+            Object.keys(accounts).forEach(function (slot) {
                 var item = accounts[slot];
-                var name = item && item.logged_in === true ? String(item.name || "").trim() : "";
-                var label = input.nextElementSibling;
-                if (slot && name && label) {
-                    var base = label.getAttribute("data-base") || label.textContent;
-                    label.setAttribute("data-base", base);
-                    label.textContent = base + " · " + name;
+                var name = item.logged_in === true ? String(item.name || "").trim() : "";
+                if (name) {
+                    names[slot] = name;
                 }
             });
+            return names;
         });
     }
 
     root.MirrorDcPost.accountStatus = accountStatus;
-    root.MirrorDcPost.labelModes = labelModes;
+    root.MirrorDcPost.authorNames = authorNames;
     root.MirrorDcPost.postJson = postJson;
     root.MirrorDcPost.postForm = postForm;
     root.MirrorDcPost.createCaptcha = createCaptcha;

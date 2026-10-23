@@ -79,7 +79,9 @@
     {% endif %}
     {% endif %}
 </head>
-<body class="{% block body_class %}{% endblock %}">
+{#- 상단 작성자 메뉴: 글쓰기 잠금을 풀었고 서버에 디시 계정이 있을 때만. 글쓰기·댓글·추천이 이 선택을 따른다. -#}
+{%- set author_menu = write_enabled|default(false) and account_slots|default([]) -%}
+<body class="{% block body_class %}{% endblock %}"{% if author_menu %} data-author-slots="{{ account_slots|join(' ') }}"{% endif %}>
     <a class="skip-link" href="#content">본문 바로가기</a>
     <div class="shell">
         <header class="masthead">
@@ -101,6 +103,33 @@
                             <path d="M15.5 17.5h5.5"/>
                         </svg>
                     </button>
+                    {% endif %}
+                    {% if author_menu %}
+                    <div class="author-pick-control">
+                        <button class="icon-btn author-pick-toggle" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="author-pick-menu" aria-label="작성자: 유동 (글쓰기·댓글·추천)" title="작성자: 유동 (글쓰기·댓글·추천)">
+                            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <circle cx="12" cy="8" r="3.6"/>
+                                <path d="M4.5 19.5c1-3.8 3.9-6 7.5-6s6.5 2.2 7.5 6"/>
+                            </svg>
+                            <span class="author-pick-badge" aria-hidden="true"></span>
+                        </button>
+                        <div class="author-pick-menu" id="author-pick-menu" role="menu" aria-label="작성자" hidden>
+                            <div class="media-block-menu-title">작성자 · 글쓰기·댓글·추천</div>
+                            <button class="media-block-option" type="button" role="menuitemradio" aria-checked="false" data-author-mode="anonymous">
+                                <span class="media-block-option-name">유동</span>
+                                <span class="media-block-option-desc">닉네임·비밀번호로 쓰고, 서버 IP로 기록돼요</span>
+                            </button>
+                            {% for slot in account_slots %}
+                            <button class="media-block-option" type="button" role="menuitemradio" aria-checked="false" data-author-mode="account:{{ slot }}">
+                                <span class="media-block-option-name">{{ "디시 계정" if account_slots|length == 1 else "계정 " ~ slot }}</span>
+                                <span class="media-block-option-desc">서버에 설정한 디시 계정으로 써요</span>
+                            </button>
+                            {% endfor %}
+                            <a class="media-block-option author-pick-link" role="menuitem" href="{{ url_for('main.write_account') }}">
+                                <span class="media-block-option-name">계정 로그인 화면</span>
+                            </a>
+                        </div>
+                    </div>
                     {% endif %}
                     <div class="media-block-control">
                         <button class="dccon-toggle" type="button" aria-label="이미지 차단 설정: 차단 없음" aria-haspopup="menu" aria-expanded="false" aria-controls="media-block-menu" title="이미지 차단 설정: 차단 없음">
@@ -177,5 +206,9 @@
         </footer>
     </div>
     <script src="{{ static_url('javascript/read_state.js') }}"></script>
+    {% if author_menu %}
+    <script src="{{ static_url('javascript/dc_post_client.js') }}"></script>
+    <script src="{{ static_url('javascript/author_menu.js') }}"></script>
+    {% endif %}
 </body>
 </html>

@@ -115,13 +115,8 @@
                 <button class="comment-form-cancel" id="comment-form-cancel" type="button">답글 취소</button>
             </div>
             {% if account_configured|default(false) %}
-            <div class="write-mode comment-form-mode" role="radiogroup" aria-label="작성자">
-                <label class="write-mode-option"><input type="radio" name="comment-mode" value="anonymous" checked><span>유동</span></label>
-                {% for slot in account_slots %}
-                <label class="write-mode-option"><input type="radio" name="comment-mode" value="account:{{ slot }}"><span>{{ "디시 계정" if account_slots|length == 1 else "계정 " ~ slot }}</span></label>
-                {% endfor %}
-            </div>
-            <p class="write-hint" id="comment-account-note" hidden>서버에 설정한 디시 계정으로 달아요. 지울 때 비밀번호가 필요 없어요.</p>
+            {#- 작성자는 상단 작성자 메뉴에서 고른다. 여기서는 지금 작성자만 보여 준다. -#}
+            <p class="write-hint comment-mode-note" id="comment-mode-note" aria-live="polite">작성자: 유동</p>
             {% endif %}
             <div class="comment-form-identity">
                 <label class="sr-only" for="comment-nickname">닉네임</label>

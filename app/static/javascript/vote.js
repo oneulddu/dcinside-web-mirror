@@ -29,10 +29,17 @@
     var board = panel.getAttribute("data-board") || "";
     var kind = panel.getAttribute("data-kind") || "";
     var pid = panel.getAttribute("data-pid") || "";
-    // 인물 갤러리 말고는 노이즈를 지운 PC 보안 문자를 쓴다. 답도 그 문자를 받은 PC 세션으로 보낸다.
+    // 유동 추천은 인물 갤러리 말고는 노이즈를 지운 PC 보안 문자를 쓰고, 답도 그 문자를 받은 PC 세션으로 보낸다.
+    // 계정 추천은 로그인으로 보내야 해서 언제나 앱 보안 문자를 쓴다.
     var captchaKind = kind === "person" ? "recommend" : "vote";
     var captchaExtra = captchaKind === "vote" ? { pid: pid, gallery_kind: kind } : null;
     var captcha = post.createCaptcha("vote-captcha", captchaKind, board, captchaExtra);
+    // 작성자는 상단 작성자 메뉴의 값. 메뉴가 없으면 유동이다.
+    var author = typeof post.authorMode === "function" ? post.authorMode() : "anonymous";
+
+    function sourceFor(mode) {
+        return post.modeAccount(mode) ? { kind: "recommend", extra: null } : { kind: captchaKind, extra: captchaExtra };
+    }
     // pending: 캡챠를 요구받은 버튼. 캡챠 칸에서 Enter를 누르면 그 버튼으로 다시 보낸다.
     // options: 디시 앱 기준 갤러리 추천 설정. 모르면 null이고, 그때는 누른 뒤 디시 응답을 따른다.
     var state = { sending: "", done: {}, pending: "", retryUntil: 0, retryTimer: null, options: null };
@@ -53,6 +60,10 @@
             var anchor = document.createElement("a");
             anchor.href = link.href;
             anchor.textContent = link.text;
+            if (link.newTab) {
+                anchor.target = "_blank";
+                anchor.rel = "noopener";
+            }
             status.appendChild(anchor);
         }
     }
@@ -132,13 +143,31 @@
         if (!NAMES[direction] || state.sending || state.done[direction] || state.retryUntil > Date.now()) {
             return;
         }
+        if (!author) {
+            if (!post.authorModes().length) {
+                // 상단 메뉴가 없어 고를 수 있는 것이 유동뿐이다. 알린 뒤 다시 누르면 유동으로 보낸다.
+                post.setAuthorMode("anonymous");
+                author = "anonymous";
+                setStatus("전에 고른 디시 계정이 서버에 없어요. 유동으로 " + NAMES[direction] + "하려면 다시 눌러 주세요.", "error");
+                return;
+            }
+            setStatus("작성자를 다시 골라 주세요. 전에 고른 계정이 서버에 없어요. 상단 작성자 메뉴에서 골라 주세요.", "error");
+            return;
+        }
+        // 보낼 때의 작성자를 붙잡아 둔다. 결과를 받기 전에 상단 메뉴를 바꿔도 바뀌지 않는다.
+        var sentAuthor = author;
+        var slot = post.modeAccount(sentAuthor);
         var body = { board: board, pid: pid, direction: direction };
+        if (slot) {
+            body.mode = "account";
+            body.account = slot;
+        }
         if (kind) {
             body.kind = kind;
         }
         var answer = captcha ? captcha.answer() : null;
-        // 보안 문자가 필요한 갤러리면 디시에 헛걸음하지 않도록 먼저 문자 칸을 연다.
-        if (!answer && captcha && state.options && state.options.captcha) {
+        // 유동 보안 문자 설정을 보고 미리 문자 칸을 연다. 계정은 디시가 실제로 요구할 때만 연다.
+        if (!slot && !answer && captcha && state.options && state.options.captcha) {
             var key = post.newCaptchaKey();
             state.pending = direction;
             setStatus("이 갤러리는 " + NAMES[direction] + "할 때 보이는 문자를 입력해야 해요.", "error");
@@ -165,12 +194,12 @@
             state.sending = "";
             sync();
             // 캡챠 입력칸을 다시 켠 뒤에 결과를 다뤄야 포커스가 들어간다.
-            handle(direction, post.interpret(result.status, result.payload));
+            handle(direction, post.interpret(result.status, result.payload), sentAuthor);
             sync();
         });
     }
 
-    function handle(direction, outcome) {
+    function handle(direction, outcome, sentAuthor) {
         var payload = outcome.payload || {};
         var message = typeof payload.message === "string" ? payload.message : "";
         if (outcome.action === "visitor_check_required") {
@@ -189,6 +218,14 @@
             return;
         }
         if (outcome.action === "captcha") {
+            // 보내는 사이 작성자를 바꿨으면 지난 작성자의 문제는 띄우지 않는다.
+            if (sentAuthor !== author) {
+                captcha.hide();
+                state.pending = "";
+                setStatus("작성자를 바꿔서 " + name + "을 보내지 않았어요. 다시 눌러 주세요.", "error");
+                return;
+            }
+            captcha.setSource(sourceFor(sentAuthor).kind, sourceFor(sentAuthor).extra);
             state.pending = direction;
             setStatus(message || "보이는 문자를 입력하고 " + name + " 버튼을 다시 눌러 주세요.", "error");
             // 처음 요구받을 때는 캡챠 칸이 같은 안내를 보여 주므로 화면 낭독기에만 남긴다.
@@ -222,6 +259,10 @@
             setStatus("이 브라우저의 추천이 잠겨 있어요.", "error", { href: post.unlockUrl(), text: "잠금 해제" });
             return;
         }
+        if (outcome.action === "login_needed") {
+            setStatus(message || "디시 계정에 다시 로그인해야 해요. " + name + "은 보내지 않았어요.", "error", post.accountLink(payload));
+            return;
+        }
         if (outcome.action === "unavailable" && message) {
             setStatus(message, "error");
             return;
@@ -242,6 +283,27 @@
                 send(state.pending || "up");
             }
         });
+    }
+    // 상단 작성자 메뉴를 바꾸면 다음 추천부터 그 작성자로 보낸다. 지난 작성자의 보안 문자는 지운다.
+    // 이미 한 추천 표시와 기다림 시간은 그대로 둔다.
+    if (typeof post.onAuthorChange === "function") {
+        post.onAuthorChange(function (mode) {
+            if (mode === author) {
+                return;
+            }
+            author = mode;
+            if (captcha) {
+                // 보내는 중이어도 문자 종류는 바꿔 둔다. 늦게 온 지난 작성자의 문제는 handle이 띄우지 않는다.
+                captcha.setSource(sourceFor(author).kind, sourceFor(author).extra);
+                if (!state.sending) {
+                    captcha.hide();
+                    state.pending = "";
+                }
+            }
+        });
+    }
+    if (captcha) {
+        captcha.setSource(sourceFor(author).kind, sourceFor(author).extra);
     }
     sync();
     loadOptions();

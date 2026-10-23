@@ -347,8 +347,11 @@ async function dispatch(input) {
   }
   const mutation = ['delete', 'comment_delete', 'modify_info', 'modify'].includes(input.op);
   if (!['write', 'comment', 'upvote', 'downvote'].includes(input.op) && !mutation) throw new Error('Unsupported operation');
-  // 보안 문자 답이 있는 추천·비추천은 그 문자를 받은 PC 쿠키 세션으로 보낸다.
-  if (input.pc !== undefined && ['upvote', 'downvote'].includes(input.op)) return pcVote(input, input.op === 'upvote' ? 'U' : 'D');
+  // PC 쿠키 세션은 유동 추천만 지원한다. 계정 추천을 유동으로 보내면 안 된다.
+  if (input.pc !== undefined && ['upvote', 'downvote'].includes(input.op)) {
+    if (account) throw invalidMutation();
+    return pcVote(input, input.op === 'upvote' ? 'U' : 'D');
+  }
   let content;
   let comment;
   let images;
@@ -360,12 +363,13 @@ async function dispatch(input) {
     if (!['anonymous', 'login'].includes(input.session?.type)) throw new Error('Unsupported session');
     if (input.op === 'write') content = await writeContent(input);
     else if (input.op === 'comment') comment = commentArgs(input);
-    if (input.session.type === 'login') {
-      const state = accounts[account];
-      if (state.blocked) throw loginNeeded(state.reason, account);
-      if (!state.session) await accountLogin({ account });
-      dc.session = state.session;
-    } else dc.useAnonymous(input.session.nickname, input.session.password);
+    if (!account) dc.useAnonymous(input.session.nickname, input.session.password);
+  }
+  if (account) {
+    const state = accounts[account];
+    if (state.blocked) throw loginNeeded(state.reason, account);
+    if (!state.session) await accountLogin({ account });
+    dc.session = state.session;
   }
   try {
     try {

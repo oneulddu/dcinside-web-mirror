@@ -266,7 +266,6 @@
         modifyLoad: document.getElementById("write-modify-load"),
         originals: document.getElementById("write-originals"),
         originalList: document.getElementById("write-original-list"),
-        modeInputs: Array.prototype.slice.call(form.querySelectorAll('input[name="write-mode"]')),
         identity: form.querySelector(".write-identity"),
         remember: form.querySelector(".write-remember"),
         passwordHint: document.getElementById("write-password-hint"),
@@ -300,12 +299,14 @@
     } catch (err) {
         storage = null;
     }
-    // 수정 화면은 연 방식(주소의 mode)을 끝까지 쓴다. 새 글은 마지막으로 고른 값을 쓴다.
-    // 기억한 계정이 선택지에 없으면 빈 값으로 두고 작성자를 다시 고르게 한다.
+    // 수정 화면은 연 방식(주소의 mode)을 끝까지 쓰고 상단 작성자 메뉴를 따르지 않는다. 새 글은 상단 메뉴의 값을 쓴다.
+    // 기억한 계정이 서버에 없으면 빈 값으로 두고 상단 메뉴에서 다시 고르게 한다.
     // 수정 주소에 account가 없을 때만 계정 1로 본다. 빈 값·잘못된 값은 그대로 보내 서버가 거절한다.
     var pinnedAccount = form.getAttribute("data-account");
     state.mode = form.getAttribute("data-mode") === "account" ? "account:" + (pinnedAccount === null ? "1" : pinnedAccount)
-        : post.pickMode(post.readMode(storage), el.modeInputs);
+        : (modifyPid ? "anonymous" : post.authorMode());
+    // 로그인한 계정의 닉네임. 작성자 안내에 붙인다.
+    var authorNames = {};
 
     function isAccount() {
         return state.mode.indexOf("account:") === 0;
@@ -402,7 +403,7 @@
     function setBusy(busy) {
         state.sending = busy;
         form.setAttribute("aria-busy", busy ? "true" : "false");
-        [el.nickname, el.password, el.subject, el.body, el.rememberNickname, el.rememberPassword, el.imageAdd, el.modifyLoad].concat(el.modeInputs).forEach(function (input) {
+        [el.nickname, el.password, el.subject, el.body, el.rememberNickname, el.rememberPassword, el.imageAdd, el.modifyLoad].forEach(function (input) {
             if (input) {
                 input.disabled = busy;
             }
@@ -968,6 +969,8 @@
             return !item.checked;
         });
         if (pending.length) {
+            // 사진을 확인하는 사이 상단 메뉴에서 작성자를 바꾸면 바뀐 작성자로 보내지 않고 멈춘다.
+            var modeAtSubmit = state.mode;
             setBusy(true);
             setStatus("사진을 확인하고 있어요.");
             Promise.all(pending.map(function (item) {
@@ -975,6 +978,10 @@
             })).then(function () {
                 setBusy(false);
                 renderImages(null);
+                if (state.mode !== modeAtSubmit) {
+                    setStatus("사진을 확인하는 동안 작성자를 바꿔서 글을 보내지 않았어요. 다시 등록해 주세요.", "error");
+                    return;
+                }
                 setStatus("");
                 submit({ preventDefault: function () {} });
             });
@@ -983,14 +990,15 @@
         clearErrors();
         setStatus("");
         if (!state.mode) {
-            if (!el.modeInputs.length) {
-                // 고를 수 있는 것이 유동뿐이다. 알린 뒤 다시 누르면 유동으로 보낸다.
+            if (!post.authorModes().length) {
+                // 상단 메뉴가 없어 고를 수 있는 것이 유동뿐이다. 알린 뒤 다시 누르면 유동으로 보낸다.
+                post.setAuthorMode("anonymous");
                 state.mode = "anonymous";
-                post.saveMode(storage, state.mode);
+                applyMode();
                 setStatus("전에 고른 디시 계정이 서버에 없어요. 유동으로 올리려면 다시 등록을 눌러 주세요.", "error");
                 return;
             }
-            setStatus("작성자를 다시 골라 주세요. 전에 고른 계정이 서버에 없어요.", "error");
+            setStatus("작성자를 다시 골라 주세요. 전에 고른 계정이 서버에 없어요. 상단 작성자 메뉴에서 골라 주세요.", "error");
             return;
         }
         var answer = captcha ? captcha.answer() : null;
@@ -1022,7 +1030,9 @@
             subject: el.subject.value.trim(),
             body: el.body.value
         };
-        if (isAccount()) {
+        // 보낼 때의 작성자를 붙잡아 둔다. 결과를 받기 전에 상단 메뉴를 바꿔도 바뀌지 않는다.
+        state.sentAccount = isAccount();
+        if (state.sentAccount) {
             body.mode = "account";
             body.account = accountSlot();
         } else {
@@ -1099,7 +1109,7 @@
             captcha.hide();
         }
         if (outcome.action === "success") {
-            if (!isAccount()) {
+            if (!state.sentAccount) {
                 saveIdentity();
             }
             state.leaving = true;
@@ -1169,9 +1179,6 @@
     // 계정으로 쓰면 닉네임·비밀번호 칸과 기억 선택을 숨긴다.
     function applyMode() {
         var account = isAccount();
-        el.modeInputs.forEach(function (input) {
-            input.checked = input.value === state.mode;
-        });
         [el.identity, el.remember, el.passwordHint].forEach(function (node) {
             if (node) {
                 node.hidden = account;
@@ -1180,27 +1187,29 @@
         if (el.accountNote) {
             el.accountNote.hidden = !account;
         }
-        if (el.modeNote && el.modeInputs.length) {
-            el.modeNote.textContent = !state.mode ? "작성자를 골라 주세요. 전에 고른 계정이 서버에 없어요."
-                : account ? "계정 " + accountSlot() + "로 올라가요." : "유동닉으로 올라가요. 서버 IP로 기록돼요.";
+        if (el.modeNote && !modifyPid) {
+            var modes = post.authorModes();
+            el.modeNote.textContent = !state.mode ? "작성자를 상단 작성자 메뉴에서 다시 골라 주세요. 전에 고른 계정이 서버에 없어요."
+                : account ? "작성자: " + post.authorLabel(state.mode, authorNames, modes.length === 2) + ". 상단 작성자 메뉴에서 바꿀 수 있어요."
+                : "유동닉으로 올라가요. 서버 IP로 기록돼요." + (modes.length ? " 작성자는 상단 메뉴에서 바꿀 수 있어요." : "");
         }
         syncRememberNote();
     }
-    el.modeInputs.forEach(function (input) {
-        input.addEventListener("change", function () {
-            if (!input.checked) {
-                return;
-            }
-            state.mode = post.normalizeMode(input.value);
-            post.saveMode(storage, state.mode);
+    // 새 글은 상단 작성자 메뉴(다른 탭 포함)를 따른다. 써 둔 내용과 닉네임·비밀번호 칸 값은 그대로 둔다.
+    if (!modifyPid) {
+        post.onAuthorChange(function (mode) {
+            state.mode = mode;
             clearErrors();
             applyMode();
         });
-    });
-    applyMode();
-    if (el.modeInputs.length && typeof post.labelModes === "function") {
-        post.labelModes(el.modeInputs);
+        if (post.authorModes().length && typeof post.authorNames === "function") {
+            post.authorNames().then(function (names) {
+                authorNames = names || {};
+                applyMode();
+            });
+        }
     }
+    applyMode();
     state.initial = draftSnapshot();
     updateCount(el.subject, el.subjectCount, limits.subject_max);
     updateCount(el.body, el.bodyCount, limits.body_max);

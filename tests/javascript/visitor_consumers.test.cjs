@@ -75,7 +75,7 @@ function harness(script, modify = false) {
     vm.createContext(context);
     vm.runInContext(fs.readFileSync(path.join(root, "dc_post_client.js"), "utf8"), context);
     context.MirrorDcPost.createCaptcha = () => ({
-        answer: () => null, hide: () => captchaHides++, setDisabled() {},
+        answer: () => null, hide: () => captchaHides++, setDisabled() {}, setSource() {},
     });
     context.MirrorDcPost.postJson = (url, body) => {
         requests.push({ url, body });

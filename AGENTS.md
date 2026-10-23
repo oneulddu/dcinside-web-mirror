@@ -101,15 +101,20 @@ pm2 logs dc-mirror
   Never auto-resubmit.
   Explicit decision: retain the existing library app_id refresh and worker
   “잠시후 다시 이용해주세요.” app_id-settling retry behavior unchanged.
-- Account frontend: write and comment forms show 유동 plus one option per configured slot
-  (`account_slots`; values `account:1`/`account:2`, labelled "디시 계정" when only one slot, else
-  "계정 N", with " · <DC nickname>" appended once that slot is logged in; never the login id).
-  The last choice is shared in localStorage `mirror_write_mode_v1` (`MirrorDcPost.readMode/saveMode`;
-  the legacy value `account` reads as `account:1`). A remembered slot that is no longer offered is not
-  replaced: the form asks the user to choose again and sends nothing. Account mode sends
-  `mode: "account"`, `account: "N"` and no nickname/password; the slot is captured at submit time.
-  Modify keeps the mode and slot it was opened with (`/write?...&mode=account&account=N`); the toggle is
-  hidden there. Pages fetch `/write/account/status` at most once (`MirrorDcPost.accountStatus`, never
+- Account frontend: one header author menu (`base.html` `.author-pick-control` + `author_menu.js`,
+  shown only when `write_enabled` and ≥1 slot; `body[data-author-slots]` lists slots) chooses 유동 or
+  `account:N` for writes, comments and votes alike. Labels are "디시 계정" when only one slot, else
+  "계정 N", with " · <DC nickname>" once logged in; never the login id. The choice lives in
+  localStorage `mirror_write_mode_v1` (`MirrorDcPost.authorMode/setAuthorMode/onAuthorChange`; legacy
+  `account` reads as `account:1`); other tabs follow via the `storage` event. Forms have no author
+  toggle; they show the current author and react live, keeping drafts. A remembered slot that is no
+  longer offered is not replaced: nothing is sent and the user re-chooses in the header (with no menu
+  left, the first submit switches to 유동 and asks to press again). Account mode sends
+  `mode: "account"`, `account: "N"` and no nickname/password; the author is captured at submit time and
+  a late response is handled for the author it was sent as. Account votes never pre-open the
+  anonymous captcha and always use the app captcha (`setSource`); changing author clears a pending
+  vote captcha. Modify keeps the mode and slot it was opened with
+  (`/write?...&mode=account&account=N`) and ignores the header menu. Pages fetch `/write/account/status` at most once (`MirrorDcPost.accountStatus`, never
   contacts DC). The read page adds password-free 수정·삭제 (`data-owner="account"`, `data-account="N"`)
   to items whose author code equals a logged-in slot's `user_id` (slot 1 wins on a collision); new
   account comments carry their slot on the delete button. This is display only; DC decides ownership,
@@ -167,7 +172,12 @@ pm2 logs dc-mirror
   `com.oneul.dc-relay` running a copy at `~/Library/Application Support/dc-relay/` (copy the script again after
   changes), log `~/Library/Logs/dc-relay.log`. A repeated upvote answers "추천은 1일 1회만 가능합니다.", which
   verifies the route without adding a vote.
-- Votes that carry a captcha answer use the PC web flow (`dc_app/pc_vote.mjs`) for normal/minor/mini galleries:
+- Account votes (`/read/vote` with `mode:"account"`, `account`) run with that slot's login session like
+  writes (same selector rules, lazy login, shared cooldown, slot-only expiry); the library sends
+  `confirm_id` = the slot's `user_id`. They never use the PC flow: captcha answers go as app captcha and
+  `captcha_required` returns `kind=recommend` image URLs; the worker rejects login session + `pc`.
+  Vote intervals stay shared across identities.
+- Anonymous votes that carry a captcha answer use the PC web flow (`dc_app/pc_vote.mjs`) for normal/minor/mini galleries:
   `pc_vote_captcha` opens the PC view page, keeps its cookies and `_view_form_` values under the client's 16-hex key
   (5 minutes, one use), and returns `/kcaptcha/image_v3/` with translucent noise palette entries turned opaque white.
   The answer is POSTed to `/board/recommend/vote` with `ci_t`, `mode` U/D, `code_recommend` and the

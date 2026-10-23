@@ -511,6 +511,8 @@ def test_login_captcha_image_without_gallery(setup):
 
 ACCOUNT_ACTIONS = [
     ("/write", "write", {"subject": "제목", "body": "본문"}),
+    ("/read/vote", "upvote", {"pid": 123}),
+    ("/read/vote", "downvote", {"pid": 123, "direction": "down"}),
     ("/read/comment", "comment", {"pid": 123, "content": "댓글"}),
     ("/read/delete", "delete", {"pid": 123}),
     ("/read/comment/delete", "comment_delete", {"pid": 123, "comment_id": 456}),
@@ -670,8 +672,11 @@ def test_anonymous_ignores_account_selector(setup, path, op, fields, as_form, se
     response = (client.post(path, data={"payload": json.dumps(payload)}, content_type="multipart/form-data", headers=ORIGIN)
                 if as_form else client.post(path, json=payload, headers=ORIGIN))
     assert response.status_code == 200 and response.json["ok"]
-    assert manager.calls[0][1]["session"]["type"] == "anonymous"
-    assert "account" not in manager.calls[0][1]["session"]
+    if op in ("upvote", "downvote"):
+        assert "session" not in manager.calls[0][1]
+    else:
+        assert manager.calls[0][1]["session"]["type"] == "anonymous"
+        assert "account" not in manager.calls[0][1]["session"]
     assert "account" not in response.json
 
 
@@ -1302,6 +1307,88 @@ def test_vote_captcha_uses_pc_session(setup, kind, galltype, query_kind):
     assert response.json == {"ok": True, "message": "비추천했어요."}
     assert manager.calls[-1] == ("downvote", {"gallery": "programming", "no": 123, "captcha": None,
                                               "pc": {"key": "b" * 16, "code": "ab12", "galltype": galltype}})
+
+
+@pytest.mark.parametrize("mode", [None, "", "login", "ACCOUNT", 1, True, {}, []])
+def test_vote_invalid_mode_never_calls_worker(setup, mode):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = post(client, "/read/vote", pid=123, mode=mode)
+    assert response.status_code == 400
+    assert response.json == {"ok": False, "code": "invalid", "field": "mode",
+                             "message": "작성 모드를 다시 선택해 주세요."}
+    assert manager.calls == []
+
+
+@pytest.mark.parametrize("kind", [None, "minor", "mini", "person"])
+@pytest.mark.parametrize("direction,op,message", [
+    ("up", "upvote", "추천했어요."), ("down", "downvote", "비추천했어요."),
+])
+def test_account_vote_captcha_always_uses_app(setup, monkeypatch, kind, direction, op, message):
+    _, client, manager, _ = setup
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID_2", "private-id")
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD_2", "private-password")
+    unlock(client)
+    payload = {"pid": 123, "kind": kind, "direction": direction, "mode": "account", "account": "2"}
+    manager.result = {"ok": False, "error": {"name": "CaptchaRequiredError", "cause": ""}}
+    response = post(client, "/read/vote", **payload)
+    assert response.status_code == 200 and response.json["code"] == "captcha_required"
+    captcha = response.json["captcha"]
+    assert captcha["image_url"] == f'/write/captcha?kind=recommend&board=programming&key={captcha["key"]}'
+    assert service._last_success == {}
+    manager.result = {"ok": True, "data": {"result": True}}
+    response = post(client, "/read/vote", **payload, captcha_key=captcha["key"], captcha_code=" ab12 ")
+    assert response.json == {"ok": True, "message": message}
+    assert manager.calls == [
+        (op, {"gallery": "programming", "no": 123, "captcha": None,
+              "session": {"type": "login", "account": "2"}}),
+        (op, {"gallery": "programming", "no": 123, "captcha": {"key": captcha["key"], "code": "ab12"},
+              "session": {"type": "login", "account": "2"}}),
+    ]
+
+
+@pytest.mark.parametrize("direction", ["up", "down"])
+@pytest.mark.parametrize("first,second", [
+    ("anonymous", "1"), ("1", "2"), ("2", "anonymous"),
+])
+def test_vote_interval_is_shared_across_identities(setup, monkeypatch, direction, first, second):
+    _, client, manager, _ = setup
+    for suffix in ("", "_2"):
+        monkeypatch.setenv("MIRROR_DC_LOGIN_ID" + suffix, "private-id")
+        monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD" + suffix, "private-password")
+    unlock(client)
+    for index, identity in enumerate((first, second)):
+        mode = "anonymous" if identity == "anonymous" else "account"
+        response = post(client, "/read/vote", pid=123, direction=direction, mode=mode, account=identity)
+        assert response.status_code == (200 if index == 0 else 429)
+    assert response.json["code"] == "retry"
+    assert len(manager.calls) == 1
+    assert set(service._last_success) == {"upvote" if direction == "up" else "downvote"}
+
+
+@pytest.mark.parametrize("direction", ["up", "down"])
+@pytest.mark.parametrize("failure,code", [
+    ({"ok": False, "error": {"name": "CaptchaRequiredError"}}, "captcha_required"),
+    ({"ok": False, "error": {"name": "LoginNeeded", "reason": "expired", "account": "2", "sent": False}}, "login_needed"),
+    ({"ok": False, "error": {"name": "ApiError", "cause": "rejected"}}, "rejected"),
+    ({"ok": False, "error": {"name": "WorkerError", "sent": False}}, "unavailable"),
+    (service.WorkerUnavailable(sent=True), "uncertain"),
+])
+def test_account_vote_failure_does_not_consume_interval(setup, monkeypatch, direction, failure, code):
+    _, client, manager, _ = setup
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID_2", "private-id")
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD_2", "private-password")
+    unlock(client)
+    manager.result = failure
+    response = post(client, "/read/vote", pid=123, direction=direction, mode="account", account="2")
+    assert response.json["code"] == code
+    if code == "login_needed":
+        assert response.json["account"] == "2"
+        assert response.json["account_url"] == "/write/account#account-2"
+    assert service._last_success == {}
+    manager.result = {"ok": True, "data": {"result": True}}
+    assert post(client, "/read/vote", pid=123, direction=direction).json["ok"]
+    assert len(manager.calls) == 2
 
 
 def test_pc_vote_captcha_image_route(setup):

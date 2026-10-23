@@ -37,6 +37,7 @@ JSON.parse = (text, ...args) => {
 };
 export const decodeHtml = value => value.replace(/&(lt|gt|amp|quot|apos|nbsp);/g, (_, key) => ({lt:'<',gt:'>',amp:'&',quot:'"',apos:"'",nbsp:' '})[key]);
 const trace = operation => appendFileSync(process.env.WORKER_TEST_TRACE, operation + '\\n');
+globalThis.fetch = async () => { trace('unexpected_fetch'); throw new Error('Unexpected network'); };
 export class DCInside {
   constructor(options) {
     this.session = null;
@@ -70,6 +71,22 @@ export class DCInside {
         }
         return {type:'login', id, password, userId:'public-user' + suffix, result:{name:'고정닉' + suffix,otp_token:'private-otp-token' + suffix}};
       },
+    };
+    const vote = async (gallery, direction, captcha) => {
+      const session = this.session;
+      if (session !== null && session.type !== 'login') throw new Error('Wrong vote session');
+      const userId = session?.userId ?? null;
+      trace('vote:' + userId);
+      if (gallery === 'expired') {
+        const http = new Http({fetch: async () => {
+          trace('http_vote');
+          return new Response(JSON.stringify({result:false,cause:'certification_login'}));
+        }});
+        http.context = this.http.context;
+        return http.post('https://invalid.test/vote', {}, {appId:false});
+      }
+      if (gallery === 'vpn') throw Object.assign(new Error('x'), {name:'ApiError',cause:'추천할 수 없습니다.',response:[{result:false,carrier_vpn_ban:true}]});
+      return {result:'true',direction,userId,captcha:captcha ?? null};
     };
     this.articles = {
       delete: async (gallery, no) => {
@@ -153,12 +170,8 @@ export class DCInside {
           ? {view_info:{no},view_main:{nonrecomm_use:false}}
           : {view_info:{recommend_captcha:true},view_main:{nonrecomm_use:true}};
       },
-      upvote: async gallery => {
-        if (this.session !== null) throw new Error('Leaked session');
-        if (gallery === 'vpn') throw Object.assign(new Error('x'), {name:'ApiError',cause:'추천할 수 없습니다.',response:[{result:false,carrier_vpn_ban:true}]});
-        return {result:'true'};
-      },
-      downvote: async () => { if (this.session !== null) throw new Error('Leaked session'); return {result:'true',direction:'down'}; },
+      upvote: async (gallery, no, captcha) => vote(gallery, 'up', captcha),
+      downvote: async (gallery, no, captcha) => vote(gallery, 'down', captcha),
     };
     this.comments = {
       delete: async (gallery, no, commentNo) => {
@@ -409,6 +422,107 @@ const modify = (extra = {}) => mutation('modify', {subject:'수정 제목', fing
 const accountWrite = subject => ({...write(subject), session:{type:'login'}});
 const sessionProbe = {op:'upvote',gallery:'programming',no:1};
 
+for (const op of ['upvote', 'downvote']) {
+  const accountVote = (account, extra = {}) => ({...sessionProbe, op, session:{type:'login',account}, ...extra});
+
+  test(op + ' alternates account slots, carries app captcha, and clears the anonymous session', () => {
+    const captcha = {key:'a'.repeat(16),code:'ab12'};
+    const result = run([
+      accountVote('1'), sessionProbe,
+      accountVote('2', {testAdvanceMs:10000,captcha}), sessionProbe,
+      accountVote('1'), accountVote('2'), sessionProbe,
+    ], false, 'success', 'success');
+    assert(result.replies.every(reply => reply.ok));
+    assert.deepEqual(result.replies.map(reply => reply.data.userId),
+      ['public-user',null,'public-user-2',null,'public-user','public-user-2',null]);
+    assert.deepEqual(result.replies[2].data.captcha, captcha);
+    assert.equal(result.trace.filter(item => item === 'login').length, 2);
+    assert(!result.trace.includes('anonymous'));
+  });
+
+  test(op + ' rejects login plus PC captcha before any DC call', () => {
+    const result = run([accountVote('2', {pc:{key:'a'.repeat(16),code:'ab12',galltype:'M'}})],
+      false, 'success', 'success');
+    assert.deepEqual(result.replies[0].error, {name:'WorkerError',cause:'',status:null,sent:false});
+    assert.deepEqual(result.trace, []);
+    assert.deepEqual(result.posts, []);
+  });
+
+  test(op + ' lazy login shares the cross-slot cooldown without voting or changing slots', () => {
+    const result = run([
+      {op:'account_login',account:'1'}, accountVote('2'), {op:'account_status'},
+      accountVote('2', {testAdvanceMs:10000}),
+    ], false, 'success', 'success');
+    assert.deepEqual(result.replies[1].error, {name:'LoginCooldown',retry_after:10,sent:false});
+    assert.equal(result.replies[2].data.accounts['1'].logged_in, true);
+    assert.equal(result.replies[2].data.accounts['2'].logged_in, false);
+    assert.equal(result.replies[3].data.userId, 'public-user-2');
+    assert.deepEqual(result.trace.filter(item => item.startsWith('vote:')), ['vote:public-user-2']);
+  });
+
+  for (const reason of ['otp', 'captcha', 'failed']) {
+    test(op + ' blocked slot 2 returns LoginNeeded without any vote or fallback: ' + reason, () => {
+      const result = run([
+        {op:'account_login',account:'1'},
+        accountVote('2', {testAdvanceMs:10000}), accountVote('2'), {op:'account_status'},
+      ], false, 'success', reason);
+      for (const index of [1,2]) {
+        const {captcha_key, ...error} = result.replies[index].error;
+        assert.deepEqual(error, {name:'LoginNeeded',reason,account:'2',sent:false});
+        if (reason === 'captcha') assert.match(captcha_key, /^[a-f0-9]{16}$/);
+      }
+      assert.equal(result.replies[3].data.accounts['1'].logged_in, true);
+      assert.equal(result.replies[3].data.accounts['2'].blocked, true);
+      assert.equal(result.trace.filter(item => item === 'login:2').length, 1);
+      assert(!result.trace.some(item => item.startsWith('vote:')));
+    });
+  }
+
+  test(op + ' expiry clears only slot 2 and never relogs or resends the rejected vote', () => {
+    const result = run([
+      {op:'account_login',account:'1'},
+      accountVote('2', {gallery:'expired',testAdvanceMs:10000}),
+      {op:'account_status'}, accountVote('2'), accountVote('1'), sessionProbe,
+    ], false, 'success', 'success');
+    assert.deepEqual(result.replies[1].error, {name:'LoginNeeded',reason:'expired',account:'2',sent:false});
+    assert.equal(result.replies[2].data.accounts['1'].logged_in, true);
+    assert.equal(result.replies[2].data.accounts['2'].logged_in, false);
+    assert.equal(result.replies[2].data.accounts['2'].reason, 'expired');
+    assert.deepEqual(result.replies[3].error, {name:'LoginCooldown',retry_after:10,sent:false});
+    assert.equal(result.replies[4].data.userId, 'public-user');
+    assert.equal(result.replies[5].data.userId, null);
+    assert.equal(result.trace.filter(item => item === 'http_vote').length, 1);
+    assert.deepEqual(result.trace.filter(item => item.startsWith('vote:')),
+      ['vote:public-user-2','vote:public-user','vote:null']);
+    assert(!result.trace.includes('automaticRelogin'));
+  });
+}
+
+test('real ArticleApi vote bodies include confirm_id only for the active login session', async () => {
+  const { DCInside } = await import('../../dc_app/node_modules/@green-1052/dcinside.js/dist/index.js');
+  const requests = [];
+  const dc = new DCInside({http:{fetch:async (url, init) => {
+    requests.push({path:new URL(url).pathname, method:init.method, body:Object.fromEntries(init.body)});
+    return new Response(JSON.stringify({result:true}));
+  }}});
+  dc.auth.appId = async () => 'test-app-id';
+  for (const op of ['upvote', 'downvote']) {
+    dc.session = {type:'login',userId:'u2'};
+    await dc.articles[op]('programming', 123);
+    dc.session = null;
+    await dc.articles[op]('programming', 123);
+  }
+  assert.equal(requests.length, 4);
+  for (const [index, request] of requests.entries()) {
+    assert.equal(request.path, index < 2 ? '/api/_recommend_up.php' : '/api/_recommend_down.php');
+    assert.equal(request.method, 'POST');
+    assert.equal(request.body.id, 'programming');
+    assert.equal(request.body.no, '123');
+    if (index % 2 === 0) assert.equal(request.body.confirm_id, 'u2');
+    else assert(!Object.hasOwn(request.body, 'confirm_id'));
+  }
+});
+
 test('account status is allowlisted and offline; explicit login never persists its secrets', () => {
   const result = run([{op:'account_status'},{op:'account_login'},sessionProbe,{op:'account_status'}], false, 'success');
   const before = {configured:true,logged_in:false,user_id:null,name:null,blocked:false,reason:null};
@@ -479,7 +593,7 @@ test('lazy login failure blocks immediate explicit login without another DC call
   assert.equal(blocked.replies[3].data.blocked, true);
   assert.equal(blocked.replies[3].data.reason, 'otp');
   // The session probe is an upvote, which performs its own settled() appId call.
-  assert.deepEqual(blocked.trace, ['appId','login','appId']);
+  assert.deepEqual(blocked.trace, ['appId','login','appId','vote:null']);
   const recovered = run([...requests, {op:'account_login',otp:'123456',testAdvanceMs:10000},
     sessionProbe, accountWrite('one')], false, 'otp');
   assert(recovered.replies.slice(4).every(reply => reply.ok));
@@ -496,7 +610,7 @@ test('expiry lazy-login cooldown sends nothing, preserves state, and expires at 
   assert.deepEqual(blocked.replies[3].data.accounts['1'],
     {configured:true,logged_in:false,user_id:null,name:null,blocked:false,reason:'expired'});
   // The final appId call belongs to the session probe, not the blocked write.
-  assert.deepEqual(blocked.trace, ['appId','login','appId','write','http_write','appId']);
+  assert.deepEqual(blocked.trace, ['appId','login','appId','write','http_write','appId','vote:null']);
   const recovered = run([...requests,
     {...accountWrite('one'),testAdvanceMs:9999}, sessionProbe,
     {...accountWrite('one'),testAdvanceMs:1}, sessionProbe, {op:'account_status'},
@@ -698,7 +812,7 @@ test('modify re-fetches original HTML, preserves options, and never accepts HTML
     content:[{type:'html',html:'<b>굵은</b> 블록'},'새 본문'],deleteFiles:[],autoDeleteTime:'24',
     head:{no:3,name:'일반'},captcha:{key:'a'.repeat(16),code:'ab'}});
   assert.equal(result.replies[1].error.sent, false);
-  assert.deepEqual(result.trace, ['anonymous','appId','modifyInfo','write','appId']);
+  assert.deepEqual(result.trace, ['anonymous','appId','modifyInfo','write','appId','vote:null']);
   assert.equal(result.replies[2].ok, true);
 });
 

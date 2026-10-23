@@ -69,10 +69,9 @@
         target: document.getElementById("comment-form-target"),
         targetText: document.getElementById("comment-form-target-text"),
         cancel: document.getElementById("comment-form-cancel"),
-        modeInputs: Array.prototype.slice.call(form.querySelectorAll('input[name="comment-mode"]')),
+        modeNote: document.getElementById("comment-mode-note"),
         identity: form.querySelector(".comment-form-identity"),
-        remember: form.querySelector(".comment-form-remember"),
-        accountNote: document.getElementById("comment-account-note")
+        remember: form.querySelector(".comment-form-remember")
     };
     var captcha = post.createCaptcha("comment-captcha", "comment", board, null);
     var storage = null;
@@ -82,10 +81,9 @@
         storage = null;
     }
     // parent: 답글을 다는 댓글({id, authorCode, author, item}). 없으면 일반 댓글.
-    // mode: 계정 선택이 있을 때만 마지막으로 고른 값을 쓴다.
-    // 기억한 계정이 선택지에 없으면 빈 값으로 두고 작성자를 다시 고르게 한다.
+    // mode: 상단 작성자 메뉴의 값. 기억한 계정이 서버에 없으면 빈 값으로 두고 다시 고르게 한다.
     var state = { sending: false, retryUntil: 0, retryTimer: null, parent: null, sentAnswer: false,
-        mode: post.pickMode(post.readMode(storage), el.modeInputs) };
+        mode: post.authorMode(), names: {} };
 
     function accountSlot() {
         return post.modeAccount(state.mode);
@@ -110,17 +108,17 @@
     // 계정으로 쓰면 닉네임·비밀번호 칸과 기억 선택을 숨긴다.
     function applyMode() {
         var account = Boolean(accountSlot());
-        el.modeInputs.forEach(function (input) {
-            input.checked = input.value === state.mode;
-        });
+        if (el.modeNote) {
+            var modes = post.authorModes();
+            el.modeNote.textContent = !state.mode ? "작성자를 상단 작성자 메뉴에서 다시 골라 주세요. 전에 고른 계정이 서버에 없어요."
+                : "작성자: " + post.authorLabel(state.mode, state.names, modes.length === 2)
+                    + (account ? ". 지울 때 비밀번호가 필요 없어요." : "");
+        }
         [el.identity, el.remember].forEach(function (node) {
             if (node) {
                 node.hidden = account;
             }
         });
-        if (el.accountNote) {
-            el.accountNote.hidden = !account;
-        }
         el.passwordHint.hidden = account || !el.rememberPassword.checked;
     }
 
@@ -153,7 +151,7 @@
 
     function sync() {
         var waiting = state.retryUntil > Date.now();
-        [el.nickname, el.password, el.content, el.cancel].concat(el.modeInputs).forEach(function (input) {
+        [el.nickname, el.password, el.content, el.cancel].forEach(function (input) {
             input.disabled = state.sending;
         });
         el.submit.disabled = state.sending || waiting;
@@ -420,14 +418,15 @@
         }
         clearErrors();
         if (!state.mode) {
-            if (!el.modeInputs.length) {
-                // 고를 수 있는 것이 유동뿐이다. 알린 뒤 다시 누르면 유동으로 보낸다.
+            if (!post.authorModes().length) {
+                // 상단 메뉴가 없어 고를 수 있는 것이 유동뿐이다. 알린 뒤 다시 누르면 유동으로 보낸다.
+                post.setAuthorMode("anonymous");
                 state.mode = "anonymous";
-                post.saveMode(storage, state.mode);
+                applyMode();
                 setStatus("전에 고른 디시 계정이 서버에 없어요. 유동으로 달려면 다시 등록을 눌러 주세요.", "error");
                 return;
             }
-            setStatus("작성자를 다시 골라 주세요. 전에 고른 계정이 서버에 없어요.", "error");
+            setStatus("작성자를 다시 골라 주세요. 전에 고른 계정이 서버에 없어요. 상단 작성자 메뉴에서 골라 주세요.", "error");
             return;
         }
         // 보낼 때 고른 계정을 붙잡아 둔다. 결과를 받기 전에 선택을 바꿔도 바뀌지 않는다.
@@ -532,22 +531,20 @@
             setParent(null);
         }
     });
-    el.modeInputs.forEach(function (input) {
-        input.addEventListener("change", function () {
-            if (!input.checked) {
-                return;
-            }
-            state.mode = post.normalizeMode(input.value);
-            post.saveMode(storage, state.mode);
-            clearErrors();
+    // 상단 작성자 메뉴(다른 탭 포함)를 따른다. 써 둔 댓글과 닉네임·비밀번호 칸 값은 그대로 둔다.
+    post.onAuthorChange(function (mode) {
+        state.mode = mode;
+        clearErrors();
+        applyMode();
+    });
+    if (post.authorModes().length && typeof post.authorNames === "function") {
+        post.authorNames().then(function (names) {
+            state.names = names || {};
             applyMode();
         });
-    });
+    }
     restoreIdentity();
     applyMode();
-    if (el.modeInputs.length && typeof post.labelModes === "function") {
-        post.labelModes(el.modeInputs);
-    }
     updateLength();
     sync();
 })(typeof window !== "undefined" ? window : globalThis);

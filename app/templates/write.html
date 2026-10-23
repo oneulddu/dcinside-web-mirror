@@ -32,15 +32,7 @@
           {%- if account_modify %} data-mode="account" data-account="{{ request.args.get('account', '1')[:2] }}"{% endif %}>
         <fieldset class="write-author">
             <legend class="sr-only">작성자</legend>
-            {#- 수정은 연 방식(유동 또는 계정)을 바꾸지 않는다. -#}
-            {% if account_configured|default(false) and not modify_pid %}
-            <div class="write-mode" role="radiogroup" aria-label="작성자">
-                <label class="write-mode-option"><input type="radio" name="write-mode" value="anonymous" checked><span>유동</span></label>
-                {% for slot in account_slots %}
-                <label class="write-mode-option"><input type="radio" name="write-mode" value="account:{{ slot }}"><span>{{ "디시 계정" if account_slots|length == 1 else "계정 " ~ slot }}</span></label>
-                {% endfor %}
-            </div>
-            {% endif %}
+            {#- 작성자는 상단 작성자 메뉴에서 고른다. 수정은 연 방식(유동 또는 계정)을 바꾸지 않는다. -#}
             {% if account_configured|default(false) and (account_modify or not modify_pid) %}
             <p class="write-hint" id="write-account-note"{% if not account_modify %} hidden{% endif %}>서버에 설정한 디시 계정으로 {{ "고쳐요" if modify_pid else "올려요" }}. 로그인이 필요하면 <a href="{{ url_for('main.write_account') }}" target="_blank" rel="noopener">계정 화면</a>에서 해 주세요.</p>
             {% endif %}

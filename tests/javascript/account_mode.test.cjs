@@ -51,8 +51,15 @@ test("작성자 선택은 계정 번호까지 기억하고, 예전 값은 계정
     assert.equal(post.modeAccount("anonymous"), "");
 });
 
+test("작성자 이름은 계정 번호와 닉네임만 쓰고, 계정이 하나면 디시 계정이라고 부른다", () => {
+    assert.equal(post.authorLabel("anonymous", {}, false), "유동");
+    assert.equal(post.authorLabel("account:2", { "2": "닉네임둘" }, false), "계정 2 · 닉네임둘");
+    assert.equal(post.authorLabel("account:2", {}, false), "계정 2");
+    assert.equal(post.authorLabel("account:1", { "1": "닉" }, true), "디시 계정 · 닉");
+});
+
 test("기억한 계정이 선택지에 없으면 다른 계정으로 바꾸지 않고 다시 고르게 한다", () => {
-    const inputs = [{ value: "anonymous" }, { value: "account:1" }];
+    const inputs = ["anonymous", "account:1"];
     assert.equal(post.pickMode("account:1", inputs), "account:1");
     assert.equal(post.pickMode("account:2", inputs), "");
     assert.equal(post.pickMode("anonymous", inputs), "anonymous");

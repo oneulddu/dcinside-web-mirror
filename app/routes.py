@@ -1417,8 +1417,8 @@ def _write_result(op, board, kind, **payload):
         result["message"] = f"디시가 {name} 받지 않았어요." + (f" 디시 안내: {cause}" if cause else "")
     elif result["code"] == "captcha_required":
         key = secrets.token_hex(8)
-        if op in ("upvote", "downvote") and _pc_gall_type(kind):
-            # 추천 보안 문자는 노이즈를 지울 수 있는 PC 문자로 받고, 답도 PC 방식으로 보낸다.
+        if op in ("upvote", "downvote") and _pc_gall_type(kind) and payload.get("session", {}).get("type") != "login":
+            # 유동 추천 보안 문자는 PC 문자로 받고, 답도 같은 PC 쿠키 세션으로 보낸다.
             image_url = url_for("main.write_captcha", kind="vote", board=board, key=key,
                                 pid=payload["no"], gallery_kind=kind or "")
         else:
@@ -1620,6 +1620,12 @@ def read_vote():
             raise ValueError()
     except (ValueError, BadRequest):
         return _write_invalid("board", "올바른 갤러리와 글 번호를 선택해 주세요.")
+    if data.get("mode", "anonymous") not in ("anonymous", "account"):
+        return _write_invalid("mode", "작성 모드를 다시 선택해 주세요.")
+    account = data.get("mode") == "account"
+    slot = _write_account_slot(data) if account else None
+    if account and slot is None:
+        return _write_invalid("mode", "계정을 다시 선택해 주세요.")
     try:
         captcha = _write_captcha_answer(data)
     except ValueError:
@@ -1632,6 +1638,8 @@ def read_vote():
         # 비추천을 끈 갤러리다. 디시에 보내지 않는다.
         return jsonify(ok=False, code="rejected", reason="down_disabled", message="이 갤러리는 비추천을 받지 않아요.")
     op = "upvote" if direction == "up" else "downvote"
+    if account:
+        return _write_result(op, board, kind, no=int(pid), captcha=captcha, session={"type": "login", "account": slot})
     gall_type = _pc_gall_type(kind)
     if captcha and gall_type:
         return _write_result(op, board, kind, no=int(pid), captcha=None, pc=dict(captcha, galltype=gall_type))

@@ -3973,58 +3973,72 @@ html[data-theme="dark"] .board-updates-btn {
     display: none;
 }
 
-/* 작성자 선택: 유동과 디시 계정 중 하나를 고른다. */
-.write-mode {
-    display: inline-flex;
-    align-self: flex-start;
-    gap: 2px;
-    padding: 3px;
-    border-radius: var(--radius-m);
-    background: var(--surface);
-}
-
-.write-mode-option {
+/* 상단 작성자 메뉴: 글쓰기·댓글·추천이 함께 따른다. 메뉴 모양은 이미지 차단 메뉴와 같다. */
+.author-pick-control {
     position: relative;
-    display: inline-flex;
 }
 
-.write-mode-option input {
+.author-pick-toggle.is-account {
+    color: var(--accent);
+}
+
+.author-pick-badge {
     position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    margin: 0;
-    opacity: 0;
-    cursor: pointer;
-}
-
-.write-mode-option span {
-    display: inline-flex;
-    align-items: center;
-    min-height: 40px;
-    padding: 0 var(--space-4);
-    border-radius: calc(var(--radius-m) - 3px);
-    color: var(--muted);
-    font: var(--type-label);
-    font-weight: 500;
-    white-space: nowrap;
-    transition: background-color var(--dur) ease-out, color var(--dur) ease-out;
-}
-
-.write-mode-option input:checked + span {
-    background: var(--bg);
-    color: var(--fg);
+    right: 6px;
+    bottom: 6px;
+    min-width: 14px;
+    border-radius: 7px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font: var(--type-meta);
+    font-size: 10px;
     font-weight: 700;
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+    line-height: 14px;
+    text-align: center;
 }
 
-.write-mode-option input:focus-visible + span {
-    outline: var(--rule-bold) solid var(--accent);
-    outline-offset: -2px;
+.author-pick-badge:empty {
+    display: none;
 }
 
-.write-mode-option input:disabled {
-    cursor: not-allowed;
+.author-pick-toggle.is-stale .author-pick-badge {
+    background: var(--fg);
+    color: var(--bg);
+}
+
+.author-pick-menu {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + var(--space-1));
+    right: 0;
+    width: min(300px, calc(100vw - var(--space-8)));
+    border-radius: var(--radius-xl);
+    background: var(--elevated);
+    box-shadow: var(--shadow-float);
+    padding: var(--space-2) 0;
+}
+
+html[data-theme="dark"] .author-pick-menu {
+    outline: var(--rule) solid var(--line-strong);
+    outline-offset: -1px;
+}
+
+.author-pick-menu[hidden] {
+    display: none;
+}
+
+.author-pick-link {
+    min-height: 48px;
+    border-top: var(--rule) solid var(--line);
+    text-decoration: none;
+}
+
+.author-pick-link::after {
+    display: none;
+}
+
+.comment-mode-note {
+    margin: 0;
 }
 
 /* 계정 화면: 계정이 둘이면 계정마다 폼이 하나씩 이어진다. */
