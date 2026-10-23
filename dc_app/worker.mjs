@@ -11,6 +11,14 @@ const dc = new DCInside({ http: { timeout: 45000 } });
 // certification_login is an answered rejection, not a transport failure.
 // Returning false makes Http.send throw rather than replay the mutation.
 dc.http.context.relogin = async () => false;
+// 2026-10-23 앱 업데이트 이후 디시는 app_id 발급 요청의 multipart 본문을 거절한다.
+// 공식 앱과 같이 urlencoded 폼으로 보내도록 이 요청에만 옵션을 덧붙인다.
+const sendPost = dc.http.post;
+dc.http.post = function (url, fields, options) {
+  return String(url).endsWith('/auth/mobile_app_verification')
+    ? sendPost.call(this, url, fields, { ...options, urlencoded: true })
+    : sendPost.call(this, url, fields, options);
+};
 const loginId = process.env.MIRROR_DC_LOGIN_ID || '';
 const loginPassword = process.env.MIRROR_DC_LOGIN_PASSWORD || '';
 let loginSession = null;

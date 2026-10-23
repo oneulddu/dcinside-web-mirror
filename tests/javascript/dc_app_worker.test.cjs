@@ -43,7 +43,12 @@ export class DCInside {
     if (options.http.timeout !== 45000) throw new Error('Wrong HTTP timeout');
     this.credentials = {androidId:'123',securityToken:'456',fid:'private-fid',refreshToken:'private-refresh',clientToken:'private-token',appId:'private-app',appIdIssuedAt:Date.now()-30000};
     this.auth = {
-      appId: async () => { trace('appId'); return 'private-app'; },
+      appId: async () => {
+        trace('appId');
+        await this.http.post('https://sign.dcinside.com/auth/mobile_app_verification', {android_id:'123'}, {appId:false, raw:true});
+        await this.http.post('https://sign.dcinside.com/auth/other', {android_id:'123'}, {appId:false, raw:true, marker:'other'});
+        return 'private-app';
+      },
       exportCredentials: () => this.credentials,
       importCredentials: value => { this.credentials = value; },
       login: async (id, password, options) => {
@@ -162,7 +167,10 @@ export class DCInside {
         return {result:'true', gallery, no, content, parent: options.parent ?? null, captcha: options.captcha ?? null};
       },
     };
-    this.http = { context: {relogin: async () => { trace('automaticRelogin'); return true; }}, fetch: async url => {
+    this.http = { post: async (url, fields, options) => {
+      if (process.env.WORKER_TEST_POSTS) appendFileSync(process.env.WORKER_TEST_POSTS, JSON.stringify({url, fields, options}) + '\\n');
+      return {result:true};
+    }, context: {relogin: async () => { trace('automaticRelogin'); return true; }}, fetch: async url => {
       if (url.includes('badtype')) return new Response('html', {headers:{'content-type':'text/html'}});
       if (url.includes('oversize')) return new Response(new Uint8Array(204801), {headers:{'content-type':'image/png'}});
       return new Response(new Uint8Array([1,2,3]), {headers:{'content-type':'image/png'}});
@@ -184,12 +192,13 @@ function run(requests, seed = false, login = '') {
     fs.copyFileSync(path.resolve(__dirname, '../../dc_app/pc_vote.mjs'), path.join(directory, 'pc_vote.mjs'));
     const state = path.join(directory, 'state/credentials.json');
     const tracePath = path.join(directory, 'trace.txt');
+    const postsPath = path.join(directory, 'posts.txt');
     if (seed) {
       fs.mkdirSync(path.dirname(state));
       fs.writeFileSync(state, JSON.stringify({ restored: true, appIdIssuedAt: Date.now() - 30000 }), { mode: 0o644 });
     }
     const child = spawnSync(process.execPath, [path.join(directory, 'worker.mjs')], {
-      env: { ...process.env, MIRROR_DC_APP_STATE: state, WORKER_TEST_TRACE: tracePath,
+      env: { ...process.env, MIRROR_DC_APP_STATE: state, WORKER_TEST_TRACE: tracePath, WORKER_TEST_POSTS: postsPath,
         MIRROR_DC_LOGIN_ID: login ? 'private-login-id' : '', MIRROR_DC_LOGIN_PASSWORD: login ? 'private-password' : '',
         WORKER_TEST_LOGIN: login },
       input: requests.map((request, index) => JSON.stringify({ id: index, ...request })).join('\n') + '\n',
@@ -201,6 +210,7 @@ function run(requests, seed = false, login = '') {
     assert.deepEqual(replies.map(reply => reply.id), requests.map((_, index) => index));
     return { replies, mode: fs.existsSync(state) ? fs.statSync(state).mode & 0o777 : null,
       trace: fs.existsSync(tracePath) ? fs.readFileSync(tracePath, 'utf8').trim().split('\n') : [],
+      posts: fs.existsSync(postsPath) ? fs.readFileSync(postsPath, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [],
       state: fs.existsSync(state) ? JSON.parse(fs.readFileSync(state, 'utf8')) : null,
       temporary: fs.existsSync(path.dirname(state)) ? fs.readdirSync(path.dirname(state)).filter(name => name.endsWith('.tmp')) : [] };
   } finally {
@@ -217,6 +227,18 @@ test('worker serializes sessions, preserves text and validateOnly, and writes cr
   assert.deepEqual(result.replies.slice(0, 2).map(reply => reply.data.subject), ['one', 'two']);
   assert.equal(result.mode, 0o600);
   assert.deepEqual(result.temporary, []);
+});
+
+test('app_id issuance is sent urlencoded while other posts keep their options', () => {
+  const result = run([write('appid')]);
+  assert.equal(result.replies[0].ok, true);
+  assert.deepEqual(result.posts.map(post => post.url), [
+    'https://sign.dcinside.com/auth/mobile_app_verification',
+    'https://sign.dcinside.com/auth/other',
+  ]);
+  assert.deepEqual(result.posts[0].options, { appId:false, raw:true, urlencoded:true });
+  assert.deepEqual(result.posts[0].fields, { android_id:'123' });
+  assert.deepEqual(result.posts[1].options, { appId:false, raw:true, marker:'other' });
 });
 
 test('credential restore restricts existing file permissions', () => {
