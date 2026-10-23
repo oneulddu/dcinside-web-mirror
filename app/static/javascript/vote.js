@@ -125,7 +125,7 @@
         }).then(function (response) {
             return response.json();
         }).then(function (data) {
-            if (data && data.code === "visitor_check_required") {
+            if (data && (data.code === "visitor_check_required" || data.code === "update_required")) {
                 setStatus(data.message || "아무것도 전송하지 않았어요. 페이지를 새로고침해 주세요.", "error");
                 return;
             }

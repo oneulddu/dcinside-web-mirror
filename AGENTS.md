@@ -101,6 +101,11 @@ pm2 logs dc-mirror
   Never auto-resubmit.
   Explicit decision: retain the existing library app_id refresh and worker
   “잠시후 다시 이용해주세요.” app_id-settling retry behavior unchanged.
+  Account mutation rejections keep generic browser messages. Only when no login was attempted
+  in that request, the worker sends separate `diag_cause` metadata: both slots' non-empty login
+  ids/passwords replaced by `***`, then capped at 200 characters. `perform` strips it and logs
+  WARNING with op/board/no; never put it in `cause`, browser JSON or messages. Login failures
+  (including lazy login) carry categories only; worker stderr remains discarded.
 - Account frontend: one header author menu (`base.html` `.author-pick-control` + `author_menu.js`,
   shown only when `write_enabled` and ≥1 slot; `body[data-author-slots]` lists slots) chooses 유동 or
   `account:N` for writes, comments and votes alike. Labels are "디시 계정" when only one slot, else
@@ -153,6 +158,11 @@ pm2 logs dc-mirror
   `dc_app/worker.mjs` uses pinned `@green-1052/dcinside.js@2.0.1`, stores device credentials
   atomically with mode 0600, and waits for newly issued app IDs to settle. Captcha images
   are image-only, at most 200KB, and no-store. Never bypass upstream captcha.
+  Before client construction it fixes `APP.versionCode="100190"` / `versionName="5.3.20"`
+  for app_id issuance (urlencoded) and GCM registration; other identity constants are unchanged.
+  The observed “최신 버전으로 업데이트” rejection is detected before sanitization, including
+  app_id/login failures, and becomes fixed `update_required` JSON/message (HTTP 200), never raw
+  upstream text or an automatic resend. Vote options and write metadata also show this warning.
 - `/write` also accepts multipart `payload` + `images`: up to 10 magic-validated JPG/PNG/GIF/WEBP files, 10MiB each/30MiB total, with a 32MiB request cap.
   A body line that is only `[사진 N]` places photo N there (`dc_write.photo_blocks` → worker `blocks`); unknown or
   duplicate markers are body errors, unmarked photos follow `image_position`, and marker text without photos stays text.

@@ -22,6 +22,15 @@ const fingerprint = createHash('sha256').update(JSON.stringify({file:[],memo:sna
 const fakeLibrary = `
 import { appendFileSync } from 'node:fs';
 import { Http } from ${JSON.stringify(require('node:url').pathToFileURL(path.resolve(__dirname, '../../dc_app/node_modules/@green-1052/dcinside.js/dist/index.js')).href)};
+export const APP = {};
+const updateText = '앱을 계속 이용하시려면 스토어에서 최신 버전으로 업데이트해 주세요.';
+const diagText = 'DC rejection private-login-id-2 private-password-2 private-login-id private-password ' + '거절'.repeat(150);
+function rejection(marker) {
+  const cause = marker.startsWith('update_') ? updateText : diagText;
+  if (marker.endsWith('_throw')) throw Object.assign(new Error(cause), {name:'ApiError', cause});
+  if (marker.endsWith('_dcerror')) throw Object.assign(new Error(cause), {name:'DCInsideError'});
+  if (marker.endsWith('_return')) return {result:false, cause};
+}
 // Test-only clock control at the mocked package boundary: advance time when a
 // request line is decoded, without a worker option or a real ten-second wait.
 let now = Date.now();
@@ -46,6 +55,7 @@ export class DCInside {
     this.auth = {
       appId: async () => {
         trace('appId');
+        if (process.env.WORKER_TEST_LOGIN === 'appid_update') throw Object.assign(new Error(updateText), {name:'DCInsideError'});
         await this.http.post('https://sign.dcinside.com/auth/mobile_app_verification', {android_id:'123'}, {appId:false, raw:true});
         await this.http.post('https://sign.dcinside.com/auth/other', {android_id:'123'}, {appId:false, raw:true, marker:'other'});
         return 'private-app';
@@ -63,6 +73,7 @@ export class DCInside {
           trace('otpToken');
         }
         const failure = process.env[second ? 'WORKER_TEST_LOGIN_2' : 'WORKER_TEST_LOGIN'];
+        if (failure === 'update') throw Object.assign(new Error(id + password + updateText), {name:'ApiError',cause:id + password + updateText});
         if (failure !== 'success' && options.otp !== '123456' && options.captcha?.code !== 'answer') {
           throw Object.assign(new Error(id + password), {
             name: {otp:'OtpRequiredError',captcha:'CaptchaRequiredError',failed:'ApiError'}[failure] || 'Error',
@@ -77,6 +88,8 @@ export class DCInside {
       if (session !== null && session.type !== 'login') throw new Error('Wrong vote session');
       const userId = session?.userId ?? null;
       trace('vote:' + userId);
+      const failure = rejection(gallery);
+      if (failure) return failure;
       if (gallery === 'expired') {
         const http = new Http({fetch: async () => {
           trace('http_vote');
@@ -91,6 +104,8 @@ export class DCInside {
     this.articles = {
       delete: async (gallery, no) => {
         trace('delete');
+        const failure = rejection(gallery);
+        if (failure) return failure;
         if (!['anonymous','login'].includes(this.session?.type)) throw new Error('Wrong session');
         if (this.session.password !== 'private-password') throw Object.assign(new Error('x'), {name:'ApiError',cause:'비밀번호 오류'});
         if (gallery === 'throttle') {
@@ -110,6 +125,8 @@ export class DCInside {
         return {...info, headid:3, head_text:[{no:0,name:'일반',level:0},{no:3,name:'기록',level:9}], auto_del_time:'24'};
       },
       list: async options => {
+        const failure = rejection(options.gallery);
+        if (failure) return failure;
         if (options.page !== 1) throw new Error('Wrong page');
         if (options.gallery === 'failure') throw Object.assign(new Error('failure'), {name:'ApiError',cause:'권한 오류'});
         if (options.gallery === 'programming') return {gall_info:[{}],gall_list:[]};
@@ -118,6 +135,8 @@ export class DCInside {
       },
       write: async options => {
         trace('write');
+        const failure = rejection(options.subject);
+        if (failure) return failure;
         const session = this.session;
         await new Promise(resolve => setTimeout(resolve, 5));
         if (this.session !== session) throw new Error('Session race');
@@ -165,6 +184,8 @@ export class DCInside {
       },
       read: async (gallery, no) => {
         trace('read');
+        const failure = rejection(gallery);
+        if (failure) return failure;
         if (gallery === 'deleted') throw Object.assign(new Error('x'), {name:'ApiError',cause:'삭제된 글'});
         return gallery === 'vanced'
           ? {view_info:{no},view_main:{nonrecomm_use:false}}
@@ -176,12 +197,16 @@ export class DCInside {
     this.comments = {
       delete: async (gallery, no, commentNo) => {
         trace('comment_delete');
+        const failure = rejection(gallery);
+        if (failure) return failure;
         if (!['anonymous','login'].includes(this.session?.type)) throw new Error('Wrong session');
         if (this.session.password !== 'private-password') throw Object.assign(new Error('x'), {name:'ApiError',cause:'비밀번호가 틀립니다.'});
         return {result:'true', gallery, no, commentNo};
       },
       write: async (gallery, no, content, options) => {
         trace('comment');
+        const failure = rejection(gallery);
+        if (failure) return failure;
         const session = this.session;
         const expectedPassword = session?.userId === 'public-user-2' ? 'private-password-2' : 'private-password';
         if (!session || !['anonymous','login'].includes(session.type) || session.password !== expectedPassword) throw new Error('Wrong session');
@@ -204,13 +229,38 @@ export class DCInside {
 export const captchaUrl = (kind,key,gallery) => 'https://invalid.test/' + gallery;
 `;
 
-function run(requests, seed = false, login = '', login2 = '') {
+// Re-export the REAL package, only replacing the transport. Auth, Http and APP
+// are unmodified; no request can leave this process, including unexpected URLs.
+const realOfflineLibrary = `
+export * from ${JSON.stringify(require('node:url').pathToFileURL(path.resolve(__dirname, '../../dc_app/node_modules/@green-1052/dcinside.js/dist/index.js')).href)};
+import { appendFileSync } from 'node:fs';
+globalThis.fetch = async (url, init = {}) => {
+  const request = new Request(url, init);
+  const body = await request.text();
+  appendFileSync(process.env.WORKER_TEST_POSTS, JSON.stringify({
+    url:request.url, method:request.method, headers:Object.fromEntries(request.headers),
+    body, urlencoded:init.body instanceof URLSearchParams,
+  }) + '\\n');
+  const target = new URL(url);
+  if (request.method === 'POST' && target.href === 'https://android.apis.google.com/c2dm/register3') return new Response('token=offline-client');
+  if (request.method === 'POST' && target.href === 'https://firebaseinstallations.googleapis.com/v1/projects/dcinside-b3f40/installations')
+    return Response.json({fid:'offline-fid', refreshToken:'offline-refresh', authToken:{token:'offline-auth'}});
+  if (request.method === 'GET' && target.href === 'https://json2.dcinside.com/json0/app_check_A_rina_one_new.php')
+    return Response.json([{date:'20261024'}]);
+  if (request.method === 'POST' && target.href === 'https://msign.dcinside.com/auth/mobile_app_verification')
+    return Response.json({result:false,cause:'앱을 계속 이용하시려면 스토어에서 최신 버전으로 업데이트해 주세요.'});
+  appendFileSync(process.env.WORKER_TEST_TRACE, 'unexpected_fetch\\n');
+  throw new Error('Unexpected offline request');
+};
+`;
+
+function run(requests, seed = false, login = '', login2 = '', real = false) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-worker-test-'));
   try {
     const library = path.join(directory, 'node_modules/@green-1052/dcinside.js');
     fs.mkdirSync(library, { recursive: true });
     fs.writeFileSync(path.join(library, 'package.json'), JSON.stringify({ type: 'module', exports: './index.mjs' }));
-    fs.writeFileSync(path.join(library, 'index.mjs'), fakeLibrary);
+    fs.writeFileSync(path.join(library, 'index.mjs'), real ? realOfflineLibrary : fakeLibrary);
     fs.copyFileSync(path.resolve(__dirname, '../../dc_app/worker.mjs'), path.join(directory, 'worker.mjs'));
     fs.copyFileSync(path.resolve(__dirname, '../../dc_app/pc_vote.mjs'), path.join(directory, 'pc_vote.mjs'));
     const state = path.join(directory, 'state/credentials.json');
@@ -218,7 +268,9 @@ function run(requests, seed = false, login = '', login2 = '') {
     const postsPath = path.join(directory, 'posts.txt');
     if (seed) {
       fs.mkdirSync(path.dirname(state));
-      fs.writeFileSync(state, JSON.stringify({ restored: true, appIdIssuedAt: Date.now() - 30000 }), { mode: 0o644 });
+      fs.writeFileSync(state, JSON.stringify(real
+        ? {androidId:'123',securityToken:'456',fid:null,refreshToken:null,clientToken:null,appId:null,appIdIssuedAt:null}
+        : { restored: true, appIdIssuedAt: Date.now() - 30000 }), { mode: 0o644 });
     }
     const child = spawnSync(process.execPath, [path.join(directory, 'worker.mjs')], {
       env: { ...process.env, MIRROR_DC_APP_STATE: state, WORKER_TEST_TRACE: tracePath, WORKER_TEST_POSTS: postsPath,
@@ -263,6 +315,80 @@ test('app_id issuance is sent urlencoded while other posts keep their options', 
   assert.deepEqual(result.posts[0].options, { appId:false, raw:true, urlencoded:true });
   assert.deepEqual(result.posts[0].fields, { android_id:'123' });
   assert.deepEqual(result.posts[1].options, { appId:false, raw:true, marker:'other' });
+});
+
+test('real Auth propagates worker APP override into urlencoded app_id and every GCM registration offline', () => {
+  const result = run([{op:'account_login'}], true, 'success', '', true);
+  assert.deepEqual(result.trace, []);
+  assert.deepEqual(result.replies[0], {id:0,ok:false,error:{name:'WorkerError',reason:'update_required'}});
+  assert.equal(result.posts.length, 6); // app check, Firebase, 3 GCM registrations, app_id
+  const appId = result.posts.filter(post => post.url.endsWith('/auth/mobile_app_verification'));
+  assert.equal(appId.length, 1);
+  assert.equal(appId[0].method, 'POST');
+  assert.equal(appId[0].urlencoded, true);
+  assert.match(appId[0].headers['content-type'], /^application\/x-www-form-urlencoded/);
+  const fields = new URLSearchParams(appId[0].body);
+  assert.equal(fields.get('vCode'), '100190');
+  assert.equal(fields.get('vName'), '5.3.20');
+  const registrations = result.posts.filter(post => post.url === 'https://android.apis.google.com/c2dm/register3');
+  assert.equal(registrations.length, 3);
+  for (const registration of registrations) {
+    assert.equal(registration.headers.app_ver, '100190');
+    const body = new URLSearchParams(registration.body);
+    assert.equal(body.get('app_ver'), '100190');
+    assert.equal(body.get('X-app_ver'), '100190');
+    assert.equal(body.get('X-app_ver_name'), '5.3.20');
+  }
+});
+
+test('update-required is category-only for thrown, returned, read, explicit/lazy login and app_id failures', () => {
+  for (const marker of ['update_throw', 'update_return', 'update_dcerror']) {
+    for (const session of [undefined, {type:'login'}]) {
+      const result = run([
+        {op:'upvote',gallery:marker,no:1,session},
+        {op:'vote_info',gallery:marker,no:1},
+        {op:'gallery_info',gallery:marker},
+      ], false, 'success');
+      for (const reply of result.replies) assert.deepEqual(reply.error, {name:'WorkerError',reason:'update_required'});
+      assert.equal(result.trace.filter(value => value.startsWith('vote:')).length, 1);
+    }
+  }
+  for (const failure of ['update', 'appid_update']) {
+    for (const request of [{op:'account_login'}, {op:'upvote',gallery:'programming',no:1,session:{type:'login'}}]) {
+      const result = run([request, {...request,testAdvanceMs:10000}], false, failure);
+      for (const reply of result.replies) assert.deepEqual(reply.error, {name:'WorkerError',reason:'update_required'});
+      assert(!result.trace.some(value => value.startsWith('vote:')));
+    }
+  }
+});
+
+test('account mutation diagnostics mask BOTH slots before truncation and exclude lazy login and reads', () => {
+  const mutations = marker => [
+    {op:'upvote',gallery:marker,no:1},
+    {op:'downvote',gallery:marker,no:1},
+    {...write(marker),session:undefined},
+    {op:'comment',gallery:marker,no:1,content:'comment'},
+    {op:'delete',gallery:marker,no:1},
+    {op:'comment_delete',gallery:marker,no:1,comment_no:2},
+    {op:'modify',gallery:'programming',no:1,subject:marker,fingerprint,blocks:[{text:'new body'}]},
+  ].map(request => ({...request,session:{type:'login'}}));
+  const expected = ('DC rejection *** *** *** *** ' + '거절'.repeat(150)).slice(0, 200);
+  for (const marker of ['diag_throw', 'diag_return']) {
+    const result = run([{op:'account_login'}, ...mutations(marker)], false, 'success', 'success');
+    for (const reply of result.replies.slice(1)) {
+      const failure = reply.ok ? reply.data : reply.error;
+      assert.equal(failure.diag_cause, expected);
+      assert.equal(failure.cause, '디시에서 요청을 받지 않았어요.');
+    }
+    for (const request of mutations(marker)) {
+      const lazy = run([request], false, 'success', 'success');
+      const failure = lazy.replies[0].ok ? lazy.replies[0].data : lazy.replies[0].error;
+      assert.equal(failure.diag_cause, undefined);
+      assert.equal(failure.cause, '디시에서 요청을 받지 않았어요.');
+    }
+    const reads = run([{op:'account_login'}, {op:'vote_info',gallery:marker,no:1,session:{type:'login'}}], false, 'success');
+    assert(!JSON.stringify(reads.replies).includes('diag_cause'));
+  }
 });
 
 test('credential restore restricts existing file permissions', () => {

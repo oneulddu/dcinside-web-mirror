@@ -1451,9 +1451,13 @@ def write():
             # Metadata is optional; do not log upstream responses or session data.
             pass
         write_blocked = False
+        write_notice = None
         try:
             result = dc_write.get_manager().request("gallery_info", deadline=time.monotonic() + 10, gallery=board)
-            if result.get("ok"):
+            update = dc_write.update_required(result)
+            if update:
+                write_notice = update["message"]
+            elif result.get("ok"):
                 info = result["data"]
                 categories = [{"head_id": str(head["no"]), "label": head["name"]}
                               for head in info.get("heads", []) if head["level"] <= 0]
@@ -1466,7 +1470,7 @@ def write():
         return render_template("write.html", board=board, kind=kind,
                                gallery_name=_gallery_display_name(board, pagination.get("gallery_name")),
                                head_categories=categories, selected_head_id=selected,
-                               write_blocked=write_blocked,
+                               write_blocked=write_blocked, write_notice=write_notice,
                                board_back_url=board_url(board, kind=kind), limits=dc_write.LIMITS, **modify_context)
     files = []
     if request.mimetype == "multipart/form-data":
@@ -1711,6 +1715,8 @@ def read_vote_options():
     options = dc_write.vote_options(board, int(pid))
     if options is None:
         return jsonify(dc_write.unavailable()), 503
+    if options.get("code") == "update_required":
+        return jsonify(options)
     return jsonify(ok=True, **options)
 
 

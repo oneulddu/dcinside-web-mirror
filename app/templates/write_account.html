@@ -29,7 +29,7 @@
     {% endif %}
     {% for slot in slots %}
     {%- set item = accounts[slot] -%}
-    {%- set reason = item.reason if item.reason in ["otp", "captcha", "failed", "expired"] else "" -%}
+    {%- set reason = item.reason if item.reason in ["otp", "captcha", "failed", "expired", "update_required"] else "" -%}
     {%- set p = "account-" ~ slot -%}
     <form class="write-form account-form" id="{{ p }}" data-account="{{ slot }}" novalidate aria-labelledby="{{ p ~ '-title' if slots|length > 1 else 'account-title' }}" data-reason="{{ reason }}">
         {% if slots|length > 1 %}<h2 class="account-form-title" id="{{ p }}-title">계정 {{ slot }}</h2>{% endif %}
@@ -38,6 +38,7 @@
             {%- elif reason == "otp" -%}디시 OTP 6자리를 입력하고 로그인해 주세요.
             {%- elif reason == "captcha" -%}보이는 문자를 입력하고 로그인해 주세요.
             {%- elif reason == "expired" -%}로그인이 만료됐어요. 다시 로그인해 주세요.
+            {%- elif reason == "update_required" -%}디시가 앱 업데이트를 요구해요. 미러 서버의 앱 버전을 올려야 해요.
             {%- elif reason == "failed" -%}로그인하지 못했어요. 서버의 계정 설정을 확인한 뒤 다시 로그인해 주세요.
             {%- else -%}아직 로그인하지 않았어요. 이 계정으로 처음 쓸 때 로그인하거나, 지금 로그인할 수 있어요.
             {%- endif -%}

@@ -94,7 +94,7 @@ def test_lock_unlock_and_key_rotation(setup):
     assert client.get("/write?board=programming&head_id=0").status_code == 200
     template, context = contexts[-1]
     assert template == "write.html"
-    assert set(context) == {"board", "kind", "gallery_name", "head_categories", "selected_head_id", "board_back_url", "limits", "write_blocked"}
+    assert set(context) == {"board", "kind", "gallery_name", "head_categories", "selected_head_id", "board_back_url", "limits", "write_blocked", "write_notice"}
     assert context["gallery_name"] == "프로그래밍" and context["selected_head_id"] == "0"
     app.config["WRITE_KEY"] = "changed"
     assert post(client).status_code == 403
@@ -592,6 +592,89 @@ def test_account_rejection_does_not_leak_upstream_identity(setup, caplog):
     response = post(client, mode="account")
     assert response.json["code"] == "rejected"
     assert "secret-login" not in response.get_data(as_text=True) + caplog.text
+
+
+@pytest.mark.parametrize("path,op,fields", ACCOUNT_ACTIONS + [("/write/account/login", "account_login", {})])
+@pytest.mark.parametrize("mode", ["account", "anonymous"])
+@pytest.mark.parametrize("returned", [False, True])
+def test_update_required_fixed_response_before_account_sanitization(setup, caplog, path, op, fields, mode, returned):
+    _, client, manager, _ = setup
+    unlock(client)
+    failure = {"reason": "update_required", "cause": "secret-login-id secret-login-password 최신 버전으로 업데이트"}
+    manager.result = ({"ok": True, "data": {"result": False, **failure}} if returned else
+                      {"ok": False, "error": {"name": "WorkerError", "sent": False, **failure}})
+    response = post(client, path, mode=mode, **fields)
+    assert response.status_code == 200
+    assert response.json == {"ok": False, "code": "update_required",
+                             "message": "디시가 앱 업데이트를 요구해요. 미러 서버의 앱 버전을 올려야 해요."}
+    assert len(manager.calls) == 1 and manager.calls[0][0] == op
+    assert service._last_success == {}
+    assert "secret-login" not in response.get_data(as_text=True) + caplog.text
+    assert "cause" not in response.json and "diag_cause" not in response.json
+
+
+@pytest.mark.parametrize("returned", [False, True])
+def test_update_required_reads_are_visible_and_not_cached(setup, returned):
+    app, client, manager, contexts = setup
+    unlock(client)
+    result = ({"ok": True, "data": {"result": False, "reason": "update_required"}} if returned else
+              {"ok": False, "error": {"name": "WorkerError", "reason": "update_required"}})
+    manager.vote_info_result = manager.gallery_result = result
+    response = client.get("/read/vote/options?board=programming&pid=123")
+    assert response.status_code == 200
+    assert response.json == {"ok": False, "code": "update_required", "message": service.UPDATE_REQUIRED}
+    assert service._vote_options == {}
+    response = client.get("/write?board=programming")
+    assert response.status_code == 200
+    context = contexts[-1][1]
+    assert context["write_notice"] == service.UPDATE_REQUIRED
+    # Render the real template as well as checking the route's context.
+    with app.test_request_context("/write?board=programming"):
+        app.update_template_context(context)
+        html = app.jinja_env.get_template("write.html").render(**context)
+    assert service.UPDATE_REQUIRED in html
+
+
+@pytest.mark.parametrize("path,op,fields", [action for action in ACCOUNT_ACTIONS if action[1] in service.SENDS])
+@pytest.mark.parametrize("returned", [False, True])
+def test_account_diag_is_warning_only_not_browser_data_or_message(setup, caplog, path, op, fields, returned):
+    _, client, manager, _ = setup
+    unlock(client)
+    # The worker masks before this boundary; generic cause remains independently sanitized.
+    failure = {"cause": "secret-login-id secret-login-password",
+               "diag_cause": "DC diagnostic *** *** " + "x" * 300}
+    manager.result = ({"ok": True, "data": {"result": False, **failure}} if returned else
+                      {"ok": False, "error": {"name": "ApiError", **failure}})
+    response = post(client, path, mode="account", **fields)
+    assert response.status_code == 200 and response.json["code"] == "rejected"
+    text = response.get_data(as_text=True)
+    assert "diag_cause" not in text and "DC diagnostic" not in text
+    assert "secret-login" not in text + caplog.text
+    records = [record for record in caplog.records if "diag=" in record.getMessage()]
+    assert len(records) == 1 and records[0].levelname == "WARNING"
+    assert records[0].getMessage() == f"dc {op} board=programming no={fields.get('pid', '-')} diag={failure['diag_cause'][:200]!r}"
+    assert len(manager.calls) == 1
+
+
+@pytest.mark.parametrize("op,session", [("account_login", {}), ("modify_info", {"type": "login"}),
+                                      ("write", {"type": "anonymous"}), ("write", {"type": "login"})])
+def test_diag_is_stripped_even_from_success_and_logged_only_for_account_mutations(setup, caplog, op, session):
+    app, _, manager, _ = setup
+    manager.result = {"ok": True, "data": {"result": True, "diag_cause": "masked diagnostic"}}
+    with app.app_context():
+        result, status = service.perform(op, session=session)
+    assert status == 200 and result == {"ok": True, "data": {"result": True}}
+    assert ("masked diagnostic" in caplog.text) == (op == "write" and session.get("type") == "login")
+
+
+@pytest.mark.parametrize("reason", ["UPDATE_REQUIRED", "future_category", ["update_required"]])
+def test_unrecognized_worker_category_is_not_an_update_rejection(setup, reason):
+    app, _, manager, _ = setup
+    manager.result = {"ok": False, "error": {"name": "ApiError", "reason": reason, "cause": "private rejection"}}
+    with app.app_context():
+        result, status = service.perform("upvote", session={"type": "login"})
+    assert status == 200 and result["code"] == "rejected"
+    assert result["message"] == "디시에서 요청을 받지 않았어요."
 
 
 ACCOUNT_SELECTOR_ROUTES = [
@@ -1792,3 +1875,17 @@ def test_read_passes_comments_complete_to_template(setup, monkeypatch, complete)
     assert contexts[-1][1]["comments_complete"] is bool(complete)
     assert "_comments_complete" not in contexts[-1][1]["data"]
     assert not manager.calls
+
+
+def test_account_page_shows_update_required_block(setup):
+    import flask
+
+    app = setup[0]
+    blocked = {"configured": True, "logged_in": False, "user_id": None, "name": None,
+               "blocked": True, "reason": "update_required"}
+    account = {"ok": True, **blocked, "accounts": {"1": blocked}}
+    with app.test_request_context("/write/account"):
+        html = flask.render_template("write_account.html", account=account)
+    assert 'data-reason="update_required"' in html
+    assert "디시가 앱 업데이트를 요구해요. 미러 서버의 앱 버전을 올려야 해요." in html
+    assert "아직 로그인하지 않았어요" not in html

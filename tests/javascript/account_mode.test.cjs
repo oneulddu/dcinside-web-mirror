@@ -26,6 +26,13 @@ test("로그인이 필요하다는 응답은 결과를 모르는 경우와 따�
     assert.equal(post.interpret(200, { ok: false, code: "uncertain" }).action, "unknown");
 });
 
+test("update-required uses the existing message-displaying unavailable action, not uncertain/retry", () => {
+    const payload = { ok: false, code: "update_required", message: "디시가 앱 업데이트를 요구해요. 미러 서버의 앱 버전을 올려야 해요." };
+    const outcome = post.interpret(200, payload);
+    assert.equal(outcome.action, "unavailable");
+    assert.equal(outcome.payload, payload);
+});
+
 test("계정 화면 링크는 같은 사이트 경로만 따른다", () => {
     assert.equal(post.accountLink({ account_url: "/write/account" }).href, "/write/account");
     assert.equal(post.accountLink({ account_url: "//evil.test/x" }).href, "/write/account");

@@ -60,6 +60,10 @@
         if (code === "uncertain") {
             return { action: "unknown", payload: payload };
         }
+        // Every form already displays unavailable.message without resending.
+        if (code === "update_required") {
+            return { action: "unavailable", payload: payload };
+        }
         if (code === "captcha_required" && payload.captcha && CAPTCHA_KEY_PATTERN.test(String(payload.captcha.key || ""))) {
             return { action: "captcha", payload: payload };
         }

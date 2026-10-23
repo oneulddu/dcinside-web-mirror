@@ -22,6 +22,9 @@
     {% if write_blocked|default(false) %}
     <p class="write-notice">디시에서 이 갤러리의 글쓰기를 막아 두었어요. 등록해도 거절될 수 있어요.</p>
     {% endif %}
+    {% if write_notice|default(none) %}
+    <p class="write-notice" role="alert">{{ write_notice }}</p>
+    {% endif %}
 
     <form class="write-form" id="write-form" method="post" action="/write" novalidate aria-labelledby="write-title"
           data-board="{{ board }}" data-kind="{{ kind or '' }}" data-back-url="{{ read_url(board, modify_pid, kind=kind) if modify_pid else board_back_url }}"

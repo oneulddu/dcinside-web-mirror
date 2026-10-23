@@ -388,6 +388,17 @@ LOGIN_MESSAGES = {
     "expired": "디시 로그인이 만료됐어요. 계정 화면에서 다시 로그인해 주세요.",
 }
 
+UPDATE_REQUIRED = "디시가 앱 업데이트를 요구해요. 미러 서버의 앱 버전을 올려야 해요."
+
+
+def update_required(result):
+    """Accept only the worker's fixed category, never its upstream text."""
+    failure = result.get("error", {}) if not result.get("ok") else result.get("data", {})
+    if failure.get("reason") == "update_required" and (
+            not result.get("ok") or failure.get("result") in (False, "false")):
+        return {"ok": False, "code": "update_required", "message": UPDATE_REQUIRED}
+    return None
+
 
 def perform(op, **payload):
     deadline = time.monotonic() + (55 if op in ("write", "modify") and payload.get("images") else 40)
@@ -414,8 +425,18 @@ def perform(op, **payload):
             if exc.sent and op in SENDS:
                 return {"ok": False, "code": "uncertain", "message": SENDS[op]}, 503
             return unavailable(), 503
-        data = result.get("data", {})
-        error = result.get("error", {})
+        data = dict(result.get("data", {}))
+        error = dict(result.get("error", {}))
+        # Diagnostics are worker-only metadata, never a cause or browser field.
+        data_diag = data.pop("diag_cause", None)
+        error_diag = error.pop("diag_cause", None)
+        diag = error_diag if not result.get("ok") else data_diag
+        if op in SENDS and payload.get("session", {}).get("type") == "login" and isinstance(diag, str) and diag:
+            current_app.logger.warning("dc %s board=%s no=%s diag=%r",
+                                       op, payload.get("gallery", "-"), payload.get("no", "-"), diag[:200])
+        update = update_required(result)
+        if update:
+            return update, 200
         if error.get("name") == "AccountInvalid":
             return {"ok": False, "code": "invalid", "field": "mode", "message": "계정을 다시 선택해 주세요."}, 400
         if error.get("name") == "LoginCooldown":
@@ -488,7 +509,7 @@ def cached_vote_options(board, no):
 
 
 def vote_options(board, no):
-    """Return {"down", "captcha"} for one post, or None when DC could not be read."""
+    """Return options, a fixed update-required failure, or None on other failures."""
     cached = cached_vote_options(board, no)
     if cached is not None:
         return cached
@@ -496,6 +517,9 @@ def vote_options(board, no):
         result = get_manager().request("vote_info", deadline=time.monotonic() + 8, gallery=board, no=no)
     except WorkerUnavailable:
         return None
+    update = update_required(result)
+    if update:
+        return update
     data = result.get("data") if result.get("ok") else None
     if not isinstance(data, dict) or not all(isinstance(data.get(key), bool) for key in ("down", "captcha")):
         return None

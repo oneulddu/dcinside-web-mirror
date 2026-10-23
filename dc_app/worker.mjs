@@ -1,4 +1,4 @@
-import { DCInside, captchaUrl, decodeHtml } from '@green-1052/dcinside.js';
+import { APP, DCInside, captchaUrl, decodeHtml } from '@green-1052/dcinside.js';
 import { readFile, mkdir, open, rename, unlink, chmod } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,9 @@ import { createInterface } from 'node:readline';
 import { pcVote, pcVoteCaptcha } from './pc_vote.mjs';
 
 const statePath = process.env.MIRROR_DC_APP_STATE || resolve(dirname(fileURLToPath(import.meta.url)), '../instance/dc_app_credentials.json');
+// DC rejects the library's old app identity; both app_id and GCM read APP at request time.
+APP.versionCode = '100190';
+APP.versionName = '5.3.20';
 const dc = new DCInside({ http: { timeout: 45000 } });
 // certification_login is an answered rejection, not a transport failure.
 // Returning false makes Http.send throw rather than replay the mutation.
@@ -28,7 +31,22 @@ const accounts = Object.fromEntries(['1', '2'].map(account => {
   }];
 }));
 let lastLoginAttempt = null;
+let loginAttempted = false; // Reset for each serialized request, including lazy login.
 const LOGIN_INTERVAL_MS = 10000;
+const ACCOUNT_MUTATIONS = new Set(['upvote', 'downvote', 'write', 'comment', 'delete', 'comment_delete', 'modify']);
+function updateRequired(value) {
+  return value?.reason === 'update_required'
+    || [value?.cause, value?.message].some(text => typeof text === 'string' && /최신\s?버전으로\s?업데이트/.test(text));
+}
+function diagnostic(input, cause) {
+  if (input?.session?.type !== 'login' || loginAttempted || !ACCOUNT_MUTATIONS.has(input.op)
+      || typeof cause !== 'string' || !cause) return {};
+  // Longest first: slot 2 credentials may contain the slot 1 value.
+  const secrets = Object.values(accounts).flatMap(state => [state.id, state.password])
+    .filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const secret of secrets) cause = cause.replaceAll(secret, '***');
+  return { diag_cause: [...cause].slice(0, 200).join('') };
+}
 function accountFields(account) {
   const state = accounts[account];
   return { configured: Boolean(state.id && state.password), logged_in: state.session !== null,
@@ -62,6 +80,7 @@ async function accountLogin(input = {}) {
     name: 'LoginCooldown', retry_after: Math.ceil(remaining / 1000), sent: false,
   });
   lastLoginAttempt = now;
+  loginAttempted = true;
   state.session = null;
   try {
     await settled();
@@ -74,7 +93,7 @@ async function accountLogin(input = {}) {
     return { result: true, account, ...accountFields(account) };
   } catch (error) {
     state.blocked = true;
-    state.reason = error.name === 'OtpRequiredError' ? 'otp'
+    state.reason = updateRequired(error) ? 'update_required' : error.name === 'OtpRequiredError' ? 'otp'
       : error.name === 'CaptchaRequiredError' ? 'captcha' : 'failed';
     throw loginNeeded(state.reason, account);
   }
@@ -321,6 +340,7 @@ async function dispatch(input) {
     if (!/^[A-Za-z0-9_]{1,80}$/.test(input.gallery) || !Number.isSafeInteger(input.no) || input.no < 1) throw new Error('Invalid vote info request');
     try {
       const response = await dc.articles.read(input.gallery, input.no);
+      if ([false, 'false'].includes(response.result)) return response;
       const info = response.view_info || {};
       const main = response.view_main || {};
       return {
@@ -336,6 +356,7 @@ async function dispatch(input) {
     if (!/^[A-Za-z0-9_]{1,80}$/.test(input.gallery)) throw new Error('Invalid gallery request');
     try {
       const response = await dc.articles.list({ gallery: input.gallery, page: 1 });
+      if ([false, 'false'].includes(response.result)) return response;
       const info = response.gall_info?.[0] || {};
       const heads = (Array.isArray(info.head_text) ? info.head_text : [])
         .filter(head => head && Number.isInteger(head.no) && typeof head.name === 'string' && Number.isInteger(head.level))
@@ -425,33 +446,49 @@ async function dispatch(input) {
 for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
   let input;
   let result;
+  loginAttempted = false;
   try {
     input = JSON.parse(line);
-    result = { id: input.id, ok: true, data: await handle(input) };
-  } catch (error) {
-    const apiError = ['ApiError', 'CaptchaRequiredError', 'AuthExpiredError'].includes(error.name);
-    const raw = Array.isArray(error.response) ? error.response[0] : error.response;
-    const vpnBan = apiError && raw && typeof raw === 'object' && [true, 'true', 1, '1'].includes(raw.carrier_vpn_ban);
-    const account = input?.session?.type === 'login';
-    result = { id: input?.id ?? null, ok: false, error: {
-      name: apiError || error.name === 'HTTPError' ? error.name : 'WorkerError',
-      cause: apiError && typeof error.cause === 'string' ? error.cause
-        : error.name === 'WorkerError' && error.sent === false && error.cause === 'stale' ? 'stale' : '',
-      status: Number.isInteger(error.status) ? error.status : null,
-      ...(vpnBan ? { vpn_ban: true } : {}),
-      ...(error.sent === false ? { sent: false } : {}),
-    } };
-    if (account && apiError && !['잠시후 다시 이용해주세요.', '잠시 후 다시 시도해 주세요.'].includes(result.error.cause)) {
-      result.error.cause = error.name === 'CaptchaRequiredError' ? '보안 코드를 입력해 주세요.' : '디시에서 요청을 받지 않았어요.';
+    let data = await handle(input);
+    if ([false, 'false'].includes(data?.result)) {
+      if (updateRequired(data)) throw Object.assign(new Error('Update required'), { reason: 'update_required' });
+      data = { ...data, ...diagnostic(input, data.cause) };
+      if (input.session?.type === 'login' && typeof data.cause === 'string'
+          && !['stale', '잠시후 다시 이용해주세요.', '잠시 후 다시 시도해 주세요.'].includes(data.cause)) {
+        data.cause = '디시에서 요청을 받지 않았어요.';
+      }
     }
-    if (error.name === 'LoginNeeded') result.error = {
-      name: 'LoginNeeded', reason: error.reason, account: error.account, sent: false,
-      ...(error.captcha_key ? { captcha_key: error.captcha_key } : {}),
-    };
-    if (error.name === 'LoginCooldown') result.error = {
-      name: 'LoginCooldown', retry_after: error.retry_after, sent: false,
-    };
-    if (error.name === 'AccountInvalid') result.error = { name: 'AccountInvalid', sent: false };
+    result = { id: input.id, ok: true, data };
+  } catch (error) {
+    if (updateRequired(error)) {
+      // Only a fixed category crosses the login/error sanitization boundary.
+      result = { id: input?.id ?? null, ok: false, error: { name: 'WorkerError', reason: 'update_required' } };
+    } else {
+      const apiError = ['ApiError', 'CaptchaRequiredError', 'AuthExpiredError'].includes(error.name);
+      const raw = Array.isArray(error.response) ? error.response[0] : error.response;
+      const vpnBan = apiError && raw && typeof raw === 'object' && [true, 'true', 1, '1'].includes(raw.carrier_vpn_ban);
+      const account = input?.session?.type === 'login';
+      result = { id: input?.id ?? null, ok: false, error: {
+        name: apiError || error.name === 'HTTPError' ? error.name : 'WorkerError',
+        cause: apiError && typeof error.cause === 'string' ? error.cause
+          : error.name === 'WorkerError' && error.sent === false && error.cause === 'stale' ? 'stale' : '',
+        status: Number.isInteger(error.status) ? error.status : null,
+        ...(vpnBan ? { vpn_ban: true } : {}),
+        ...(error.sent === false ? { sent: false } : {}),
+        ...diagnostic(input, error.cause),
+      } };
+      if (account && apiError && !['잠시후 다시 이용해주세요.', '잠시 후 다시 시도해 주세요.'].includes(result.error.cause)) {
+        result.error.cause = error.name === 'CaptchaRequiredError' ? '보안 코드를 입력해 주세요.' : '디시에서 요청을 받지 않았어요.';
+      }
+      if (error.name === 'LoginNeeded') result.error = {
+        name: 'LoginNeeded', reason: error.reason, account: error.account, sent: false,
+        ...(error.captcha_key ? { captcha_key: error.captcha_key } : {}),
+      };
+      if (error.name === 'LoginCooldown') result.error = {
+        name: 'LoginCooldown', retry_after: error.retry_after, sent: false,
+      };
+      if (error.name === 'AccountInvalid') result.error = { name: 'AccountInvalid', sent: false };
+    }
   }
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
