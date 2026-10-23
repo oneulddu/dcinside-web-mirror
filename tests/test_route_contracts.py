@@ -144,6 +144,7 @@ def test_screen_and_service_route_map_contract():
         "/write/account/status": "main.write_account_status",
         "/write/account/login": "main.write_account_login",
         "/write/captcha": "main.write_captcha",
+        "/write/dccons": "main.write_dccons",
         "/write/lock": "main.write_lock",
         "/write/modify/load": "main.write_modify_load",
         "/write/unlock": "main.write_unlock",

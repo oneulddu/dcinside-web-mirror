@@ -21,7 +21,10 @@ import threading
 import time
 from collections import deque
 from contextlib import contextmanager
+from datetime import datetime
+from html import unescape
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from flask import current_app, request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -29,7 +32,10 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 COOKIE = "mirror_write"
 COOKIE_AGE = 180 * 24 * 60 * 60
 LIMITS = dict(subject_max=40, body_max=10000, comment_max=400, nickname_max=20, password_min=2, password_max=20,
-              image_max_count=10, image_max_bytes=10 * 1024 * 1024, image_total_bytes=30 * 1024 * 1024)
+              image_max_count=10, image_max_bytes=10 * 1024 * 1024, image_total_bytes=30 * 1024 * 1024,
+              poll_title_max=40, poll_item_max=30, poll_items_max=20,
+              video_max_count=3, video_max_bytes=20 * 1024 * 1024,
+              upload_total_bytes=30 * 1024 * 1024)
 IMAGE_TOTAL_MESSAGE = "사진은 모두 합쳐 30MB까지 올릴 수 있어요."
 CAPTCHA_KEY = re.compile(r"^[0-9a-f]{16}$")
 MAX_IMAGE = 200 * 1024
@@ -49,12 +55,84 @@ class InvalidPhotoMarker(ValueError):
     pass
 
 
+class InvalidVideo(ValueError):
+    pass
+
+
+class InvalidWriteField(ValueError):
+    def __init__(self, field, message):
+        self.field = field
+        super().__init__(message)
+
+
+def _future_date(value, *, five_minutes=False):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", value):
+        return False
+    try:
+        date = datetime.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    except ValueError:
+        return False
+    return date > datetime.now(ZoneInfo("Asia/Seoul")) and (not five_minutes or date.minute % 5 == 0)
+
+
+def new_post_fields(data, *, account):
+    """Validate new-post-only JSON before creating uploads or contacting DC."""
+    def invalid(field, message):
+        raise InvalidWriteField(field, message)
+
+    html = data.get("html", False)
+    if type(html) is not bool:
+        invalid("body", "HTML 사용 여부를 다시 선택해 주세요.")
+    if html and isinstance(data.get("body"), str):
+        body = unescape(data["body"])
+        if re.search(r"<\s*(?:script|iframe|object|embed|form)\b|\bon\w+\s*=", body, re.I) or re.search(
+                r"javascript\s*:", re.sub(r"[\x00-\x20]", "", body), re.I):
+            invalid("body", "HTML에 스크립트, 외부 삽입 요소나 실행 가능한 속성을 넣을 수 없어요.")
+    options = data.get("options", {})
+    if not isinstance(options, dict) or any(type(options.get(key, False)) is not bool for key in ("no_repost", "secret")):
+        invalid("options", "글 설정을 다시 확인해 주세요.")
+    if "secret_password" in options and (not options.get("secret") or not isinstance(options["secret_password"], str)
+                                         or not 2 <= len(options["secret_password"]) <= 20):
+        invalid("options", "비밀글 비밀번호는 비밀글에서만 2~20자로 입력해 주세요.")
+    if "auto_delete" in options and not _future_date(options["auto_delete"], five_minutes=True):
+        invalid("options", "자동 삭제 시간은 서울 시간 기준 미래 시각을 5분 단위로 입력해 주세요.")
+    poll = data.get("poll")
+    if "poll" in data:
+        if not isinstance(poll, dict):
+            invalid("poll", "투표 설정을 다시 확인해 주세요.")
+        title, items = poll.get("title"), poll.get("items")
+        if not isinstance(title, str) or not title.strip() or len(title) > LIMITS["poll_title_max"]:
+            invalid("poll", "투표 제목은 1~40자로 입력해 주세요.")
+        if not isinstance(items, list) or not 2 <= len(items) <= LIMITS["poll_items_max"] or any(
+                not isinstance(item, str) or not item.strip() or len(item) > LIMITS["poll_item_max"] for item in items):
+            invalid("poll", "투표 항목은 1~30자로 2~20개 입력해 주세요.")
+        multiple = poll.get("multiple", 0)
+        if type(multiple) is not int or (multiple != 0 and not 2 <= multiple <= len(items)):
+            invalid("poll", "복수 선택 수는 0 또는 2부터 항목 수까지 입력해 주세요.")
+        if type(poll.get("preview", False)) is not bool:
+            invalid("poll", "투표 결과 미리보기 설정을 다시 확인해 주세요.")
+        if "end_date" in poll and not _future_date(poll["end_date"]):
+            invalid("poll", "투표 마감은 서울 시간 기준 미래 시각으로 입력해 주세요.")
+    dccons = data.get("dccons", [])
+    if not isinstance(dccons, list) or (dccons and not account) or any(
+            not isinstance(icon, dict) or any(type(icon.get(key)) is not int or not 1 <= icon[key] <= 9007199254740991
+                                              for key in ("package_idx", "detail_idx")) for icon in dccons):
+        invalid("dccons", "디시콘은 로그인한 계정에서 올바른 항목을 선택해 주세요.")
+    # Pass only supported fields; credentials and arbitrary library options never cross this boundary.
+    result = {}
+    for key in ("html", "options", "poll", "dccons"):
+        if key in data:
+            result[key] = data[key]
+    return result
+
+
 # 본문 한 줄이 "[사진 N]"뿐이면 그 자리에 N번째 사진을 넣는다.
 PHOTO_MARKER = re.compile(r"^[ \t]*\[사진[ ]?([0-9]{1,2})\][ \t]*$")
 MODIFY_MARKER = re.compile(r"^[ \t]*\[(사진|원본)[ ]?([0-9]{1,2})\][ \t]*$")
+CONTENT_MARKER = re.compile(r"^[ \t]*\[(사진|디시콘|동영상)[ ]?([0-9]{1,5})\][ \t]*$")
 
 
-def photo_blocks(body, count, position="top", *, photos=None, originals=None):
+def photo_blocks(body, count, position="top", *, photos=None, originals=None, dccons=0, videos=0):
     """Split the body at photo markers into ordered text/image blocks.
 
     Photos without a marker keep the old top/bottom placement so older clients still work.
@@ -86,6 +164,9 @@ def photo_blocks(body, count, position="top", *, photos=None, originals=None):
         entries = {"사진": photo_entries, "원본": [{"keep": index} for index in originals]}
     else:
         entries = {"사진": [{"image": index} for index in range(count)]}
+        if dccons or videos:
+            entries.update(디시콘=[{"dccon": index} for index in range(dccons)],
+                           동영상=[{"video": index} for index in range(videos)])
     blocks, used, lines = [], set(), []
 
     def flush():
@@ -95,11 +176,11 @@ def photo_blocks(body, count, position="top", *, photos=None, originals=None):
         lines.clear()
 
     for line in body.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        match = (MODIFY_MARKER if modifying else PHOTO_MARKER).match(line)
+        match = (MODIFY_MARKER if modifying else CONTENT_MARKER if dccons or videos else PHOTO_MARKER).match(line)
         if not match:
             lines.append(line)
             continue
-        label, number = (match.group(1), int(match.group(2))) if modifying else ("사진", int(match.group(1)))
+        label, number = (match.group(1), int(match.group(2))) if modifying or dccons or videos else ("사진", int(match.group(1)))
         if not 1 <= number <= len(entries[label]):
             raise InvalidPhotoMarker(f"본문의 [{label} {number}]에 맞는 {label}이 없어요. 그 줄을 지우거나 {label}을 넣어 주세요.")
         if (label, number) in used:
@@ -108,6 +189,8 @@ def photo_blocks(body, count, position="top", *, photos=None, originals=None):
         flush()
         blocks.append(entries[label][number - 1])
     flush()
+    if dccons and any(("디시콘", index + 1) not in used for index in range(dccons)):
+        raise InvalidPhotoMarker("선택한 디시콘마다 [디시콘 N] 줄을 한 번씩 넣어 주세요.")
     rest = [entry for label, items in entries.items() for index, entry in enumerate(items) if (label, index + 1) not in used]
     return rest + blocks if position == "top" and not modifying else blocks + rest
 
@@ -126,8 +209,22 @@ def _image_format(data):
 
 @contextmanager
 def prepared_images(files):
+    with _prepared_uploads(files, video=False) as uploads:
+        yield uploads
+
+
+@contextmanager
+def prepared_videos(files):
+    with _prepared_uploads(files, video=True) as uploads:
+        yield uploads
+
+
+@contextmanager
+def _prepared_uploads(files, *, video):
     """Keep private, server-named uploads alive only for this worker request."""
-    if len(files) > LIMITS["image_max_count"]:
+    if video and len(files) > LIMITS["video_max_count"]:
+        raise InvalidVideo("동영상은 3개까지 올릴 수 있어요.")
+    if not video and len(files) > LIMITS["image_max_count"]:
         raise InvalidImage("사진은 10장까지 올릴 수 있어요.")
     directory = None
     try:
@@ -137,13 +234,25 @@ def prepared_images(files):
                 directory = tempfile.mkdtemp(prefix="mirror-dcimg-", dir=current_app.config.get("DC_APP_UPLOADS"))
                 os.chmod(directory, 0o700)
             for index, file in enumerate(files, 1):
-                data = file.stream.read(LIMITS["image_max_bytes"] + 1)
-                if len(data) > LIMITS["image_max_bytes"]:
+                data = file.stream.read(LIMITS["video_max_bytes" if video else "image_max_bytes"] + 1)
+                if video and len(data) > LIMITS["video_max_bytes"]:
+                    raise InvalidVideo(f"{index}번째 동영상은 20MB까지 올릴 수 있어요.")
+                if not video and len(data) > LIMITS["image_max_bytes"]:
                     raise InvalidImage(f"{index}번째 사진은 10MB까지 올릴 수 있어요.")
                 total += len(data)
                 if total > LIMITS["image_total_bytes"]:
+                    if video:
+                        raise InvalidVideo("사진과 동영상은 모두 합쳐 30MB까지 올릴 수 있어요.")
                     raise InvalidImage(IMAGE_TOTAL_MESSAGE)
-                detected = _image_format(data)
+                if video:
+                    # The official app transcodes to MP4/H.264. Do not accept arbitrary
+                    # video/* or trust browser MIME/filenames; this mirror does not transcode.
+                    detected = ("video/mp4", "mp4") if len(data) >= 16 and data[4:8] == b"ftyp" and data[8:12] in (
+                        b"isom", b"iso2", b"mp41", b"mp42", b"avc1", b"M4V ") else None
+                    if detected is None:
+                        raise InvalidVideo(f"{index}번째 동영상은 MP4 파일만 올릴 수 있어요.")
+                else:
+                    detected = _image_format(data)
                 if detected is None:
                     raise InvalidImage(f"{index}번째 파일은 JPG, PNG, GIF, WEBP 사진만 올릴 수 있어요.")
                 content_type, extension = detected
@@ -151,7 +260,8 @@ def prepared_images(files):
                 with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output:
                     os.fchmod(output.fileno(), 0o600)
                     output.write(data)
-                images.append({"path": str(path), "type": content_type, "name": f"image{index}.{extension}"})
+                images.append({"path": str(path), "type": content_type,
+                               "name": f"{'video' if video else 'image'}{index}.{extension}"})
         except OSError:
             # Filesystem exceptions can contain private paths; do not surface them.
             raise WorkerUnavailable() from None
@@ -380,7 +490,7 @@ SENDS = {
 }
 _last_success = {}
 # 성공한 뒤 같은 동작을 다시 보낼 수 있을 때까지 기다리는 시간(초).
-INTERVALS = {"write": 20, "comment": 10, "modify": 20, "delete": 3, "comment_delete": 3, "modify_info": 1}
+INTERVALS = {"write": 20, "comment": 10, "modify": 20, "delete": 3, "comment_delete": 3, "modify_info": 1, "dccons": 0}
 LOGIN_MESSAGES = {
     "otp": "디시 OTP 6자리를 입력해 주세요.",
     "captcha": "로그인 보안 문자를 입력해 주세요.",
@@ -401,7 +511,7 @@ def update_required(result):
 
 
 def perform(op, **payload):
-    deadline = time.monotonic() + (55 if op in ("write", "modify") and payload.get("images") else 40)
+    deadline = time.monotonic() + (55 if op in ("write", "modify") and (payload.get("images") or payload.get("videos")) else 40)
     # The interval check and success timestamp must surround the serialized call.
     remaining = deadline - time.monotonic()
     if remaining <= 0 or not _action_lock.acquire(timeout=remaining):
@@ -465,7 +575,7 @@ def perform(op, **payload):
         if op == "modify" and name == "WorkerError" and error.get("sent") is False and cause == "stale":
             return {"ok": False, "code": "rejected", "reason": "stale",
                     "message": "글이 그사이 바뀌었어요. 수정 화면을 다시 열어 주세요."}, 200
-        if name == "WorkerError" and error.get("sent") is False:
+        if error.get("sent") is False and name not in ("ApiError", "CaptchaRequiredError"):
             return unavailable(), 503
         if name == "CaptchaRequiredError" or (cause and re.search(r"captcha|보안\s?코드|자동\s?입력|코드가\s?설정된\s?갤러리", cause, re.I)):
             return {"ok": False, "code": "captcha_required", "message": cause or "보안 코드를 입력해 주세요."}, 200

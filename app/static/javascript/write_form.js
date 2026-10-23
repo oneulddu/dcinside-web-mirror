@@ -3,11 +3,17 @@
 
     // 디시 글쓰기 폼. 확인은 서버가 다시 하지만 같은 기준으로 먼저 알려 준다.
     var IDENTITY_KEY = "mirror_write_identity_v1";
-    var FIELDS = ["nickname", "password", "subject", "body", "images", "captcha"];
+    var FIELDS = ["nickname", "password", "subject", "body", "images", "captcha", "videos", "dccons", "poll", "options"];
     var IMAGE_TYPES = { "image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true };
     var IMAGE_EXTENSION = /\.(jpe?g|png|gif|webp)$/i;
     // 본문 한 줄이 "[사진 N]"뿐이면 그 자리에 N번째 사진이 들어간다. 서버(dc_write.PHOTO_MARKER)와 같은 규칙.
     var MARKER_LINE = /^[ \t]*\[사진 ?([0-9]{1,2})\][ \t]*$/;
+    var VIDEO_EXTENSION = /\.mp4$/i;
+    var FORMAT_PAIRS = { b: ["<b>", "</b>"], i: ["<i>", "</i>"], u: ["<u>", "</u>"], s: ["<s>", "</s>"], link: ['<a href="https://">', "</a>"] };
+    var FORMAT_INSERTS = {
+        br: "<br>\n",
+        table: '<table border="1">\n<tr><td>칸</td><td>칸</td></tr>\n<tr><td>칸</td><td>칸</td></tr>\n</table>\n'
+    };
 
     function charLength(value) {
         return Array.from(String(value == null ? "" : value)).length;
@@ -97,13 +103,13 @@
     }
 
     // 커서 자리에 사진 줄을 넣는다. 표시 줄은 항상 한 줄을 혼자 차지하고, 커서는 그 다음 줄로 간다.
-    function insertMarkers(text, start, end, numbers) {
+    function insertMarkers(text, start, end, numbers, label) {
         var before = text.slice(0, start);
         var after = text.slice(end);
         var lead = before && before.charAt(before.length - 1) !== "\n" ? "\n" : "";
         var tail = after.charAt(0) === "\n" ? "" : "\n";
         var inserted = lead + numbers.map(function (number) {
-            return markerText(number);
+            return markerText(number, label);
         }).join("\n") + tail;
         var caret = before.length + inserted.length + (tail ? 0 : 1);
         return { text: before + inserted + after, caret: Math.min(caret, (before + inserted + after).length) };
@@ -218,7 +224,181 @@
         }
     }
 
+    // 고른 항목(디시콘)마다 본문에 표시 줄이 한 번씩 있어야 한다. 서버(dc_write.photo_blocks)와 같은 규칙.
+    function missingMarkers(text, count, label) {
+        var pattern = markerPattern(label);
+        var seen = {};
+        String(text).split("\n").forEach(function (line) {
+            var match = pattern.exec(line);
+            if (match) {
+                seen[Number(match[1])] = true;
+            }
+        });
+        for (var number = 1; number <= count; number += 1) {
+            if (!seen[number]) {
+                return "본문에 " + markerText(number, label) + " 줄이 없어요. 넣을 자리에 그 줄을 다시 넣거나 " + label + "을 빼 주세요.";
+            }
+        }
+        return null;
+    }
+
+    // 서버(dc_write.new_post_fields)와 같은 기준. 엔티티로 감춘 것은 서버가 다시 거른다.
+    function htmlProblem(body) {
+        var text = String(body || "");
+        if (/<\s*(?:script|iframe|object|embed|form)\b|\bon\w+\s*=/i.test(text)
+                || /javascript\s*:/i.test(text.replace(/[\x00-\x20]/g, ""))) {
+            return "HTML에 스크립트, 외부 삽입 요소나 실행 가능한 속성을 넣을 수 없어요.";
+        }
+        return null;
+    }
+
+    // <input type="datetime-local"> 값(YYYY-MM-DDTHH:mm)을 서버 형식(YYYY-MM-DD HH:mm)으로 바꾼다.
+    function localDate(value) {
+        var match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(String(value || ""));
+        return match ? match[1] + " " + match[2] : "";
+    }
+
+    // 날짜 칸은 서버와 같이 서울 시간(UTC+9, 서머타임 없음)으로 읽고 쓴다. 브라우저 시간대와 무관하다.
+    var SEOUL_OFFSET = 9 * 3600000;
+
+    function inputDate(time) {
+        function pad(number) {
+            return (number < 10 ? "0" : "") + number;
+        }
+        var date = new Date(time + SEOUL_OFFSET);
+        return date.getUTCFullYear() + "-" + pad(date.getUTCMonth() + 1) + "-" + pad(date.getUTCDate())
+            + "T" + pad(date.getUTCHours()) + ":" + pad(date.getUTCMinutes());
+    }
+
+    function parseDate(text) {
+        var match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(String(text || ""));
+        return match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5])) - SEOUL_OFFSET) : null;
+    }
+
+    // values: {secret, secretPassword, autoDelete, autoDeleteAt("YYYY-MM-DD HH:mm")}
+    function validateOptions(values, limits, now) {
+        var password = String(values.secretPassword || "");
+        if (values.secret && password && (charLength(password) < limits.password_min || charLength(password) > limits.password_max)) {
+            return "비밀글 비밀번호는 " + limits.password_min + "~" + limits.password_max + "자로 입력하거나 비워 주세요.";
+        }
+        if (values.autoDelete) {
+            var date = parseDate(values.autoDeleteAt);
+            if (!date) {
+                return "자동 삭제 시각을 골라 주세요.";
+            }
+            if (date.getUTCMinutes() % 5) {
+                return "자동 삭제 시각은 5분 단위로 골라 주세요.";
+            }
+            if (date.getTime() <= now) {
+                return "자동 삭제 시각은 지금보다 뒤로 골라 주세요.";
+            }
+        }
+        return null;
+    }
+
+    // poll: {title, items(빈 항목은 뺀 목록), multiple(0 또는 최대 선택 수), end_date?}
+    function validatePoll(poll, limits, now) {
+        var title = String(poll.title || "").trim();
+        if (!title) {
+            return "투표 제목을 입력해 주세요.";
+        }
+        if (charLength(title) > limits.poll_title_max) {
+            return "투표 제목은 " + limits.poll_title_max + "자까지 쓸 수 있어요.";
+        }
+        var items = poll.items || [];
+        if (items.length < 2) {
+            return "투표 항목을 2개 이상 입력해 주세요.";
+        }
+        if (items.length > limits.poll_items_max) {
+            return "투표 항목은 " + limits.poll_items_max + "개까지 넣을 수 있어요.";
+        }
+        for (var i = 0; i < items.length; i += 1) {
+            if (charLength(items[i]) > limits.poll_item_max) {
+                return (i + 1) + "번째 항목은 " + limits.poll_item_max + "자까지 쓸 수 있어요.";
+            }
+        }
+        if (poll.multiple !== 0 && !(poll.multiple >= 2 && poll.multiple <= items.length)) {
+            return "고를 수 있는 수를 입력한 항목 수 안에서 골라 주세요.";
+        }
+        if (poll.end_date !== undefined) {
+            var date = parseDate(poll.end_date);
+            if (!date || date.getTime() <= now) {
+                return "투표 마감은 지금보다 뒤로 골라 주세요.";
+            }
+        }
+        return null;
+    }
+
+    // 새로 고른 동영상 중 넣을 수 있는 것만 고른다. otherBytes는 함께 올리는 새 사진의 크기 합이다.
+    function pickVideos(existing, incoming, limits, otherBytes) {
+        var accepted = [];
+        var skipped = { type: 0, size: 0, count: 0, total: 0 };
+        var total = (otherBytes || 0) + existing.reduce(function (sum, file) {
+            return sum + file.size;
+        }, 0);
+        Array.prototype.forEach.call(incoming || [], function (file) {
+            var typeOk = file.type ? file.type === "video/mp4" : VIDEO_EXTENSION.test(file.name || "");
+            if (!typeOk) {
+                skipped.type += 1;
+            } else if (!file.size || file.size > limits.video_max_bytes) {
+                skipped.size += 1;
+            } else if (existing.length + accepted.length >= limits.video_max_count) {
+                skipped.count += 1;
+            } else if (total + file.size > limits.upload_total_bytes) {
+                skipped.total += 1;
+            } else {
+                accepted.push(file);
+                total += file.size;
+            }
+        });
+        var messages = [];
+        if (skipped.type) {
+            messages.push("MP4가 아닌 파일 " + skipped.type + "개는 넣지 않았어요.");
+        }
+        if (skipped.size) {
+            messages.push(megabytes(limits.video_max_bytes) + "를 넘거나 빈 동영상 " + skipped.size + "개는 넣지 않았어요.");
+        }
+        if (skipped.count) {
+            messages.push("동영상은 " + limits.video_max_count + "개까지라 " + skipped.count + "개는 넣지 않았어요.");
+        }
+        if (skipped.total) {
+            messages.push("사진과 합쳐 " + megabytes(limits.upload_total_bytes) + "를 넘어서 " + skipped.total + "개는 넣지 않았어요.");
+        }
+        return { accepted: accepted, message: messages.join(" ") };
+    }
+
+    // HTML 서식 단추. 고른 글자를 태그로 감싸거나 커서 자리에 넣고, 새로 고를 범위를 돌려준다.
+    function wrapSelection(text, start, end, format, color) {
+        var before = text.slice(0, start);
+        var selected = text.slice(start, end);
+        var after = text.slice(end);
+        var insert;
+        if (format === "br" || format === "table") {
+            insert = FORMAT_INSERTS[format];
+            return { text: before + insert + after, start: start + insert.length, end: start + insert.length };
+        }
+        var pair = FORMAT_PAIRS[format];
+        if (format === "color") {
+            if (!/^#[0-9a-f]{6}$/i.test(String(color || ""))) {
+                return null;
+            }
+            pair = ['<span style="color:' + color.toLowerCase() + '">', "</span>"];
+        }
+        if (!pair) {
+            return null;
+        }
+        insert = pair[0] + selected + pair[1];
+        return { text: before + insert + after, start: start + pair[0].length, end: start + pair[0].length + selected.length };
+    }
+
     root.MirrorWriteForm = {
+        missingMarkers: missingMarkers,
+        htmlProblem: htmlProblem,
+        localDate: localDate,
+        validateOptions: validateOptions,
+        validatePoll: validatePoll,
+        pickVideos: pickVideos,
+        wrapSelection: wrapSelection,
         validateFields: validateFields,
         pickImages: pickImages,
         moveItem: moveItem,
@@ -270,8 +450,42 @@
         remember: form.querySelector(".write-remember"),
         passwordHint: document.getElementById("write-password-hint"),
         accountNote: document.getElementById("write-account-note"),
-        modeNote: document.getElementById("write-mode-note")
+        modeNote: document.getElementById("write-mode-note"),
+        videoAdd: document.getElementById("write-videos-add"),
+        videoInput: document.getElementById("write-videos-input"),
+        videoList: document.getElementById("write-video-list"),
+        videoCount: document.getElementById("write-videos-count"),
+        dcconAdd: document.getElementById("write-dccon-add"),
+        dcconPanel: document.getElementById("write-dccon-panel"),
+        dcconClose: document.getElementById("write-dccon-close"),
+        dcconPicker: document.getElementById("write-dccon-picker"),
+        dcconPackage: document.getElementById("write-dccon-package"),
+        dcconStatus: document.getElementById("write-dccon-status"),
+        dcconGrid: document.getElementById("write-dccon-grid"),
+        dcconList: document.getElementById("write-dccon-list"),
+        pollAdd: document.getElementById("write-poll-add"),
+        poll: document.getElementById("write-poll"),
+        pollRemove: document.getElementById("write-poll-remove"),
+        pollTitle: document.getElementById("write-poll-title"),
+        pollItems: document.getElementById("write-poll-items"),
+        pollAddItem: document.getElementById("write-poll-add-item"),
+        pollMultiple: document.getElementById("write-poll-multiple"),
+        pollEnd: document.getElementById("write-poll-end"),
+        pollPreview: document.getElementById("write-poll-preview"),
+        html: document.getElementById("write-html"),
+        htmlHint: document.getElementById("write-html-hint"),
+        format: document.getElementById("write-format"),
+        formatColor: document.getElementById("write-format-color"),
+        noRepost: document.getElementById("write-no-repost"),
+        secret: document.getElementById("write-secret"),
+        secretField: document.getElementById("write-secret-field"),
+        secretPassword: document.getElementById("write-secret-password"),
+        autoDelete: document.getElementById("write-auto-delete"),
+        autoDeleteField: document.getElementById("write-auto-delete-field"),
+        autoDeleteAt: document.getElementById("write-auto-delete-at")
     };
+    // 한 글에 넣는 디시콘 수. 서버는 따로 막지 않지만 화면과 표시 번호(두 자리)를 위해 둔다.
+    var DCCON_MAX = 20;
     // 수정 화면이면 원래 글 번호. 비밀번호로 원래 글을 불러온 뒤에만 수정을 보낼 수 있다.
     var modifyPid = form.getAttribute("data-modify-pid") || "";
     var limits = {
@@ -282,7 +496,13 @@
         password_max: Number(form.getAttribute("data-password-max")) || 20,
         image_max_count: Number(form.getAttribute("data-image-max-count")) || 10,
         image_max_bytes: Number(form.getAttribute("data-image-max-bytes")) || 10485760,
-        image_total_bytes: Number(form.getAttribute("data-image-total-bytes")) || 31457280
+        image_total_bytes: Number(form.getAttribute("data-image-total-bytes")) || 31457280,
+        video_max_count: Number(form.getAttribute("data-video-max-count")) || 3,
+        video_max_bytes: Number(form.getAttribute("data-video-max-bytes")) || 20971520,
+        upload_total_bytes: Number(form.getAttribute("data-upload-total-bytes")) || 31457280,
+        poll_title_max: Number(form.getAttribute("data-poll-title-max")) || 40,
+        poll_item_max: Number(form.getAttribute("data-poll-item-max")) || 30,
+        poll_items_max: Number(form.getAttribute("data-poll-items-max")) || 20
     };
     var board = form.getAttribute("data-board") || "";
     var kind = form.getAttribute("data-kind") || "";
@@ -291,7 +511,9 @@
     // images: 새 사진({file, url})과 수정할 글의 원래 사진({keep, url})이 본문 순서대로 섞인다.
     // originals: 수정할 글의 사진이 아닌 원래 블록({index, preview}).
     var state = { sending: false, retryUntil: 0, retryTimer: null, leaving: false, initial: "", images: [], caret: null,
-        originals: [], fingerprint: "", originalHead: null, loaded: !modifyPid };
+        originals: [], fingerprint: "", originalHead: null, loaded: !modifyPid,
+        // 새 글 전용: 동영상 파일, 고른 디시콘({package_idx, detail_idx, title, image_url}), 계정별 디시콘 목록.
+        videos: [], dccons: [], dcconCache: {}, dcconLoading: "" };
     var nextImageId = 1;
     var storage = null;
     try {
@@ -318,7 +540,8 @@
     }
 
     function draftSnapshot() {
-        return [el.subject.value, el.body.value, headValue(), state.images.length, state.originals.length].join("\u0000");
+        return [el.subject.value, el.body.value, headValue(), state.images.length, state.originals.length,
+            state.videos.length, state.dccons.length, pollOpen()].join("\u0000");
     }
 
     function newImages() {
@@ -353,6 +576,18 @@
         }
         if (field === "images") {
             return el.imageAdd;
+        }
+        if (field === "videos") {
+            return el.videoAdd;
+        }
+        if (field === "dccons") {
+            return el.dcconAdd && !el.dcconAdd.hidden ? el.dcconAdd : (el.dcconList ? el.body : null);
+        }
+        if (field === "poll") {
+            return el.pollTitle;
+        }
+        if (field === "options") {
+            return el.noRepost;
         }
         return el[field] || null;
     }
@@ -423,6 +658,26 @@
         }
         if (captcha) {
             captcha.setDisabled(busy);
+        }
+        [el.dcconAdd, el.dcconPackage, el.dcconClose, el.pollAdd, el.pollRemove, el.pollTitle, el.pollAddItem, el.pollMultiple,
+            el.pollEnd, el.pollPreview, el.html, el.formatColor, el.noRepost, el.secret, el.secretPassword, el.autoDelete,
+            el.autoDeleteAt].forEach(function (input) {
+            if (input) {
+                input.disabled = busy;
+            }
+        });
+        [el.videoList, el.dcconList, el.dcconGrid, el.pollItems, el.format].forEach(function (zone) {
+            if (zone) {
+                Array.prototype.forEach.call(zone.querySelectorAll("button, input"), function (control) {
+                    control.disabled = busy;
+                });
+            }
+        });
+        if (el.videoAdd) {
+            el.videoAdd.disabled = busy || state.videos.length >= limits.video_max_count;
+        }
+        if (!busy && el.pollItems) {
+            syncPollItems();
         }
         syncSubmit();
     }
@@ -948,11 +1203,607 @@
                 var files = event.dataTransfer ? Array.prototype.slice.call(event.dataTransfer.files || []) : [];
                 if (files.length) {
                     event.preventDefault();
-                    addImages(files);
+                    addFiles(files);
                 }
             });
         });
         renderImages(null);
+    }
+
+    // ---- 새 글 전용: 동영상, 디시콘, 투표, HTML 서식, 글 설정 ----
+
+    function uploadBytes(files) {
+        return files.reduce(function (sum, file) {
+            return sum + file.size;
+        }, 0);
+    }
+
+    function newImageFiles() {
+        return newImages().map(function (item) {
+            return item.file;
+        });
+    }
+
+    function showListNote(field, message) {
+        var error = errorElement(field);
+        if (error) {
+            error.textContent = message || "";
+            error.hidden = !message;
+        }
+    }
+
+    // 커서 자리(없으면 본문 끝)에 표시 줄을 넣는다.
+    function insertMarked(label, numbers) {
+        var length = el.body.value.length;
+        var start = state.caret ? Math.min(state.caret.start, length) : length;
+        var end = state.caret ? Math.min(state.caret.end, length) : length;
+        var result = insertMarkers(el.body.value, start, end, numbers, label);
+        setBody(result.text, result.caret);
+    }
+
+    // 목록에서 하나를 빼고 본문의 표시 번호를 맞춘다.
+    function removeMarked(list, index, label, render) {
+        if (state.sending || index < 0 || index >= list.length) {
+            return;
+        }
+        var map = {};
+        map[index + 1] = 0;
+        for (var number = index + 2; number <= list.length; number += 1) {
+            map[number] = number - 1;
+        }
+        list.splice(index, 1);
+        setBody(renumberMarkers(el.body.value, map, label), state.caret ? state.caret.start : el.body.value.length);
+        render(index);
+        announce(label + " " + (index + 1) + "을 뺐어요.");
+    }
+
+    function attachmentRow(index, label, previewText, thumb, onRemove) {
+        var li = document.createElement("li");
+        li.className = "write-original";
+        if (thumb) {
+            var img = document.createElement("img");
+            img.className = "write-attachment-thumb";
+            img.alt = "";
+            img.src = thumb;
+            li.appendChild(img);
+        }
+        var name = document.createElement("span");
+        name.className = "write-original-label";
+        name.textContent = markerText(index + 1, label);
+        var preview = document.createElement("span");
+        preview.className = "write-original-preview";
+        preview.textContent = previewText;
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "comment-reply-btn write-original-remove";
+        remove.textContent = "빼기";
+        remove.setAttribute("aria-label", markerText(index + 1, label) + " 빼기");
+        remove.disabled = state.sending;
+        remove.addEventListener("click", onRemove);
+        li.appendChild(name);
+        li.appendChild(preview);
+        li.appendChild(remove);
+        return li;
+    }
+
+    function focusRow(list, focusIndex, fallback) {
+        if (focusIndex === undefined || !list) {
+            return;
+        }
+        var buttons = list.querySelectorAll(".write-original-remove");
+        var target = buttons[Math.min(focusIndex, buttons.length - 1)];
+        (target || fallback || el.body).focus();
+    }
+
+    function renderVideos(focusIndex) {
+        if (!el.videoList) {
+            return;
+        }
+        el.videoList.textContent = "";
+        state.videos.forEach(function (file, index) {
+            el.videoList.appendChild(attachmentRow(index, "동영상", (file.name || "동영상") + " · " + formatSize(file.size), "", function () {
+                removeMarked(state.videos, index, "동영상", renderVideos);
+            }));
+        });
+        el.videoList.hidden = state.videos.length === 0;
+        if (el.videoCount) {
+            el.videoCount.textContent = state.videos.length + "/" + limits.video_max_count;
+        }
+        if (el.videoAdd) {
+            el.videoAdd.disabled = state.sending || state.videos.length >= limits.video_max_count;
+        }
+        focusRow(el.videoList, focusIndex, el.videoAdd && !el.videoAdd.disabled ? el.videoAdd : el.body);
+    }
+
+    function addVideos(files) {
+        if (state.sending || !files || !files.length || !el.videoAdd) {
+            return;
+        }
+        var picked = pickVideos(state.videos, files, limits, uploadBytes(newImageFiles()));
+        var first = state.videos.length + 1;
+        picked.accepted.forEach(function (file) {
+            state.videos.push(file);
+        });
+        if (picked.accepted.length) {
+            insertMarked("동영상", picked.accepted.map(function (file, offset) {
+                return first + offset;
+            }));
+        }
+        el.videoAdd.removeAttribute("aria-invalid");
+        showListNote("videos", picked.message);
+        renderVideos();
+        if (picked.accepted.length) {
+            announce("동영상 " + picked.accepted.length + "개를 본문에 넣었어요.");
+        }
+    }
+
+    function isVideoFile(file) {
+        return /^video\//.test(file.type || "") || (!file.type && VIDEO_EXTENSION.test(file.name || ""));
+    }
+
+    // 끌어다 놓은 파일을 사진과 동영상으로 나눈다. 수정 화면에는 동영상 칸이 없다.
+    function addFiles(files) {
+        if (!el.videoAdd) {
+            addImages(files);
+            return;
+        }
+        var videos = files.filter(isVideoFile);
+        var rest = files.filter(function (file) {
+            return !isVideoFile(file);
+        });
+        if (videos.length) {
+            addVideos(videos);
+        }
+        if (rest.length) {
+            addImages(rest);
+        }
+    }
+
+    function setDcconStatus(text, link) {
+        if (!el.dcconStatus) {
+            return;
+        }
+        el.dcconStatus.textContent = text || "";
+        if (link) {
+            el.dcconStatus.appendChild(document.createTextNode(" "));
+            var anchor = document.createElement("a");
+            anchor.href = link.href;
+            anchor.textContent = link.text;
+            anchor.target = "_blank";
+            anchor.rel = "noopener";
+            el.dcconStatus.appendChild(anchor);
+        }
+    }
+
+    function renderDccons(focusIndex) {
+        if (!el.dcconList) {
+            return;
+        }
+        el.dcconList.textContent = "";
+        state.dccons.forEach(function (item, index) {
+            el.dcconList.appendChild(attachmentRow(index, "디시콘", item.title || "디시콘", item.image_url, function () {
+                removeMarked(state.dccons, index, "디시콘", renderDccons);
+            }));
+        });
+        el.dcconList.hidden = state.dccons.length === 0;
+        focusRow(el.dcconList, focusIndex, el.dcconAdd && !el.dcconAdd.hidden ? el.dcconAdd : el.body);
+    }
+
+    function addDccon(pack, icon) {
+        if (state.sending || !isAccount()) {
+            return;
+        }
+        if (state.dccons.length >= DCCON_MAX) {
+            showListNote("dccons", "디시콘은 한 글에 " + DCCON_MAX + "개까지 넣을 수 있어요.");
+            return;
+        }
+        state.dccons.push({ package_idx: pack.package_idx, detail_idx: icon.detail_idx, title: icon.title || "",
+            image_url: post.safePath(icon.image_url), slot: accountSlot() });
+        insertMarked("디시콘", [state.dccons.length]);
+        showListNote("dccons", "");
+        renderDccons();
+        announce("디시콘을 본문에 넣었어요. 모두 " + state.dccons.length + "개예요.");
+    }
+
+    function renderDcconIcons() {
+        if (!el.dcconGrid) {
+            return;
+        }
+        var packages = state.dcconCache[accountSlot()] || [];
+        var pack = packages[Number(el.dcconPackage.value) || 0];
+        el.dcconGrid.textContent = "";
+        if (!pack) {
+            return;
+        }
+        (pack.icons || []).forEach(function (icon) {
+            var src = post.safePath(icon.image_url);
+            if (!src) {
+                return;
+            }
+            var button = document.createElement("button");
+            button.type = "button";
+            button.className = "write-dccon-icon";
+            button.setAttribute("aria-label", icon.title || "디시콘");
+            button.title = icon.title || "";
+            button.disabled = state.sending;
+            var img = document.createElement("img");
+            img.alt = "";
+            img.loading = "lazy";
+            img.src = src;
+            button.appendChild(img);
+            button.addEventListener("click", function () {
+                addDccon(pack, icon);
+            });
+            el.dcconGrid.appendChild(button);
+        });
+        setDcconStatus(el.dcconGrid.children.length ? "" : "이 묶음에는 넣을 수 있는 디시콘이 없어요.");
+    }
+
+    function renderDcconPackages() {
+        var packages = state.dcconCache[accountSlot()] || [];
+        el.dcconPackage.textContent = "";
+        if (!packages.length) {
+            el.dcconPicker.hidden = true;
+            el.dcconGrid.textContent = "";
+            setDcconStatus("이 계정에 가진 디시콘이 없어요.");
+            return;
+        }
+        packages.forEach(function (pack, index) {
+            var option = document.createElement("option");
+            option.value = String(index);
+            option.textContent = pack.title || "묶음 " + (index + 1);
+            el.dcconPackage.appendChild(option);
+        });
+        el.dcconPicker.hidden = false;
+        renderDcconIcons();
+    }
+
+    // 목록은 서버가 계정 로그인으로 디시에서 읽는다. 계정마다 한 번만 받아 둔다.
+    function loadDccons() {
+        var slot = accountSlot();
+        if (!slot) {
+            return;
+        }
+        if (state.dcconCache[slot]) {
+            renderDcconPackages();
+            return;
+        }
+        if (state.dcconLoading === slot) {
+            return;
+        }
+        state.dcconLoading = slot;
+        el.dcconPicker.hidden = true;
+        el.dcconGrid.textContent = "";
+        setDcconStatus("디시콘을 불러오고 있어요.");
+        root.fetch("/write/dccons?account=" + encodeURIComponent(slot), {
+            credentials: "same-origin",
+            headers: { "Accept": "application/json" }
+        }).then(function (response) {
+            return response.json().catch(function () {
+                return null;
+            });
+        }, function () {
+            return null;
+        }).then(function (payload) {
+            if (state.dcconLoading === slot) {
+                state.dcconLoading = "";
+            }
+            // 기다리는 사이 상단 메뉴에서 다른 계정을 골랐으면 그 계정 목록을 따로 받는다.
+            if (accountSlot() !== slot || el.dcconPanel.hidden) {
+                return;
+            }
+            if (payload && payload.ok === true && Array.isArray(payload.packages)) {
+                state.dcconCache[slot] = payload.packages;
+                renderDcconPackages();
+                return;
+            }
+            var message = payload && typeof payload.message === "string" ? payload.message : "디시콘을 불러오지 못했어요. 잠시 뒤 다시 열어 주세요.";
+            setDcconStatus(message, payload && payload.code === "login_needed" ? post.accountLink(payload) : null);
+        });
+    }
+
+    function openDccon() {
+        el.dcconPanel.hidden = false;
+        el.dcconAdd.setAttribute("aria-expanded", "true");
+        loadDccons();
+        (el.dcconPicker.hidden ? el.dcconClose : el.dcconPackage).focus();
+    }
+
+    function closeDccon(focus) {
+        if (!el.dcconPanel) {
+            return;
+        }
+        el.dcconPanel.hidden = true;
+        el.dcconAdd.setAttribute("aria-expanded", "false");
+        if (focus && !el.dcconAdd.hidden) {
+            el.dcconAdd.focus();
+        }
+    }
+
+    // 디시콘은 디시 계정으로 쓸 때만 넣을 수 있다.
+    function syncDcconTool() {
+        if (!el.dcconAdd) {
+            return;
+        }
+        el.dcconAdd.hidden = !isAccount();
+        if (!isAccount()) {
+            closeDccon(false);
+        } else if (!el.dcconPanel.hidden) {
+            loadDccons();
+        }
+    }
+
+    function pollOpen() {
+        return Boolean(el.poll && !el.poll.hidden);
+    }
+
+    function pollInputs() {
+        return el.pollItems ? Array.prototype.slice.call(el.pollItems.querySelectorAll("input")) : [];
+    }
+
+    function syncPollMultiple() {
+        var count = Math.max(2, pollInputs().length);
+        var current = Number(el.pollMultiple.value) || 0;
+        el.pollMultiple.textContent = "";
+        var single = document.createElement("option");
+        single.value = "0";
+        single.textContent = "하나만";
+        el.pollMultiple.appendChild(single);
+        for (var number = 2; number <= count; number += 1) {
+            var option = document.createElement("option");
+            option.value = String(number);
+            option.textContent = number + "개까지";
+            el.pollMultiple.appendChild(option);
+        }
+        el.pollMultiple.value = String(Math.min(current, count));
+    }
+
+    function syncPollItems() {
+        var inputs = pollInputs();
+        inputs.forEach(function (input, index) {
+            input.setAttribute("aria-label", (index + 1) + "번째 항목");
+            input.placeholder = "항목 " + (index + 1);
+            var remove = input.parentNode.querySelector("button");
+            remove.setAttribute("aria-label", (index + 1) + "번째 항목 빼기");
+            remove.disabled = state.sending || inputs.length <= 2;
+        });
+        el.pollAddItem.disabled = state.sending || inputs.length >= limits.poll_items_max;
+        syncPollMultiple();
+    }
+
+    function addPollItem(focus) {
+        if (pollInputs().length >= limits.poll_items_max) {
+            return;
+        }
+        var li = document.createElement("li");
+        li.className = "write-poll-item";
+        var input = document.createElement("input");
+        input.className = "write-input";
+        input.type = "text";
+        input.autocomplete = "off";
+        input.maxLength = limits.poll_item_max * 2;
+        input.setAttribute("aria-describedby", "write-poll-error");
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "comment-reply-btn";
+        remove.textContent = "빼기";
+        remove.addEventListener("click", function () {
+            var index = pollInputs().indexOf(input);
+            li.parentNode.removeChild(li);
+            syncPollItems();
+            var inputs = pollInputs();
+            (inputs[Math.min(index, inputs.length - 1)] || el.pollTitle).focus();
+        });
+        li.appendChild(input);
+        li.appendChild(remove);
+        el.pollItems.appendChild(li);
+        syncPollItems();
+        if (focus) {
+            input.focus();
+        }
+    }
+
+    function openPoll() {
+        if (!pollOpen()) {
+            el.poll.hidden = false;
+            el.pollAdd.setAttribute("aria-expanded", "true");
+            while (pollInputs().length < 2) {
+                addPollItem(false);
+            }
+        }
+        el.pollTitle.focus();
+    }
+
+    function removePoll() {
+        el.poll.hidden = true;
+        el.pollAdd.setAttribute("aria-expanded", "false");
+        el.pollTitle.value = "";
+        el.pollItems.textContent = "";
+        el.pollEnd.value = "";
+        el.pollPreview.checked = false;
+        el.pollMultiple.value = "0";
+        showListNote("poll", "");
+        el.pollAdd.focus();
+    }
+
+    function pollPayload() {
+        var poll = {
+            title: el.pollTitle.value.trim(),
+            items: pollInputs().map(function (input) {
+                return input.value.trim();
+            }).filter(Boolean),
+            multiple: Number(el.pollMultiple.value) || 0,
+            preview: el.pollPreview.checked
+        };
+        var end = localDate(el.pollEnd.value);
+        if (end) {
+            poll.end_date = end;
+        }
+        return poll;
+    }
+
+    function applyHtml() {
+        var on = Boolean(el.html && el.html.checked);
+        if (el.format) {
+            el.format.hidden = !on;
+        }
+        if (el.htmlHint) {
+            el.htmlHint.hidden = !on;
+        }
+        el.body.classList.toggle("is-html", on);
+    }
+
+    function applyFormat(format, color) {
+        var start = state.caret ? state.caret.start : el.body.selectionStart;
+        var end = state.caret ? state.caret.end : el.body.selectionEnd;
+        var result = wrapSelection(el.body.value, start, end, format, color);
+        if (!result) {
+            return;
+        }
+        el.body.value = result.text;
+        el.body.focus();
+        el.body.setSelectionRange(result.start, result.end);
+        state.caret = { start: result.start, end: result.end };
+        updateCount(el.body, el.bodyCount, limits.body_max);
+        fitBody();
+    }
+
+    function applyOptions() {
+        if (el.secretField) {
+            el.secretField.hidden = !el.secret.checked;
+        }
+        if (el.autoDeleteField) {
+            el.autoDeleteField.hidden = !el.autoDelete.checked;
+            if (el.autoDelete.checked && !el.autoDeleteAt.value) {
+                // 처음 켜면 하루 뒤(서울 시간)를 5분 단위로 올려 채운다.
+                el.autoDeleteAt.value = inputDate(Math.ceil((Date.now() + 86400000) / 300000) * 300000);
+            }
+        }
+    }
+
+    function optionsPayload() {
+        if (!el.noRepost) {
+            return null;
+        }
+        var options = { no_repost: el.noRepost.checked, secret: el.secret.checked };
+        if (el.secret.checked && el.secretPassword.value) {
+            options.secret_password = el.secretPassword.value;
+        }
+        var at = localDate(el.autoDeleteAt.value);
+        if (el.autoDelete.checked && at) {
+            options.auto_delete = at;
+        }
+        return options.no_repost || options.secret || options.auto_delete ? options : null;
+    }
+
+    // 새 글 도구의 입력을 서버와 같은 기준으로 먼저 확인한다.
+    function extrasProblem() {
+        var body = el.body.value;
+        var problem = state.videos.length ? checkMarkers(body, state.videos.length, "동영상") : null;
+        if (problem) {
+            return { field: "body", message: problem };
+        }
+        if (state.dccons.length) {
+            if (!isAccount()) {
+                return { field: "dccons", message: "디시콘은 디시 계정으로 쓸 때만 넣을 수 있어요. 디시콘을 빼거나 상단 작성자 메뉴에서 계정을 골라 주세요." };
+            }
+            if (state.dccons.some(function (item) {
+                return item.slot !== accountSlot();
+            })) {
+                return { field: "dccons", message: "다른 계정에서 고른 디시콘이 있어요. 빼고 지금 계정의 디시콘으로 다시 넣어 주세요." };
+            }
+            problem = checkMarkers(body, state.dccons.length, "디시콘") || missingMarkers(body, state.dccons.length, "디시콘");
+            if (problem) {
+                return { field: "body", message: problem };
+            }
+        }
+        if (el.html && el.html.checked) {
+            problem = htmlProblem(body);
+            if (problem) {
+                return { field: "body", message: problem };
+            }
+        }
+        if (pollOpen()) {
+            problem = validatePoll(pollPayload(), limits, Date.now());
+            if (problem) {
+                return { field: "poll", message: problem };
+            }
+        }
+        if (el.noRepost) {
+            problem = validateOptions({ secret: el.secret.checked, secretPassword: el.secretPassword.value,
+                autoDelete: el.autoDelete.checked, autoDeleteAt: localDate(el.autoDeleteAt.value) }, limits, Date.now());
+            if (problem) {
+                return { field: "options", message: problem };
+            }
+        }
+        if (state.videos.length && uploadBytes(newImageFiles()) + uploadBytes(state.videos) > limits.upload_total_bytes) {
+            return { field: "videos", message: "사진과 동영상은 모두 합쳐 " + megabytes(limits.upload_total_bytes) + "까지 올릴 수 있어요." };
+        }
+        return null;
+    }
+
+    function bindExtras() {
+        if (el.videoAdd && el.videoInput) {
+            el.videoAdd.addEventListener("click", function () {
+                el.videoInput.click();
+            });
+            el.videoInput.addEventListener("change", function () {
+                addVideos(Array.prototype.slice.call(el.videoInput.files || []));
+                el.videoInput.value = "";
+            });
+            renderVideos();
+        }
+        if (el.dcconAdd && el.dcconPanel) {
+            el.dcconAdd.addEventListener("click", function () {
+                if (el.dcconPanel.hidden) {
+                    openDccon();
+                } else {
+                    closeDccon(true);
+                }
+            });
+            el.dcconClose.addEventListener("click", function () {
+                closeDccon(true);
+            });
+            el.dcconPackage.addEventListener("change", renderDcconIcons);
+            el.dcconPanel.addEventListener("keydown", function (event) {
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeDccon(true);
+                }
+            });
+        }
+        if (el.pollAdd && el.poll) {
+            el.pollAdd.addEventListener("click", openPoll);
+            el.pollRemove.addEventListener("click", removePoll);
+            el.pollAddItem.addEventListener("click", function () {
+                addPollItem(true);
+            });
+        }
+        if (el.html) {
+            el.html.addEventListener("change", applyHtml);
+            applyHtml();
+        }
+        if (el.format) {
+            el.format.addEventListener("click", function (event) {
+                var button = event.target.closest ? event.target.closest("[data-format]") : null;
+                if (button && !state.sending) {
+                    applyFormat(button.getAttribute("data-format"));
+                }
+            });
+            if (el.formatColor) {
+                el.formatColor.addEventListener("change", function () {
+                    applyFormat("color", el.formatColor.value);
+                });
+            }
+        }
+        [el.secret, el.autoDelete].forEach(function (input) {
+            if (input) {
+                input.addEventListener("change", applyOptions);
+            }
+        });
+        if (el.noRepost) {
+            applyOptions();
+        }
     }
 
     function submit(event) {
@@ -1007,7 +1858,8 @@
             password: el.password.value,
             subject: el.subject.value,
             body: el.body.value,
-            imageCount: state.images.length + state.originals.length,
+            // 동영상·디시콘·투표만 있어도 본문을 비울 수 있다.
+            imageCount: state.images.length + state.originals.length + state.videos.length + state.dccons.length + (pollOpen() ? 1 : 0),
             captcha: answer,
             account: isAccount()
         }, limits);
@@ -1023,6 +1875,11 @@
             || (state.originals.length ? checkMarkers(el.body.value, state.originals.length, "원본") : null);
         if (markerProblem) {
             showFieldError("body", markerProblem);
+            return;
+        }
+        var extras = modifyPid ? null : extrasProblem();
+        if (extras) {
+            showFieldError(extras.field, extras.message);
             return;
         }
         var body = {
@@ -1048,6 +1905,24 @@
             body.captcha_code = answer.code;
         }
         var uploads = newImages();
+        var videos = modifyPid ? [] : state.videos.slice();
+        if (!modifyPid) {
+            if (el.html && el.html.checked) {
+                body.html = true;
+            }
+            var options = optionsPayload();
+            if (options) {
+                body.options = options;
+            }
+            if (pollOpen()) {
+                body.poll = pollPayload();
+            }
+            if (state.dccons.length) {
+                body.dccons = state.dccons.map(function (item) {
+                    return { package_idx: item.package_idx, detail_idx: item.detail_idx };
+                });
+            }
+        }
         if (modifyPid) {
             // 사진 순서: 원래 사진은 원래 블록 번호, 새 사진은 올리는 순서로 가리킨다.
             var nextUpload = 0;
@@ -1062,18 +1937,22 @@
         }
         setBusy(true);
         var request;
-        if (uploads.length) {
-            // 본문에서 [사진 N] 줄을 지운 사진은 글 맨 아래에 붙인다.
+        if (uploads.length || videos.length) {
+            // 본문에서 [사진 N]·[동영상 N] 줄을 지운 파일은 글 맨 아래에 붙인다.
             body.image_position = "bottom";
             var data = new FormData();
             data.append("payload", JSON.stringify(body));
             uploads.forEach(function (item) {
                 data.append("images", item.file, item.file.name || "image");
             });
-            setStatus("사진을 올리고 있어요. 0%");
+            videos.forEach(function (file) {
+                data.append("videos", file, file.name || "video.mp4");
+            });
+            var what = videos.length ? (uploads.length ? "사진과 동영상을" : "동영상을") : "사진을";
+            setStatus(what + " 올리고 있어요. 0%");
             request = post.postForm("/write", data, {
                 onProgress: function (ratio) {
-                    setStatus("사진을 올리고 있어요. " + Math.min(99, Math.floor(ratio * 100)) + "%");
+                    setStatus(what + " 올리고 있어요. " + Math.min(99, Math.floor(ratio * 100)) + "%");
                 },
                 onUploaded: function () {
                     setStatus(modifyPid ? "수정하고 있어요." : "등록하고 있어요.");
@@ -1090,7 +1969,7 @@
                 // 서버가 요청을 다 받지 못했으니 보이는 캡챠 답도 아직 쓰이지 않았다.
                 setStatus(modifyPid
                     ? "사진을 다 올리기 전에 연결이 끊겼어요. 글은 바뀌지 않았어요. 다시 수정해 주세요."
-                    : "사진을 다 올리기 전에 연결이 끊겼어요. 글은 등록되지 않았어요. 다시 등록해 주세요.", "error");
+                    : "파일을 다 올리기 전에 연결이 끊겼어요. 글은 등록되지 않았어요. 다시 등록해 주세요.", "error");
                 return;
             }
             handle(post.interpret(result.status, result.payload));
@@ -1194,6 +2073,7 @@
                 : "유동닉으로 올라가요. 서버 IP로 기록돼요." + (modes.length ? " 작성자는 상단 메뉴에서 바꿀 수 있어요." : "");
         }
         syncRememberNote();
+        syncDcconTool();
     }
     // 새 글은 상단 작성자 메뉴(다른 탭 포함)를 따른다. 써 둔 내용과 닉네임·비밀번호 칸 값은 그대로 둔다.
     if (!modifyPid) {
@@ -1225,6 +2105,7 @@
     el.rememberPassword.addEventListener("change", saveIdentity);
     el.rememberPassword.addEventListener("change", syncRememberNote);
     bindImageInputs();
+    bindExtras();
     form.addEventListener("submit", submit);
     root.addEventListener("beforeunload", function (event) {
         if (!state.leaving && isDirty()) {

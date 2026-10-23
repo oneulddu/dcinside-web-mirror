@@ -4456,6 +4456,189 @@ html[data-theme="dark"] .author-pick-menu {
     flex: none;
 }
 
+/* 새 글 전용 도구: 동영상·디시콘 목록, 디시콘 고르기, 투표, HTML 서식, 글 설정. */
+.write-tool[hidden],
+.write-panel[hidden],
+.write-format[hidden],
+.write-field[hidden] {
+    display: none;
+}
+
+.write-attachments {
+    padding: var(--space-2) 0;
+    border-top: var(--rule) solid var(--line);
+}
+
+.write-attachment-thumb {
+    flex: none;
+    align-self: center;
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+}
+
+.write-html-toggle {
+    min-height: 44px;
+    margin-left: var(--space-1);
+}
+
+.write-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border-radius: var(--radius-l);
+    background: var(--surface);
+}
+
+.write-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
+
+.write-panel .write-input {
+    background: var(--bg);
+}
+
+.write-dccon-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+    gap: var(--space-2);
+    max-height: 288px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.write-dccon-grid:empty {
+    display: none;
+}
+
+.write-dccon-icon {
+    aspect-ratio: 1;
+    min-height: 44px;
+    padding: var(--space-1);
+    border: 0;
+    border-radius: var(--radius-s);
+    background: var(--bg);
+    cursor: pointer;
+    transition: box-shadow var(--dur) ease-out, transform var(--dur-fast) ease-out;
+}
+
+.write-dccon-icon img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.write-dccon-icon:hover:not(:disabled) {
+    box-shadow: inset 0 0 0 var(--rule-bold) var(--accent);
+}
+
+.write-dccon-icon:not(:disabled):active {
+    transform: scale(0.96);
+}
+
+.write-poll-items {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.write-poll-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.write-poll-item .write-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.write-poll-add-item {
+    align-self: flex-start;
+    min-height: 40px;
+    padding: 0 var(--space-4);
+}
+
+.write-poll-settings {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-3);
+}
+
+@media (max-width: 520px) {
+    .write-poll-settings {
+        grid-template-columns: 1fr;
+    }
+}
+
+.write-format {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) 0;
+}
+
+.write-format-btn {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0 var(--space-2);
+    border: 0;
+    border-radius: var(--radius-s);
+    background: transparent;
+    color: var(--text);
+    font: var(--type-label);
+    cursor: pointer;
+}
+
+.write-format-btn:hover:not(:disabled) {
+    background: var(--surface);
+}
+
+.write-format-color {
+    width: 40px;
+    height: 40px;
+    padding: 6px;
+    border: 0;
+    border-radius: var(--radius-s);
+    background: transparent;
+    cursor: pointer;
+}
+
+.write-body.is-html {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 14px;
+}
+
+.write-options {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.write-options legend {
+    margin-bottom: var(--space-2);
+    padding: 0;
+}
+
+.write-options-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-5);
+}
+
 /* 본문 아래 도구 줄: 사진 넣기, 사진 위치, 글자 수. */
 .write-toolbar {
     display: flex;

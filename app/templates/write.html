@@ -31,6 +31,8 @@
           data-subject-max="{{ limits.subject_max }}" data-body-max="{{ limits.body_max }}"
           data-nickname-max="{{ limits.nickname_max }}" data-password-min="{{ limits.password_min }}" data-password-max="{{ limits.password_max }}"
           data-image-max-count="{{ limits.image_max_count }}" data-image-max-bytes="{{ limits.image_max_bytes }}" data-image-total-bytes="{{ limits.image_total_bytes }}"
+          data-video-max-count="{{ limits.video_max_count }}" data-video-max-bytes="{{ limits.video_max_bytes }}" data-upload-total-bytes="{{ limits.upload_total_bytes }}"
+          data-poll-title-max="{{ limits.poll_title_max }}" data-poll-item-max="{{ limits.poll_item_max }}" data-poll-items-max="{{ limits.poll_items_max }}"
           {%- if modify_pid %} data-modify-pid="{{ modify_pid }}" data-modify-author="{{ request.args.get('author', '')[:limits.nickname_max] }}"{% endif %}
           {%- if account_modify %} data-mode="account" data-account="{{ request.args.get('account', '1')[:2] }}"{% endif %}>
         <fieldset class="write-author">
@@ -93,6 +95,18 @@
             </div>
             <p class="write-error write-doc-error" id="write-subject-error" hidden></p>
 
+            {% if not modify_pid %}
+            <div class="write-format" id="write-format" role="toolbar" aria-label="HTML 서식" hidden>
+                <button class="write-format-btn" type="button" data-format="b" aria-label="굵게"><b>가</b></button>
+                <button class="write-format-btn" type="button" data-format="i" aria-label="기울임"><i>가</i></button>
+                <button class="write-format-btn" type="button" data-format="u" aria-label="밑줄"><u>가</u></button>
+                <button class="write-format-btn" type="button" data-format="s" aria-label="취소선"><s>가</s></button>
+                <input class="write-format-color" id="write-format-color" type="color" value="#e03131" aria-label="글자색">
+                <button class="write-format-btn" type="button" data-format="table">표</button>
+                <button class="write-format-btn" type="button" data-format="link">링크</button>
+                <button class="write-format-btn" type="button" data-format="br">줄바꿈</button>
+            </div>
+            {% endif %}
             <label class="sr-only" for="write-body">본문</label>
             <textarea class="write-body" id="write-body" name="body" rows="9" placeholder="내용을 입력하세요" aria-describedby="write-body-error" required></textarea>
             <p class="write-error write-doc-error" id="write-body-error" hidden></p>
@@ -110,16 +124,109 @@
                 <p class="sr-only" id="write-images-live" role="status" aria-live="polite"></p>
             </div>
 
+            {% if not modify_pid %}
+            <ol class="write-original-list write-attachments" id="write-video-list" aria-label="넣은 동영상" hidden></ol>
+            <input id="write-videos-input" type="file" accept="video/mp4" multiple hidden>
+            <p class="write-error" id="write-videos-error" hidden></p>
+            <ol class="write-original-list write-attachments" id="write-dccon-list" aria-label="넣은 디시콘" hidden></ol>
+            <p class="write-error" id="write-dccons-error" hidden></p>
+            {% endif %}
             <div class="write-toolbar">
                 <button class="write-tool" id="write-images-add" type="button" aria-describedby="write-images-hint">
                     <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M20.5 15.5l-4.5-4.5-8 8"/></svg>
                     <span>사진</span>
                     <span class="write-tool-count" id="write-images-count">0/{{ limits.image_max_count }}</span>
                 </button>
+                {% if not modify_pid %}
+                <button class="write-tool" id="write-videos-add" type="button" aria-describedby="write-images-hint">
+                    <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10.5l5-3v9l-5-3"/></svg>
+                    <span>동영상</span>
+                    <span class="write-tool-count" id="write-videos-count">0/{{ limits.video_max_count }}</span>
+                </button>
+                {% if account_configured|default(false) %}
+                <button class="write-tool" id="write-dccon-add" type="button" aria-expanded="false" aria-controls="write-dccon-panel" hidden>
+                    <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 14c.9 1.3 2.1 2 3.5 2s2.6-.7 3.5-2"/><path d="M9 9.5h.01M15 9.5h.01"/></svg>
+                    <span>디시콘</span>
+                </button>
+                {% endif %}
+                <button class="write-tool" id="write-poll-add" type="button" aria-expanded="false" aria-controls="write-poll">
+                    <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 19v-8M12 19V5M18 19v-6"/></svg>
+                    <span>투표</span>
+                </button>
+                <label class="write-check write-html-toggle">
+                    <input type="checkbox" id="write-html" aria-describedby="write-html-hint">
+                    <span>HTML</span>
+                </label>
+                {% endif %}
                 <span class="write-count write-body-count" id="write-body-count" aria-hidden="true">0/{{ limits.body_max }}</span>
             </div>
         </div>
-        <p class="write-hint write-images-hint" id="write-images-hint">사진을 넣으면 커서 자리에 <strong>[사진 1]</strong> 같은 줄이 생기고, 그 줄이 있는 곳에 사진이 들어가요. 줄을 옮기면 사진 자리도 바뀌어요. {% if modify_pid %}원래 사진도 같은 줄로 보여요. 새 사진은{% else %}사진은{% endif %} {{ limits.image_max_count }}장, 한 장 {{ limits.image_max_bytes // 1048576 }}MB까지예요.</p>
+        <p class="write-hint write-images-hint" id="write-images-hint">사진을 넣으면 커서 자리에 <strong>[사진 1]</strong> 같은 줄이 생기고, 그 줄이 있는 곳에 사진이 들어가요. 줄을 옮기면 사진 자리도 바뀌어요. {% if modify_pid %}원래 사진도 같은 줄로 보여요. 새 사진은{% else %}사진은{% endif %} {{ limits.image_max_count }}장, 한 장 {{ limits.image_max_bytes // 1048576 }}MB까지예요.{% if not modify_pid %} 동영상은 MP4만 {{ limits.video_max_count }}개, 한 개 {{ limits.video_max_bytes // 1048576 }}MB까지이고 사진과 합쳐 {{ limits.upload_total_bytes // 1048576 }}MB까지예요. 본문의 <strong>[동영상 N]</strong> 줄 자리에 들어가요. 유동으로 올린 동영상은 디시가 평일 9~18시에만 받아요.{% endif %}</p>
+        {% if not modify_pid %}
+        <p class="write-hint" id="write-html-hint" hidden>HTML을 켜면 본문을 HTML로 보내요. 서식 단추로 태그를 넣을 수 있고, 줄을 바꾸려면 &lt;br&gt;을 써요. 스크립트·iframe·이벤트 속성·javascript 주소는 보낼 수 없어요.</p>
+
+        {% if account_configured|default(false) %}
+        <div class="write-panel" id="write-dccon-panel" role="group" aria-labelledby="write-dccon-title" hidden>
+            <div class="write-panel-head">
+                <span class="write-label" id="write-dccon-title">내 디시콘</span>
+                <button class="comment-reply-btn" id="write-dccon-close" type="button">닫기</button>
+            </div>
+            <div class="write-field write-dccon-picker" id="write-dccon-picker" hidden>
+                <label class="write-label" for="write-dccon-package">묶음</label>
+                <select class="write-input" id="write-dccon-package"></select>
+            </div>
+            <p class="write-hint" id="write-dccon-status" role="status" aria-live="polite"></p>
+            <div class="write-dccon-grid" id="write-dccon-grid" role="group" aria-label="디시콘"></div>
+            <p class="write-hint">누르면 커서 자리에 <strong>[디시콘 N]</strong> 줄이 생기고, 그 자리에 디시콘이 들어가요.</p>
+        </div>
+        {% endif %}
+
+        <div class="write-panel" id="write-poll" role="group" aria-labelledby="write-poll-label" hidden>
+            <div class="write-panel-head">
+                <span class="write-label" id="write-poll-label">투표</span>
+                <button class="comment-reply-btn" id="write-poll-remove" type="button">투표 빼기</button>
+            </div>
+            <div class="write-field">
+                <label class="write-label" for="write-poll-title">투표 제목</label>
+                <input class="write-input" id="write-poll-title" type="text" autocomplete="off" maxlength="{{ limits.poll_title_max * 2 }}" aria-describedby="write-poll-error">
+            </div>
+            <ol class="write-poll-items" id="write-poll-items" aria-label="투표 항목"></ol>
+            <button class="write-cancel write-poll-add-item" id="write-poll-add-item" type="button">항목 추가</button>
+            <div class="write-poll-settings">
+                <div class="write-field">
+                    <label class="write-label" for="write-poll-multiple">고를 수 있는 수</label>
+                    <select class="write-input" id="write-poll-multiple"></select>
+                </div>
+                <div class="write-field">
+                    <label class="write-label" for="write-poll-end">마감 (한국 시간, 비우면 무기한)</label>
+                    <input class="write-input" id="write-poll-end" type="datetime-local">
+                </div>
+            </div>
+            <label class="write-check"><input type="checkbox" id="write-poll-preview"><span>투표하기 전에 결과 보기</span></label>
+            <p class="write-hint">항목은 {{ limits.poll_items_max }}개, 한 항목 {{ limits.poll_item_max }}자까지예요. 투표는 본문 아래에 붙어요.</p>
+            <p class="write-error" id="write-poll-error" hidden></p>
+        </div>
+
+        <fieldset class="write-options" id="write-options">
+            <legend class="write-label">글 설정</legend>
+            <div class="write-options-row">
+                <label class="write-check"><input type="checkbox" id="write-no-repost" aria-describedby="write-options-error"><span>펌 금지</span></label>
+                <label class="write-check"><input type="checkbox" id="write-secret" aria-controls="write-secret-field"><span>비밀글</span></label>
+                <label class="write-check"><input type="checkbox" id="write-auto-delete" aria-controls="write-auto-delete-field"><span>자동 삭제</span></label>
+            </div>
+            <div class="write-field" id="write-secret-field" hidden>
+                <label class="write-label" for="write-secret-password">비밀글 비밀번호 (선택)</label>
+                <input class="write-input" id="write-secret-password" type="password" autocomplete="new-password" maxlength="{{ limits.password_max * 2 }}" aria-describedby="write-secret-hint write-options-error">
+                <p class="write-hint" id="write-secret-hint">비우면 비밀번호 없는 비밀글이에요. 넣으면 {{ limits.password_min }}~{{ limits.password_max }}자예요.</p>
+            </div>
+            <div class="write-field" id="write-auto-delete-field" hidden>
+                <label class="write-label" for="write-auto-delete-at">지울 시각 (한국 시간)</label>
+                <input class="write-input" id="write-auto-delete-at" type="datetime-local" step="300" aria-describedby="write-auto-delete-hint write-options-error">
+                <p class="write-hint" id="write-auto-delete-hint">5분 단위로 정해요. 개념글이 되면 자동 삭제가 풀리고, 삭제 제한 말머리에서는 쓸 수 없어요.</p>
+            </div>
+            <p class="write-error" id="write-options-error" hidden></p>
+        </fieldset>
+        {% endif %}
         </div>
 
         {{ captcha_box("write-captcha", "디시가 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 다시 등록해 주세요.") }}

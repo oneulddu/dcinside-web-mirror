@@ -168,6 +168,23 @@ pm2 logs dc-mirror
   A body line that is only `[사진 N]` places photo N there (`dc_write.photo_blocks` → worker `blocks`); unknown or
   duplicate markers are body errors, unmarked photos follow `image_position`, and marker text without photos stays text.
   Uploads use private temporary directories under `MIRROR_DC_APP_UPLOADS` (system temp by default), are removed after every outcome, and are read before worker DC calls; image-only bodies and top/bottom placement are supported.
+- New posts only: `html` sends text segments as HTML (unsafe elements, event handlers and javascript URLs are
+  rejected); `options` maps `no_repost`, `secret`, optional 2–20-character `secret_password`, and `auto_delete`
+  (future Asia/Seoul `YYYY-MM-DD HH:mm`, five-minute steps). The worker overrides `not_allowed_pum` only on
+  new-write upload POSTs, retaining the app-host urlencoded/upload-host multipart distinction.
+  `poll` accepts title ≤40 characters, 2–20 items ≤30 characters each, `multiple` 0 or 2..item count,
+  boolean `preview`, and optional future `end_date`. It creates the poll with permission `A` (all) and uses
+  the successful response's `cause` as `vote`; a raw `Dc_App_Vote` memo block is appended after the body.
+  `dccons` is account-only (`package_idx`, `detail_idx`); each `[디시콘 N]` line must occur exactly once.
+  `GET /write/dccons?account=N` shares the status gate, pins lazy login to that slot, maps `tab`/nested `list`
+  into packages/icons, proxies icon URLs through `/media`, and caches successful lists for 180s per worker slot.
+  New login/expiry clears that slot's cache; list does not purchase or insert anything.
+  Multipart `videos` accepts up to three magic-validated MP4 files, 20MiB each, with photos+videos ≤30MiB;
+  Flask/nginx remain 32MiB. No server transcoding. `[동영상 N]` uses an inline `Dc_App_Movie_N-1` memo block
+  (unmarked files follow image placement). Upload → movieInfo produces `mv_no|mv_token|file_no`.
+  APK defaults are three videos, 50MiB upload, five minutes, with the app transcoding to MP4/H.264;
+  the mirror's lower byte limit fits the existing deployment. DC may restrict anonymous video posting by time.
+  All these fields are rejected on modify. Poll/DCCon/video pre-step failures are `sent:false`; never retry a post.
 - `MIRROR_DC_APP_NODE` selects Node (default PATH lookup), `MIRROR_DC_APP_DIR` defaults to
   `<repo>/dc_app`, and `MIRROR_DC_APP_STATE` defaults to `instance/dc_app_credentials.json`.
   Set `MIRROR_WRITE_KEY` only in the server environment. Deployment installs `dc_app` with

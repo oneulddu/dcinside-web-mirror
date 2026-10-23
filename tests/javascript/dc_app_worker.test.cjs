@@ -102,6 +102,15 @@ export class DCInside {
       return {result:'true',direction,userId,captcha:captcha ?? null};
     };
     this.articles = {
+      createPoll: async options => {
+        trace('poll');
+        if (options.title === 'throw') throw new Error('poll transport');
+        if (options.title === 'reject') return {result:false,cause:'투표 거절'};
+        if (options.title === 'update_return') return {result:false,cause:updateText};
+        if (options.permission !== 'A') throw new Error('Poll permission');
+        trace('poll-options:' + JSON.stringify(options));
+        return {result:'true',cause:'poll-key'};
+      },
       delete: async (gallery, no) => {
         trace('delete');
         const failure = rejection(gallery);
@@ -166,6 +175,7 @@ export class DCInside {
             autoDeleteTime:options.autoDeleteTime, head:options.headText, captcha:options.captcha, fix:options.fix};
         }
         if (!options.validateOnly) throw new Error('Expected validateOnly');
+        if (options.subject === 'features') return {result:'true',options};
         if (options.subject === 'images') {
           const blocks = [];
           for (const block of options.content) {
@@ -193,6 +203,34 @@ export class DCInside {
       },
       upvote: async (gallery, no, captcha) => vote(gallery, 'up', captcha),
       downvote: async (gallery, no, captcha) => vote(gallery, 'down', captcha),
+    };
+    this.dccons = {
+      insert: async icon => {
+        trace('dccon:' + icon.detail_idx);
+        if (this.session?.type !== 'login') throw new Error('No login');
+        if (icon.detail_idx === 999) throw Object.assign(new Error('dccon failure'), {name:'ApiError',cause:'디시콘 거절'});
+        return {result:'true',img_tag:'<img data-icon="' + icon.detail_idx + '">'};
+      },
+      list: async () => {
+        trace('dccons:' + this.session?.userId);
+        return {result:'true',tab:[{package_idx:10,title:'꾸러미'},{package_idx:20,title:'다른 꾸러미'}],
+          list:[[{package_idx:20,detail_idx:22,title:'둘',img:'https://dcimg5.dcinside.com/dccon.php?no=22'}],
+            [{package_idx:10,detail_idx:11,title:'하나',img:'https://dcimg5.dcinside.com/dccon.php?no=11'}]]};
+      },
+    };
+    this.uploads = {
+      movie: async (gallery, file) => {
+        trace('movie');
+        if (!(file instanceof File) || file.type !== 'video/mp4') throw new Error('Wrong movie file');
+        if (gallery === 'movie_fail') throw new Error('movie transport');
+        if (gallery === 'movie_reject') return {msg:'동영상 거절'};
+        return {file_no:'file-9',thum_url_arr:['https://dcm6.dcinside.co.kr/thumb'],width:160,height:120};
+      },
+      movieInfo: async info => {
+        trace('movieInfo:' + JSON.stringify(info));
+        if (info.gallery === 'info_fail') return {result:'false',cause:'동영상 정보 거절'};
+        return {result:'true',mv_no:'movie-8',mv_token:'movie-token'};
+      },
     };
     this.comments = {
       delete: async (gallery, no, commentNo) => {
@@ -243,6 +281,8 @@ globalThis.fetch = async (url, init = {}) => {
   }) + '\\n');
   const target = new URL(url);
   if (request.method === 'POST' && target.host === 'app.dcinside.com') return Response.json({result:'true'});
+  if (request.method === 'POST' && target.href === 'https://upload.dcinside.com/_app_vote_upload.php')
+    return Response.json({result:'true',cause:'offline-poll-key'});
   if (request.method === 'POST' && target.href === 'https://upload.dcinside.com/_app_write_api.php') return Response.json({result:'true'});
   if (request.method === 'POST' && target.href === 'https://android.apis.google.com/c2dm/register3') return new Response('token=offline-client');
   if (request.method === 'POST' && target.href === 'https://firebaseinstallations.googleapis.com/v1/projects/dcinside-b3f40/installations')
@@ -297,6 +337,160 @@ function run(requests, seed = false, login = '', login2 = '', real = false, cred
 }
 
 const write = subject => ({ op:'write', session:{type:'anonymous', nickname:'private-nickname', password:'private-password'}, gallery:'programming', subject, body:'line1\nline2 <script>', validateOnly:true });
+
+test('new HTML/settings and anonymous poll map before write, with an official poll placeholder', () => {
+  const result = run([{...write('features'), html:true, body:'<b>굵게</b>',
+    options:{secret:true,secret_password:'pw',no_repost:true,auto_delete:'2099-01-01 00:05'},
+    poll:{title:'투표',items:['하나','둘'],multiple:2,preview:true,end_date:'2099-01-01 00:01'}}]);
+  assert.equal(result.replies[0].ok, true);
+  const options = result.replies[0].data.options;
+  assert.equal(options.secret, 'pw');
+  assert.equal(options.autoDeleteTime, '2099-01-01 00:05');
+  assert.equal(options.vote, 'poll-key');
+  assert.deepEqual(options.content, [{type:'html',html:'<b>굵게</b>'},{type:'html',html:'Dc_App_Vote'}]);
+  assert(result.trace.indexOf('poll') < result.trace.indexOf('write'));
+  assert.deepEqual(JSON.parse(result.trace.find(line => line.startsWith('poll-options:')).slice('poll-options:'.length)),
+    {gallery:'programming',title:'투표',items:['하나','둘'],multiple:2,preview:true,endDate:'2099-01-01 00:01',permission:'A'});
+});
+
+test('real write transport overrides no-repost without leaking it and retains multipart poll/write', async () => {
+  const credentials = {androidId:'123',securityToken:'456',fid:'offline-fid',refreshToken:'offline-refresh',
+    clientToken:'offline-client-token',appId:'offline-app',appIdIssuedAt:Date.now() - 30000};
+  const result = run([
+    {...write('settings'), html:true, body:'<b>표</b>', options:{no_repost:true,secret:true,secret_password:'pw',auto_delete:'2099-01-01 00:05'},
+      poll:{title:'투표',items:['하나','둘'],multiple:2,preview:true,end_date:'2099-01-01 00:01'}},
+    {...write('default'), options:{secret:true}},
+    write('plain'),
+  ], true, '', '', true, credentials);
+  assert(result.replies.every(reply => reply.ok));
+  const writes = result.posts.filter(post => post.url.endsWith('/_app_write_api.php'));
+  const polls = result.posts.filter(post => post.url.endsWith('/_app_vote_upload.php'));
+  assert.equal(polls.length, 1);
+  assert.equal(writes.length, 3);
+  const forms = [];
+  for (const post of [...writes, ...polls]) {
+    assert.equal(post.multipart, true);
+    assert.equal(post.urlencoded, false);
+    forms.push(await new Response(post.body, {headers:post.headers}).formData());
+  }
+  assert.equal(forms[0].get('not_allowed_pum'), '1');
+  assert.equal(forms[1].get('not_allowed_pum'), '0');
+  assert.equal(forms[2].get('not_allowed_pum'), '0');
+  assert.equal(forms[0].get('secret_use'), '1');
+  assert.equal(forms[0].get('secret_password'), 'pw');
+  assert.equal(forms[0].get('auto_del_time'), '2099-01-01 00:05');
+  assert.equal(forms[0].get('vote'), 'offline-poll-key');
+  assert.equal(decodeURIComponent(forms[0].get('memo_block[0]')), '<b>표</b>');
+  assert.equal(forms[0].get('memo_block[1]'), 'Dc_App_Vote');
+  assert.equal(forms[1].get('secret_use'), '1');
+  assert.equal(forms[1].get('secret_password'), null);
+  assert.equal(forms[2].get('secret_use'), '0');
+  assert.equal(forms[2].get('auto_del_time'), null);
+  assert.equal(forms[3].get('permission'), 'A');
+  assert.equal(forms[3].get('multi'), '1');
+  assert.equal(forms[3].get('multi_cnt'), '02');
+  assert.equal(forms[3].get('preview'), '01');
+  assert.equal(forms[3].get('end_date'), '2099-01-01 00:01');
+  assert.equal(forms[3].get('voteItem[1]'), '둘');
+  assert(result.posts.indexOf(polls[0]) < result.posts.indexOf(writes[0]));
+});
+
+test('dccon insert uses pinned account and emits blocks in marker order', () => {
+  const result = run([{...write('features'), session:{type:'login',account:'2'}, html:true,
+    dccons:[{package_idx:10,detail_idx:11},{package_idx:20,detail_idx:22}],
+    blocks:[{text:'<b>앞</b>'},{dccon:1},{text:'중간'},{dccon:0}]}], false, '', 'success');
+  assert.equal(result.replies[0].ok, true);
+  assert.deepEqual(result.replies[0].data.options.content, [
+    {type:'html',html:'<b>앞</b>'}, {type:'dccon',tag:'<img data-icon="22">',packageIdx:20,detailIdx:22},
+    {type:'html',html:'중간'}, {type:'dccon',tag:'<img data-icon="11">',packageIdx:10,detailIdx:11},
+  ]);
+  assert(result.trace.includes('login:2'));
+  assert(result.trace.indexOf('dccon:11') < result.trace.indexOf('write'));
+  assert(result.trace.indexOf('dccon:22') < result.trace.indexOf('write'));
+});
+
+test('dccon listing maps tab/list by package id, caches per slot and expires after three minutes', () => {
+  const request = account => ({op:'dccons',session:{type:'login',account}});
+  const result = run([request('1'),request('1'),{...request('2'),testAdvanceMs:10001},
+    {...request('1'),testAdvanceMs:180001}], false, 'success', 'success');
+  assert(result.replies.every(reply => reply.ok));
+  assert.deepEqual(result.replies[0].data.packages, [
+    {package_idx:10,title:'꾸러미',icons:[{detail_idx:11,title:'하나',image_url:'https://dcimg5.dcinside.com/dccon.php?no=11'}]},
+    {package_idx:20,title:'다른 꾸러미',icons:[{detail_idx:22,title:'둘',image_url:'https://dcimg5.dcinside.com/dccon.php?no=22'}]},
+  ]);
+  assert.equal(result.trace.filter(line => line === 'dccons:public-user').length, 2);
+  assert.equal(result.trace.filter(line => line === 'dccons:public-user-2').length, 1);
+  assert(!result.trace.some(line => line === 'write' || line.startsWith('dccon:')));
+});
+
+test('anonymous dccons and missing or repeated dccon markers are refused before DC calls', () => {
+  const icons = [{package_idx:10,detail_idx:11}];
+  for (const request of [
+    {...write('features'),dccons:icons,blocks:[{dccon:0}]},
+    {...write('features'),session:{type:'login'},dccons:icons,blocks:[]},
+    {...write('features'),session:{type:'login'},dccons:icons,blocks:[{dccon:0},{dccon:0}]},
+  ]) {
+    const result = run([request], false, 'success');
+    assert.equal(result.replies[0].error.sent, false);
+    assert.deepEqual(result.trace, []);
+  }
+});
+
+const movieBytes = Buffer.from([0,0,0,24,102,116,121,112,105,115,111,109,0,0,0,0,105,115,111,109,109,112,52,50]);
+function withMovie(callback) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-movie-test-'));
+  try {
+    const file = path.join(directory, 'video1.mp4');
+    fs.writeFileSync(file, movieBytes);
+    return callback({path:file,name:'video1.mp4',type:'video/mp4'});
+  } finally {
+    fs.rmSync(directory, {recursive:true,force:true});
+  }
+}
+
+test('video upload and info precede write and use inline placeholders plus mv_no|token|file_no', () => {
+  withMovie(video => {
+    const result = run([{...write('features'),videos:[video,video],
+      blocks:[{text:'앞'},{video:1},{text:'중간'},{video:0}]}]);
+    assert.equal(result.replies[0].ok, true);
+    const options = result.replies[0].data.options;
+    assert.deepEqual(options.content, ['앞',{type:'html',html:'Dc_App_Movie_1'},'중간',{type:'html',html:'Dc_App_Movie_0'}]);
+    assert.deepEqual(options.movies, ['movie-8|movie-token|file-9','movie-8|movie-token|file-9']);
+    assert.equal(result.trace.filter(line => line === 'movie').length, 2);
+    const info = result.trace.filter(line => line.startsWith('movieInfo:'));
+    assert.equal(info.length, 2);
+    assert.deepEqual(JSON.parse(info[0].slice('movieInfo:'.length)), {
+      gallery:'programming',thumbnail:'https://dcm6.dcinside.co.kr/thumb',width:160,height:120,allowDownload:false});
+    assert(result.trace.indexOf('movie') < result.trace.indexOf(info[0]));
+    assert(result.trace.lastIndexOf(info[1]) < result.trace.indexOf('write'));
+  });
+});
+
+test('poll, dccon and movie pre-step failures never write, preserve rejection causes and mark not sent', () => {
+  withMovie(video => {
+    const requests = [
+      {...write('features'),poll:{title:'throw',items:['a','b']}},
+      {...write('features'),poll:{title:'reject',items:['a','b']}},
+      {...write('features'),session:{type:'login'},dccons:[{package_idx:1,detail_idx:999}],blocks:[{dccon:0}]},
+      ...['movie_fail','movie_reject','info_fail'].map(gallery => ({...write('features'),gallery,videos:[video],blocks:[{video:0}]})),
+    ];
+    for (const [index, request] of requests.entries()) {
+      const result = run([request], false, 'success');
+      assert.equal(result.replies[0].ok, false);
+      assert.equal(result.replies[0].error.sent, false);
+      assert(!result.trace.includes('write'));
+      if (index === 1) assert.equal(result.replies[0].error.cause, '투표 거절');
+      if (index === 4) assert.equal(result.replies[0].error.cause, '동영상 거절');
+      if (index === 5) assert.equal(result.replies[0].error.cause, '동영상 정보 거절');
+    }
+  });
+});
+
+test('poll pre-step update rejection keeps the fixed update-required category', () => {
+  const result = run([{...write('features'),poll:{title:'update_return',items:['a','b']}}]);
+  assert.deepEqual(result.replies[0].error, {name:'WorkerError',reason:'update_required'});
+  assert(!result.trace.includes('write'));
+});
 
 test('worker serializes sessions, preserves text and validateOnly, and writes credentials atomically', () => {
   const result = run([write('one'), write('two'), { op:'upvote', gallery:'programming', no:1 }, { op:'downvote', gallery:'programming', no:1 }]);

@@ -4,6 +4,7 @@ import base64
 import secrets
 import ipaddress
 import json
+import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -1212,7 +1213,7 @@ def dc_write_context():
 _WRITE_ENDPOINTS = {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote",
                     "main.read_vote_options", "main.read_comment", "main.read_delete",
                     "main.read_comment_delete", "main.write_modify_load",
-                    "main.write_account", "main.write_account_status", "main.write_account_login"}
+                    "main.write_account", "main.write_account_status", "main.write_account_login", "main.write_dccons"}
 
 
 @bp.before_request
@@ -1227,7 +1228,7 @@ def gate_dc_write():
         return jsonify(ok=False, code="locked"), 403
     if request.method == "POST":
         _reject_cross_origin_post()
-    if request.endpoint in {"main.write_account", "main.write_account_status"} and request.method in {"GET", "HEAD"}:
+    if request.endpoint in {"main.write_account", "main.write_account_status", "main.write_dccons"} and request.method in {"GET", "HEAD"}:
         # 주소창·즐겨찾기로 여는 계정 화면("none")은 받는다. 상태 JSON은 같은 사이트의 스크립트만 읽는다.
         allowed = (None, "same-origin", "none") if request.endpoint == "main.write_account" else (None, "same-origin")
         if request.headers.get("Sec-Fetch-Site") not in allowed:
@@ -1324,6 +1325,35 @@ def write_account():
 def write_account_status():
     result, status = dc_write.account_status()
     return jsonify(result), status
+
+
+@bp.route("/write/dccons")
+def write_dccons():
+    slot = _write_account_slot(request.args)
+    if slot is None or slot not in dc_write.account_slots():
+        return _write_invalid("mode", "계정을 다시 선택해 주세요.")
+    result, status = dc_write.perform("dccons", session={"type": "login", "account": slot})
+    if result["ok"]:
+        packages = []
+        for package in result["data"].get("packages", []):
+            icons = []
+            for icon in package["icons"]:
+                src = normalize_media_url_shape(icon.get("image_url"))
+                if src:
+                    icons.append({"detail_idx": icon["detail_idx"], "title": icon["title"],
+                                  "image_url": url_for("main.media", src=src)})
+            packages.append({"package_idx": package["package_idx"], "title": package["title"], "icons": icons})
+        result = {"ok": True, "packages": packages}
+    else:
+        result.pop("cause", None)
+        if result["code"] == "login_needed":
+            result["account_url"] = url_for("main.write_account") + "#account-" + result["account"]
+            result.pop("captcha_key", None)
+    response = jsonify(result)
+    response.status_code = status
+    if status == 429:
+        response.headers["Retry-After"] = str(result["retry_after"])
+    return response
 
 
 @bp.route("/write/account/login", methods=["POST"])
@@ -1472,7 +1502,7 @@ def write():
                                head_categories=categories, selected_head_id=selected,
                                write_blocked=write_blocked, write_notice=write_notice,
                                board_back_url=board_url(board, kind=kind), limits=dc_write.LIMITS, **modify_context)
-    files = []
+    files, video_files = [], []
     if request.mimetype == "multipart/form-data":
         try:
             data = json.loads(request.form.get("payload", ""))
@@ -1483,9 +1513,10 @@ def write():
         if data is not None:
             if "account" in request.form:
                 data["account"] = request.form["account"]
-            if any(name != "images" for name in request.files):
+            if any(name not in ("images", "videos") for name in request.files):
                 return _write_invalid("images", "사진은 images 항목으로 올려 주세요.")
             files = request.files.getlist("images")
+            video_files = request.files.getlist("videos")
     else:
         data = _write_json_request()
     if data is None:
@@ -1497,6 +1528,13 @@ def write():
     if account and slot is None:
         return _write_invalid("mode", "계정을 다시 선택해 주세요.")
     modifying = "pid" in data
+    if modifying and (any(key in data for key in ("html", "options", "poll", "dccons", "videos"))
+                      or "videos" in request.files):
+        return _write_invalid("body", "글 설정, HTML, 투표, 디시콘, 동영상은 새 글에서만 사용할 수 있어요.")
+    try:
+        extra = {} if modifying else dc_write.new_post_fields(data, account=account)
+    except dc_write.InvalidWriteField as exc:
+        return _write_invalid(exc.field, str(exc))
     if modifying and (isinstance(data["pid"], bool) or not re.fullmatch(r"[1-9][0-9]{0,14}", str(data["pid"] or ""))):
         return _write_invalid("board", "올바른 글 번호를 선택해 주세요.")
     if modifying and (not isinstance(data.get("fingerprint"), str) or not re.fullmatch(r"[0-9a-fA-F]{64}", data["fingerprint"])):
@@ -1512,8 +1550,8 @@ def write():
         return _write_invalid("board", "올바른 갤러리를 선택해 주세요.")
     values = {}
     rules = [("subject", 1, 40, "제목은 1~40자로 입력해 주세요."),
-             ("body", 0 if files or modifying else 1, 10000,
-              "본문은 10000자까지 입력해 주세요." if files or modifying else "본문은 1~10000자로 입력해 주세요."),
+             ("body", 0 if files or video_files or extra.get("poll") or modifying else 1, 10000,
+              "본문은 10000자까지 입력해 주세요." if files or video_files or extra.get("poll") or modifying else "본문은 1~10000자로 입력해 주세요."),
              ("nickname", 1, 20, "닉네임은 1~20자로 입력해 주세요."),
              ("password", 2, 20, "비밀번호는 2~20자로 입력해 주세요.")]
     for field, minimum, maximum, message in rules:
@@ -1528,7 +1566,7 @@ def write():
             return _write_invalid(field, message)
         values[field] = value
     blocks = None
-    if files or modifying:
+    if files or video_files or extra.get("dccons") or modifying:
         try:
             if modifying:
                 if not isinstance(data.get("photos", []), list) or not isinstance(data.get("originals", []), list):
@@ -1538,7 +1576,8 @@ def write():
                 if not blocks:
                     return _write_invalid("body", "본문이나 사진, 원본을 하나 이상 남겨 주세요.")
             else:
-                blocks = dc_write.photo_blocks(values["body"], len(files), image_position)
+                blocks = dc_write.photo_blocks(values["body"], len(files), image_position,
+                                               dccons=len(extra.get("dccons", [])), videos=len(video_files))
         except dc_write.InvalidPhotoMarker as exc:
             return _write_invalid("body", str(exc))
     try:
@@ -1553,16 +1592,21 @@ def write():
     except ValueError:
         return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
     try:
-        with dc_write.prepared_images(files) as images:
+        with dc_write.prepared_images(files) as images, dc_write.prepared_videos(video_files) as videos:
+            if videos and sum(os.path.getsize(item["path"]) for item in images + videos) > dc_write.LIMITS["upload_total_bytes"]:
+                return _write_invalid("videos", "사진과 동영상은 모두 합쳐 30MB까지 올릴 수 있어요.")
             return _write_result("modify" if modifying else "write", board, kind,
                                  session={"type": "login", "account": slot} if account else {"type": "anonymous", "nickname": values["nickname"], "password": values["password"]},
                                  subject=values["subject"], body=values["body"],
                                  head={"no": int(head_id), "name": head_name} if head_id is not None else None,
                                  captcha=captcha, images=images, image_position=image_position,
+                                 **extra, **({"videos": videos} if videos else {}),
                                  **({"no": int(data["pid"]), "fingerprint": data["fingerprint"].lower()} if modifying else {}),
                                  **({"blocks": blocks} if blocks is not None else {}))
     except dc_write.InvalidImage as exc:
         return _write_invalid("images", str(exc))
+    except dc_write.InvalidVideo as exc:
+        return _write_invalid("videos", str(exc))
     except dc_write.WorkerUnavailable:
         return jsonify(dc_write.unavailable()), 503
 

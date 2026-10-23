@@ -1858,6 +1858,261 @@ def test_plain_write_contract_unchanged(setup):
     assert "blocks" not in payload and "no" not in payload and "fingerprint" not in payload
 
 
+@pytest.mark.parametrize("body", [
+    "<script>alert(1)</script>", "<SCRIPT src=x>", "<iframe>", "<OBJECT>", "<embed>", "<form>",
+    '<div onClick = "x">', '<a href="JaVaScRiPt:alert(1)">x</a>',
+    '<a href="java&#115;cript:alert(1)">', '<a href="java\tscript:alert(1)">',
+])
+def test_new_html_rejects_active_content(setup, body):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = post(client, html=True, body=body)
+    assert response.status_code == 400 and response.json["field"] == "body"
+    assert response.json["message"] and not manager.calls
+
+
+@pytest.mark.parametrize("changes,field", [
+    ({"html": "true"}, "body"),
+    ({"html": True, "body": "x" * 10001}, "body"),
+    ({"options": None}, "options"),
+    ({"options": {"secret": "true"}}, "options"),
+    ({"options": {"no_repost": 1}}, "options"),
+    ({"options": {"secret_password": "pw"}}, "options"),
+    ({"options": {"secret": True, "secret_password": ""}}, "options"),
+    ({"options": {"secret": True, "secret_password": "x"}}, "options"),
+    ({"options": {"secret": True, "secret_password": "x" * 21}}, "options"),
+    ({"options": {"secret": True, "secret_password": 123}}, "options"),
+    ({"options": {"auto_delete": "2000-01-01 00:00"}}, "options"),
+    ({"options": {"auto_delete": "2099-01-01 00:01"}}, "options"),
+    ({"options": {"auto_delete": "2099-01-01T00:00"}}, "options"),
+    ({"options": {"auto_delete": "2099-02-30 00:00"}}, "options"),
+    ({"options": {"auto_delete": None}}, "options"),
+    ({"poll": None}, "poll"),
+    ({"poll": {"title": "", "items": ["a", "b"]}}, "poll"),
+    ({"poll": {"title": "x" * 41, "items": ["a", "b"]}}, "poll"),
+    ({"poll": {"title": "t", "items": ["a"]}}, "poll"),
+    ({"poll": {"title": "t", "items": ["a"] * 21}}, "poll"),
+    ({"poll": {"title": "t", "items": ["a" * 31, "b"]}}, "poll"),
+    ({"poll": {"title": "t", "items": [" ", "b"]}}, "poll"),
+    ({"poll": {"title": "t", "items": [1, "b"]}}, "poll"),
+    ({"poll": {"title": "t", "items": ["a", "b"], "multiple": 1}}, "poll"),
+    ({"poll": {"title": "t", "items": ["a", "b"], "multiple": 3}}, "poll"),
+    ({"poll": {"title": "t", "items": ["a", "b"], "multiple": True}}, "poll"),
+    ({"poll": {"title": "t", "items": ["a", "b"], "preview": "true"}}, "poll"),
+    ({"poll": {"title": "t", "items": ["a", "b"], "end_date": "2000-01-01 00:00"}}, "poll"),
+    ({"poll": {"title": "t", "items": ["a", "b"], "end_date": "2099-1-1 01:00"}}, "poll"),
+    ({"dccons": [{"package_idx": 1, "detail_idx": 2}]}, "dccons"),
+    ({"dccons": None}, "dccons"),
+])
+def test_new_post_validation_before_worker(setup, changes, field):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = post(client, **changes)
+    assert response.status_code == 400 and response.json["field"] == field
+    assert not manager.calls
+
+
+def test_new_post_html_options_poll_mapping_and_limits(setup):
+    _, client, manager, contexts = setup
+    unlock(client)
+    options = {"no_repost": True, "secret": True, "secret_password": "비밀번호", "auto_delete": "2099-01-01 00:05"}
+    poll = {"title": "투표", "items": ["하나", "둘"], "multiple": 2, "preview": True, "end_date": "2099-01-01 00:01"}
+    body = "<b>굵게</b><table><tr><td>표</td></tr></table>"
+    response = post(client, body=body, html=True, options=options, poll=poll)
+    assert response.json["ok"]
+    assert manager.calls[0][1]["options"] == options
+    assert manager.calls[0][1]["poll"] == poll
+    assert manager.calls[0][1]["html"] is True and manager.calls[0][1]["body"] == body
+    client.get("/write?board=programming")
+    limits = contexts[-1][1]["limits"]
+    assert {key: limits[key] for key in ("poll_title_max", "poll_item_max", "poll_items_max", "video_max_count", "video_max_bytes")} == {
+        "poll_title_max": 40, "poll_item_max": 30, "poll_items_max": 20, "video_max_count": 3, "video_max_bytes": 20 * 1024 * 1024}
+    assert limits["upload_total_bytes"] == 30 * 1024 * 1024
+
+
+def test_new_dates_use_seoul_and_five_minute_boundary(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz):
+            assert tz == ZoneInfo("Asia/Seoul")
+            return cls(2030, 1, 1, 0, 4, 59, tzinfo=tz)
+
+    monkeypatch.setattr(service, "datetime", Clock)
+    assert service._future_date("2030-01-01 00:05", five_minutes=True)
+    assert not service._future_date("2030-01-01 00:00", five_minutes=True)
+    assert not service._future_date("2030-01-01 00:06", five_minutes=True)
+    assert service._future_date("2030-01-01 00:06")
+
+
+@pytest.mark.parametrize("field,value", [("html", False), ("options", {}), ("poll", {}),
+                                       ("dccons", []), ("videos", [])])
+def test_modify_rejects_every_new_field_even_empty(setup, field, value):
+    _, client, manager, _ = setup
+    unlock(client)
+    response = post(client, pid=123, fingerprint="a" * 64, **{field: value})
+    assert response.status_code == 400 and response.json["field"] == "body"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("icons", [
+    [{"package_idx": True, "detail_idx": 2}], [{"package_idx": 1, "detail_idx": 0}],
+    [{"package_idx": 1, "detail_idx": "2"}], [{"package_idx": 1}], ["bad"],
+])
+def test_dccon_reference_validation(setup, monkeypatch, icons):
+    _, client, manager, _ = setup
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID", "configured")
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD", "configured")
+    unlock(client)
+    response = post(client, mode="account", dccons=icons)
+    assert response.status_code == 400 and response.json["field"] == "dccons"
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("body,valid", [
+    ("앞\n[디시콘 2]\n[사진 1]\n[디시콘 1]\n뒤", True),
+    ("[디시콘 1]", False), ("[디시콘 1]\n[디시콘 1]", False),
+    ("[디시콘 3]", False), ("[디시콘 0]", False),
+])
+def test_dccon_marker_order_and_validation(setup, monkeypatch, body, valid):
+    _, client, manager, _ = setup
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID_2", "configured")
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD_2", "configured")
+    unlock(client)
+    icons = [{"package_idx": 1, "detail_idx": 2}, {"package_idx": 1, "detail_idx": 3}]
+    response = multipart(client, [PNG], mode="account", account="2", dccons=icons, body=body)
+    if valid:
+        assert response.json["ok"]
+        payload = manager.calls[0][1]
+        assert payload["session"] == {"type": "login", "account": "2"}
+        assert payload["dccons"] == icons
+        assert payload["blocks"] == [{"text": "앞"}, {"dccon": 1}, {"image": 0}, {"dccon": 0}, {"text": "뒤"}]
+    else:
+        assert response.status_code == 400 and response.json["field"] == "body"
+        assert not manager.calls
+
+
+@pytest.mark.parametrize("gate,status", [("disabled", 404), ("locked", 403), ("cross-site", 403),
+                                        ("none", 403), ("same-site", 403), ("slot", 400)])
+def test_dccons_endpoint_gate_before_worker(setup, monkeypatch, gate, status):
+    app, client, manager, _ = setup
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID", "configured")
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD", "configured")
+    if gate == "disabled":
+        app.config["WRITE_KEY"] = ""
+    elif gate != "locked":
+        unlock(client)
+    response = client.get("/write/dccons?account=" + ("2" if gate == "slot" else "1"),
+                          headers={"Sec-Fetch-Site": gate} if gate in ("cross-site", "none", "same-site") else {})
+    assert response.status_code == status and response.headers["Cache-Control"] == "no-store"
+    assert not manager.calls
+
+
+def test_dccons_endpoint_proxies_allowlisted_icons_and_pins_slot(setup, monkeypatch):
+    from urllib.parse import urlsplit, parse_qs
+    _, client, manager, _ = setup
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID_2", "configured")
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD_2", "configured")
+    unlock(client)
+    src = "https://dcimg5.dcinside.com/dccon.php?no=abc"
+    manager.result = {"ok": True, "data": {"result": True, "packages": [
+        {"package_idx": 10, "title": "꾸러미", "icons": [
+            {"detail_idx": 11, "title": "하나", "image_url": src, "password": "private"},
+            {"detail_idx": 12, "title": "외부", "image_url": "https://evil.test/icon.png"}]}], "session": "private"}}
+    response = client.get("/write/dccons?account=2", headers={"Sec-Fetch-Site": "same-origin"})
+    assert response.status_code == 200 and set(response.json) == {"ok", "packages"}
+    assert manager.calls == [("dccons", {"session": {"type": "login", "account": "2"}})]
+    package = response.json["packages"][0]
+    assert package["package_idx"] == 10 and package["title"] == "꾸러미"
+    assert len(package["icons"]) == 1
+    icon = package["icons"][0]
+    assert set(icon) == {"detail_idx", "title", "image_url"}
+    assert urlsplit(icon["image_url"]).path == "/media"
+    assert parse_qs(urlsplit(icon["image_url"]).query) == {"src": [src]}
+
+
+def test_dccons_endpoint_login_needed_uses_selected_account(setup, monkeypatch):
+    _, client, manager, _ = setup
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID_2", "configured")
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD_2", "configured")
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "LoginNeeded", "reason": "otp", "account": "2", "sent": False}}
+    response = client.get("/write/dccons?account=2")
+    assert response.json["code"] == "login_needed"
+    assert response.json["account_url"] == "/write/account#account-2"
+
+
+MP4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp42"
+
+
+def video_multipart(client, videos, **changes):
+    return client.post("/write", data={"payload": json.dumps({**BODY, **changes}),
+        "videos": [(io.BytesIO(data), "untrusted.mov", "text/plain") for data in videos]},
+        content_type="multipart/form-data", headers=ORIGIN)
+
+
+def test_video_upload_mapping_permissions_cleanup(setup, tmp_path, monkeypatch):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    unlock(client)
+    observed = []
+
+    def inspect(op, deadline=None, **payload):
+        assert op == "write"
+        assert payload["blocks"] == [{"text": "앞"}, {"video": 1}, {"text": "중간"}, {"video": 0}]
+        for index, video in enumerate(payload["videos"], 1):
+            path = Path(video["path"])
+            assert path.read_bytes() == MP4
+            assert path.stat().st_mode & 0o777 == 0o600
+            assert path.parent.stat().st_mode & 0o777 == 0o700
+            assert video["type"] == "video/mp4" and video["name"] == f"video{index}.mp4"
+            observed.append(path)
+        return manager.result
+
+    monkeypatch.setattr(manager, "request", inspect)
+    response = video_multipart(client, [MP4, MP4], body="앞\n[동영상 2]\n중간\n[동영상 1]")
+    assert response.json["ok"] and len(observed) == 2 and not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("videos,changes,field", [
+    ([b"not video"], {}, "videos"), ([MP4] * 4, {}, "videos"),
+    ([MP4], {"body": "[동영상 2]"}, "body"),
+    ([MP4], {"body": "[동영상 1]\n[동영상 1]"}, "body"),
+    ([MP4], {"pid": 123, "fingerprint": "a" * 64}, "body"),
+])
+def test_video_invalid_before_worker(setup, tmp_path, videos, changes, field):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    unlock(client)
+    response = video_multipart(client, videos, **changes)
+    assert response.status_code == 400 and response.json["field"] == field
+    assert not manager.calls and not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("limit", ["video_max_bytes", "upload_total_bytes"])
+def test_video_size_limits_cleanup(setup, monkeypatch, tmp_path, limit):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    monkeypatch.setitem(service.LIMITS, limit, len(MP4) - 1)
+    unlock(client)
+    response = video_multipart(client, [MP4])
+    assert response.status_code == 400 and response.json["field"] == "videos"
+    assert not manager.calls and not list(tmp_path.iterdir())
+
+
+def test_video_only_body_and_preparation_failure_is_not_uncertain(setup, tmp_path):
+    app, client, manager, _ = setup
+    app.config["DC_APP_UPLOADS"] = str(tmp_path)
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "HTTPError", "sent": False}}
+    response = video_multipart(client, [MP4], body="")
+    assert response.status_code == 503 and response.json["code"] == "unavailable"
+    assert manager.calls[0][1]["blocks"] == [{"video": 0}]
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize("complete", [True, False, None])
 def test_read_passes_comments_complete_to_template(setup, monkeypatch, complete):
     _, client, manager, contexts = setup

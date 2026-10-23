@@ -18,8 +18,13 @@ dc.http.context.relogin = async () => false;
 // 공식 앱 5.3.20은 app.dcinside.com POST를 urlencoded 폼으로 보낸다(업로드만 multipart).
 // app_id 발급 요청과 app.dcinside.com 요청에 옵션을 덧붙이고, Blob은 urlencoded 인코더가 버리므로 multipart로 남긴다.
 const sendPost = dc.http.post;
+let writeNoRepost = null; // Serialized request scope; never applied to modify.
 dc.http.post = function (url, fields, options) {
   const text = String(url);
+  if (writeNoRepost !== null && new URL(text).host === 'upload.dcinside.com'
+      && new URL(text).pathname === '/_app_write_api.php') {
+    fields = { ...fields, not_allowed_pum: writeNoRepost ? '1' : '0' };
+  }
   const urlencoded = text.endsWith('/auth/mobile_app_verification')
     || (new URL(text).host === 'app.dcinside.com'
       && !Object.values(fields ?? {}).some(value => value instanceof Blob));
@@ -32,7 +37,7 @@ const accounts = Object.fromEntries(['1', '2'].map(account => {
   return [account, {
     id: process.env[`MIRROR_DC_LOGIN_ID${suffix}`] || '',
     password: process.env[`MIRROR_DC_LOGIN_PASSWORD${suffix}`] || '',
-    session: null, otpToken: undefined, blocked: false, reason: null,
+    session: null, otpToken: undefined, blocked: false, reason: null, dccons: null,
   }];
 }));
 let lastLoginAttempt = null;
@@ -87,6 +92,7 @@ async function accountLogin(input = {}) {
   lastLoginAttempt = now;
   loginAttempted = true;
   state.session = null;
+  state.dccons = null;
   try {
     await settled();
     state.session = await dc.auth.login(state.id, state.password, {
@@ -185,23 +191,122 @@ async function uploadedImages(input) {
 
 async function writeContent(input) {
   const images = await uploadedImages(input);
+  const icons = input.dccons ?? [];
+  if (!Array.isArray(icons) || (icons.length && input.session?.type !== 'login') || icons.some(icon =>
+    !icon || !Number.isSafeInteger(icon.package_idx) || icon.package_idx < 1
+      || !Number.isSafeInteger(icon.detail_idx) || icon.detail_idx < 1)) throw invalidMutation();
+  const videos = input.videos ?? [];
+  const textBlock = text => input.html === true ? { type: 'html', html: text } : text;
   // 서버가 본문의 [사진 N] 줄로 나눈 순서. 사진마다 정확히 한 번씩 써야 한다.
   if (input.blocks !== undefined) {
     const used = new Set();
-    if (!Array.isArray(input.blocks) || input.blocks.length > images.length * 2 + 1) throw Object.assign(new Error('Invalid blocks'), { sent: false });
+    const count = images.length + icons.length + videos.length;
+    if (!Array.isArray(input.blocks) || input.blocks.length > count * 2 + 1) throw Object.assign(new Error('Invalid blocks'), { sent: false });
     const content = input.blocks.map(block => {
-      if (block && typeof block.text === 'string' && block.text.trim() && block.image === undefined) return block.text;
-      if (block && Number.isInteger(block.image) && block.image >= 0 && block.image < images.length && !used.has(block.image) && block.text === undefined) {
-        used.add(block.image);
-        return images[block.image];
+      if (!block || Object.keys(block).length !== 1) throw invalidMutation();
+      if (typeof block.text === 'string' && block.text.trim()) return textBlock(block.text);
+      for (const [key, entries] of [['image', images], ['dccon', icons], ['video', videos]]) {
+        const index = block[key];
+        if (Number.isInteger(index) && index >= 0 && index < entries.length && !used.has(`${key}:${index}`)) {
+          used.add(`${key}:${index}`);
+          return key === 'image' ? images[index] : key === 'video'
+            ? { type: 'html', html: `Dc_App_Movie_${index}` } : { dccon: index };
+        }
       }
       throw Object.assign(new Error('Invalid blocks'), { sent: false });
     });
-    if (used.size !== images.length) throw Object.assign(new Error('Invalid blocks'), { sent: false });
+    if (used.size !== count) throw Object.assign(new Error('Invalid blocks'), { sent: false });
     return content;
   }
-  const text = typeof input.body === 'string' && input.body.trim() ? [input.body] : [];
+  if (icons.length || videos.length) throw invalidMutation();
+  const text = typeof input.body === 'string' && input.body.trim() ? [textBlock(input.body)] : [];
   return input.image_position === 'bottom' ? [...text, ...images] : [...images, ...text];
+}
+
+async function uploadedVideos(input) {
+  const videos = input.videos ?? [];
+  if (!Array.isArray(videos) || videos.length > 3) throw invalidMutation();
+  try {
+    const files = [];
+    for (const video of videos) {
+      if (!video || typeof video.path !== 'string' || !isAbsolute(video.path)
+          || !/^[A-Za-z0-9_-]+\.mp4$/.test(basename(video.path))
+          || typeof video.name !== 'string' || !/^[A-Za-z0-9_-]+\.mp4$/.test(video.name)
+          || video.type !== 'video/mp4') throw invalidMutation();
+      const bytes = await readFile(video.path);
+      if (bytes.length < 16 || bytes.length > 20 * 1024 * 1024 || bytes.toString('ascii', 4, 8) !== 'ftyp'
+          || !['isom', 'iso2', 'mp41', 'mp42', 'avc1', 'M4V '].includes(bytes.toString('ascii', 8, 12))) throw invalidMutation();
+      files.push(new File([bytes], video.name, { type: video.type }));
+    }
+    return files;
+  } catch {
+    throw invalidMutation();
+  }
+}
+
+function acceptedPrestep(result) {
+  if ([false, 'false'].includes(result?.result)) {
+    throw Object.assign(new Error('DC rejected preparation'), { name: 'ApiError', cause: result.cause, sent: false });
+  }
+  return result;
+}
+
+async function prepareWrite(input, content, videos) {
+  try {
+    const options = input.options ?? {};
+    const extra = { secret: options.secret ? options.secret_password ?? true : false,
+      autoDeleteTime: options.auto_delete };
+    // Insert calls use the pinned login session, but content follows marker order.
+    const icons = [];
+    for (const icon of input.dccons ?? []) {
+      const result = acceptedPrestep(await dc.dccons.insert(icon));
+      if (typeof result.img_tag !== 'string' || !result.img_tag) throw invalidMutation();
+      icons.push({ type: 'dccon', tag: result.img_tag, detailIdx: icon.detail_idx, packageIdx: icon.package_idx });
+    }
+    content = content.map(block => Number.isInteger(block?.dccon) ? icons[block.dccon] : block);
+    if (input.poll) {
+      const poll = input.poll;
+      const result = acceptedPrestep(await dc.articles.createPoll({ gallery: input.gallery, title: poll.title,
+        items: poll.items, multiple: poll.multiple, preview: poll.preview, endDate: poll.end_date, permission: 'A' }));
+      if (typeof result.cause !== 'string' || !result.cause) throw invalidMutation();
+      extra.vote = result.cause;
+      // Official h6 write builder emits a separate raw memo block at poll position.
+      // The form has one post-level poll, so place that block after the body.
+      content.push({ type: 'html', html: 'Dc_App_Vote' });
+    }
+    if (videos.length) {
+      extra.movies = [];
+      for (const video of videos) {
+        const upload = acceptedPrestep(await dc.uploads.movie(input.gallery, video));
+        if (!upload.file_no || !upload.thum_url_arr?.[0] || !(upload.width > 0) || !(upload.height > 0)) {
+          if (upload.msg) throw Object.assign(new Error('Movie rejected'), { name: 'ApiError', cause: upload.msg });
+          throw invalidMutation();
+        }
+        const info = acceptedPrestep(await dc.uploads.movieInfo({ gallery: input.gallery,
+          thumbnail: upload.thum_url_arr[0], width: upload.width, height: upload.height, allowDownload: false }));
+        if (!info.mv_no || !info.mv_token) throw invalidMutation();
+        extra.movies.push(`${info.mv_no}|${info.mv_token}|${upload.file_no}`);
+      }
+    }
+    return { ...extra, content };
+  } catch (error) {
+    error.sent = false;
+    throw error;
+  }
+}
+
+async function dcconPackages(account) {
+  const state = accounts[account];
+  if (state.dccons && state.dccons.expires > Date.now()) return state.dccons.data;
+  const result = acceptedPrestep(await dc.dccons.list());
+  const packages = (result.tab ?? []).filter(tab => Number.isSafeInteger(tab.package_idx) && tab.package_idx > 0)
+    .map(tab => ({ package_idx: tab.package_idx, title: tab.title ?? '',
+      icons: (result.list ?? []).flat().filter(icon => icon.package_idx === tab.package_idx
+        && Number.isSafeInteger(icon.detail_idx) && icon.detail_idx > 0 && typeof icon.img === 'string')
+        .map(icon => ({ detail_idx: icon.detail_idx, title: icon.title ?? '', image_url: icon.img })) }));
+  const data = { result: true, packages };
+  state.dccons = { expires: Date.now() + 180000, data };
+  return data;
 }
 
 // 댓글 요청을 디시에 보내기 전에 확인한다. 답글은 부모 댓글 번호와 그 작성자 아이디(유동은 빈 값)를 쓴다.
@@ -324,6 +429,7 @@ async function handle(input) {
     if (input.session?.type === 'login' && error.name === 'AuthExpiredError' && error.kind === 'login') {
       const account = selectedAccount(input.session);
       accounts[account].session = null;
+      accounts[account].dccons = null;
       accounts[account].reason = 'expired';
       throw loginNeeded('expired', account);
     }
@@ -372,7 +478,8 @@ async function dispatch(input) {
     }
   }
   const mutation = ['delete', 'comment_delete', 'modify_info', 'modify'].includes(input.op);
-  if (!['write', 'comment', 'upvote', 'downvote'].includes(input.op) && !mutation) throw new Error('Unsupported operation');
+  if (!['write', 'comment', 'upvote', 'downvote', 'dccons'].includes(input.op) && !mutation) throw new Error('Unsupported operation');
+  if (input.op === 'dccons' && !account) throw invalidMutation();
   // PC 쿠키 세션은 유동 추천만 지원한다. 계정 추천을 유동으로 보내면 안 된다.
   if (input.pc !== undefined && ['upvote', 'downvote'].includes(input.op)) {
     if (account) throw invalidMutation();
@@ -381,13 +488,19 @@ async function dispatch(input) {
   let content;
   let comment;
   let images;
+  let videos = [];
+  let preparedWrite;
   if (mutation) {
+    if (input.op === 'modify' && ['html', 'options', 'poll', 'dccons', 'videos'].some(key => Object.hasOwn(input, key))) throw invalidMutation();
     mutationArgs(input);
     if (input.op === 'modify') images = await uploadedImages(input);
   }
   if (input.op === 'write' || input.op === 'comment' || mutation) {
     if (!['anonymous', 'login'].includes(input.session?.type)) throw new Error('Unsupported session');
-    if (input.op === 'write') content = await writeContent(input);
+    if (input.op === 'write') {
+      videos = await uploadedVideos(input);
+      content = await writeContent(input);
+    }
     else if (input.op === 'comment') comment = commentArgs(input);
     if (!account) dc.useAnonymous(input.session.nickname, input.session.password);
   }
@@ -404,6 +517,7 @@ async function dispatch(input) {
       error.sent = false;
       throw error;
     }
+    if (input.op === 'dccons') return await dcconPackages(account);
     if (input.op === 'modify_info') {
       const info = await dc.articles.modifyInfo(input.gallery, input.no);
       return [false, 'false'].includes(info.result) ? info : modifySnapshot(info).normalized;
@@ -420,10 +534,14 @@ async function dispatch(input) {
       return await dc.articles.write({ gallery: input.gallery, articleNo: input.no, subject: input.subject,
         headText: input.head, captcha: input.captcha, useGalleryNickname: false, ...prepared });
     }
+    if (input.op === 'write') {
+      preparedWrite = await prepareWrite(input, content, videos);
+      writeNoRepost = input.options?.no_repost === true;
+    }
     const send = () => {
       if (input.op === 'delete') return dc.articles.delete(input.gallery, input.no);
       if (input.op === 'comment_delete') return dc.comments.delete(input.gallery, input.no, input.comment_no);
-      if (input.op === 'write') return dc.articles.write({ gallery: input.gallery, subject: input.subject, content, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true, useGalleryNickname: false });
+      if (input.op === 'write') return dc.articles.write({ gallery: input.gallery, subject: input.subject, ...preparedWrite, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true, useGalleryNickname: false });
       if (input.op === 'comment') return dc.comments.write(input.gallery, input.no, comment.content, { parent: comment.parent, captcha: input.captcha ?? undefined, useGalleryNickname: false })
         .then(result => input.session?.type === 'login'
           ? { ...result, author: { name: accounts[account].session.result?.name ?? null, user_id: accounts[account].session.userId } } : result);
@@ -441,6 +559,7 @@ async function dispatch(input) {
       return await send();
     }
   } finally {
+    writeNoRepost = null;
     dc.session = null;
     // A persistence failure after a successful write must not invite a duplicate write.
     await saveCredentials().catch(() => process.stderr.write('DC credential save failed\n'));

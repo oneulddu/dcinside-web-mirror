@@ -47,6 +47,7 @@ class Config:
     DC_APP_UPLOADS = os.getenv("MIRROR_DC_APP_UPLOADS", "").strip() or None
     # DC 워커만 이 HTTP 프록시(집 회선 중계기)를 거쳐 나간다. DC는 클라우드 IP의 추천·글쓰기를 조용히 거절한다.
     DC_APP_PROXY = os.getenv("MIRROR_DC_APP_PROXY", "").strip() or None
+    # 사진+동영상 합계 30MiB + multipart 여유; ops nginx 예제의 32m와 동일.
     MAX_CONTENT_LENGTH = 32 * 1024 * 1024
     # Opportunistic JS-cookie gate: HTML-only 수집기 억제용이며 HTML의 토큰을 추출하면 우회할 수 있다.
     VISITOR_CHECK = _as_bool(os.getenv("MIRROR_VISITOR_CHECK"), True)

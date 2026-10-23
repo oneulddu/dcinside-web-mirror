@@ -171,6 +171,77 @@ test("결과를 모르는 uncertain은 다시 보내라고 하지 않는 unknown
     assert.equal(post.interpret(503, { ok: false, code: "unavailable", message: "x" }).action, "unavailable");
 });
 
+const extLimits = { password_min: 2, password_max: 20, poll_title_max: 40, poll_item_max: 30, poll_items_max: 20,
+    video_max_count: 3, video_max_bytes: 20 * 1048576, upload_total_bytes: 30 * 1048576 };
+
+test("디시콘 줄은 고른 수만큼 한 번씩 있어야 한다", () => {
+    assert.equal(form.missingMarkers("[디시콘 1]\n글\n[디시콘 2]", 2, "디시콘"), null);
+    assert.match(form.missingMarkers("[디시콘 1]", 2, "디시콘"), /\[디시콘 2\]/);
+    assert.equal(form.insertMarkers("가", 1, 1, [1], "디시콘").text, "가\n[디시콘 1]\n");
+});
+
+test("HTML은 서버와 같은 위험 요소를 막는다", () => {
+    assert.equal(form.htmlProblem("<b>굵게</b><table><tr><td>칸</td></tr></table>"), null);
+    for (const bad of ["<script>x</script>", "<IFRAME src=x>", '<img onerror="x">', '<a href="java\nscript:x">a</a>']) {
+        assert.ok(form.htmlProblem(bad), bad);
+    }
+});
+
+test("서식 단추는 고른 글자를 감싸거나 커서 자리에 넣는다", () => {
+    assert.deepEqual(JSON.parse(JSON.stringify(form.wrapSelection("가나다", 1, 2, "b"))), { text: "가<b>나</b>다", start: 4, end: 5 });
+    assert.equal(form.wrapSelection("가", 1, 1, "color", "#E03131").text, '가<span style="color:#e03131"></span>');
+    assert.equal(form.wrapSelection("가", 1, 1, "color", "red;x"), null);
+    assert.equal(form.wrapSelection("", 0, 0, "br").text, "<br>\n");
+});
+
+test("날짜 입력은 서버 형식으로 바꾼다", () => {
+    assert.equal(form.localDate("2030-01-02T03:05"), "2030-01-02 03:05");
+    assert.equal(form.localDate(""), "");
+});
+
+test("날짜는 브라우저 시간대와 상관없이 서울 시간으로 확인한다", () => {
+    // 2030-01-01 12:00 서울 = 03:00 UTC
+    const now = Date.UTC(2030, 0, 1, 3, 0);
+    assert.equal(form.validateOptions({ autoDelete: true, autoDeleteAt: "2030-01-01 12:05" }, extLimits, now), null);
+    assert.match(form.validateOptions({ autoDelete: true, autoDeleteAt: "2030-01-01 11:55" }, extLimits, now), /뒤로/);
+    assert.ok(form.validatePoll({ title: "t", items: ["a", "b"], multiple: 0, end_date: "2030-01-01 11:59" }, extLimits, now));
+});
+
+test("글 설정은 비밀글 비밀번호와 자동 삭제 시각을 확인한다", () => {
+    const now = Date.UTC(2030, 0, 1, 3, 0);
+    assert.equal(form.validateOptions({ secret: true, secretPassword: "" }, extLimits, now), null);
+    assert.ok(form.validateOptions({ secret: true, secretPassword: "a" }, extLimits, now));
+    assert.equal(form.validateOptions({ autoDelete: true, autoDeleteAt: "2030-01-01 12:05" }, extLimits, now), null);
+    assert.match(form.validateOptions({ autoDelete: true, autoDeleteAt: "2030-01-01 12:07" }, extLimits, now), /5분/);
+    assert.match(form.validateOptions({ autoDelete: true, autoDeleteAt: "2030-01-01 11:55" }, extLimits, now), /뒤로/);
+    assert.ok(form.validateOptions({ autoDelete: true, autoDeleteAt: "" }, extLimits, now));
+});
+
+test("투표는 제목·항목 수·길이·복수 선택·마감을 확인한다", () => {
+    const now = Date.UTC(2030, 0, 1, 3, 0);
+    const ok = { title: "점심", items: ["밥", "면"], multiple: 0 };
+    assert.equal(form.validatePoll(ok, extLimits, now), null);
+    assert.ok(form.validatePoll({ ...ok, title: " " }, extLimits, now));
+    assert.ok(form.validatePoll({ ...ok, items: ["밥"] }, extLimits, now));
+    assert.ok(form.validatePoll({ ...ok, items: ["밥", "가".repeat(31)] }, extLimits, now));
+    assert.ok(form.validatePoll({ ...ok, multiple: 3 }, extLimits, now));
+    assert.equal(form.validatePoll({ ...ok, multiple: 2 }, extLimits, now), null);
+    assert.ok(form.validatePoll({ ...ok, end_date: "2029-12-31 12:00" }, extLimits, now));
+});
+
+test("동영상은 MP4·크기·개수·사진과의 합계를 넘는 것만 뺀다", () => {
+    const mb = 1048576;
+    const files = [{ name: "a.mp4", type: "video/mp4", size: mb }, { name: "b.mov", type: "video/quicktime", size: mb },
+        { name: "c.mp4", type: "video/mp4", size: 21 * mb }, { name: "d.mp4", type: "", size: mb }];
+    const picked = form.pickVideos([], files, extLimits, 0);
+    assert.deepEqual(Array.from(picked.accepted, f => f.name), ["a.mp4", "d.mp4"]);
+    assert.match(picked.message, /MP4/);
+    const total = form.pickVideos([], [{ name: "e.mp4", type: "video/mp4", size: 5 * mb }], extLimits, 28 * mb);
+    assert.equal(total.accepted.length, 0);
+    const count = form.pickVideos([files[0], files[0], files[0]], [files[0]], extLimits, 0);
+    assert.equal(count.accepted.length, 0);
+});
+
 test("visitor check is explicitly not sent, never uncertain or retryable", () => {
     const payload = { ok: false, code: "visitor_check_required", sent: false, message: "새로고침해 주세요." };
     const outcome = post.interpret(403, payload);
