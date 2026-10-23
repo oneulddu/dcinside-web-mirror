@@ -313,7 +313,7 @@
             return;
         }
         var target = state.target;
-        var body = { board: board, pid: pid, mode: "account" };
+        var body = { board: board, pid: pid, mode: "account", account: target.account };
         if (!target.account) {
             var password = part("#owner-password").value;
             var problem = validatePassword(password, limits);
@@ -342,9 +342,17 @@
         });
     }
 
+    // 계정 버튼이면 그 버튼에 적힌 계정 번호, 유동이면 빈 값.
+    function ownerAccount(button) {
+        if (button.getAttribute("data-owner") !== "account") {
+            return "";
+        }
+        return button.getAttribute("data-account") || "1";
+    }
+
     function bindPostButton(button) {
         button.addEventListener("click", function () {
-            open({ type: "post", account: button.getAttribute("data-owner") === "account" }, button);
+            open({ type: "post", account: ownerAccount(button) }, button);
         });
     }
 
@@ -360,15 +368,16 @@
             if (!item || !/^[1-9][0-9]*$/.test(id)) {
                 return;
             }
-            open({ type: "comment", id: id, item: item, account: button.getAttribute("data-owner") === "account" }, button);
+            open({ type: "comment", id: id, item: item, account: ownerAccount(button) }, button);
         });
     }
 
-    function ownerButton(className, label, ariaLabel) {
+    function ownerButton(className, label, ariaLabel, slot) {
         var button = document.createElement("button");
         button.className = className;
         button.type = "button";
         button.setAttribute("data-owner", "account");
+        button.setAttribute("data-account", slot);
         button.setAttribute("aria-haspopup", "dialog");
         if (ariaLabel) {
             button.setAttribute("aria-label", ariaLabel);
@@ -377,13 +386,14 @@
         return button;
     }
 
-    // 식별 코드가 로그인한 계정 아이디와 같은 글·댓글에 수정·삭제를 붙인다.
+    // 식별 코드가 로그인한 계정의 코드와 같은 글·댓글에 수정·삭제를 붙인다. owners: {코드: 계정 번호}.
     // 화면에 보이는 것일 뿐, 실제로 지우거나 고칠 수 있는지는 디시가 판단한다.
-    function markOwned(userId) {
-        var slot = document.querySelector("[data-account-owner-slot]");
+    function markOwned(owners) {
+        var holder = document.querySelector("[data-account-owner-slot]");
         var postAuthor = document.querySelector(".article-meta .author-text");
-        if (slot && postAuthor && postAuthor.getAttribute("data-author-code") === userId) {
-            var params = new URLSearchParams({ board: board, pid: pid, mode: "account" });
+        var postAccount = postAuthor ? owners[postAuthor.getAttribute("data-author-code") || ""] : "";
+        if (holder && postAccount) {
+            var params = new URLSearchParams({ board: board, pid: pid, mode: "account", account: postAccount });
             if (kind) {
                 params.set("kind", kind);
             }
@@ -391,11 +401,11 @@
             edit.className = "comment-reply-btn article-owner-action";
             edit.href = "/write?" + params.toString();
             edit.textContent = "수정";
-            var remove = ownerButton("comment-reply-btn article-owner-action", "삭제");
+            var remove = ownerButton("comment-reply-btn article-owner-action", "삭제", "", postAccount);
             remove.setAttribute("data-post-delete", "");
-            slot.appendChild(edit);
-            slot.appendChild(remove);
-            slot.hidden = false;
+            holder.appendChild(edit);
+            holder.appendChild(remove);
+            holder.hidden = false;
             bindPostButton(remove);
         }
         if (!list) {
@@ -404,28 +414,33 @@
         Array.prototype.forEach.call(list.querySelectorAll(".comment-item[data-comment-id]"), function (item) {
             var author = item.querySelector(".comment-meta .author-text");
             var meta = item.querySelector(".comment-meta");
-            if (!author || !meta || item.classList.contains("is-deleted") || meta.querySelector("[data-comment-delete]")
-                    || author.getAttribute("data-author-code") !== userId
+            var account = author ? owners[author.getAttribute("data-author-code") || ""] : "";
+            if (!account || !meta || item.classList.contains("is-deleted") || meta.querySelector("[data-comment-delete]")
                     || !/^[1-9][0-9]*$/.test(item.getAttribute("data-comment-id") || "")) {
                 return;
             }
-            var button = ownerButton("comment-reply-btn", "삭제", "내 댓글 삭제");
+            var button = ownerButton("comment-reply-btn", "삭제", "내 댓글 삭제", account);
             button.setAttribute("data-comment-delete", "");
             meta.appendChild(button);
         });
     }
 
     // 상태 조회는 디시에 요청하지 않는다. 로그인한 적이 없으면 계정 글 버튼은 보이지 않는다.
-    if (shell.getAttribute("data-account-configured") !== null && typeof root.fetch === "function") {
-        root.fetch("/write/account/status", { credentials: "same-origin", headers: { "Accept": "application/json" } }).then(function (response) {
-            return response.ok ? response.json() : null;
-        }).then(function (status) {
-            var userId = status && status.ok === true && status.logged_in === true ? String(status.user_id || "") : "";
-            if (/^[A-Za-z0-9_]{1,40}$/.test(userId)) {
-                markOwned(userId);
+    // 두 계정의 코드가 같으면 계정 1로 붙인다. 실패해도 다른 계정으로 다시 보내지 않는다.
+    if (shell.getAttribute("data-account-configured") !== null && typeof post.accountStatus === "function") {
+        post.accountStatus().then(function (status) {
+            var accounts = post.accountList(status);
+            var owners = {};
+            ["1", "2"].forEach(function (slot) {
+                var item = accounts[slot];
+                var userId = item && item.logged_in === true ? String(item.user_id || "") : "";
+                if (/^[A-Za-z0-9_]{1,40}$/.test(userId) && !Object.prototype.hasOwnProperty.call(owners, userId)) {
+                    owners[userId] = slot;
+                }
+            });
+            if (Object.keys(owners).length) {
+                markOwned(owners);
             }
-        }, function () {
-            // 상태를 모르면 계정 글 버튼을 붙이지 않는다.
         });
     }
 })(typeof window !== "undefined" ? window : globalThis);

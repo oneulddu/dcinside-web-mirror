@@ -74,30 +74,50 @@ pm2 logs dc-mirror
 
 ### DC write/vote backend and configuration
 
-- Optional fixed-nickname account mode uses `MIRROR_DC_LOGIN_ID` and `MIRROR_DC_LOGIN_PASSWORD`
-  from the worker's startup environment. Python checks presence only; never send credentials in
+- Optional fixed-nickname account mode has two slots: `"1"` uses `MIRROR_DC_LOGIN_ID` and
+  `MIRROR_DC_LOGIN_PASSWORD`; optional `"2"` uses `MIRROR_DC_LOGIN_ID_2` and
+  `MIRROR_DC_LOGIN_PASSWORD_2` from the worker's startup environment. A slot is configured only
+  with both variables non-empty. Python checks presence only; never send credentials in
   worker stdin, logs or responses. `/write/account`, `/write/account/status` and `/write/account/login`
   share the unlock/no-store gate. `/write/account/status` rejects any supplied non-same-origin
   Sec-Fetch-Site; the `/write/account` page also accepts `none` (address bar, bookmark).
-  Explicit and lazy login attempts (including failures) share one worker-owned 10s interval, counted
+  Explicit and lazy login attempts across both slots (including failures) share one worker-owned 10s interval, counted
   at attempt start. Cooldown returns `retry`/HTTP 429 without contacting DC. OTP and login captcha
-  failures block lazy login until an explicit login succeeds. Status never contacts DC.
+  failures block lazy login for that slot until an explicit login succeeds. Status never contacts DC.
+  `account_status` returns the six public fields (`configured`, `logged_in`, `user_id`, `name`,
+  `blocked`, `reason`) for slot 1 at the top level for compatibility, plus `accounts` keyed only
+  by configured slot ids, each with the same six fields. Never serialize library login sessions.
   Login sessions and OTP tokens are memory-only: account login requires a single web process
   (`MIRROR_WORKERS=1`), because each process owns its worker. Worker restart loses login state.
-  Account write/comment/delete/modify use `mode: "account"`; modify-load returns the mode for submit.
+  Account write/comment/delete/modify use `mode: "account"` and selector `account`: absent defaults
+  to `"1"`; a supplied selector must be exactly string `"1"` or `"2"` and configured, otherwise
+  HTTP 400 `invalid`/field `mode` (worker `AccountInvalid`, `sent:false`). Anonymous mode ignores it.
+  Worker sessions are `{type:"login", account:"1"|"2"}`; explicit `account_login` takes `account`.
+  Modify-load returns the mode and selected account for submit. Login success returns the selected
+  slot's public fields and `account`; `login_needed` includes `account` and an `#account-N` link.
+  Sessions, OTP tokens and failure state are isolated per slot. Never fall back or retry with the other slot.
   Login expiry disables library automatic relogin/resend and returns `login_needed`/`expired` only
-  after DC answers `certification_login` (not an ambiguous transport failure). Never auto-resubmit.
+  after DC answers `certification_login` (not an ambiguous transport failure), clearing only that slot.
+  Never auto-resubmit.
   Explicit decision: retain the existing library app_id refresh and worker
   “잠시후 다시 이용해주세요.” app_id-settling retry behavior unchanged.
-- Account frontend: write and comment forms show a 유동/디시 계정 toggle only when
-  `account_configured`; the last choice is shared in localStorage `mirror_write_mode_v1`
-  (`MirrorDcPost.readMode/saveMode`). Account mode sends `mode: "account"` and no nickname/password.
-  Modify keeps the mode it was opened with (`/write?...&mode=account`); the toggle is hidden there.
-  The read page fetches `/write/account/status` once (never contacts DC) and, only when logged in,
-  adds password-free 수정·삭제 (`data-owner="account"`) to the post/comments whose author code equals
-  `user_id`. This is display only; DC decides ownership. `login_needed` is not `uncertain`: show the
-  message with a new-tab link to `/write/account` and keep the draft. `account_login.js` logs in only
-  on explicit submit and asks for OTP/login captcha only when DC requires them.
+- Account frontend: write and comment forms show 유동 plus one option per configured slot
+  (`account_slots`; values `account:1`/`account:2`, labelled "디시 계정" when only one slot, else
+  "계정 N", with " · <DC nickname>" appended once that slot is logged in; never the login id).
+  The last choice is shared in localStorage `mirror_write_mode_v1` (`MirrorDcPost.readMode/saveMode`;
+  the legacy value `account` reads as `account:1`). A remembered slot that is no longer offered is not
+  replaced: the form asks the user to choose again and sends nothing. Account mode sends
+  `mode: "account"`, `account: "N"` and no nickname/password; the slot is captured at submit time.
+  Modify keeps the mode and slot it was opened with (`/write?...&mode=account&account=N`); the toggle is
+  hidden there. Pages fetch `/write/account/status` at most once (`MirrorDcPost.accountStatus`, never
+  contacts DC). The read page adds password-free 수정·삭제 (`data-owner="account"`, `data-account="N"`)
+  to items whose author code equals a logged-in slot's `user_id` (slot 1 wins on a collision); new
+  account comments carry their slot on the delete button. This is display only; DC decides ownership,
+  and a failed action is never retried with the other slot. `login_needed` is not `uncertain`: show
+  the message with a new-tab link to `account_url` (`/write/account#account-N`) and keep the draft.
+  `/write/account` renders one form per configured slot (`account-N-*` ids, own OTP/captcha state);
+  `account_login.js` logs in only on explicit submit with `{account: "N"}` and asks for OTP/login
+  captcha only when DC requires them.
 
 - DC anonymous writing (`GET/POST /write`) and voting (`POST /read/vote`, `direction` `up`|`down`) are opt-in.
   `MIRROR_WRITE_KEY` unset disables every write route; `/write/unlock` issues a signed,

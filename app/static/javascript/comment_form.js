@@ -83,8 +83,13 @@
     }
     // parent: 답글을 다는 댓글({id, authorCode, author, item}). 없으면 일반 댓글.
     // mode: 계정 선택이 있을 때만 마지막으로 고른 값을 쓴다.
+    // 기억한 계정이 선택지에 없으면 빈 값으로 두고 작성자를 다시 고르게 한다.
     var state = { sending: false, retryUntil: 0, retryTimer: null, parent: null, sentAnswer: false,
-        mode: el.modeInputs.length ? post.readMode(storage) : "anonymous" };
+        mode: post.pickMode(post.readMode(storage), el.modeInputs) };
+
+    function accountSlot() {
+        return post.modeAccount(state.mode);
+    }
 
     function setStatus(text, tone, link) {
         el.status.textContent = text || "";
@@ -104,7 +109,7 @@
 
     // 계정으로 쓰면 닉네임·비밀번호 칸과 기억 선택을 숨긴다.
     function applyMode() {
-        var account = state.mode === "account";
+        var account = Boolean(accountSlot());
         el.modeInputs.forEach(function (input) {
             input.checked = input.value === state.mode;
         });
@@ -311,8 +316,10 @@
             remove.setAttribute("data-comment-delete", "");
             remove.setAttribute("aria-haspopup", "dialog");
             remove.setAttribute("aria-label", "내 댓글 삭제");
+            // 계정 댓글은 쓴 계정으로만 지운다.
             if (who.account) {
                 remove.setAttribute("data-owner", "account");
+                remove.setAttribute("data-account", who.account);
             }
             remove.textContent = "삭제";
             meta.appendChild(remove);
@@ -353,11 +360,11 @@
         }
         if (outcome.action === "success") {
             var newId = /^[1-9][0-9]{0,14}$/.test(String(payload.comment_id)) ? String(payload.comment_id) : "";
-            var who = { name: sent.nickname, code: "", account: false };
+            var who = { name: sent.nickname, code: "", account: "" };
             if (sent.account) {
                 var author = payload.author && typeof payload.author === "object" ? payload.author : {};
                 var code = String(author.user_id || "");
-                who = { name: String(author.name || "").trim() || "내 계정", code: /^[A-Za-z0-9_]{1,40}$/.test(code) ? code : "", account: true };
+                who = { name: String(author.name || "").trim() || "내 계정", code: /^[A-Za-z0-9_]{1,40}$/.test(code) ? code : "", account: sent.account };
             }
             appendComment(sent.content, who, newId);
             el.content.value = "";
@@ -412,15 +419,27 @@
             return;
         }
         clearErrors();
-        var account = state.mode === "account";
-        var values = { content: el.content.value, nickname: el.nickname.value, password: el.password.value, account: account };
+        if (!state.mode) {
+            if (!el.modeInputs.length) {
+                // 고를 수 있는 것이 유동뿐이다. 알린 뒤 다시 누르면 유동으로 보낸다.
+                state.mode = "anonymous";
+                post.saveMode(storage, state.mode);
+                setStatus("전에 고른 디시 계정이 서버에 없어요. 유동으로 달려면 다시 등록을 눌러 주세요.", "error");
+                return;
+            }
+            setStatus("작성자를 다시 골라 주세요. 전에 고른 계정이 서버에 없어요.", "error");
+            return;
+        }
+        // 보낼 때 고른 계정을 붙잡아 둔다. 결과를 받기 전에 선택을 바꿔도 바뀌지 않는다.
+        var account = accountSlot();
+        var values = { content: el.content.value, nickname: el.nickname.value, password: el.password.value, account: Boolean(account) };
         var problem = validateComment(values, limits);
         if (problem) {
             showError(problem.field, problem.message);
             return;
         }
         var body = account
-            ? { board: board, pid: pid, content: values.content, mode: "account" }
+            ? { board: board, pid: pid, content: values.content, mode: "account", account: account }
             : { board: board, pid: pid, content: values.content, nickname: values.nickname.trim(), password: values.password };
         if (kind) {
             body.kind = kind;
@@ -518,7 +537,7 @@
             if (!input.checked) {
                 return;
             }
-            state.mode = input.value === "account" ? "account" : "anonymous";
+            state.mode = post.normalizeMode(input.value);
             post.saveMode(storage, state.mode);
             clearErrors();
             applyMode();
@@ -526,6 +545,9 @@
     });
     restoreIdentity();
     applyMode();
+    if (el.modeInputs.length && typeof post.labelModes === "function") {
+        post.labelModes(el.modeInputs);
+    }
     updateLength();
     sync();
 })(typeof window !== "undefined" ? window : globalThis);

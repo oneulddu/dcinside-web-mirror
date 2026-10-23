@@ -117,7 +117,9 @@
             {% if account_configured|default(false) %}
             <div class="write-mode comment-form-mode" role="radiogroup" aria-label="작성자">
                 <label class="write-mode-option"><input type="radio" name="comment-mode" value="anonymous" checked><span>유동</span></label>
-                <label class="write-mode-option"><input type="radio" name="comment-mode" value="account"><span>디시 계정</span></label>
+                {% for slot in account_slots %}
+                <label class="write-mode-option"><input type="radio" name="comment-mode" value="account:{{ slot }}"><span>{{ "디시 계정" if account_slots|length == 1 else "계정 " ~ slot }}</span></label>
+                {% endfor %}
             </div>
             <p class="write-hint" id="comment-account-note" hidden>서버에 설정한 디시 계정으로 달아요. 지울 때 비밀번호가 필요 없어요.</p>
             {% endif %}

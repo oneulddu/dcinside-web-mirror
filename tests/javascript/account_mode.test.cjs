@@ -32,17 +32,41 @@ test("계정 화면 링크는 같은 사이트 경로만 따른다", () => {
     assert.equal(post.accountLink(null).newTab, true);
 });
 
-test("작성자 선택은 계정만 기억하고 나머지는 유동으로 본다", () => {
+test("작성자 선택은 계정 번호까지 기억하고, 예전 값은 계정 1로 읽는다", () => {
     const storage = memoryStorage();
     assert.equal(post.readMode(storage), "anonymous");
-    post.saveMode(storage, "account");
-    assert.equal(post.readMode(storage), "account");
-    storage.setItem(post.MODE_KEY, "something");
-    assert.equal(post.readMode(storage), "anonymous");
+    post.saveMode(storage, "account:2");
+    assert.equal(post.readMode(storage), "account:2");
+    storage.setItem(post.MODE_KEY, "account");
+    assert.equal(post.readMode(storage), "account:1");
+    for (const bad of ["something", "account:3", "account:", "account:1x"]) {
+        storage.setItem(post.MODE_KEY, bad);
+        assert.equal(post.readMode(storage), "anonymous");
+    }
     assert.equal(post.readMode(null), "anonymous");
     const broken = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); } };
     assert.equal(post.readMode(broken), "anonymous");
-    post.saveMode(broken, "account");
+    post.saveMode(broken, "account:1");
+    assert.equal(post.modeAccount("account:2"), "2");
+    assert.equal(post.modeAccount("anonymous"), "");
+});
+
+test("기억한 계정이 선택지에 없으면 다른 계정으로 바꾸지 않고 다시 고르게 한다", () => {
+    const inputs = [{ value: "anonymous" }, { value: "account:1" }];
+    assert.equal(post.pickMode("account:1", inputs), "account:1");
+    assert.equal(post.pickMode("account:2", inputs), "");
+    assert.equal(post.pickMode("anonymous", inputs), "anonymous");
+    // 계정을 모두 뺐으면 유동으로 바로 보내지 않고 한 번 알린다.
+    assert.equal(post.pickMode("account:2", []), "");
+    assert.equal(post.pickMode("anonymous", []), "anonymous");
+});
+
+test("상태 응답에서 계정 번호별 상태만 꺼내고, 예전 응답은 계정 1로 본다", () => {
+    const one = { logged_in: true, user_id: "a1", name: "닉1" };
+    const two = { logged_in: false, user_id: null, name: null };
+    assert.deepEqual(Object.keys(post.accountList({ ok: true, accounts: { "1": one, "2": two, "3": one } })), ["1", "2"]);
+    assert.equal(post.accountList({ ok: true, logged_in: true, user_id: "a1" })["1"].user_id, "a1");
+    assert.deepEqual(Object.keys(post.accountList(null)), []);
 });
 
 test("계정으로 쓰면 닉네임과 비밀번호를 확인하지 않는다", () => {

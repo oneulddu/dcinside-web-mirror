@@ -1205,6 +1205,7 @@ def dc_write_context():
     return {"write_configured": is_dc and dc_write.configured(),
             "write_enabled": is_dc and dc_write.enabled(),
             "account_configured": is_dc and dc_write.account_configured(),
+            "account_slots": dc_write.account_slots() if is_dc else [],
             "write_limits": dc_write.LIMITS}
 
 
@@ -1306,6 +1307,13 @@ def _write_json_request():
     return data if isinstance(data, dict) else None
 
 
+def _write_account_slot(data):
+    if "account" not in data:
+        return "1"
+    slot = data["account"]
+    return slot if isinstance(slot, str) and slot in dc_write.account_slots() else None
+
+
 @bp.route("/write/account")
 def write_account():
     account, status = dc_write.account_status()
@@ -1323,6 +1331,9 @@ def write_account_login():
     data = _write_json_request()
     if data is None:
         return _write_invalid("otp", "JSON 형식으로 요청해 주세요.")
+    slot = _write_account_slot(data)
+    if slot is None:
+        return _write_invalid("mode", "계정을 다시 선택해 주세요.")
     otp = data.get("otp")
     if otp is not None and (not isinstance(otp, str) or not re.fullmatch(r"[0-9]{6}", otp)):
         return _write_invalid("otp", "OTP는 숫자 6자리로 입력해 주세요.")
@@ -1336,9 +1347,11 @@ def write_account_login():
                 raise ValueError()
         except ValueError:
             return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
-    result, status = dc_write.perform("account_login", otp=otp, captcha=captcha)
+    result, status = dc_write.perform("account_login", account=slot, otp=otp, captcha=captcha)
     if result["ok"]:
-        result = {"ok": True, **dc_write.account_fields(result["data"])}
+        result = {"ok": True, "account": slot, **dc_write.account_fields(result["data"])}
+    elif result["code"] == "login_needed":
+        result["account_url"] = url_for("main.write_account") + "#account-" + result["account"]
     response = jsonify(result)
     response.status_code = status
     if status == 429:
@@ -1391,10 +1404,12 @@ def _write_result(op, board, kind, **payload):
                 result.update(subject=data["subject"], head_id=data["head_id"], head_name=data.get("head_name"),
                               blocks=blocks, fingerprint=data["fingerprint"])
                 result["mode"] = "account" if payload["session"]["type"] == "login" else "anonymous"
+                if result["mode"] == "account":
+                    result["account"] = payload["session"]["account"]
         else:
             result["message"] = "추천했어요." if op == "upvote" else "비추천했어요."
     elif result["code"] == "login_needed":
-        result["account_url"] = url_for("main.write_account")
+        result["account_url"] = url_for("main.write_account") + "#account-" + result["account"]
         result.pop("captcha_key", None)
     elif op != "write" and result["code"] == "rejected" and "reason" not in result:
         name = {"comment": "댓글을", "upvote": "추천을", "downvote": "비추천을", "delete": "글 삭제를",
@@ -1462,6 +1477,8 @@ def write():
         if not isinstance(data, dict):
             data = None
         if data is not None:
+            if "account" in request.form:
+                data["account"] = request.form["account"]
             if any(name != "images" for name in request.files):
                 return _write_invalid("images", "사진은 images 항목으로 올려 주세요.")
             files = request.files.getlist("images")
@@ -1472,6 +1489,9 @@ def write():
     if data.get("mode", "anonymous") not in ("anonymous", "account"):
         return _write_invalid("mode", "작성 모드를 다시 선택해 주세요.")
     account = data.get("mode") == "account"
+    slot = _write_account_slot(data) if account else None
+    if account and slot is None:
+        return _write_invalid("mode", "계정을 다시 선택해 주세요.")
     modifying = "pid" in data
     if modifying and (isinstance(data["pid"], bool) or not re.fullmatch(r"[1-9][0-9]{0,14}", str(data["pid"] or ""))):
         return _write_invalid("board", "올바른 글 번호를 선택해 주세요.")
@@ -1531,7 +1551,7 @@ def write():
     try:
         with dc_write.prepared_images(files) as images:
             return _write_result("modify" if modifying else "write", board, kind,
-                                 session={"type": "login"} if account else {"type": "anonymous", "nickname": values["nickname"], "password": values["password"]},
+                                 session={"type": "login", "account": slot} if account else {"type": "anonymous", "nickname": values["nickname"], "password": values["password"]},
                                  subject=values["subject"], body=values["body"],
                                  head={"no": int(head_id), "name": head_name} if head_id is not None else None,
                                  captcha=captcha, images=images, image_position=image_position,
@@ -1557,6 +1577,9 @@ def _anonymous_post_action(op):
     if data.get("mode", "anonymous") not in ("anonymous", "account"):
         return _write_invalid("mode", "작성 모드를 다시 선택해 주세요.")
     account = data.get("mode") == "account"
+    slot = _write_account_slot(data) if account else None
+    if account and slot is None:
+        return _write_invalid("mode", "계정을 다시 선택해 주세요.")
     password = data.get("password")
     if not account and (not isinstance(password, str) or not password.strip() or not 2 <= len(password) <= 20):
         return _write_invalid("password", "비밀번호는 2~20자로 입력해 주세요.")
@@ -1567,7 +1590,7 @@ def _anonymous_post_action(op):
             return _write_invalid("comment_id", "삭제할 댓글을 다시 골라 주세요.")
         extra["comment_no"] = int(comment_id)
     return _write_result(op, board, kind, no=int(pid),
-                         session={"type": "login"} if account else {"type": "anonymous", "nickname": "ㅇㅇ", "password": password}, **extra)
+                         session={"type": "login", "account": slot} if account else {"type": "anonymous", "nickname": "ㅇㅇ", "password": password}, **extra)
 
 
 @bp.route("/read/delete", methods=["POST"])
@@ -1635,6 +1658,9 @@ def read_comment():
     if data.get("mode", "anonymous") not in ("anonymous", "account"):
         return _write_invalid("mode", "작성 모드를 다시 선택해 주세요.")
     account = data.get("mode") == "account"
+    slot = _write_account_slot(data) if account else None
+    if account and slot is None:
+        return _write_invalid("mode", "계정을 다시 선택해 주세요.")
     content, nickname, password = data.get("content"), data.get("nickname"), data.get("password")
     if not isinstance(content, str) or not content.strip() or len(content) > limits["comment_max"]:
         return _write_invalid("content", f"댓글은 1~{limits['comment_max']}자로 입력해 주세요.")
@@ -1657,7 +1683,7 @@ def read_comment():
     except ValueError:
         return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
     return _write_result("comment", board, kind, no=int(pid), content=content, parent=parent, captcha=captcha,
-                         session={"type": "login"} if account else {"type": "anonymous", "nickname": nickname, "password": password})
+                         session={"type": "login", "account": slot} if account else {"type": "anonymous", "nickname": nickname, "password": password})
 
 
 # PC 화면의 갤러리 종류 값(_GALLTYPE_). 인물 갤러리는 PC 추천을 쓰지 않고 앱 보안 문자를 그대로 쓴다.

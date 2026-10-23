@@ -29,14 +29,16 @@
           data-nickname-max="{{ limits.nickname_max }}" data-password-min="{{ limits.password_min }}" data-password-max="{{ limits.password_max }}"
           data-image-max-count="{{ limits.image_max_count }}" data-image-max-bytes="{{ limits.image_max_bytes }}" data-image-total-bytes="{{ limits.image_total_bytes }}"
           {%- if modify_pid %} data-modify-pid="{{ modify_pid }}" data-modify-author="{{ request.args.get('author', '')[:limits.nickname_max] }}"{% endif %}
-          {%- if account_modify %} data-mode="account"{% endif %}>
+          {%- if account_modify %} data-mode="account" data-account="{{ request.args.get('account', '1')[:2] }}"{% endif %}>
         <fieldset class="write-author">
             <legend class="sr-only">작성자</legend>
             {#- 수정은 연 방식(유동 또는 계정)을 바꾸지 않는다. -#}
             {% if account_configured|default(false) and not modify_pid %}
             <div class="write-mode" role="radiogroup" aria-label="작성자">
                 <label class="write-mode-option"><input type="radio" name="write-mode" value="anonymous" checked><span>유동</span></label>
-                <label class="write-mode-option"><input type="radio" name="write-mode" value="account"><span>디시 계정</span></label>
+                {% for slot in account_slots %}
+                <label class="write-mode-option"><input type="radio" name="write-mode" value="account:{{ slot }}"><span>{{ "디시 계정" if account_slots|length == 1 else "계정 " ~ slot }}</span></label>
+                {% endfor %}
             </div>
             {% endif %}
             {% if account_configured|default(false) and (account_modify or not modify_pid) %}

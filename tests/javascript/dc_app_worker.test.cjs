@@ -53,19 +53,22 @@ export class DCInside {
       importCredentials: value => { this.credentials = value; },
       login: async (id, password, options) => {
         trace('login');
-        if (id !== 'private-login-id' || password !== 'private-password') throw new Error('Wrong credentials');
+        const second = id === 'private-login-id-2';
+        const suffix = second ? '-2' : '';
+        if (id !== 'private-login-id' + suffix || password !== 'private-password' + suffix) throw new Error('Wrong credentials');
+        if (second) trace('login:2');
         if (options.otpToken) {
-          if (options.otpToken !== 'private-otp-token') throw new Error('Wrong OTP token');
+          if (options.otpToken !== 'private-otp-token' + suffix) throw new Error('Wrong OTP token');
           trace('otpToken');
         }
-        const failure = process.env.WORKER_TEST_LOGIN;
+        const failure = process.env[second ? 'WORKER_TEST_LOGIN_2' : 'WORKER_TEST_LOGIN'];
         if (failure !== 'success' && options.otp !== '123456' && options.captcha?.code !== 'answer') {
           throw Object.assign(new Error(id + password), {
             name: {otp:'OtpRequiredError',captcha:'CaptchaRequiredError',failed:'ApiError'}[failure] || 'Error',
             cause: id + password,
           });
         }
-        return {type:'login', id, password, userId:'public-user', result:{name:'고정닉',otp_token:'private-otp-token'}};
+        return {type:'login', id, password, userId:'public-user' + suffix, result:{name:'고정닉' + suffix,otp_token:'private-otp-token' + suffix}};
       },
     };
     this.articles = {
@@ -101,7 +104,13 @@ export class DCInside {
         const session = this.session;
         await new Promise(resolve => setTimeout(resolve, 5));
         if (this.session !== session) throw new Error('Session race');
-        if (!['anonymous','login'].includes(session.type) || session.password !== 'private-password') throw new Error('Wrong session');
+        const expectedPassword = session.userId === 'public-user-2' ? 'private-password-2' : 'private-password';
+        if (!['anonymous','login'].includes(session.type) || session.password !== expectedPassword) throw new Error('Wrong session');
+        if (options.subject.startsWith('slot-')) {
+          const expectedUser = options.subject === 'slot-2' ? 'public-user-2' : 'public-user';
+          if (session.userId !== expectedUser) throw new Error('Wrong account');
+          trace('session:' + expectedUser);
+        }
         if (session.type === 'login' && options.useGalleryNickname !== false) throw new Error('Gallery nickname');
         if (options.subject === 'expired') {
           const http = new Http({fetch: async () => {
@@ -161,7 +170,8 @@ export class DCInside {
       write: async (gallery, no, content, options) => {
         trace('comment');
         const session = this.session;
-        if (!session || !['anonymous','login'].includes(session.type) || session.password !== 'private-password') throw new Error('Wrong session');
+        const expectedPassword = session?.userId === 'public-user-2' ? 'private-password-2' : 'private-password';
+        if (!session || !['anonymous','login'].includes(session.type) || session.password !== expectedPassword) throw new Error('Wrong session');
         if (session.type === 'login' && options.useGalleryNickname !== false) throw new Error('Gallery nickname');
         if (gallery === 'captcha') throw Object.assign(new Error('x'), {name:'CaptchaRequiredError',cause:'보안 코드 입력'});
         return {result:'true', gallery, no, content, parent: options.parent ?? null, captcha: options.captcha ?? null};
@@ -181,7 +191,7 @@ export class DCInside {
 export const captchaUrl = (kind,key,gallery) => 'https://invalid.test/' + gallery;
 `;
 
-function run(requests, seed = false, login = '') {
+function run(requests, seed = false, login = '', login2 = '') {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-worker-test-'));
   try {
     const library = path.join(directory, 'node_modules/@green-1052/dcinside.js');
@@ -200,7 +210,8 @@ function run(requests, seed = false, login = '') {
     const child = spawnSync(process.execPath, [path.join(directory, 'worker.mjs')], {
       env: { ...process.env, MIRROR_DC_APP_STATE: state, WORKER_TEST_TRACE: tracePath, WORKER_TEST_POSTS: postsPath,
         MIRROR_DC_LOGIN_ID: login ? 'private-login-id' : '', MIRROR_DC_LOGIN_PASSWORD: login ? 'private-password' : '',
-        WORKER_TEST_LOGIN: login },
+        MIRROR_DC_LOGIN_ID_2: login2 ? 'private-login-id-2' : '', MIRROR_DC_LOGIN_PASSWORD_2: login2 ? 'private-password-2' : '',
+        WORKER_TEST_LOGIN: login, WORKER_TEST_LOGIN_2: login2 },
       input: requests.map((request, index) => JSON.stringify({ id: index, ...request })).join('\n') + '\n',
       encoding: 'utf8', timeout: 5000,
     });
@@ -400,8 +411,11 @@ const sessionProbe = {op:'upvote',gallery:'programming',no:1};
 
 test('account status is allowlisted and offline; explicit login never persists its secrets', () => {
   const result = run([{op:'account_status'},{op:'account_login'},sessionProbe,{op:'account_status'}], false, 'success');
-  assert.deepEqual(result.replies[0].data, {configured:true,logged_in:false,user_id:null,name:null,blocked:false,reason:null});
-  assert.deepEqual(result.replies[3].data, {configured:true,logged_in:true,user_id:'public-user',name:'고정닉',blocked:false,reason:null});
+  const before = {configured:true,logged_in:false,user_id:null,name:null,blocked:false,reason:null};
+  const after = {configured:true,logged_in:true,user_id:'public-user',name:'고정닉',blocked:false,reason:null};
+  assert.deepEqual(result.replies[0].data, {...before, accounts:{'1':before}});
+  assert.deepEqual(result.replies[3].data, {...after, accounts:{'1':after}});
+  assert.deepEqual(result.replies[1].data, {...after, account:'1', result:true});
   assert(result.replies.every(reply => reply.ok));
   assert.equal(result.trace.filter(item => item === 'login').length, 1);
   assert(!JSON.stringify(result.state).includes('private-password'));
@@ -420,7 +434,7 @@ for (const reason of ['otp','captcha','failed']) {
       {op:'account_login',otp:'123456',testAdvanceMs:10000}, sessionProbe, accountWrite('one'), sessionProbe,
     ], false, reason);
     assert.deepEqual(Object.keys(result.replies[0].error).sort(),
-      (reason === 'captcha' ? ['name','reason','sent','captcha_key'] : ['name','reason','sent']).sort());
+      (reason === 'captcha' ? ['name','reason','account','sent','captcha_key'] : ['name','reason','account','sent']).sort());
     assert.equal(result.replies[0].error.reason, reason);
     assert.equal(result.replies[0].error.sent, false);
     assert.equal(result.replies[2].data.blocked, true);
@@ -444,7 +458,7 @@ test('lazy account login, expiry rejection with exactly one real Http send, and 
     accountWrite('expired'), sessionProbe, {op:'account_status'},
     {...accountWrite('one'),testAdvanceMs:10000}, sessionProbe, {op:'account_status'},
   ], false, 'success');
-  assert.deepEqual(result.replies[0].error, {name:'LoginNeeded',reason:'expired',sent:false});
+  assert.deepEqual(result.replies[0].error, {name:'LoginNeeded',reason:'expired',account:'1',sent:false});
   assert.equal(result.replies[2].data.logged_in, false);
   assert.equal(result.replies[2].data.reason, 'expired');
   assert.equal(result.replies[3].ok, true);
@@ -479,7 +493,7 @@ test('expiry lazy-login cooldown sends nothing, preserves state, and expires at 
   assert.equal(blocked.replies[0].error.reason, 'expired');
   assert.deepEqual(blocked.replies[1].error, {name:'LoginCooldown',retry_after:10,sent:false});
   assert.equal(blocked.replies[2].ok, true);
-  assert.deepEqual(blocked.replies[3].data,
+  assert.deepEqual(blocked.replies[3].data.accounts['1'],
     {configured:true,logged_in:false,user_id:null,name:null,blocked:false,reason:'expired'});
   // The final appId call belongs to the session probe, not the blocked write.
   assert.deepEqual(blocked.trace, ['appId','login','appId','write','http_write','appId']);
@@ -506,6 +520,107 @@ test('successful explicit login also starts the shared cooldown without losing i
   assert.equal(result.replies[3].data.reason, null);
   assert(result.replies.slice(2).every(reply => reply.ok));
   assert.equal(result.trace.filter(item => item === 'login').length, 2);
+});
+
+test('alternating slots use independent sessions and comment authors; every operation clears dc.session', () => {
+  const result = run([
+    {...accountWrite('slot-1'), session:{type:'login',account:'1'}}, sessionProbe,
+    {...accountWrite('slot-2'), session:{type:'login',account:'2'}, testAdvanceMs:10000}, sessionProbe,
+    {...accountWrite('slot-1'), session:{type:'login',account:'1'}}, sessionProbe,
+    {...comment({}), session:{type:'login',account:'2'}}, sessionProbe, {op:'account_status'},
+  ], false, 'success', 'success');
+  assert(result.replies.every(reply => reply.ok));
+  assert.deepEqual(result.trace.filter(item => item.startsWith('session:')),
+    ['session:public-user','session:public-user-2','session:public-user']);
+  assert.equal(result.trace.filter(item => item === 'login').length, 2);
+  assert.deepEqual(result.replies[6].data.author, {name:'고정닉-2', user_id:'public-user-2'});
+  const {accounts, ...top} = result.replies[8].data;
+  assert.deepEqual(top, accounts['1']);
+  assert.deepEqual(Object.keys(accounts), ['1','2']);
+  assert.equal(accounts['2'].user_id, 'public-user-2');
+});
+
+test('slot 2 expiry clears only its session and reuses only its OTP token', () => {
+  const result = run([
+    {op:'account_login',account:'1'},
+    {...accountWrite('expired'), session:{type:'login',account:'2'}, testAdvanceMs:10000},
+    sessionProbe, {op:'account_status'}, accountWrite('slot-1'), sessionProbe,
+    {...accountWrite('slot-2'), session:{type:'login',account:'2'}, testAdvanceMs:10000}, sessionProbe,
+  ], false, 'success', 'success');
+  assert.deepEqual(result.replies[1].error, {name:'LoginNeeded',reason:'expired',account:'2',sent:false});
+  assert.equal(result.replies[3].data.accounts['1'].logged_in, true);
+  assert.equal(result.replies[3].data.accounts['1'].reason, null);
+  assert.equal(result.replies[3].data.accounts['2'].logged_in, false);
+  assert.equal(result.replies[3].data.accounts['2'].reason, 'expired');
+  assert(result.replies.slice(4).every(reply => reply.ok));
+  assert.equal(result.trace.filter(item => item === 'login').length, 3);
+  assert.equal(result.trace.filter(item => item === 'login:2').length, 2);
+  assert.equal(result.trace.filter(item => item === 'otpToken').length, 1);
+  assert.equal(result.trace.filter(item => item === 'http_write').length, 1);
+  assert(!result.trace.includes('automaticRelogin'));
+});
+
+test('slot 2 OTP failure blocks only slot 2 lazy login with no fallback', () => {
+  const result = run([
+    {op:'account_login',account:'2'},
+    {...accountWrite('slot-1'),testAdvanceMs:10000}, sessionProbe,
+    {...accountWrite('blocked'),session:{type:'login',account:'2'}}, sessionProbe,
+    {op:'account_status'},
+  ], false, 'success', 'otp');
+  for (const index of [0,3]) {
+    assert.deepEqual(result.replies[index].error, {name:'LoginNeeded',reason:'otp',account:'2',sent:false});
+  }
+  assert.equal(result.replies[1].ok, true);
+  assert.equal(result.replies[5].data.accounts['1'].logged_in, true);
+  assert.equal(result.replies[5].data.accounts['1'].blocked, false);
+  assert.equal(result.replies[5].data.accounts['2'].blocked, true);
+  assert.equal(result.trace.filter(item => item === 'login:2').length, 1);
+  assert.equal(result.trace.filter(item => item === 'login').length, 2);
+});
+
+test('explicit and lazy login share one cooldown across slots without changing rejected slot state', () => {
+  const result = run([
+    {op:'account_login',account:'1'}, {op:'account_status'},
+    {op:'account_login',account:'2'},
+    {...accountWrite('slot-2'),session:{type:'login',account:'2'}},
+    {op:'account_status'},
+    {op:'account_login',account:'2',testAdvanceMs:10000}, sessionProbe,
+  ], false, 'success', 'success');
+  for (const index of [2,3]) {
+    assert.deepEqual(result.replies[index].error, {name:'LoginCooldown',retry_after:10,sent:false});
+  }
+  assert.deepEqual(result.replies[1].data, result.replies[4].data);
+  assert.equal(result.trace.filter(item => item === 'login').length, 2);
+  assert.equal(result.trace.filter(item => item === 'login:2').length, 1);
+  assert.equal(result.replies[5].data.account, '2');
+  assert.equal(result.replies[5].data.user_id, 'public-user-2');
+  assert.equal(result.replies[6].ok, true);
+});
+
+test('status contains only configured slots and keeps unconfigured slot 1 at top level', () => {
+  const result = run([{op:'account_status'}], false, '', 'success');
+  const empty = {configured:false,logged_in:false,user_id:null,name:null,blocked:false,reason:null};
+  assert.deepEqual(result.replies[0].data, {...empty, accounts:{'2':{...empty,configured:true}}});
+  assert.deepEqual(result.trace, []);
+  assert.deepEqual(run([{op:'account_status'}]).replies[0].data, {...empty,accounts:{}});
+});
+
+test('invalid and unconfigured account selectors reject offline without exposing secrets', () => {
+  const invalid = ['3',2,null,'',true,{},[],'private-login-id'];
+  const requests = invalid.flatMap(account => [
+    {op:'account_login',account},
+    {...accountWrite('one'),session:{type:'login',account}},
+  ]);
+  const result = run(requests, false, 'success', 'success');
+  assert(result.replies.every(reply => !reply.ok));
+  for (const reply of result.replies) assert.deepEqual(reply.error, {name:'AccountInvalid',sent:false});
+  assert.deepEqual(result.trace, []);
+  const missing = run([
+    {op:'account_login',account:'2'},
+    {...accountWrite('one'),session:{type:'login',account:'2'}},
+  ], false, 'success');
+  for (const reply of missing.replies) assert.deepEqual(reply.error, {name:'AccountInvalid',sent:false});
+  assert.deepEqual(missing.trace, []);
 });
 
 test('account timeout is not marked unsent or retried, and every path clears dc.session', () => {

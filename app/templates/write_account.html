@@ -8,39 +8,53 @@
 {% block content %}
 {#- 상태는 워커가 메모리에 든 값만 읽는다. 이 화면을 여는 것만으로는 디시에 로그인하지 않는다. -#}
 {%- set ok = account.ok|default(false) -%}
-{%- set configured = ok and account.configured -%}
-{%- set reason = account.reason if ok and account.reason in ["otp", "captcha", "failed", "expired"] else "" -%}
+{#- 계정 번호별 상태. 예전 응답(accounts 없음)은 계정 1 하나로 본다. 로그인 아이디는 이 화면에 오지 않는다. -#}
+{%- set accounts = account.accounts if ok and account.accounts is mapping else ({"1": account} if ok and account.configured else {}) -%}
+{%- set slots = [] -%}
+{%- for slot in ["1", "2"] if slot in accounts -%}{%- set _ = slots.append(slot) -%}{%- endfor -%}
 <section class="write-shell">
     <div class="board-head page-head">
         <div class="page-head-copy">
             <h1 id="account-title">디시 계정</h1>
-            <p class="board-head-note">글·댓글을 디시 계정으로 쓸 때 쓰는 로그인이에요. 아이디와 비밀번호는 서버 설정에서만 읽어요.</p>
+            <p class="board-head-note">글·댓글을 디시 계정으로 쓸 때 쓰는 로그인이에요. 아이디와 비밀번호는 서버 설정에서만 읽어요.{% if slots|length > 1 %} 두 계정의 로그인은 10초 간격으로 할 수 있어요.{% endif %}</p>
         </div>
     </div>
-    <form class="write-form" id="account-form" novalidate aria-labelledby="account-title" data-reason="{{ reason }}"{% if not configured %} data-unconfigured{% endif %}>
-        <p class="write-status{% if not ok or not configured or reason %} is-error{% elif account.logged_in %} is-success{% endif %}" id="account-status" role="status" aria-live="polite">
-            {%- if not ok -%}계정 상태를 확인하지 못했어요. 잠시 뒤 새로고침해 주세요.
-            {%- elif not configured -%}서버에 MIRROR_DC_LOGIN_ID와 MIRROR_DC_LOGIN_PASSWORD를 설정한 뒤 다시 시작해 주세요.
-            {%- elif account.logged_in -%}{{ account.name or account.user_id }}{% if account.user_id %}({{ account.user_id }}){% endif %} 계정으로 로그인돼 있어요.
+    {% if not ok or not slots %}
+    <p class="write-status is-error" role="status">
+        {%- if not ok -%}계정 상태를 확인하지 못했어요. 잠시 뒤 새로고침해 주세요.
+        {%- else -%}서버에 MIRROR_DC_LOGIN_ID와 MIRROR_DC_LOGIN_PASSWORD를 설정한 뒤 다시 시작해 주세요.
+        {%- endif -%}
+    </p>
+    <div class="write-actions"><a class="write-cancel" href="/">닫기</a></div>
+    {% endif %}
+    {% for slot in slots %}
+    {%- set item = accounts[slot] -%}
+    {%- set reason = item.reason if item.reason in ["otp", "captcha", "failed", "expired"] else "" -%}
+    {%- set p = "account-" ~ slot -%}
+    <form class="write-form account-form" id="{{ p }}" data-account="{{ slot }}" novalidate aria-labelledby="{{ p ~ '-title' if slots|length > 1 else 'account-title' }}" data-reason="{{ reason }}">
+        {% if slots|length > 1 %}<h2 class="account-form-title" id="{{ p }}-title">계정 {{ slot }}</h2>{% endif %}
+        <p class="write-status{% if reason %} is-error{% elif item.logged_in %} is-success{% endif %}" id="{{ p }}-status" role="status" aria-live="polite">
+            {%- if item.logged_in -%}{{ item.name or item.user_id }}{% if item.user_id %}({{ item.user_id }}){% endif %} 계정으로 로그인돼 있어요.
             {%- elif reason == "otp" -%}디시 OTP 6자리를 입력하고 로그인해 주세요.
             {%- elif reason == "captcha" -%}보이는 문자를 입력하고 로그인해 주세요.
             {%- elif reason == "expired" -%}로그인이 만료됐어요. 다시 로그인해 주세요.
             {%- elif reason == "failed" -%}로그인하지 못했어요. 서버의 계정 설정을 확인한 뒤 다시 로그인해 주세요.
-            {%- else -%}아직 로그인하지 않았어요. 디시 계정으로 처음 쓸 때 로그인하거나, 지금 로그인할 수 있어요.
+            {%- else -%}아직 로그인하지 않았어요. 이 계정으로 처음 쓸 때 로그인하거나, 지금 로그인할 수 있어요.
             {%- endif -%}
         </p>
-        <div class="write-field" id="account-otp-field"{% if reason != "otp" %} hidden{% endif %}>
-            <label class="write-label" for="account-otp">OTP 6자리</label>
-            <input class="write-input" id="account-otp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-describedby="account-otp-hint account-otp-error">
-            <p class="write-hint" id="account-otp-hint">디시 계정에 연결한 OTP 앱의 숫자예요. 한 번 통과하면 서버가 다시 시작될 때까지 다시 묻지 않을 수 있어요.</p>
-            <p class="write-error" id="account-otp-error" hidden></p>
+        <div class="write-field" id="{{ p }}-otp-field"{% if reason != "otp" %} hidden{% endif %}>
+            <label class="write-label" for="{{ p }}-otp">OTP 6자리</label>
+            <input class="write-input" id="{{ p }}-otp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-describedby="{{ p }}-otp-hint {{ p }}-otp-error">
+            <p class="write-hint" id="{{ p }}-otp-hint">디시 계정에 연결한 OTP 앱의 숫자예요. 한 번 통과하면 서버가 다시 시작될 때까지 다시 묻지 않을 수 있어요.</p>
+            <p class="write-error" id="{{ p }}-otp-error" hidden></p>
         </div>
-        {{ captcha_box("account-captcha", "디시가 로그인할 때 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 다시 로그인해 주세요.") }}
+        {{ captcha_box(p ~ "-captcha", "디시가 로그인할 때 자동 입력 방지 문자를 요구했어요. 보이는 문자를 입력하고 다시 로그인해 주세요.") }}
         <div class="write-actions">
-            <a class="write-cancel" href="/">닫기</a>
-            <button class="write-submit" id="account-submit" type="submit"{% if not configured %} disabled{% endif %}>{{ "다시 로그인" if ok and account.logged_in else "로그인" }}</button>
+            {% if loop.last %}<a class="write-cancel" href="/">닫기</a>{% endif %}
+            <button class="write-submit" id="{{ p }}-submit" type="submit">{{ "다시 로그인" if item.logged_in else "로그인" }}</button>
         </div>
     </form>
+    {% endfor %}
 </section>
 <script src="{{ static_url('javascript/dc_post_client.js') }}"></script>
 <script src="{{ static_url('javascript/account_login.js') }}"></script>

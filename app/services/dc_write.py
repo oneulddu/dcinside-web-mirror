@@ -296,7 +296,12 @@ def configured():
 
 
 def account_configured():
-    return bool(os.environ.get("MIRROR_DC_LOGIN_ID") and os.environ.get("MIRROR_DC_LOGIN_PASSWORD"))
+    return bool(account_slots())
+
+
+def account_slots():
+    return [slot for slot, suffix in (("1", ""), ("2", "_2"))
+            if os.environ.get(f"MIRROR_DC_LOGIN_ID{suffix}") and os.environ.get(f"MIRROR_DC_LOGIN_PASSWORD{suffix}")]
 
 
 def account_fields(data):
@@ -311,7 +316,11 @@ def account_status():
         return unavailable(), 503
     if not result.get("ok"):
         return unavailable(), 503
-    return {"ok": True, **account_fields(result["data"])}, 200
+    data = result["data"]
+    accounts = data.get("accounts", {})
+    return {"ok": True, **account_fields(data),
+            "accounts": {slot: account_fields(fields) for slot, fields in accounts.items()
+                         if slot in ("1", "2") and isinstance(fields, dict)}}, 200
 
 
 def _key():
@@ -407,13 +416,18 @@ def perform(op, **payload):
             return unavailable(), 503
         data = result.get("data", {})
         error = result.get("error", {})
+        if error.get("name") == "AccountInvalid":
+            return {"ok": False, "code": "invalid", "field": "mode", "message": "계정을 다시 선택해 주세요."}, 400
         if error.get("name") == "LoginCooldown":
             return {"ok": False, "code": "retry", "message": "잠시 후 다시 시도해 주세요.",
                     "retry_after": error["retry_after"]}, 429
         if error.get("name") == "LoginNeeded":
             reason = error.get("reason")
             reason = reason if reason in LOGIN_MESSAGES else "failed"
-            failure = {"ok": False, "code": "login_needed", "reason": reason, "message": LOGIN_MESSAGES[reason]}
+            account = error.get("account")
+            account = account if account in ("1", "2") else "1"
+            failure = {"ok": False, "code": "login_needed", "reason": reason, "account": account,
+                       "message": LOGIN_MESSAGES[reason]}
             if reason == "captcha" and isinstance(error.get("captcha_key"), str) and CAPTCHA_KEY.fullmatch(error["captcha_key"]):
                 failure["captcha_key"] = error["captcha_key"]
             return failure, 200

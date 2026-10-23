@@ -74,12 +74,22 @@
         return "/write/unlock?" + new URLSearchParams({ next: next }).toString();
     }
 
-    // 글·댓글을 유동과 디시 계정 중 무엇으로 쓸지 마지막으로 고른 값. 글쓰기와 댓글이 함께 쓴다.
+    // 글·댓글 작성자로 마지막에 고른 값: "anonymous" 또는 "account:1"·"account:2". 글쓰기와 댓글이 함께 쓴다.
+    // 계정이 하나뿐이던 때 저장한 "account"는 계정 1로 읽는다.
     var MODE_KEY = "mirror_write_mode_v1";
+    var MODE_PATTERN = /^(anonymous|account:[12])$/;
+
+    function normalizeMode(value) {
+        var text = String(value == null ? "" : value);
+        if (text === "account") {
+            return "account:1";
+        }
+        return MODE_PATTERN.test(text) ? text : "anonymous";
+    }
 
     function readMode(storage) {
         try {
-            return storage && storage.getItem(MODE_KEY) === "account" ? "account" : "anonymous";
+            return storage ? normalizeMode(storage.getItem(MODE_KEY)) : "anonymous";
         } catch (err) {
             return "anonymous";
         }
@@ -88,11 +98,44 @@
     function saveMode(storage, mode) {
         try {
             if (storage) {
-                storage.setItem(MODE_KEY, mode === "account" ? "account" : "anonymous");
+                storage.setItem(MODE_KEY, normalizeMode(mode));
             }
         } catch (err) {
             // 기억하지 못해도 지금 고른 값으로 쓴다.
         }
+    }
+
+    // "account:N"이면 계정 번호, 아니면 빈 값.
+    function modeAccount(mode) {
+        var match = /^account:([12])$/.exec(String(mode || ""));
+        return match ? match[1] : "";
+    }
+
+    // 기억한 값이 지금 화면의 선택지에 없으면(서버에서 그 계정을 뺐으면) 빈 값을 돌려준다.
+    // 다른 계정으로 바꿔 보내지 않고, 작성자를 다시 고르게 한다.
+    // 선택지가 아예 없으면(계정을 모두 뺐으면) 유동만 남지만, 계정을 기억하고 있었다면 한 번 알리고 다시 누르게 한다.
+    function pickMode(saved, inputs) {
+        if (!inputs.length) {
+            return modeAccount(saved) ? "" : "anonymous";
+        }
+        return inputs.some(function (input) {
+            return input.value === saved;
+        }) ? saved : "";
+    }
+
+    // 상태 응답에서 계정 번호별 상태만 꺼낸다. 예전 응답(accounts 없음)은 계정 1로 본다.
+    function accountList(status) {
+        var result = {};
+        if (!status || typeof status !== "object") {
+            return result;
+        }
+        var accounts = status.accounts && typeof status.accounts === "object" ? status.accounts : { "1": status };
+        ["1", "2"].forEach(function (slot) {
+            if (accounts[slot] && typeof accounts[slot] === "object") {
+                result[slot] = accounts[slot];
+            }
+        });
+        return result;
     }
 
     // 입력한 글이 사라지지 않게 계정 화면은 새 탭으로 연다.
@@ -107,8 +150,12 @@
         safePath: safePath,
         interpret: interpret,
         unlockUrl: unlockUrl,
+        normalizeMode: normalizeMode,
         readMode: readMode,
         saveMode: saveMode,
+        modeAccount: modeAccount,
+        pickMode: pickMode,
+        accountList: accountList,
         accountLink: accountLink,
         MODE_KEY: MODE_KEY
     };
@@ -277,6 +324,42 @@
         };
     }
 
+    // 계정 상태는 서버 메모리의 값만 읽는다(디시에 요청하지 않는다). 한 화면에서 한 번만 묻는다.
+    var statusPromise = null;
+
+    function accountStatus() {
+        if (!statusPromise) {
+            statusPromise = root.fetch("/write/account/status", { credentials: "same-origin", headers: { "Accept": "application/json" } }).then(function (response) {
+                return response.ok ? response.json() : null;
+            }).then(function (status) {
+                return status && status.ok === true ? status : null;
+            }, function () {
+                return null;
+            });
+        }
+        return statusPromise;
+    }
+
+    // 로그인한 계정은 선택지에 디시 닉네임을 붙인다. 닉네임이 같을 수 있어 번호는 남기고, 로그인 아이디는 쓰지 않는다.
+    function labelModes(inputs) {
+        accountStatus().then(function (status) {
+            var accounts = accountList(status);
+            inputs.forEach(function (input) {
+                var slot = modeAccount(input.value);
+                var item = accounts[slot];
+                var name = item && item.logged_in === true ? String(item.name || "").trim() : "";
+                var label = input.nextElementSibling;
+                if (slot && name && label) {
+                    var base = label.getAttribute("data-base") || label.textContent;
+                    label.setAttribute("data-base", base);
+                    label.textContent = base + " · " + name;
+                }
+            });
+        });
+    }
+
+    root.MirrorDcPost.accountStatus = accountStatus;
+    root.MirrorDcPost.labelModes = labelModes;
     root.MirrorDcPost.postJson = postJson;
     root.MirrorDcPost.postForm = postForm;
     root.MirrorDcPost.createCaptcha = createCaptcha;

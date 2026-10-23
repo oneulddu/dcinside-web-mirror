@@ -4027,6 +4027,19 @@ html[data-theme="dark"] .board-updates-btn {
     cursor: not-allowed;
 }
 
+/* 계정 화면: 계정이 둘이면 계정마다 폼이 하나씩 이어진다. */
+.account-form + .account-form {
+    margin-top: var(--space-6);
+    padding-top: var(--space-6);
+    border-top: var(--rule) solid var(--line);
+}
+
+.account-form-title {
+    margin: 0;
+    font: var(--type-label);
+    font-weight: 700;
+}
+
 /* 계정 글의 수정·삭제는 글 정보 줄에 다른 정보처럼 이어 붙는다. */
 .article-owner-slot {
     display: contents;

@@ -36,6 +36,8 @@ class FakeManager:
 def setup(monkeypatch):
     monkeypatch.delenv("MIRROR_DC_LOGIN_ID", raising=False)
     monkeypatch.delenv("MIRROR_DC_LOGIN_PASSWORD", raising=False)
+    monkeypatch.delenv("MIRROR_DC_LOGIN_ID_2", raising=False)
+    monkeypatch.delenv("MIRROR_DC_LOGIN_PASSWORD_2", raising=False)
     app = create_app()
     app.config.update(TESTING=True, WRITE_KEY="비밀-key", SECRET_KEY="test-secret")
     manager = FakeManager()
@@ -369,13 +371,13 @@ def test_metadata_failure_and_no_recent_cookie(setup, monkeypatch):
 def test_context_globals(setup):
     app, client, _, _ = setup
     with app.test_request_context("/write"):
-        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": False, "account_configured": False, "write_limits": service.LIMITS}
+        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": False, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS}
     unlock(client)
     cookie = client.get_cookie(service.COOKIE).value
     with app.test_request_context("/write", headers={"Cookie": f"mirror_write={cookie}"}):
-        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": True, "account_configured": False, "write_limits": service.LIMITS}
+        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": True, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS}
     with app.test_request_context("/poker"):
-        assert routes.dc_write_context() == {"write_configured": False, "write_enabled": False, "account_configured": False, "write_limits": service.LIMITS}
+        assert routes.dc_write_context() == {"write_configured": False, "write_enabled": False, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS}
 
 
 ACCOUNT_STATUS = {"configured": True, "logged_in": True, "user_id": "public-user",
@@ -439,12 +441,16 @@ def test_account_status_page_and_context_are_allowlisted(setup, monkeypatch):
         assert routes.dc_write_context()["account_configured"] is True
     unlock(client)
     manager.result = {"ok": True, "data": {**ACCOUNT_STATUS, "id": "secret-login-id",
-                                          "password": "secret-login-password", "otp_token": "secret-token"}}
+                                          "password": "secret-login-password", "otp_token": "secret-token",
+                                          "accounts": {"1": {**ACCOUNT_STATUS, "password": "secret"},
+                                                       "2": {**ACCOUNT_STATUS, "id": "secret"},
+                                                       "3": ACCOUNT_STATUS}}}
+    expected = {"ok": True, **ACCOUNT_STATUS, "accounts": {"1": ACCOUNT_STATUS, "2": ACCOUNT_STATUS}}
     response = client.get("/write/account/status", headers={"Sec-Fetch-Site": "same-origin"})
-    assert response.json == {"ok": True, **ACCOUNT_STATUS}
+    assert response.json == expected
     assert response.headers["Cache-Control"] == "no-store"
     assert client.get("/write/account").status_code == 200
-    assert contexts[-1] == ("write_account.html", {"account": {"ok": True, **ACCOUNT_STATUS}})
+    assert contexts[-1] == ("write_account.html", {"account": expected})
     assert manager.calls == [("account_status", {}), ("account_status", {})]
 
 
@@ -455,12 +461,13 @@ def test_account_login_failure_contract_and_worker_cooldown(setup, reason):
     manager.result = {"ok": False, "error": {"name": "LoginNeeded", "reason": reason, "sent": False,
                                            "cause": "secret-login-id secret-login-password", "captcha_key": "a" * 16}}
     response = client.post("/write/account/login", json={}, headers=ORIGIN)
-    expected = {"ok": False, "code": "login_needed", "reason": reason, "message": service.LOGIN_MESSAGES[reason]}
+    expected = {"ok": False, "code": "login_needed", "reason": reason, "account": "1",
+                "account_url": "/write/account#account-1", "message": service.LOGIN_MESSAGES[reason]}
     if reason == "captcha":
         expected["captcha_key"] = "a" * 16
     assert response.json == expected
     assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
-    assert manager.calls == [("account_login", {"otp": None, "captcha": None})]
+    assert manager.calls == [("account_login", {"account": "1", "otp": None, "captcha": None})]
     manager.result = {"ok": False, "error": {"name": "LoginCooldown", "retry_after": 10, "sent": False}}
     limited = client.post("/write/account/login", json={}, headers=ORIGIN)
     assert limited.status_code == 429
@@ -470,8 +477,8 @@ def test_account_login_failure_contract_and_worker_cooldown(setup, reason):
     manager.result = {"ok": True, "data": {"result": True, **ACCOUNT_STATUS, "password": "secret-login-password"}}
     response = client.post("/write/account/login", json={"otp": "123456", "captcha": {"key": "b" * 16, "code": " ab "},
                                                        "id": "do-not-forward", "password": "do-not-forward"}, headers=ORIGIN)
-    assert response.json == {"ok": True, **ACCOUNT_STATUS}
-    assert manager.calls[-1] == ("account_login", {"otp": "123456", "captcha": {"key": "b" * 16, "code": "ab"}})
+    assert response.json == {"ok": True, "account": "1", **ACCOUNT_STATUS}
+    assert manager.calls[-1] == ("account_login", {"account": "1", "otp": "123456", "captcha": {"key": "b" * 16, "code": "ab"}})
     # Even an immediate second success must reach the worker: Python owns no login clock.
     assert client.post("/write/account/login", json={}, headers=ORIGIN).json["ok"]
     assert len(manager.calls) == 4
@@ -523,13 +530,14 @@ def test_account_actions_use_only_session_marker(setup, path, op, fields):
     response = client.post(path, json={"board": "programming", "mode": "account", **fields}, headers=ORIGIN)
     assert response.status_code == 200 and response.json["ok"]
     assert manager.calls[0][0] == op
-    assert manager.calls[0][1]["session"] == {"type": "login"}
+    assert manager.calls[0][1]["session"] == {"type": "login", "account": "1"}
     assert "password" not in response.get_data(as_text=True)
     if op == "comment":
         assert response.json["author"] == {"name": "고정닉", "user_id": "public-user"}
         assert response.json["comment_id"] == 456
     if op == "modify_info":
         assert response.json["mode"] == "account"
+        assert response.json["account"] == "1"
 
 
 @pytest.mark.parametrize("path,op,fields", ACCOUNT_ACTIONS + [("/write/account/login", "account_login", {})])
@@ -558,7 +566,8 @@ def test_account_action_login_needed_is_not_uncertain(setup, path, op, fields, r
     response = client.post(path, json={"board": "programming", "mode": "account", **fields}, headers=ORIGIN)
     assert response.status_code == 200
     assert response.json == {"ok": False, "code": "login_needed", "reason": reason,
-                             "message": service.LOGIN_MESSAGES[reason], "account_url": "/write/account"}
+                             "message": service.LOGIN_MESSAGES[reason], "account": "1",
+                             "account_url": "/write/account#account-1"}
     assert len(manager.calls) == 1
     assert "secret-login" not in response.get_data(as_text=True) + caplog.text
 
@@ -581,6 +590,126 @@ def test_account_rejection_does_not_leak_upstream_identity(setup, caplog):
     response = post(client, mode="account")
     assert response.json["code"] == "rejected"
     assert "secret-login" not in response.get_data(as_text=True) + caplog.text
+
+
+ACCOUNT_SELECTOR_ROUTES = [
+    *[(path, op, fields, False) for path, op, fields in ACCOUNT_ACTIONS],
+    ("/write/account/login", "account_login", {}, False),
+    *[(path, op, fields, True) for path, op, fields in ACCOUNT_ACTIONS if path == "/write"],
+]
+
+
+@pytest.mark.parametrize("path,op,fields,as_form", ACCOUNT_SELECTOR_ROUTES)
+@pytest.mark.parametrize("selector,expected", [
+    ({}, "1"), ({"account": "1"}, "1"), ({"account": "2"}, "2"),
+    ({"account": None}, None), ({"account": ""}, None), ({"account": 2}, None),
+    ({"account": True}, None), ({"account": "3"}, None), ({"account": {}}, None),
+    ({"account": []}, None), ({"account": " 2"}, None),
+])
+def test_account_selector_contract(setup, monkeypatch, path, op, fields, as_form, selector, expected):
+    _, client, manager, _ = setup
+    for suffix in ("", "_2"):
+        monkeypatch.setenv("MIRROR_DC_LOGIN_ID" + suffix, "private-id" + suffix)
+        monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD" + suffix, "private-password" + suffix)
+    unlock(client)
+    manager.result = {"ok": True, "data": MODIFY_INFO if op == "modify_info" else
+                      {"result": True, **ACCOUNT_STATUS}}
+    payload = {"board": "programming", "mode": "account", **fields, **selector}
+    if as_form:
+        # Real form selectors are strings; nonstrings exercise multipart's JSON payload.
+        form = {}
+        if "account" in selector and isinstance(selector["account"], str):
+            form["account"] = payload.pop("account")
+        response = client.post(path, data={"payload": json.dumps(payload), **form},
+                               content_type="multipart/form-data", headers=ORIGIN)
+    else:
+        response = client.post(path, json=payload, headers=ORIGIN)
+    if expected is None:
+        assert response.status_code == 400
+        assert response.json == {"ok": False, "code": "invalid", "field": "mode",
+                                 "message": "계정을 다시 선택해 주세요."}
+        assert manager.calls == []
+    else:
+        assert response.status_code == 200 and response.json["ok"]
+        assert len(manager.calls) == 1 and manager.calls[0][0] == op
+        sent = manager.calls[0][1]
+        if op == "account_login":
+            assert sent["account"] == expected
+            assert response.json == {"ok": True, "account": expected, **ACCOUNT_STATUS}
+        else:
+            assert sent["session"] == {"type": "login", "account": expected}
+        if op == "modify_info":
+            assert response.json["mode"] == "account" and response.json["account"] == expected
+
+
+@pytest.mark.parametrize("path,op,fields,as_form", ACCOUNT_SELECTOR_ROUTES)
+@pytest.mark.parametrize("slot", ["1", "2"])
+def test_explicit_unconfigured_slot_never_calls_worker(setup, monkeypatch, path, op, fields, as_form, slot):
+    _, client, manager, _ = setup
+    suffix = "" if slot == "1" else "_2"
+    # One credential alone is not a configured account.
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID" + suffix, "private-id")
+    unlock(client)
+    payload = {"board": "programming", "mode": "account", **fields}
+    response = (client.post(path, data={"payload": json.dumps(payload), "account": slot},
+                            content_type="multipart/form-data", headers=ORIGIN)
+                if as_form else client.post(path, json={**payload, "account": slot}, headers=ORIGIN))
+    assert response.status_code == 400
+    assert response.json == {"ok": False, "code": "invalid", "field": "mode",
+                             "message": "계정을 다시 선택해 주세요."}
+    assert manager.calls == []
+
+
+@pytest.mark.parametrize("path,op,fields,as_form", [row for row in ACCOUNT_SELECTOR_ROUTES if row[1] != "account_login"])
+@pytest.mark.parametrize("selector", [None, "", 2, True, "3", "2"])
+def test_anonymous_ignores_account_selector(setup, path, op, fields, as_form, selector):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": True, "data": MODIFY_INFO if op == "modify_info" else {"result": True}}
+    payload = {**BODY, **fields, "mode": "anonymous", "account": selector}
+    response = (client.post(path, data={"payload": json.dumps(payload)}, content_type="multipart/form-data", headers=ORIGIN)
+                if as_form else client.post(path, json=payload, headers=ORIGIN))
+    assert response.status_code == 200 and response.json["ok"]
+    assert manager.calls[0][1]["session"]["type"] == "anonymous"
+    assert "account" not in manager.calls[0][1]["session"]
+    assert "account" not in response.json
+
+
+@pytest.mark.parametrize("path,op,fields", ACCOUNT_ACTIONS + [("/write/account/login", "account_login", {})])
+def test_worker_invalid_account_mapping(setup, path, op, fields):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "AccountInvalid", "sent": False}}
+    response = client.post(path, json={"board": "programming", "mode": "account", **fields}, headers=ORIGIN)
+    assert response.status_code == 400
+    assert response.json == {"ok": False, "code": "invalid", "field": "mode",
+                             "message": "계정을 다시 선택해 주세요."}
+
+
+@pytest.mark.parametrize("path,op,fields", ACCOUNT_ACTIONS + [("/write/account/login", "account_login", {})])
+@pytest.mark.parametrize("worker_account,expected", [("2", "2"), ("1", "1"), (2, "1"), ("3", "1"), (None, "1")])
+def test_login_needed_uses_validated_worker_account(setup, path, op, fields, worker_account, expected):
+    _, client, manager, _ = setup
+    unlock(client)
+    manager.result = {"ok": False, "error": {"name": "LoginNeeded", "reason": "expired",
+                                           "account": worker_account, "sent": False}}
+    response = client.post(path, json={"board": "programming", "mode": "account", **fields}, headers=ORIGIN)
+    assert response.status_code == 200
+    assert response.json == {"ok": False, "code": "login_needed", "reason": "expired",
+                             "message": service.LOGIN_MESSAGES["expired"], "account": expected,
+                             "account_url": "/write/account#account-" + expected}
+
+
+def test_post_interval_is_shared_between_slots(setup, monkeypatch):
+    _, client, manager, _ = setup
+    for suffix in ("", "_2"):
+        monkeypatch.setenv("MIRROR_DC_LOGIN_ID" + suffix, "private-id")
+        monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD" + suffix, "private-password")
+    unlock(client)
+    assert post(client, mode="account", account="1").json["ok"]
+    response = post(client, mode="account", account="2")
+    assert response.status_code == 429 and response.json["code"] == "retry"
+    assert len(manager.calls) == 1
 
 
 @pytest.fixture

@@ -19,50 +19,64 @@ dc.http.post = function (url, fields, options) {
     ? sendPost.call(this, url, fields, { ...options, urlencoded: true })
     : sendPost.call(this, url, fields, options);
 };
-const loginId = process.env.MIRROR_DC_LOGIN_ID || '';
-const loginPassword = process.env.MIRROR_DC_LOGIN_PASSWORD || '';
-let loginSession = null;
-let otpToken;
-let loginBlocked = false;
-let loginReason = null;
+const accounts = Object.fromEntries(['1', '2'].map(account => {
+  const suffix = account === '1' ? '' : '_2';
+  return [account, {
+    id: process.env[`MIRROR_DC_LOGIN_ID${suffix}`] || '',
+    password: process.env[`MIRROR_DC_LOGIN_PASSWORD${suffix}`] || '',
+    session: null, otpToken: undefined, blocked: false, reason: null,
+  }];
+}));
 let lastLoginAttempt = null;
 const LOGIN_INTERVAL_MS = 10000;
-function accountStatus() {
-  return { configured: Boolean(loginId && loginPassword), logged_in: loginSession !== null,
-    user_id: loginSession?.userId ?? null, name: loginSession?.result?.name ?? null,
-    blocked: loginBlocked, reason: loginReason };
+function accountFields(account) {
+  const state = accounts[account];
+  return { configured: Boolean(state.id && state.password), logged_in: state.session !== null,
+    user_id: state.session?.userId ?? null, name: state.session?.result?.name ?? null,
+    blocked: state.blocked, reason: state.reason };
 }
-function loginNeeded(reason) {
-  return Object.assign(new Error('Login needed'), { name: 'LoginNeeded', reason, sent: false,
+function accountStatus() {
+  return { ...accountFields('1'), accounts: Object.fromEntries(
+    ['1', '2'].filter(account => accountFields(account).configured)
+      .map(account => [account, accountFields(account)])) };
+}
+function selectedAccount(input) {
+  const account = Object.hasOwn(input, 'account') ? input.account : '1';
+  if (!['1', '2'].includes(account) || !accountFields(account).configured) {
+    throw Object.assign(new Error('Invalid account'), { name: 'AccountInvalid', sent: false });
+  }
+  return account;
+}
+function loginNeeded(reason, account) {
+  return Object.assign(new Error('Login needed'), { name: 'LoginNeeded', reason, account, sent: false,
     ...(reason === 'captcha' ? { captcha_key: randomBytes(8).toString('hex') } : {}) });
 }
 async function accountLogin(input = {}) {
+  const account = selectedAccount(input);
+  const state = accounts[account];
   // Both explicit and lazy login share this clock. Rejection must not change
   // the session/failure state or extend the interval.
-  if (loginId && loginPassword) {
-    const now = Date.now();
-    const remaining = lastLoginAttempt === null ? 0 : LOGIN_INTERVAL_MS - (now - lastLoginAttempt);
-    if (remaining > 0) throw Object.assign(new Error('Login cooldown'), {
-      name: 'LoginCooldown', retry_after: Math.ceil(remaining / 1000), sent: false,
-    });
-    lastLoginAttempt = now;
-  }
-  loginSession = null;
+  const now = Date.now();
+  const remaining = lastLoginAttempt === null ? 0 : LOGIN_INTERVAL_MS - (now - lastLoginAttempt);
+  if (remaining > 0) throw Object.assign(new Error('Login cooldown'), {
+    name: 'LoginCooldown', retry_after: Math.ceil(remaining / 1000), sent: false,
+  });
+  lastLoginAttempt = now;
+  state.session = null;
   try {
-    if (!loginId || !loginPassword) throw new Error('Not configured');
     await settled();
-    loginSession = await dc.auth.login(loginId, loginPassword, {
-      otp: input.otp, captcha: input.captcha, otpToken,
+    state.session = await dc.auth.login(state.id, state.password, {
+      otp: input.otp, captcha: input.captcha, otpToken: state.otpToken,
     });
-    otpToken = loginSession.result?.otp_token ?? otpToken;
-    loginBlocked = false;
-    loginReason = null;
-    return { result: true, ...accountStatus() };
+    state.otpToken = state.session.result?.otp_token ?? state.otpToken;
+    state.blocked = false;
+    state.reason = null;
+    return { result: true, account, ...accountFields(account) };
   } catch (error) {
-    loginBlocked = true;
-    loginReason = error.name === 'OtpRequiredError' ? 'otp'
+    state.blocked = true;
+    state.reason = error.name === 'OtpRequiredError' ? 'otp'
       : error.name === 'CaptchaRequiredError' ? 'captcha' : 'failed';
-    throw loginNeeded(loginReason);
+    throw loginNeeded(state.reason, account);
   }
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -284,9 +298,10 @@ async function handle(input) {
     return await dispatch(input);
   } catch (error) {
     if (input.session?.type === 'login' && error.name === 'AuthExpiredError' && error.kind === 'login') {
-      loginSession = null;
-      loginReason = 'expired';
-      throw loginNeeded('expired');
+      const account = selectedAccount(input.session);
+      accounts[account].session = null;
+      accounts[account].reason = 'expired';
+      throw loginNeeded('expired', account);
     }
     throw error;
   } finally {
@@ -295,6 +310,7 @@ async function handle(input) {
 }
 
 async function dispatch(input) {
+  const account = input.session?.type === 'login' ? selectedAccount(input.session) : null;
   if (input.op === 'ping') return { ready: true };
   if (input.op === 'account_status') return accountStatus();
   if (input.op === 'account_login') return accountLogin(input);
@@ -345,9 +361,10 @@ async function dispatch(input) {
     if (input.op === 'write') content = await writeContent(input);
     else if (input.op === 'comment') comment = commentArgs(input);
     if (input.session.type === 'login') {
-      if (loginBlocked) throw loginNeeded(loginReason);
-      if (!loginSession) await accountLogin();
-      dc.session = loginSession;
+      const state = accounts[account];
+      if (state.blocked) throw loginNeeded(state.reason, account);
+      if (!state.session) await accountLogin({ account });
+      dc.session = state.session;
     } else dc.useAnonymous(input.session.nickname, input.session.password);
   }
   try {
@@ -379,7 +396,7 @@ async function dispatch(input) {
       if (input.op === 'write') return dc.articles.write({ gallery: input.gallery, subject: input.subject, content, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true, useGalleryNickname: false });
       if (input.op === 'comment') return dc.comments.write(input.gallery, input.no, comment.content, { parent: comment.parent, captcha: input.captcha ?? undefined, useGalleryNickname: false })
         .then(result => input.session?.type === 'login'
-          ? { ...result, author: { name: loginSession.result?.name ?? null, user_id: loginSession.userId } } : result);
+          ? { ...result, author: { name: accounts[account].session.result?.name ?? null, user_id: accounts[account].session.userId } } : result);
       return input.op === 'upvote'
         ? dc.articles.upvote(input.gallery, input.no, input.captcha)
         : dc.articles.downvote(input.gallery, input.no, input.captcha);
@@ -424,12 +441,13 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       result.error.cause = error.name === 'CaptchaRequiredError' ? '보안 코드를 입력해 주세요.' : '디시에서 요청을 받지 않았어요.';
     }
     if (error.name === 'LoginNeeded') result.error = {
-      name: 'LoginNeeded', reason: error.reason, sent: false,
+      name: 'LoginNeeded', reason: error.reason, account: error.account, sent: false,
       ...(error.captcha_key ? { captcha_key: error.captcha_key } : {}),
     };
     if (error.name === 'LoginCooldown') result.error = {
       name: 'LoginCooldown', retry_after: error.retry_after, sent: false,
     };
+    if (error.name === 'AccountInvalid') result.error = { name: 'AccountInvalid', sent: false };
   }
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

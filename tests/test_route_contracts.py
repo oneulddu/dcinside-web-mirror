@@ -9,6 +9,27 @@ import pytest
 from app import create_app, routes
 
 
+@pytest.mark.parametrize("slots", [[], ["1"], ["2"], ["1", "2"]])
+def test_account_slot_context_is_dc_only(monkeypatch, slots):
+    from app.services import dc_write
+
+    for slot, suffix in (("1", ""), ("2", "_2")):
+        # Presence only: a lone id must not enable a slot.
+        monkeypatch.setenv("MIRROR_DC_LOGIN_ID" + suffix, "private-login")
+        monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD" + suffix, "private-password" if slot in slots else "")
+    assert dc_write.account_slots() == slots
+    assert dc_write.account_configured() is bool(slots)
+    app = create_app()
+    with app.test_request_context("/write"):
+        context = routes.dc_write_context()
+        assert context["account_slots"] == slots
+        assert context["account_configured"] is bool(slots)
+    with app.test_request_context("/poker"):
+        context = routes.dc_write_context()
+        assert context["account_slots"] == []
+        assert context["account_configured"] is False
+
+
 async def _board_payload(*args, **kwargs):
     return [
         {

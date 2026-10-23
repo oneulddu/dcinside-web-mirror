@@ -17,18 +17,24 @@
     if (!document || !post || typeof post.postJson !== "function") {
         return;
     }
-    var form = document.getElementById("account-form");
-    if (!form) {
-        return;
-    }
+    // 계정 번호마다 폼이 하나씩 있다. 각 폼은 자기 계정만 로그인하고 OTP·보안 문자도 따로 받는다.
+    Array.prototype.forEach.call(document.querySelectorAll("form.account-form[data-account]"), function (form) {
+        var slot = form.getAttribute("data-account");
+        if (slot === "1" || slot === "2") {
+            setup(form, slot);
+        }
+    });
+
+    function setup(form, slot) {
+    var p = "account-" + slot;
     var el = {
-        status: document.getElementById("account-status"),
-        otpField: document.getElementById("account-otp-field"),
-        otp: document.getElementById("account-otp"),
-        otpError: document.getElementById("account-otp-error"),
-        submit: document.getElementById("account-submit")
+        status: document.getElementById(p + "-status"),
+        otpField: document.getElementById(p + "-otp-field"),
+        otp: document.getElementById(p + "-otp"),
+        otpError: document.getElementById(p + "-otp-error"),
+        submit: document.getElementById(p + "-submit")
     };
-    var captcha = post.createCaptcha("account-captcha", "login", "", null);
+    var captcha = post.createCaptcha(p + "-captcha", "login", "", null);
     var state = { sending: false, retryUntil: 0, retryTimer: null, loggedIn: /로그인돼 있어요/.test(el.status.textContent) };
 
     function setStatus(text, tone, link) {
@@ -45,7 +51,7 @@
 
     function sync() {
         var waiting = state.retryUntil > Date.now();
-        el.submit.disabled = state.sending || waiting || form.getAttribute("data-unconfigured") !== null;
+        el.submit.disabled = state.sending || waiting;
         el.submit.setAttribute("aria-busy", state.sending ? "true" : "false");
         el.submit.textContent = state.sending ? "로그인 중" : (state.loggedIn ? "다시 로그인" : "로그인");
         el.otp.disabled = state.sending;
@@ -138,11 +144,11 @@
     }
 
     function submit() {
-        if (state.sending || state.retryUntil > Date.now() || form.getAttribute("data-unconfigured") !== null) {
+        if (state.sending || state.retryUntil > Date.now()) {
             return;
         }
         setOtpError("");
-        var body = {};
+        var body = { account: slot };
         if (!el.otpField.hidden) {
             var otp = el.otp.value.trim();
             if (!OTP_PATTERN.test(otp)) {
@@ -184,4 +190,5 @@
         showCaptcha("");
     }
     sync();
+    }
 })(typeof window !== "undefined" ? window : globalThis);

@@ -301,8 +301,20 @@
         storage = null;
     }
     // 수정 화면은 연 방식(주소의 mode)을 끝까지 쓴다. 새 글은 마지막으로 고른 값을 쓴다.
-    state.mode = form.getAttribute("data-mode") === "account" ? "account"
-        : (el.modeInputs.length ? post.readMode(storage) : "anonymous");
+    // 기억한 계정이 선택지에 없으면 빈 값으로 두고 작성자를 다시 고르게 한다.
+    // 수정 주소에 account가 없을 때만 계정 1로 본다. 빈 값·잘못된 값은 그대로 보내 서버가 거절한다.
+    var pinnedAccount = form.getAttribute("data-account");
+    state.mode = form.getAttribute("data-mode") === "account" ? "account:" + (pinnedAccount === null ? "1" : pinnedAccount)
+        : post.pickMode(post.readMode(storage), el.modeInputs);
+
+    function isAccount() {
+        return state.mode.indexOf("account:") === 0;
+    }
+
+    // 계정으로 쓰면 계정 번호. 수정 주소의 값은 그대로 보내 서버가 확인한다.
+    function accountSlot() {
+        return isAccount() ? state.mode.slice(8) : "";
+    }
 
     function draftSnapshot() {
         return [el.subject.value, el.body.value, headValue(), state.images.length, state.originals.length].join("\u0000");
@@ -853,8 +865,8 @@
             return;
         }
         clearErrors();
-        var body = { board: board, pid: modifyPid, mode: "account" };
-        if (state.mode !== "account") {
+        var body = { board: board, pid: modifyPid, mode: "account", account: accountSlot() };
+        if (!isAccount()) {
             var password = el.password.value;
             if (charLength(password) < limits.password_min || charLength(password) > limits.password_max || !password.trim()) {
                 showFieldError("password", "글 비밀번호는 " + limits.password_min + "~" + limits.password_max + "자로 입력해 주세요.");
@@ -970,6 +982,17 @@
         }
         clearErrors();
         setStatus("");
+        if (!state.mode) {
+            if (!el.modeInputs.length) {
+                // 고를 수 있는 것이 유동뿐이다. 알린 뒤 다시 누르면 유동으로 보낸다.
+                state.mode = "anonymous";
+                post.saveMode(storage, state.mode);
+                setStatus("전에 고른 디시 계정이 서버에 없어요. 유동으로 올리려면 다시 등록을 눌러 주세요.", "error");
+                return;
+            }
+            setStatus("작성자를 다시 골라 주세요. 전에 고른 계정이 서버에 없어요.", "error");
+            return;
+        }
         var answer = captcha ? captcha.answer() : null;
         var problem = validateFields({
             nickname: el.nickname.value,
@@ -978,7 +1001,7 @@
             body: el.body.value,
             imageCount: state.images.length + state.originals.length,
             captcha: answer,
-            account: state.mode === "account"
+            account: isAccount()
         }, limits);
         if (problem) {
             showFieldError(problem.field, problem.message);
@@ -999,8 +1022,9 @@
             subject: el.subject.value.trim(),
             body: el.body.value
         };
-        if (state.mode === "account") {
+        if (isAccount()) {
             body.mode = "account";
+            body.account = accountSlot();
         } else {
             body.nickname = el.nickname.value.trim();
             body.password = el.password.value;
@@ -1075,7 +1099,7 @@
             captcha.hide();
         }
         if (outcome.action === "success") {
-            if (state.mode !== "account") {
+            if (!isAccount()) {
                 saveIdentity();
             }
             state.leaving = true;
@@ -1139,12 +1163,12 @@
     }
     function syncRememberNote() {
         if (el.rememberNote) {
-            el.rememberNote.hidden = state.mode === "account" || !el.rememberPassword.checked;
+            el.rememberNote.hidden = isAccount() || !el.rememberPassword.checked;
         }
     }
     // 계정으로 쓰면 닉네임·비밀번호 칸과 기억 선택을 숨긴다.
     function applyMode() {
-        var account = state.mode === "account";
+        var account = isAccount();
         el.modeInputs.forEach(function (input) {
             input.checked = input.value === state.mode;
         });
@@ -1157,7 +1181,8 @@
             el.accountNote.hidden = !account;
         }
         if (el.modeNote && el.modeInputs.length) {
-            el.modeNote.textContent = account ? "디시 계정으로 올라가요." : "유동닉으로 올라가요. 서버 IP로 기록돼요.";
+            el.modeNote.textContent = !state.mode ? "작성자를 골라 주세요. 전에 고른 계정이 서버에 없어요."
+                : account ? "계정 " + accountSlot() + "로 올라가요." : "유동닉으로 올라가요. 서버 IP로 기록돼요.";
         }
         syncRememberNote();
     }
@@ -1166,13 +1191,16 @@
             if (!input.checked) {
                 return;
             }
-            state.mode = input.value === "account" ? "account" : "anonymous";
+            state.mode = post.normalizeMode(input.value);
             post.saveMode(storage, state.mode);
             clearErrors();
             applyMode();
         });
     });
     applyMode();
+    if (el.modeInputs.length && typeof post.labelModes === "function") {
+        post.labelModes(el.modeInputs);
+    }
     state.initial = draftSnapshot();
     updateCount(el.subject, el.subjectCount, limits.subject_max);
     updateCount(el.body, el.bodyCount, limits.body_max);
