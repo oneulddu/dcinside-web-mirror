@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -82,6 +83,16 @@ HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 BOARD_KIND_CACHE_TTL = max(env_int("MIRROR_BOARD_KIND_CACHE_TTL", 21600), 0)
 BOARD_KIND_CACHE_MAX_ITEMS = 2048
 DC_CONN_LIMIT = max(env_int("MIRROR_DC_CONN_LIMIT", 20), 1)
+
+
+def _env_seconds(name, default):
+    try:
+        return max(float(os.getenv(name, str(default))), 0.0)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+DC_SLOW_REQUEST_SECONDS = _env_seconds("MIRROR_DC_SLOW_REQUEST_SECONDS", 2)
 DC_DNS_CACHE_TTL = max(env_int("MIRROR_DC_DNS_CACHE_TTL", 60), 0)
 DC_RATE_LIMIT_COOLDOWN = max(env_int("MIRROR_DC_RATE_LIMIT_COOLDOWN", 10), 0)
 DC_RATE_LIMIT_MAX_COOLDOWN = max(env_int("MIRROR_DC_RATE_LIMIT_MAX_COOLDOWN", 3600), 1)
@@ -559,39 +570,56 @@ class API(ParserMixin):
         # no await during initialization, so requests on the shared loop agree.
         if getattr(self, "_API__request_slots", None) is None:
             self.__request_slots = asyncio.Semaphore(DC_CONN_LIMIT)
-        async with self.__request_slots:
-            if self.__cooldown_active(cooldown_scope):
-                raise RateLimitCooldownError("rate limited: cooldown")
-            async with self.session.request(
-                method,
-                url,
-                headers=request_headers,
-                data=data,
-                cookies=cookies,
-                **({"allow_redirects": False} if self._is_notice_url(url) else {}),
-            ) as res:
-                text = await res.text()
-                status = res.status
-                response_headers = dict(res.headers)
+        started = None
+        observed_status = "-"
+        try:
+            async with self.__request_slots:
+                if self.__cooldown_active(cooldown_scope):
+                    raise RateLimitCooldownError("rate limited: cooldown")
+                started = time.monotonic()
+                async with self.session.request(
+                    method,
+                    url,
+                    headers=request_headers,
+                    data=data,
+                    cookies=cookies,
+                    **({"allow_redirects": False} if self._is_notice_url(url) else {}),
+                ) as res:
+                    observed_status = res.status
+                    text = await res.text()
+                    status = res.status
+                    response_headers = dict(res.headers)
 
-            # Publish cooldown before releasing admission to queued requests.
-            if self.__is_rate_limited_response(status, text[:1000]):
-                retry_delay = max(
-                    float(DC_RATE_LIMIT_COOLDOWN),
-                    self.__retry_after_delay(response_headers),
-                )
-                self.__start_cooldown_for(cooldown_scope, retry_delay)
-                logger.warning(
-                    "rate limited: status=%s host=%s path=%s scope=%s retry_after=%.0f",
-                    status,
-                    host,
-                    parsed_url.path or "/",
-                    cooldown_scope or "none",
-                    retry_delay,
-                )
-                raise RateLimitError(f"rate limited: {status}")
+                # Publish cooldown before releasing admission to queued requests.
+                if self.__is_rate_limited_response(status, text[:1000]):
+                    retry_delay = max(
+                        float(DC_RATE_LIMIT_COOLDOWN),
+                        self.__retry_after_delay(response_headers),
+                    )
+                    self.__start_cooldown_for(cooldown_scope, retry_delay)
+                    logger.warning(
+                        "rate limited: status=%s host=%s path=%s scope=%s retry_after=%.0f",
+                        status,
+                        host,
+                        parsed_url.path or "/",
+                        cooldown_scope or "none",
+                        retry_delay,
+                    )
+                    raise RateLimitError(f"rate limited: {status}")
 
-            return status, response_headers, text
+                return status, response_headers, text
+        finally:
+            if started is not None:
+                elapsed = time.monotonic() - started
+                if elapsed >= DC_SLOW_REQUEST_SECONDS:
+                    logger.warning(
+                        "slow upstream: host=%s path=%s status=%s elapsed=%.2f scope=%s",
+                        host,
+                        parsed_url.path or "/",
+                        observed_status,
+                        elapsed,
+                        cooldown_scope or "none",
+                    )
 
     def __normalize_head_id(self, head_id):
         if head_id is None:
