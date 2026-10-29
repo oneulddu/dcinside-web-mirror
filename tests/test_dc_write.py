@@ -3,8 +3,10 @@ import io
 import json
 from pathlib import Path
 import shutil
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from types import SimpleNamespace
 
 import pytest
 
@@ -835,6 +837,211 @@ def test_manager_serializes(tmp_path, node):
         assert results == list(range(8))
     finally:
         manager.close()
+
+
+@pytest.fixture
+def status_worker(monkeypatch):
+    class Process:
+        def __init__(self):
+            self.stdin = SimpleNamespace(fileno=lambda: 10, close=lambda: None)
+            self.stdout = SimpleNamespace(fileno=lambda: 11, close=lambda: None)
+            self.alive = True
+            self.result = {"ok": True, "data": {"logged_in": False, "accounts": {"1": {"logged_in": False}}}}
+            self.block_op = None
+            self.started = threading.Event()
+            self.resume = threading.Event()
+            self.request = None
+
+        def poll(self):
+            return None if self.alive else 1
+
+        def kill(self):
+            self.alive = False
+            self.resume.set()
+
+        def wait(self):
+            return 1
+
+    processes = []
+
+    def start(*args, **kwargs):
+        process = Process()
+        processes.append(process)
+        return process
+
+    class Selector:
+        def __enter__(self):
+            self.reading = False
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def register(self, stream, event):
+            self.reading = event == service.selectors.EVENT_READ
+
+        def unregister(self, stream):
+            pass
+
+        def select(self, timeout):
+            process = processes[-1]
+            if self.reading and process.request["op"] == process.block_op:
+                process.started.set()
+                if not process.resume.wait(timeout):
+                    return []
+            return [True]
+
+    def write(fd, data):
+        processes[-1].request = json.loads(bytes(data))
+        return len(data)
+
+    def read(fd, size):
+        process = processes[-1]
+        if process.result == "bad-json":
+            return b"bad-json\n"
+        return (json.dumps({"id": process.request["id"], **process.result}) + "\n").encode()
+
+    monkeypatch.setattr(service.subprocess, "Popen", start)
+    monkeypatch.setattr(service.selectors, "DefaultSelector", Selector)
+    monkeypatch.setattr(service.os, "set_blocking", lambda *args: None)
+    monkeypatch.setattr(service.os, "write", write)
+    monkeypatch.setattr(service.os, "read", read)
+    manager = service.WorkerManager(node="fake", timeout=2)
+    try:
+        yield manager, processes
+    finally:
+        for process in processes:
+            process.resume.set()
+        manager.close()
+
+
+def test_status_returns_snapshot_while_worker_is_blocked(status_worker):
+    manager, processes = status_worker
+    manager.request("account_status")
+    process = processes[-1]
+    process.block_op = "vote_info"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        vote = pool.submit(manager.request, "vote_info")
+        try:
+            assert process.started.wait(1), "fake vote never reached worker I/O"
+            status = pool.submit(manager.request, "account_status")
+            assert status.result(timeout=0.5)["data"]["logged_in"] is False
+            assert not vote.done()
+        finally:
+            process.resume.set()
+        vote.result(timeout=1)
+
+
+def test_status_free_worker_refreshes_snapshot(status_worker):
+    manager, processes = status_worker
+    manager.request("account_status")
+    processes[-1].result = {"ok": True, "data": {"logged_in": True}}
+    assert manager.request("account_status")["data"]["logged_in"] is True
+    with manager._lock:
+        assert manager.request("account_status")["data"]["logged_in"] is True
+
+
+def test_status_snapshot_is_independent_of_returned_nested_data(status_worker):
+    manager, _ = status_worker
+    first = manager.request("account_status")
+    first["data"]["accounts"]["1"]["logged_in"] = True
+    with manager._lock:
+        cached = manager.request("account_status")
+        assert cached["data"]["accounts"]["1"]["logged_in"] is False
+        cached["data"]["accounts"]["1"]["logged_in"] = True
+        assert manager.request("account_status")["data"]["accounts"]["1"]["logged_in"] is False
+
+
+@pytest.mark.parametrize("op", ["vote_info", "account_status"])
+@pytest.mark.parametrize("outcome", ["error", "timeout", "protocol"])
+def test_status_snapshot_invalid_after_request_failure(status_worker, op, outcome):
+    manager, processes = status_worker
+    manager.request("account_status")
+    process = processes[-1]
+    if outcome == "error":
+        process.result = {"ok": False, "error": {"name": "Unavailable"}}
+        assert manager.request(op)["ok"] is False
+    else:
+        if outcome == "timeout":
+            process.block_op = op
+        else:
+            process.result = "bad-json"
+        with pytest.raises(service.WorkerUnavailable):
+            manager.request(op, deadline=time.monotonic() + 0.02)
+    with manager._lock:
+        with pytest.raises(service.WorkerUnavailable) as error:
+            manager.request("account_status", deadline=time.monotonic() + 0.02)
+        assert error.value.sent is False
+
+
+def test_status_snapshot_invalid_after_successful_non_status_request(status_worker):
+    manager, _ = status_worker
+    manager.request("account_status")
+    manager.request("vote_info")
+    with manager._lock:
+        with pytest.raises(service.WorkerUnavailable):
+            manager.request("account_status", deadline=time.monotonic() + 0.02)
+
+
+def test_status_snapshot_invalid_after_non_status_lock_timeout(status_worker):
+    manager, _ = status_worker
+    manager.request("account_status")
+    with manager._lock:
+        with pytest.raises(service.WorkerUnavailable):
+            manager.request("vote_info", deadline=time.monotonic() + 0.02)
+        with pytest.raises(service.WorkerUnavailable):
+            manager.request("account_status", deadline=time.monotonic() + 0.02)
+
+
+@pytest.mark.parametrize("change", ["dead", "replacement", "close"])
+def test_status_snapshot_rejects_lost_process(status_worker, change):
+    manager, processes = status_worker
+    manager.request("account_status")
+    if change == "dead":
+        processes[-1].alive = False
+    elif change == "replacement":
+        manager.close()
+        # A new process must not inherit the old one's status, even while alive.
+        with manager._metadata_lock:
+            manager._process = type(processes[-1])()
+            processes.append(manager._process)
+    else:
+        manager.close()
+    with manager._lock:
+        with pytest.raises(service.WorkerUnavailable):
+            manager.request("account_status", deadline=time.monotonic() + 0.02)
+
+
+def test_status_requeries_after_process_restart(status_worker):
+    manager, processes = status_worker
+    manager.request("account_status")
+    processes[-1].result = {"ok": True, "data": {"logged_in": True}}
+    assert manager.request("account_status")["data"]["logged_in"] is True
+    processes[-1].alive = False
+    assert manager.request("account_status")["data"]["logged_in"] is False
+
+
+def test_status_without_snapshot_waits_for_worker(status_worker):
+    manager, _ = status_worker
+    manager._lock.acquire()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        status = pool.submit(manager.request, "account_status")
+        try:
+            with pytest.raises(TimeoutError):
+                status.result(timeout=0.02)
+        finally:
+            manager._lock.release()
+        assert status.result(timeout=1)["data"]["logged_in"] is False
+
+
+def test_status_lock_wait_preserves_deadline(status_worker):
+    manager, _ = status_worker
+    with manager._lock:
+        started = time.monotonic()
+        with pytest.raises(service.WorkerUnavailable) as error:
+            manager.request("account_status", deadline=started + 0.02)
+        assert error.value.sent is False
+        assert time.monotonic() - started < 0.5
 
 
 def test_success_interval_atomic(setup):

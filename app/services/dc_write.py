@@ -21,6 +21,7 @@ import threading
 import time
 from collections import deque
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime
 from html import unescape
 from urllib.parse import urlsplit
@@ -280,11 +281,15 @@ class WorkerManager:
         self.timeout = timeout
         self.proxy = proxy
         self._lock = threading.Lock()
+        self._metadata_lock = threading.Lock()
         self._process = None
+        self._status_snapshot = None
         atexit.register(self.close)
 
     def _discard(self):
-        process, self._process = self._process, None
+        with self._metadata_lock:
+            self._status_snapshot = None
+            process, self._process = self._process, None
         if process is not None:
             if process.poll() is None:
                 process.kill()
@@ -299,28 +304,44 @@ class WorkerManager:
     def request(self, op, deadline=None, **payload):
         if deadline is None:
             deadline = time.monotonic() + self.timeout
-        remaining = deadline - time.monotonic()
-        if remaining <= 0 or not self._lock.acquire(timeout=remaining):
-            raise WorkerUnavailable(sent=False)
-        sent = False
+        acquired = False
         try:
+            if time.monotonic() >= deadline:
+                raise WorkerUnavailable(sent=False)
+            if op == "account_status":
+                with self._metadata_lock:
+                    acquired = self._lock.acquire(blocking=False)
+                    if not acquired and self._status_snapshot is not None:
+                        process, snapshot = self._status_snapshot
+                        if process is self._process and process.poll() is None:
+                            # Equivalent to reading status before the in-flight operation.
+                            return deepcopy(snapshot)
+            if not acquired:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not self._lock.acquire(timeout=remaining):
+                    raise WorkerUnavailable(sent=False)
+                acquired = True
+            sent = False
             try:
                 if time.monotonic() >= deadline:
                     raise WorkerUnavailable(sent=False)
-                if self._process is None or self._process.poll() is not None:
+                with self._metadata_lock:
+                    process = self._process
+                if process is None or process.poll() is not None:
                     self._discard()
                     if not self.node:
                         raise WorkerUnavailable()
                     env = worker_env(self.state, self.proxy)
                     # Worker stderr is deliberately discarded, including dependency crashes.
-                    self._process = subprocess.Popen(
+                    process = subprocess.Popen(
                         [self.node, str(self.directory / "worker.mjs")],
                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                         env=env, bufsize=0,
                     )
-                    os.set_blocking(self._process.stdin.fileno(), False)
-                    os.set_blocking(self._process.stdout.fileno(), False)
-                process = self._process
+                    with self._metadata_lock:
+                        self._process = process
+                    os.set_blocking(process.stdin.fileno(), False)
+                    os.set_blocking(process.stdout.fileno(), False)
                 identifier = secrets.token_hex(12)
                 pending = memoryview((json.dumps(dict(payload, id=identifier, op=op)) + "\n").encode())
                 received = bytearray()
@@ -352,12 +373,19 @@ class WorkerManager:
                                 raise WorkerUnavailable()
                             if not isinstance(result.get("data" if result["ok"] else "error"), dict):
                                 raise WorkerUnavailable()
+                            if op == "account_status":
+                                with self._metadata_lock:
+                                    self._status_snapshot = (process, deepcopy(result)) if result["ok"] else None
                             return result
             except (OSError, ValueError, WorkerUnavailable):
                 self._discard()
                 raise WorkerUnavailable(sent=sent) from None
         finally:
-            self._lock.release()
+            with self._metadata_lock:
+                if op != "account_status":
+                    self._status_snapshot = None
+                if acquired:
+                    self._lock.release()
 
 
 _PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "NODE_USE_ENV_PROXY")
