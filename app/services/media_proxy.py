@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from contextlib import contextmanager
 import ipaddress
 import logging
 import os
@@ -7,6 +8,7 @@ import socket
 import tempfile
 import threading
 import time
+from uuid import uuid4
 from html import escape
 from urllib.parse import urljoin, urlparse
 
@@ -53,7 +55,60 @@ _PUBLIC_HOST_CACHE = {}
 _PUBLIC_HOST_CACHE_LOCK = threading.Lock()
 _MEDIA_SPOOL_MEMORY_BYTES = 1024 * 1024
 _PINNED_ADDRESS_ATTEMPT_LIMIT = 2
+_MEDIA_SLOW_SECONDS = 2
 _LOGGER = logging.getLogger(__name__)
+
+
+class _MediaTiming:
+    def __init__(self):
+        self.operation = uuid4().hex
+        self.started = time.monotonic()
+        self.fetch_seconds = 0.0
+        self.body_seconds = 0.0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        elapsed = time.monotonic() - self.started
+        if elapsed >= _MEDIA_SLOW_SECONDS:
+            _LOGGER.warning(
+                "slow media: operation=%s phase=prepare elapsed=%.2f fetch=%.2f body=%.2f local=%.2f",
+                self.operation, elapsed, self.fetch_seconds, self.body_seconds,
+                elapsed - self.fetch_seconds - self.body_seconds,
+            )
+
+    @contextmanager
+    def fetch(self):
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            self.fetch_seconds += time.monotonic() - started
+
+    def log_stream(self, phase, started, body_started):
+        elapsed = time.monotonic() - started
+        if elapsed >= _MEDIA_SLOW_SECONDS:
+            # Iterator lifetime includes WSGI consumer pauses, not final
+            # nginx/client delivery or browser rendering.
+            _LOGGER.warning(
+                "slow media: operation=%s phase=%s iterator=%.2f body=%.2f",
+                self.operation, phase, elapsed, self.body_seconds - body_started,
+            )
+
+
+def _media_chunks(upstream, timing):
+    chunks = iter(upstream.iter_content(chunk_size=MEDIA_CHUNK_BYTES))
+    while True:
+        started = time.monotonic()
+        try:
+            chunk = next(chunks)
+        except StopIteration:
+            return
+        finally:
+            if timing is not None:
+                timing.body_seconds += time.monotonic() - started
+        yield chunk
 
 
 class UnsafeMediaAddress(requests.RequestException):
@@ -437,11 +492,11 @@ def is_identity_content_encoding(content_encoding):
     return not value or value == "identity"
 
 
-def read_limited_media_body(upstream):
+def read_limited_media_body(upstream, timing=None):
     total = 0
     chunks = []
     try:
-        for chunk in upstream.iter_content(chunk_size=MEDIA_CHUNK_BYTES):
+        for chunk in _media_chunks(upstream, timing):
             if not chunk:
                 continue
             total += len(chunk)
@@ -455,10 +510,12 @@ def read_limited_media_body(upstream):
         upstream.close()
 
 
-def stream_media_body(upstream, max_bytes=None):
+def stream_media_body(upstream, max_bytes=None, timing=None):
     remaining = max(_safe_int(MEDIA_MAX_BYTES if max_bytes is None else max_bytes, 0), 0)
+    started = time.monotonic()
+    body_started = timing.body_seconds if timing is not None else 0.0
     try:
-        for chunk in upstream.iter_content(chunk_size=MEDIA_CHUNK_BYTES):
+        for chunk in _media_chunks(upstream, timing):
             if not chunk:
                 continue
             if remaining <= 0:
@@ -471,11 +528,13 @@ def stream_media_body(upstream, max_bytes=None):
             remaining -= len(chunk)
     finally:
         upstream.close()
+        if timing is not None:
+            timing.log_stream("upstream_stream", started, body_started)
 
 
-def build_streaming_media_response(upstream, content_type, content_length=None):
+def build_streaming_media_response(upstream, content_type, content_length=None, timing=None):
     response = Response(
-        stream_with_context(stream_media_body(upstream, max_bytes=content_length)),
+        stream_with_context(stream_media_body(upstream, max_bytes=content_length, timing=timing)),
         status=upstream.status_code,
         direct_passthrough=True,
     )
@@ -492,11 +551,11 @@ def build_streaming_media_response(upstream, content_type, content_length=None):
     return response
 
 
-def read_limited_media_spool(upstream):
+def read_limited_media_spool(upstream, timing=None):
     total = 0
     spool = tempfile.SpooledTemporaryFile(max_size=_MEDIA_SPOOL_MEMORY_BYTES, mode="w+b")
     try:
-        for chunk in upstream.iter_content(chunk_size=MEDIA_CHUNK_BYTES):
+        for chunk in _media_chunks(upstream, timing):
             if not chunk:
                 continue
             total += len(chunk)
@@ -513,7 +572,9 @@ def read_limited_media_spool(upstream):
         upstream.close()
 
 
-def stream_spooled_media_body(spool):
+def stream_spooled_media_body(spool, timing=None):
+    started = time.monotonic()
+    body_started = timing.body_seconds if timing is not None else 0.0
     try:
         while True:
             chunk = spool.read(MEDIA_CHUNK_BYTES)
@@ -522,11 +583,13 @@ def stream_spooled_media_body(spool):
             yield chunk
     finally:
         spool.close()
+        if timing is not None:
+            timing.log_stream("spool_stream", started, body_started)
 
 
-def build_spooled_media_response(spool, content_length, upstream, content_type):
+def build_spooled_media_response(spool, content_length, upstream, content_type, timing=None):
     response = Response(
-        stream_with_context(stream_spooled_media_body(spool)),
+        stream_with_context(stream_spooled_media_body(spool, timing=timing)),
         status=upstream.status_code,
         direct_passthrough=True,
     )
@@ -622,81 +685,84 @@ def _log_media_rejection(src, upstream, attempt):
 
 
 def build_media_response(src, board, pid, kind=None, range_header=None, head_only=False):
-    headers = {
-        "Accept-Encoding": "identity",
-        "User-Agent": PC_USER_AGENT,
-        "Referer": build_pc_view_referer(board, pid, kind=kind),
-    }
-    normalized_range = normalize_range_header(range_header)
-    if normalized_range:
-        headers["Range"] = normalized_range
-    cookies = {"__gat_mobile_search": "1", "list_count": "200"}
-    if head_only:
-        upstream, error_status = fetch_media_response(src, headers, cookies, method="HEAD")
-    else:
-        upstream, error_status = fetch_media_response(src, headers, cookies)
-    if error_status:
-        return _media_error_response(error_status)
+    with _MediaTiming() as timing:
+        headers = {
+            "Accept-Encoding": "identity",
+            "User-Agent": PC_USER_AGENT,
+            "Referer": build_pc_view_referer(board, pid, kind=kind),
+        }
+        normalized_range = normalize_range_header(range_header)
+        if normalized_range:
+            headers["Range"] = normalized_range
+        cookies = {"__gat_mobile_search": "1", "list_count": "200"}
+        with timing.fetch():
+            if head_only:
+                upstream, error_status = fetch_media_response(src, headers, cookies, method="HEAD")
+            else:
+                upstream, error_status = fetch_media_response(src, headers, cookies)
+        if error_status:
+            return _media_error_response(error_status)
 
-    attempt = 1
-    if _retryable_image_response(src, upstream):
-        _log_media_rejection(src, upstream, attempt)
-        upstream.close()
-        attempt = 2
-        # Retry the same request once: a temporary HTML response is not an image.
-        # Re-enter the fetch path so redirects and DNS addresses are checked again.
+        attempt = 1
+        if _retryable_image_response(src, upstream):
+            _log_media_rejection(src, upstream, attempt)
+            upstream.close()
+            attempt = 2
+            # Retry the same request once: a temporary HTML response is not an image.
+            # Re-enter the fetch path so redirects and DNS addresses are checked again.
+            with timing.fetch():
+                if head_only:
+                    upstream, error_status = fetch_media_response(src, headers, cookies, method="HEAD")
+                else:
+                    upstream, error_status = fetch_media_response(src, headers, cookies)
+            if error_status:
+                return _media_error_response(error_status)
+
+        if upstream.status_code >= 400:
+            _log_media_rejection(src, upstream, attempt)
+            return _media_error_response(upstream.status_code, upstream)
+
+        content_type = upstream.headers.get("Content-Type", "application/octet-stream")
+        if not is_allowed_media_content_type(content_type):
+            _log_media_rejection(src, upstream, attempt)
+            return _media_error_response(415, upstream)
+
+        content_encoding = upstream.headers.get("Content-Encoding")
+        can_stream_decoded_body = is_identity_content_encoding(content_encoding)
+        content_length, length_error = parse_media_content_length(upstream.headers)
+        if length_error:
+            return _media_error_response(length_error, upstream)
+        if content_length is not None and content_length > MEDIA_MAX_BYTES:
+            return _media_error_response(413, upstream)
+        if not can_stream_decoded_body and upstream.status_code == 206:
+            return _media_error_response(502, upstream)
         if head_only:
-            upstream, error_status = fetch_media_response(src, headers, cookies, method="HEAD")
-        else:
-            upstream, error_status = fetch_media_response(src, headers, cookies)
+            verified_length = content_length if can_stream_decoded_body else None
+            return build_head_media_response(upstream, content_type, content_length=verified_length)
+        if can_stream_decoded_body and is_streaming_media_response(content_type, upstream.status_code, normalized_range):
+            if content_length is not None:
+                return build_streaming_media_response(upstream, content_type, content_length=content_length, timing=timing)
+            spool, verified_length, error_status = read_limited_media_spool(upstream, timing=timing)
+            if error_status:
+                return _media_error_response(error_status)
+            return build_spooled_media_response(spool, verified_length, upstream, content_type, timing=timing)
+        if (
+            content_length is not None
+            and can_stream_decoded_body
+            and should_stream_known_length_media(content_type, content_length)
+        ):
+            return build_streaming_media_response(upstream, content_type, content_length=content_length, timing=timing)
+
+        body, error_status = read_limited_media_body(upstream, timing=timing)
         if error_status:
             return _media_error_response(error_status)
 
-    if upstream.status_code >= 400:
-        _log_media_rejection(src, upstream, attempt)
-        return _media_error_response(upstream.status_code, upstream)
-
-    content_type = upstream.headers.get("Content-Type", "application/octet-stream")
-    if not is_allowed_media_content_type(content_type):
-        _log_media_rejection(src, upstream, attempt)
-        return _media_error_response(415, upstream)
-
-    content_encoding = upstream.headers.get("Content-Encoding")
-    can_stream_decoded_body = is_identity_content_encoding(content_encoding)
-    content_length, length_error = parse_media_content_length(upstream.headers)
-    if length_error:
-        return _media_error_response(length_error, upstream)
-    if content_length is not None and content_length > MEDIA_MAX_BYTES:
-        return _media_error_response(413, upstream)
-    if not can_stream_decoded_body and upstream.status_code == 206:
-        return _media_error_response(502, upstream)
-    if head_only:
-        verified_length = content_length if can_stream_decoded_body else None
-        return build_head_media_response(upstream, content_type, content_length=verified_length)
-    if can_stream_decoded_body and is_streaming_media_response(content_type, upstream.status_code, normalized_range):
-        if content_length is not None:
-            return build_streaming_media_response(upstream, content_type, content_length=content_length)
-        spool, verified_length, error_status = read_limited_media_spool(upstream)
-        if error_status:
-            return _media_error_response(error_status)
-        return build_spooled_media_response(spool, verified_length, upstream, content_type)
-    if (
-        content_length is not None
-        and can_stream_decoded_body
-        and should_stream_known_length_media(content_type, content_length)
-    ):
-        return build_streaming_media_response(upstream, content_type, content_length=content_length)
-
-    body, error_status = read_limited_media_body(upstream)
-    if error_status:
-        return _media_error_response(error_status)
-
-    response = Response(body or b"", status=upstream.status_code)
-    response.headers["Content-Type"] = content_type
-    response.content_length = len(body or b"")
-    response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    return response
+        response = Response(body or b"", status=upstream.status_code)
+        response.headers["Content-Type"] = content_type
+        response.content_length = len(body or b"")
+        response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
 
 def movie_player_candidates(movie_no, board, pid, kind=None):

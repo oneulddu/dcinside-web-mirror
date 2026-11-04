@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,8 +73,9 @@ async def test_slow_success_logs_once_without_query(monkeypatch, caplog):
     assert (status, text) == (200, "ok")
     messages = slow_messages(caplog)
     assert len(messages) == 1
-    assert "host=m.dcinside.com path=/board/test status=200 elapsed=" in messages[0]
-    assert messages[0].endswith("scope=none")
+    assert "host='m.dcinside.com' status=200 elapsed=" in messages[0]
+    assert "queue=" in messages[0] and "upstream=" in messages[0]
+    assert messages[0].endswith("outcome=complete")
     assert "secret" not in messages[0] and "?" not in messages[0]
 
 
@@ -116,3 +118,50 @@ async def test_slow_failure_without_response_logs_dash_status(monkeypatch, caplo
     messages = slow_messages(caplog)
     assert len(messages) == 1
     assert "status=-" in messages[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_queue_time_is_reported_even_when_cancelled_before_admission(monkeypatch, caplog, cancel):
+    clock = [0.0]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class Slots:
+        async def __aenter__(self):
+            entered.set()
+            await release.wait()
+
+        async def __aexit__(self, *args):
+            return None
+
+    class Response(FakeResponse):
+        async def text(self):
+            clock[0] += 1
+            return "ok"
+
+    api = make_api(FakeSession(Response(0)), 2, monkeypatch)
+    api._API__request_slots = Slots()
+    monkeypatch.setattr(dc_api, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    caplog.set_level("WARNING", logger="app.services.dc.api")
+    task = asyncio.create_task(api._API__request_text(
+        "POST", "https://user:password@m.dcinside.com/private-path?secret=query",
+        headers={"Authorization": "secret-header"}, data={"password": "secret-body"},
+        cookies={"session": "secret-cookie"},
+    ))
+    await entered.wait()
+    clock[0] = 3
+    if cancel:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        release.set()
+        assert await task == (200, {}, "ok")
+
+    messages = slow_messages(caplog)
+    assert len(messages) == 1
+    assert "queue=3.00" in messages[0]
+    assert ("upstream=0.00 outcome=cancelled" if cancel else "upstream=1.00 outcome=complete") in messages[0]
+    for secret in ("user", "password", "private-path", "secret", "query"):
+        assert secret not in messages[0]

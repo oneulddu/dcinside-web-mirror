@@ -41,6 +41,7 @@ BOARD_FETCH_TIMEOUT = max(_env_int("MIRROR_BOARD_FETCH_TIMEOUT", 25), 1)
 READ_CACHE_TTL = max(_env_int("MIRROR_READ_CACHE_TTL", 30), 0)
 READ_STALE_TTL = max(_env_int("MIRROR_READ_STALE_TTL", 300), 0)
 READ_FETCH_TIMEOUT = max(_env_int("MIRROR_READ_FETCH_TIMEOUT", 50), 1)
+READ_COMMENT_REFRESH_TIMEOUT = max(_env_int("MIRROR_READ_COMMENT_REFRESH_TIMEOUT", 3), 1)
 READ_SINGLEFLIGHT_TIMEOUT = max(
     _env_int("MIRROR_READ_SINGLEFLIGHT_TIMEOUT", 55),
     1,
@@ -247,8 +248,10 @@ def _should_prune_cache(cache, now, max_items):
         return should_prune
 
 
-def _cache_set(cache, lock, key, value, ttl, max_items):
+def _cache_set(cache, lock, key, value, ttl, max_items, expires_at_limit=None):
     expires_at = time.time() + max(_safe_int(ttl, 0), 0)
+    if expires_at_limit is not None:
+        expires_at = min(expires_at, expires_at_limit)
     with lock:
         cache[key] = {"value": value, "expires_at": expires_at}
         now = time.time()
@@ -878,7 +881,10 @@ async def _load_read_payload(
 ):
     body_cached = _cache_get(_READ_STALE_CACHE, _READ_STALE_CACHE_LOCK, cache_key)
     if body_cached is not None:
-        refreshed = await _refresh_cached_comments(body_cached, api_id, board, kind=kind)
+        refreshed = await asyncio.wait_for(
+            _refresh_cached_comments(body_cached, api_id, board, kind=kind),
+            timeout=min(READ_COMMENT_REFRESH_TIMEOUT, READ_FETCH_TIMEOUT),
+        )
         refreshed[0]["_body_from_cache"] = True
         return refreshed
 
@@ -972,6 +978,14 @@ async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=No
                 cache_payload = body_cache_payload
             else:
                 cache_payload = None
+            body_expires_at = None
+            if body_from_cache:
+                with _READ_STALE_CACHE_LOCK:
+                    entry = _READ_STALE_CACHE.get(cache_key)
+                    if entry is None or entry["expires_at"] <= time.time():
+                        cache_payload = None
+                    else:
+                        body_expires_at = entry["expires_at"]
             if READ_CACHE_TTL > 0 and cache_payload is not None:
                 _cache_set(
                     _READ_CACHE,
@@ -980,6 +994,7 @@ async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=No
                     cache_payload,
                     READ_CACHE_TTL,
                     READ_CACHE_MAX_ITEMS,
+                    expires_at_limit=body_expires_at,
                 )
             if READ_STALE_TTL > 0 and body_from_cache:
                 # Retain the latest comment snapshot without extending the

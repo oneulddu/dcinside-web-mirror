@@ -27,7 +27,8 @@ def cached_post(monkeypatch):
     monkeypatch.setattr(core, "READ_CACHE_TTL", 30)
     monkeypatch.setattr(core, "READ_STALE_TTL", 300)
     state = {"initial": [comment(1, "기존 댓글")], "rows": [], "complete": True,
-             "error": None, "wait": False, "mobile": True, "body_calls": 0, "comment_calls": 0}
+             "error": None, "wait": False, "mobile": True, "body_calls": 0, "comment_calls": 0,
+             "refresh_entered": asyncio.Event(), "refresh_finished": False}
 
     async def initial_comments():
         for row in state["initial"]:
@@ -54,7 +55,11 @@ def cached_post(monkeypatch):
             state["comment_calls"] += 1
             await asyncio.sleep(0)
             if state["wait"]:
-                await asyncio.Event().wait()
+                state["refresh_entered"].set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    state["refresh_finished"] = True
             for row in state["rows"]:
                 yield row
             status_collector["complete"] = state["complete"]
@@ -156,7 +161,19 @@ async def test_concurrent_expired_comment_refresh_is_shared_and_body_expires_on_
 
 
 @pytest.mark.asyncio
-async def test_refresh_timeout_serves_latest_comments_without_extending_body_ttl(cached_post, monkeypatch):
+async def test_comment_refresh_near_body_expiry_does_not_extend_fresh_cache(cached_post):
+    state, clock = cached_post
+    await core.async_read("123", "test")
+    clock[0] = 1299
+    await core.async_read("123", "test")
+    clock[0] = 1301
+    await core.async_read("123", "test")
+    assert state["body_calls"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("comment_timeout, outer_timeout", [(0.01, 50), (50, 0.01)])
+async def test_refresh_timeout_serves_latest_comments_without_extending_body_ttl(cached_post, monkeypatch, comment_timeout, outer_timeout):
     state, clock = cached_post
     await core.async_read("123", "test")
     state["rows"] = [comment(2, "최근에 확인한 댓글")]
@@ -164,12 +181,34 @@ async def test_refresh_timeout_serves_latest_comments_without_extending_body_ttl
     await core.async_read("123", "test")
     state["wait"] = True
     clock[0] += 31
-    monkeypatch.setattr(core, "READ_FETCH_TIMEOUT", 0.01)
-    fallback = await core.async_read("123", "test")
+    monkeypatch.setattr(core, "READ_COMMENT_REFRESH_TIMEOUT", comment_timeout)
+    monkeypatch.setattr(core, "READ_FETCH_TIMEOUT", outer_timeout)
+    results = await asyncio.wait_for(
+        asyncio.gather(*(core.async_read("123", "test") for _ in range(3))), timeout=1,
+    )
+    fallback = results[0]
+    assert all(result == fallback for result in results)
     assert [row["contents"] for row in fallback[1]] == ["최근에 확인한 댓글"]
     assert fallback[0]["_served_stale"] is True
     assert core._READ_INFLIGHT == {}
+    assert core._READ_CACHE == {}
+    assert state["refresh_finished"] is True
     assert core._READ_STALE_CACHE[core._read_cache_key("123", "test")]["expires_at"] == 1300
+
+
+@pytest.mark.asyncio
+async def test_cancelled_cached_read_does_not_serve_fallback_or_leave_refresh_running(cached_post):
+    state, clock = cached_post
+    await core.async_read("123", "test")
+    clock[0] += 31
+    state["wait"] = True
+    task = asyncio.create_task(core.async_read("123", "test"))
+    await state["refresh_entered"].wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert state["refresh_finished"] is True
+    assert core._READ_INFLIGHT == {}
 
 
 def test_read_page_renders_new_comments_while_reusing_body(cached_post, monkeypatch):

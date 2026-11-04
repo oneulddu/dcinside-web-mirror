@@ -570,10 +570,15 @@ class API(ParserMixin):
         # no await during initialization, so requests on the shared loop agree.
         if getattr(self, "_API__request_slots", None) is None:
             self.__request_slots = asyncio.Semaphore(DC_CONN_LIMIT)
+        queued_at = time.monotonic()
+        admitted_at = None
         started = None
+        upstream_finished = None
         observed_status = "-"
+        outcome = "error"
         try:
             async with self.__request_slots:
+                admitted_at = time.monotonic()
                 if self.__cooldown_active(cooldown_scope):
                     raise RateLimitCooldownError("rate limited: cooldown")
                 started = time.monotonic()
@@ -589,6 +594,7 @@ class API(ParserMixin):
                     text = await res.text()
                     status = res.status
                     response_headers = dict(res.headers)
+                upstream_finished = time.monotonic()
 
                 # Publish cooldown before releasing admission to queued requests.
                 if self.__is_rate_limited_response(status, text[:1000]):
@@ -607,19 +613,29 @@ class API(ParserMixin):
                     )
                     raise RateLimitError(f"rate limited: {status}")
 
+                outcome = "complete"
                 return status, response_headers, text
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
         finally:
-            if started is not None:
-                elapsed = time.monotonic() - started
-                if elapsed >= DC_SLOW_REQUEST_SECONDS:
-                    logger.warning(
-                        "slow upstream: host=%s path=%s status=%s elapsed=%.2f scope=%s",
-                        host,
-                        parsed_url.path or "/",
-                        observed_status,
-                        elapsed,
-                        cooldown_scope or "none",
-                    )
+            finished = time.monotonic()
+            elapsed = finished - queued_at
+            if elapsed >= DC_SLOW_REQUEST_SECONDS:
+                queue_seconds = (admitted_at if admitted_at is not None else finished) - queued_at
+                upstream_seconds = (
+                    (upstream_finished if upstream_finished is not None else finished) - started
+                    if started is not None else 0.0
+                )
+                logger.warning(
+                    "slow upstream: host=%r status=%s elapsed=%.2f queue=%.2f upstream=%.2f outcome=%s",
+                    host[:253],
+                    observed_status,
+                    elapsed,
+                    queue_seconds,
+                    upstream_seconds,
+                    outcome,
+                )
 
     def __normalize_head_id(self, head_id):
         if head_id is None:

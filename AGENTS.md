@@ -393,7 +393,8 @@ Environment variables use the `MIRROR_` prefix:
 - `MIRROR_BIND`: Gunicorn bind (default: `[::]:6100`)
 - `MIRROR_WORKERS`, `MIRROR_THREADS`, `MIRROR_TIMEOUT`: Gunicorn process/thread/timeout settings
 - `MIRROR_HTTP_TIMEOUT`: DCinside request timeout (default: 20s)
-- `MIRROR_DC_SLOW_REQUEST_SECONDS`: Log a warning (host/path/status/elapsed only) for DC upstream requests at least this slow (default: 2s)
+- `MIRROR_DC_SLOW_REQUEST_SECONDS`: Log a warning (host/status/elapsed/queue/upstream/outcome only) for DC requests including admission wait at least this slow (default: 2s)
+- `MIRROR_READ_COMMENT_REFRESH_TIMEOUT`: Cached-body comment refresh budget in integer seconds (default 3, minimum 1, capped by `MIRROR_READ_FETCH_TIMEOUT`); expiry and cancellation remain authoritative.
 - `MIRROR_HEUNG_CACHE_TTL`, `MIRROR_HEUNG_CACHE_FILE`, `MIRROR_HEUNG_REFRESH_RETRY_SECONDS`: Heung gallery cache and refresh-failure backoff settings
 - `MIRROR_BOARD_PAGE_CACHE_TTL`: Short board-page cache TTL
 - `MIRROR_BOARD_FILL_AUTHOR_CODES`: Enable cached board-list author code backfill

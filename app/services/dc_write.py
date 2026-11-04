@@ -7,6 +7,7 @@ import atexit
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ import tempfile
 import threading
 import time
 from collections import deque
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
@@ -40,6 +42,8 @@ LIMITS = dict(subject_max=40, body_max=10000, comment_max=400, nickname_max=20, 
 IMAGE_TOTAL_MESSAGE = "사진은 모두 합쳐 30MB까지 올릴 수 있어요."
 CAPTCHA_KEY = re.compile(r"^[0-9a-f]{16}$")
 MAX_IMAGE = 200 * 1024
+WORKER_SLOW_SECONDS = 1.0
+_logger = logging.getLogger(__name__)
 
 
 class WorkerUnavailable(Exception):
@@ -302,11 +306,15 @@ class WorkerManager:
             self._discard()
 
     def request(self, op, deadline=None, **payload):
+        started = time.monotonic()
         if deadline is None:
-            deadline = time.monotonic() + self.timeout
+            deadline = started + self.timeout
         acquired = False
+        execution_started = None
+        outcome = "exception"
         try:
             if time.monotonic() >= deadline:
+                outcome = "queue_timeout"
                 raise WorkerUnavailable(sent=False)
             if op == "account_status":
                 with self._metadata_lock:
@@ -315,15 +323,19 @@ class WorkerManager:
                         process, snapshot = self._status_snapshot
                         if process is self._process and process.poll() is None:
                             # Equivalent to reading status before the in-flight operation.
+                            outcome = "snapshot"
                             return deepcopy(snapshot)
             if not acquired:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not self._lock.acquire(timeout=remaining):
+                    outcome = "queue_timeout"
                     raise WorkerUnavailable(sent=False)
                 acquired = True
+            execution_started = time.monotonic()
             sent = False
             try:
                 if time.monotonic() >= deadline:
+                    outcome = "queue_timeout"
                     raise WorkerUnavailable(sent=False)
                 with self._metadata_lock:
                     process = self._process
@@ -350,6 +362,7 @@ class WorkerManager:
                     while True:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0 or not selector.select(remaining) or time.monotonic() >= deadline:
+                            outcome = "ipc_timeout"
                             raise WorkerUnavailable()
                         if pending:
                             written = os.write(process.stdin.fileno(), pending)
@@ -376,8 +389,11 @@ class WorkerManager:
                             if op == "account_status":
                                 with self._metadata_lock:
                                     self._status_snapshot = (process, deepcopy(result)) if result["ok"] else None
+                            outcome = "success" if result["ok"] else "rejected"
                             return result
             except (OSError, ValueError, WorkerUnavailable):
+                if outcome == "exception":
+                    outcome = "unavailable"
                 self._discard()
                 raise WorkerUnavailable(sent=sent) from None
         finally:
@@ -386,6 +402,15 @@ class WorkerManager:
                     self._status_snapshot = None
                 if acquired:
                     self._lock.release()
+            finished = time.monotonic()
+            if finished - started >= WORKER_SLOW_SECONDS:
+                category = op if op in ("vote_info", "account_status") else "other"
+                queued_until = execution_started if execution_started is not None else finished
+                _logger.warning(
+                    "Slow DC worker category=%s outcome=%s queue_seconds=%.3f execution_seconds=%.3f",
+                    category, outcome, queued_until - started,
+                    finished - execution_started if execution_started is not None else 0.0,
+                )
 
 
 _PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "NODE_USE_ENV_PROXY")
@@ -636,6 +661,7 @@ VOTE_OPTIONS_TTL = 10 * 60
 VOTE_OPTIONS_MAX = 2000
 _vote_options = {}
 _vote_options_lock = threading.Lock()
+_vote_options_flights = {}
 
 
 def cached_vote_options(board, no):
@@ -648,11 +674,41 @@ def cached_vote_options(board, no):
 
 def vote_options(board, no):
     """Return options, a fixed update-required failure, or None on other failures."""
-    cached = cached_vote_options(board, no)
-    if cached is not None:
-        return cached
+    deadline = time.monotonic() + 8
+    key = (board, no)
+    with _vote_options_lock:
+        entry = _vote_options.get(key)
+        if entry and entry[0] > time.monotonic():
+            return entry[1]
+        flight = _vote_options_flights.get(key)
+        owner = flight is None
+        if owner:
+            flight = Future()
+            _vote_options_flights[key] = flight
+    if not owner:
+        try:
+            value, error = flight.result(timeout=max(0, deadline - time.monotonic()))
+        except FutureTimeout:
+            return None
+        if error is not None:
+            raise error
+        return value
+    value, error = None, None
     try:
-        result = get_manager().request("vote_info", deadline=time.monotonic() + 8, gallery=board, no=no)
+        value = _load_vote_options(board, no, deadline)
+        return value
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        with _vote_options_lock:
+            del _vote_options_flights[key]
+            flight.set_result((value, error))
+
+
+def _load_vote_options(board, no, deadline):
+    try:
+        result = get_manager().request("vote_info", deadline=deadline, gallery=board, no=no)
     except WorkerUnavailable:
         return None
     update = update_required(result)

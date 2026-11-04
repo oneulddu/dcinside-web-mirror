@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from types import SimpleNamespace
 
 import pytest
@@ -47,6 +47,7 @@ def setup(monkeypatch):
     monkeypatch.setattr(service, "_unlock_failures", service.deque())
     monkeypatch.setattr(service, "_last_success", {})
     monkeypatch.setattr(service, "_vote_options", {})
+    monkeypatch.setattr(service, "_vote_options_flights", {})
     contexts = []
 
     def render(template, **context):
@@ -299,6 +300,122 @@ def test_vote_options_cache_is_bounded(setup, monkeypatch):
     for pid in range(1, 6):
         client.get(f"/read/vote/options?board=programming&pid={pid}")
     assert list(service._vote_options) == [("programming", 3), ("programming", 4), ("programming", 5)]
+
+
+@pytest.fixture
+def vote_lookup(monkeypatch):
+    manager = FakeManager()
+    monkeypatch.setattr(service, "get_manager", lambda: manager)
+    monkeypatch.setattr(service, "_vote_options", {})
+    monkeypatch.setattr(service, "_vote_options_flights", {})
+    return manager
+
+
+@pytest.mark.parametrize("failure", [None, service.WorkerUnavailable(), RuntimeError("worker failed")])
+def test_vote_options_concurrent_miss_shares_outcome_and_recovers(vote_lookup, monkeypatch, failure):
+    manager = vote_lookup
+    entered, release, joined = threading.Event(), threading.Event(), threading.Event()
+    joining_lock = threading.Lock()
+    joining = 0
+    calls = []
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            nonlocal joining
+            with joining_lock:
+                joining += 1
+                if joining == 4:
+                    joined.set()
+            return super().result(timeout)
+
+    def request(op, deadline=None, **payload):
+        calls.append((op, payload))
+        entered.set()
+        assert release.wait(3), "test did not release fake worker"
+        if failure is not None:
+            raise failure
+        return {"ok": True, "data": {"down": False, "captcha": True}}
+
+    monkeypatch.setattr(service, "Future", ObservedFuture)
+    monkeypatch.setattr(manager, "request", request)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        owner = pool.submit(service.vote_options, "programming", 12)
+        try:
+            assert entered.wait(3)
+            followers = [pool.submit(service.vote_options, "programming", 12) for _ in range(4)]
+            assert joined.wait(3), "same-key callers did not join the in-flight read"
+        finally:
+            release.set()
+        for result in [owner, *followers]:
+            if isinstance(failure, RuntimeError):
+                with pytest.raises(RuntimeError, match="worker failed"):
+                    result.result(timeout=3)
+            else:
+                assert result.result(timeout=3) == (
+                    None if failure else {"down": False, "captcha": True}
+                )
+    assert calls == [("vote_info", {"gallery": "programming", "no": 12})]
+    monkeypatch.setattr(manager, "request", lambda *a, **kw: {
+        "ok": True, "data": {"down": True, "captcha": False},
+    })
+    assert service.vote_options("programming", 12) == (
+        {"down": True, "captcha": False} if failure else {"down": False, "captcha": True}
+    )
+
+
+def test_vote_options_follower_deadline_does_not_cancel_owner(vote_lookup, monkeypatch):
+    manager = vote_lookup
+    entered, release = threading.Event(), threading.Event()
+    now = [100.0]
+
+    class ExpiringFuture(Future):
+        def result(self, timeout=None):
+            assert timeout == 6.0
+            now[0] += timeout
+            raise TimeoutError()
+
+    class ElapsedLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            self.lock.acquire()
+            now[0] += 2
+
+        def __exit__(self, *args):
+            self.lock.release()
+
+    def request(op, deadline=None, **payload):
+        assert deadline == 108.0  # Cache-lock time must not reset the read budget.
+        entered.set()
+        assert release.wait(3)
+        return {"ok": True, "data": {"down": False, "captcha": True}}
+
+    monkeypatch.setattr(service, "Future", ExpiringFuture)
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(service, "_vote_options_lock", ElapsedLock())
+    monkeypatch.setattr(manager, "request", request)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        owner = pool.submit(service.vote_options, "programming", 12)
+        try:
+            assert entered.wait(3)
+            assert service.vote_options("programming", 12) is None
+            assert not owner.done()
+        finally:
+            release.set()
+        assert owner.result(timeout=3) == {"down": False, "captcha": True}
+
+
+def test_vote_options_success_expires_after_ten_minutes(vote_lookup, monkeypatch):
+    manager = vote_lookup
+    now = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+    assert service.vote_options("programming", 12) == {"down": False, "captcha": True}
+    manager.vote_info_result = {"ok": True, "data": {"down": True, "captcha": False}}
+    now[0] = 699.0
+    assert service.vote_options("programming", 12) == {"down": False, "captcha": True}
+    now[0] = 700.0
+    assert service.vote_options("programming", 12) == {"down": True, "captcha": False}
 
 
 @pytest.mark.parametrize("result", [
@@ -930,6 +1047,99 @@ def test_status_returns_snapshot_while_worker_is_blocked(status_worker):
         finally:
             process.resume.set()
         vote.result(timeout=1)
+
+
+@pytest.mark.parametrize("outcome", ["success", "rejected", "ipc_timeout", "unavailable"])
+def test_slow_worker_diagnostics_separate_queue_and_execution(status_worker, monkeypatch, caplog, outcome):
+    manager, processes = status_worker
+    manager.request("account_status")
+    now = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+    real_lock = manager._lock
+
+    class DelayedLock:
+        def acquire(self, **kwargs):
+            now[0] += 2
+            return real_lock.acquire(**kwargs)
+
+        def release(self):
+            real_lock.release()
+
+        def __enter__(self):
+            real_lock.acquire()
+
+        def __exit__(self, *args):
+            real_lock.release()
+
+    monkeypatch.setattr(manager, "_lock", DelayedLock())
+    original_read = service.os.read
+
+    def read(*args):
+        now[0] += 3
+        if outcome == "unavailable":
+            raise OSError("secret-password")
+        return original_read(*args)
+
+    monkeypatch.setattr(service.os, "read", read)
+    if outcome == "rejected":
+        processes[-1].result = {"ok": False, "error": {"cause": "secret-password"}}
+    if outcome == "ipc_timeout":
+        def select(self, timeout):
+            now[0] += 3
+            return []
+        monkeypatch.setattr(service.selectors.DefaultSelector, "select", select)
+    if outcome in ("ipc_timeout", "unavailable"):
+        with pytest.raises(service.WorkerUnavailable) as error:
+            manager.request("vote_info", deadline=110, password="secret-password")
+        assert error.value.sent is (outcome == "unavailable")
+        assert manager._process is None
+    else:
+        manager.request("vote_info", deadline=110, password="secret-password")
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Slow DC worker category=vote_info outcome={outcome} queue_seconds=2.000 execution_seconds=3.000",
+    ]
+
+
+def test_slow_worker_queue_timeout_keeps_inflight_process(status_worker, monkeypatch, caplog):
+    manager, processes = status_worker
+    manager.request("account_status")
+    process = processes[-1]
+    now = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+
+    class BusyLock:
+        def acquire(self, timeout):
+            now[0] += timeout
+            return False
+
+    with monkeypatch.context() as patch:
+        patch.setattr(manager, "_lock", BusyLock())
+        with pytest.raises(service.WorkerUnavailable) as error:
+            manager.request("private-operation", deadline=108, username="secret-user")
+    assert error.value.sent is False
+    assert manager._process is process
+    assert [record.getMessage() for record in caplog.records] == [
+        "Slow DC worker category=other outcome=queue_timeout queue_seconds=8.000 execution_seconds=0.000",
+    ]
+
+
+def test_slow_status_snapshot_diagnostics(status_worker, monkeypatch, caplog):
+    manager, processes = status_worker
+    expected = manager.request("account_status")
+    now = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+
+    class BusyLock:
+        def acquire(self, blocking):
+            now[0] += 2
+            return False
+
+    with monkeypatch.context() as patch:
+        patch.setattr(manager, "_lock", BusyLock())
+        assert manager.request("account_status") == expected
+    assert [record.getMessage() for record in caplog.records] == [
+        "Slow DC worker category=account_status outcome=snapshot queue_seconds=2.000 execution_seconds=0.000",
+    ]
 
 
 def test_status_free_worker_refreshes_snapshot(status_worker):
