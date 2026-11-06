@@ -7,7 +7,11 @@
 """
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -58,3 +62,13 @@ def test_read_state_resyncs_on_restore_and_cross_tab_updates():
     assert "event.persisted" in js
     assert '"storage"' in js
     assert "visibilitychange" in js
+
+
+def test_dc_body_image_retry_state_machine():
+    """디시 본문 이미지 재시도·직접 다시 불러오기·차단 존중 계약을 실제 스크립트로 확인한다."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required")
+    result = subprocess.run([node, str(Path(__file__).parent / "javascript/dc_images.test.cjs")],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr

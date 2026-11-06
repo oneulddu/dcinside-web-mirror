@@ -299,6 +299,12 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
 - `static/javascript/board_keyboard.js`: DC board list J/K select, O/Enter open, Esc clear. Uses `event.code`
   so Korean IME keys work; ignores inputs, modifiers, composition, open dialogs and `#media-block-menu`/`#author-menu`,
   busy lists, and `.is-user-filtered` rows. Selection is real link focus plus `.is-keyboard-current`.
+- `static/javascript/dc_images.js`: DC article body `/media?` images only; load before `read_state.js`.
+  Retry failures at most twice with backoff and two concurrent retry slots (including manual attempts).
+  Exhaustion offers a per-image “다시 불러오기” button; each manual click is one attempt, not a new
+  automatic retry cycle. Preserve the original URL, lazy loading and image-block controls; never load
+  hidden images. Cancel pending retries on removal, source changes and page exit; stalled retries
+  release their slots and offer manual recovery. Poker images, DCCons and previews are out of scope.
 - `static/javascript/image_viewer.js`: Read-page `<dialog>` viewer for visible `#article-body img.body-image`
   only (has `src`, not hidden, not inside a link). It never reads `data-body-image-src` itself, so the image-block
   setting stays authoritative; a viewed image that becomes blocked closes the viewer. Comments and related posts are out of scope.

@@ -2830,11 +2830,61 @@ html[data-media-block-mode="all"] .article-body:not([data-body-media-ready="true
     background: none;
 }
 
+/* 실패한 본문 이미지 바로 아래의 평면 안내 줄(dc_images.js). */
+.body-image-retry {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-3);
+    margin: var(--space-2) 0;
+    color: var(--muted);
+    font: var(--type-label);
+    font-weight: 500;
+}
+
+.body-image-retry-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 var(--space-4);
+    border: 0;
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    color: var(--fg);
+    font: var(--type-label);
+    cursor: pointer;
+    transition: background-color var(--dur) ease-out, color var(--dur) ease-out, transform var(--dur-fast) ease-out;
+}
+
+.body-image-retry-button:hover {
+    background: var(--surface-strong);
+}
+
+.body-image-retry-button:active {
+    transform: scale(0.96);
+}
+
+.body-image-retry-button:focus-visible {
+    outline: var(--rule-bold) solid var(--accent);
+    outline-offset: 2px;
+}
+
+.body-image-retry-button[aria-disabled="true"] {
+    background: var(--surface);
+    color: var(--muted);
+    cursor: default;
+    transform: none;
+}
+
 .article-body img[hidden],
 .comment-main img[hidden],
 .body-media-controls[hidden],
 .body-media-toggle[hidden],
-.body-media-item-toggle[hidden] {
+.body-media-item-toggle[hidden],
+.body-image-retry[hidden],
+.body-image-retry-button[hidden] {
     display: none !important;
 }
 

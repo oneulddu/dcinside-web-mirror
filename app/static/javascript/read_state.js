@@ -19,6 +19,9 @@
     var bodyMediaOverrides = new WeakMap();
     var bodyMediaButtons = new WeakMap();
     var bodyMediaId = 0;
+    // dc_images.js가 멈춘 재시도를 끊으면 붙이는 표시. 탭 복귀·bfcache 재동기화가 그 이미지를
+    // 대기열 밖에서 다시 받지 않게 하고, 차단으로 숨기면 dc_images.js가 표시를 지운다.
+    var RETRY_SUSPENDED_ATTRIBUTE = "data-body-image-retry-suspended";
 
     function safeParse(jsonText) {
         if (!jsonText) {
@@ -209,7 +212,7 @@
     function hydrateDeferredImage(image, sourceAttribute, isBlocked) {
         if (isBlocked) {
             image.removeAttribute("src");
-        } else if (!image.getAttribute("src")) {
+        } else if (!image.getAttribute("src") && image.getAttribute(RETRY_SUSPENDED_ATTRIBUTE) === null) {
             image.setAttribute("src", image.getAttribute(sourceAttribute));
         }
         image.hidden = isBlocked;

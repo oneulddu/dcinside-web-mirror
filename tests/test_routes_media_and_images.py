@@ -2678,6 +2678,10 @@ def test_read_social_meta_uses_canonical_url(monkeypatch):
     assert og_url == "https://mirror.example/read?board=test&pid=123&recommend=1&source_page=2&kind=minor&headid=10"
     assert soup.select_one(".crumb-link").get_text(strip=True) == "테스트 갤러리"
     assert soup.select_one("script[src*='/static/javascript/read_related_loader.js']") is not None
+    # 본문 이미지 재시도는 read_state.js가 첫 주소를 붙이기 전에 오류를 듣고 있어야 한다.
+    scripts = [node.get("src", "") for node in soup.select("script[src]")]
+    retry_index = next(i for i, src in enumerate(scripts) if "/static/javascript/dc_images.js" in src)
+    assert retry_index < next(i for i, src in enumerate(scripts) if "/static/javascript/read_state.js" in src)
     assert related_section["data-head-id"] == "10"
     assert related_section["data-recommend"] == "1"
     assert related_section["data-gallery-name"] == "테스트 갤러리"
