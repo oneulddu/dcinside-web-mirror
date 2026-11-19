@@ -127,6 +127,7 @@ def test_screen_and_service_route_map_contract():
         "/movie": "main.movie",
         "/read": "main.read",
         "/read/related": "main.read_related",
+        "/read/reply-activity": "main.reply_activity",
         "/read/vote": "main.read_vote",
         "/read/vote/options": "main.read_vote_options",
         "/read/comment": "main.read_comment",

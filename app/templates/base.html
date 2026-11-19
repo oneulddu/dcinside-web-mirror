@@ -95,6 +95,12 @@
                 </div>
                 <div class="header-actions">
                     {% block masthead_actions %}{% endblock %}
+                    {% if write_enabled|default(false) %}
+                    <button class="icon-btn" id="reply-inbox-open" type="button" aria-label="답글 알림" title="답글 알림" aria-haspopup="dialog" aria-controls="reply-inbox">
+                        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 16h14l-2-3V9a5 5 0 0 0-10 0v4zM10 19a2.2 2.2 0 0 0 4 0"/></svg>
+                        <span id="reply-inbox-count" hidden></span>
+                    </button>
+                    {% endif %}
                     {% if request.endpoint in ('main.board', 'main.read') %}
                     <button class="icon-btn user-filter-open" type="button" data-user-filter-header data-user-filter-open aria-haspopup="dialog" aria-label="차단 필터 설정" title="차단 필터 설정" hidden>
                         <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -205,6 +211,21 @@
             {% endif %}
         </footer>
     </div>
+    {% if write_enabled|default(false) %}
+    <dialog class="user-filter-dialog" id="reply-inbox" aria-labelledby="reply-inbox-title">
+        <div class="ufd-head">
+            <h2 id="reply-inbox-title">답글 알림</h2>
+            <form method="dialog"><button class="header-text-link" type="submit">닫기</button></form>
+        </div>
+        <div class="ufd-body">
+            <p class="write-hint">이 브라우저에서 최근 30일 동안 쓴 댓글의 답글을 사이트가 열려 있을 때 확인해요.</p>
+            <p id="reply-inbox-status" role="status"></p>
+            <ul id="reply-inbox-list"></ul>
+            <button type="button" class="site-foot-link" id="reply-inbox-read" hidden>모두 읽음</button>
+        </div>
+    </dialog>
+    <script src="{{ static_url('javascript/reply_inbox.js') }}"></script>
+    {% endif %}
     <script src="{{ static_url('javascript/read_state.js') }}"></script>
     {% if author_menu %}
     <script src="{{ static_url('javascript/dc_post_client.js') }}"></script>

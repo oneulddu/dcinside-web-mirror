@@ -75,7 +75,7 @@
         {% endif %}
         <ul class="comment-list" id="comment-list">
             {% for comment in comments %}
-            <li class="comment-item{% if comment.is_reply %} is-reply{% endif %}"{% if comment.id %} data-comment-id="{{ comment.id }}"{% endif %}{% if comment.parent_id %} data-parent-id="{{ comment.parent_id }}"{% endif %}>
+            <li class="comment-item{% if comment.is_reply %} is-reply{% endif %}"{% if comment.id %} id="comment-{{ comment.id }}" data-comment-id="{{ comment.id }}"{% endif %}{% if comment.parent_id %} data-parent-id="{{ comment.parent_id }}"{% endif %}>
                 {% if comment.is_reply %}
                 <span class="reply-mark" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M6 5v6a4 4 0 0 0 4 4h8"/><path d="M15 12l3 3-3 3"/></svg></span>
                 {% endif %}

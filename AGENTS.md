@@ -319,6 +319,11 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   "답글" button that moves the form into a `li.comment-reply-slot` after the thread. Replies with valid ids
   get the same button, including newly inserted rows. Clicking plain comment content also selects the target.
   Replies to replies use the selected reply's id/author and `mention: true` (DC `com_mention`).
+  Unlocked DC pages show a browser-local reply inbox (`reply_inbox.js`). Only a successful
+  comment with a returned id is tracked (last 50/30 days); no nickname, password or shared DC
+  notification token is used. While visible and online, check at most one watched post per
+  minute via the gated `/read/reply-activity`; only comment-number pairs leave the route.
+  Mobile thread fallback is page-local; do not infer ownership from names or the PC post number.
   Success appends the comment client-side with time "방금" and bumps `.comment-count` instead of reloading.
   `vote.js` reads `GET /read/vote/options` (worker `vote_info`: app API `view_main.nonrecomm_use` and
   `view_info.recommend_captcha`, cached per post for 10 minutes because galleries can disable downvotes per 말머리) and shows or hides the downvote button from it.

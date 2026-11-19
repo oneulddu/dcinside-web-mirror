@@ -1553,8 +1553,7 @@ class API(ParserMixin):
                     raise RuntimeError("mobile comment page produced no comment rows")
                 break
             yielded_in_page = 0
-            for li in comment_rows:
-                comment = self.__parse_mobile_comment_li(li)
+            for comment in self._mobile_comment_page(comment_rows):
                 comment_id = self.__comment_id(comment)
                 if comment_id and comment_id in seen_ids:
                     continue

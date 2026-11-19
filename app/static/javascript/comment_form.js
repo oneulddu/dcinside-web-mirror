@@ -279,6 +279,7 @@
         item.className = "comment-item is-new" + (state.parent ? " is-reply" : "");
         if (commentId) {
             item.setAttribute("data-comment-id", commentId);
+            item.id = "comment-" + commentId;
         }
         if (state.parent) {
             item.setAttribute("data-parent-id", state.parent.id);
@@ -374,6 +375,11 @@
                 who = { name: String(author.name || "").trim() || "내 계정", code: /^[A-Za-z0-9_]{1,40}$/.test(code) ? code : "", account: sent.account };
             }
             appendComment(sent.content, who, newId);
+            if (newId) {
+                document.dispatchEvent(new CustomEvent("mirror:comment-written", {
+                    detail: { board: board, kind: kind, pid: pid, id: newId }
+                }));
+            }
             el.content.value = "";
             updateLength();
             setParent(null);

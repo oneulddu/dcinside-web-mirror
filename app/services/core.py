@@ -180,6 +180,7 @@ def _comment_to_dict(comment):
         "author_code": comment_author_code,
         "author_role": _normalize_author_role(getattr(comment, "author_role", None)),
         "parent_id": comment.parent_id,
+        "reply_to": getattr(comment, "reply_to", None),
         "is_reply": is_reply,
         "dccon": comment.dccon,
     }

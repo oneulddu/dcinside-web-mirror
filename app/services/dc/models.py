@@ -62,10 +62,11 @@ class Document:
         return f"{self.subject or ''}\t|{self.id}\t|{time_text}\t|{self.author}\t|{self.title} +{self.voteup_count} -{self.votedown_count}\n{self.contents}"
 
 class Comment:
-    __slots__ = ["id", "parent_id", "author", "author_search_name", "author_id", "author_role", "contents", "dccon", "voice", "time", "is_reply"]
+    __slots__ = ["id", "parent_id", "reply_to", "author", "author_search_name", "author_id", "author_role", "contents", "dccon", "voice", "time", "is_reply"]
     def __init__(self, id, parent_id, author, author_id, contents, dccon, voice, time, is_reply=False, author_role=None, author_search_name=None):
         self.id = id
         self.parent_id = parent_id
+        self.reply_to = None
         self.author = author
         self.author_search_name = author_search_name
         self.author_id = author_id

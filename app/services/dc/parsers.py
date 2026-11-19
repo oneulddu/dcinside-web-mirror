@@ -639,11 +639,22 @@ class ParserMixin:
             )
         return []
 
+    def _mobile_comment_page(self, rows):
+        # 모바일의 일반 답글은 m_no=0이다. 같은 원본 페이지 안에서만 스레드를 잇는다.
+        root_id = None
+        for li in rows:
+            comment = self.__parse_mobile_comment_li(li)
+            if not comment.is_reply:
+                root_id = comment.id
+            else:
+                target = comment.parent_id
+                comment.reply_to = root_id if target in (None, "", "0", "1") else target
+            yield comment
+
     def __parse_embedded_mobile_comments(self, parsed):
         comments = []
         seen_ids = set()
-        for li in self.__mobile_comment_rows(parsed):
-            comment = self.__parse_mobile_comment_li(li)
+        for comment in self._mobile_comment_page(self.__mobile_comment_rows(parsed)):
             comment_id = str(comment.id or "").strip()
             if comment_id and comment_id in seen_ids:
                 continue
@@ -1347,7 +1358,7 @@ class ParserMixin:
             " ".join(str(raw.get(key) or "") for key in ("nick_icon", "user_icon", "icon", "member_icon"))
         )
 
-        return Comment(
+        comment = Comment(
             id=str(raw.get("no") or "").strip() or None,
             parent_id=parent_id,
             author=(raw.get("name") or "").strip() or "익명",
@@ -1360,6 +1371,10 @@ class ParserMixin:
             author_role=author_role,
             author_search_name=_author_search_name(raw.get("name"), known_suffix=author_id),
         )
+        if comment.is_reply:
+            # PC parent는 글 번호일 수도 있어 답글 대상으로 사용하지 않는다.
+            comment.reply_to = str(raw.get("c_no") or "")
+        return comment
 
     def __parse_time(self, time): 
         def fill_missing_year(parsed):

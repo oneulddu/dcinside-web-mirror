@@ -1211,7 +1211,7 @@ def dc_write_context():
 
 
 _WRITE_ENDPOINTS = {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote",
-                    "main.read_vote_options", "main.read_comment", "main.read_delete",
+                    "main.read_vote_options", "main.read_comment", "main.reply_activity", "main.read_delete",
                     "main.read_comment_delete", "main.write_modify_load",
                     "main.write_account", "main.write_account_status", "main.write_account_login", "main.write_dccons"}
 
@@ -1228,7 +1228,7 @@ def gate_dc_write():
         return jsonify(ok=False, code="locked"), 403
     if request.method == "POST":
         _reject_cross_origin_post()
-    if request.endpoint in {"main.write_account", "main.write_account_status", "main.write_dccons"} and request.method in {"GET", "HEAD"}:
+    if request.endpoint in {"main.write_account", "main.write_account_status", "main.write_dccons", "main.reply_activity"} and request.method in {"GET", "HEAD"}:
         # 주소창·즐겨찾기로 여는 계정 화면("none")은 받는다. 상태 JSON은 같은 사이트의 스크립트만 읽는다.
         allowed = (None, "same-origin", "none") if request.endpoint == "main.write_account" else (None, "same-origin")
         if request.headers.get("Sec-Fetch-Site") not in allowed:
@@ -1696,6 +1696,28 @@ def read_vote():
 
 # 답글 대상의 디시 아이디. 유동(IP 앞자리)이나 알 수 없는 값은 빈 값으로 보낸다(디시 앱과 같다).
 _COMMENT_USER_ID = re.compile(r"[A-Za-z0-9_]{1,40}")
+
+
+@bp.get("/read/reply-activity")
+def reply_activity():
+    board = _normalize_board_id(request.args.get("board"), default="")
+    kind = _normalize_gallery_kind(request.args.get("kind"))
+    pid = request.args.get("pid", "")
+    if not re.fullmatch(r"[1-9][0-9]{0,14}", pid):
+        abort(400)
+    try:
+        _, comments, _ = run_async(async_read(int(pid), board, kind=kind))
+    except DocumentNotFoundError:
+        return jsonify(ok=False), 404
+    except DocumentUnavailableError:
+        return jsonify(ok=False), 503
+    edges = []
+    for row in comments:
+        target, child = row.get("reply_to"), row.get("id")
+        if (re.fullmatch(r"[1-9][0-9]{0,14}", target or "")
+                and re.fullmatch(r"[1-9][0-9]{0,14}", child or "") and int(target) < int(child)):
+            edges.append((target, child))
+    return jsonify(ok=True, replies=edges)
 
 
 @bp.route("/read/comment", methods=["POST"])
