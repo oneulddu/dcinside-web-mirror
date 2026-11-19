@@ -308,6 +308,15 @@
         meta.appendChild(author);
         meta.appendChild(time);
         if (commentId) {
+            var reply = document.createElement("button");
+            reply.className = "comment-reply-btn";
+            reply.type = "button";
+            reply.setAttribute("data-comment-reply", "");
+            reply.setAttribute("aria-expanded", "false");
+            reply.setAttribute("aria-controls", "comment-form");
+            reply.setAttribute("aria-label", who.name + "의 댓글에 답글 달기");
+            reply.textContent = "답글";
+            meta.appendChild(reply);
             var remove = document.createElement("button");
             remove.className = "comment-reply-btn";
             remove.type = "button";
@@ -446,6 +455,9 @@
         if (state.parent) {
             body.parent_id = state.parent.id;
             body.parent_author_code = state.parent.authorCode;
+            if (state.parent.item.classList.contains("is-reply")) {
+                body.mention = true;
+            }
         }
         var answer = captcha ? captcha.answer() : null;
         if (answer) {
@@ -513,7 +525,11 @@
     });
     if (list) {
         list.addEventListener("click", function (event) {
-            var button = event.target.closest ? event.target.closest("[data-comment-reply]") : null;
+            var button = event.target.closest("[data-comment-reply]");
+            if (!button && event.target.closest(".comment-main") && !event.target.closest("a, button")
+                    && !String(root.getSelection())) {
+                button = event.target.closest(".comment-item").querySelector("[data-comment-reply]");
+            }
             var item = button ? button.closest(".comment-item") : null;
             if (!item) {
                 return;

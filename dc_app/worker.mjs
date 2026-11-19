@@ -314,6 +314,7 @@ function commentArgs(input) {
   const invalid = () => Object.assign(new Error('Invalid comment'), { sent: false });
   if (!/^[A-Za-z0-9_]{1,80}$/.test(input.gallery) || !Number.isSafeInteger(input.no) || input.no < 1) throw invalid();
   if (typeof input.content !== 'string' || !input.content.trim() || [...input.content].length > COMMENT_MAX) throw invalid();
+  if ((input.mention !== undefined && typeof input.mention !== 'boolean') || (input.mention && !input.parent)) throw invalid();
   if (input.parent === undefined || input.parent === null) return { content: input.content, parent: undefined };
   const { comment_no: commentNo, user_id: userId } = input.parent;
   if (!Number.isSafeInteger(commentNo) || commentNo < 1 || typeof userId !== 'string' || !/^[A-Za-z0-9_]{0,40}$/.test(userId)) throw invalid();
@@ -542,7 +543,7 @@ async function dispatch(input) {
       if (input.op === 'delete') return dc.articles.delete(input.gallery, input.no);
       if (input.op === 'comment_delete') return dc.comments.delete(input.gallery, input.no, input.comment_no);
       if (input.op === 'write') return dc.articles.write({ gallery: input.gallery, subject: input.subject, ...preparedWrite, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true, useGalleryNickname: false });
-      if (input.op === 'comment') return dc.comments.write(input.gallery, input.no, comment.content, { parent: comment.parent, captcha: input.captcha ?? undefined, useGalleryNickname: false })
+      if (input.op === 'comment') return dc.comments.write(input.gallery, input.no, comment.content, { parent: comment.parent, mention: input.mention, captcha: input.captcha ?? undefined, useGalleryNickname: false })
         .then(result => input.session?.type === 'login'
           ? { ...result, author: { name: accounts[account].session.result?.name ?? null, user_id: accounts[account].session.userId } } : result);
       return input.op === 'upvote'

@@ -1727,6 +1727,9 @@ def read_comment():
         return _write_invalid("password", "비밀번호는 2~20자로 입력해 주세요.")
     parent = None
     parent_id = data.get("parent_id")
+    mention = data.get("mention", False)
+    if not isinstance(mention, bool) or (mention and parent_id is None):
+        return _write_invalid("parent", "답글을 달 댓글을 다시 골라 주세요.")
     if parent_id is not None:
         author = data.get("parent_author_code")
         if (isinstance(parent_id, bool) or not re.fullmatch(r"[1-9][0-9]{0,14}", str(parent_id))
@@ -1738,7 +1741,7 @@ def read_comment():
         captcha = _write_captcha_answer(data)
     except ValueError:
         return _write_invalid("captcha", "보안 코드를 1~10자로 입력해 주세요.")
-    return _write_result("comment", board, kind, no=int(pid), content=content, parent=parent, captcha=captcha,
+    return _write_result("comment", board, kind, no=int(pid), content=content, parent=parent, mention=mention, captcha=captcha,
                          session={"type": "login", "account": slot} if account else {"type": "anonymous", "nickname": nickname, "password": password})
 
 

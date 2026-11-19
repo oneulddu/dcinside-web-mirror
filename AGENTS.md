@@ -316,7 +316,9 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   Nickname/password are saved in `localStorage["mirror_write_identity_v1"]` only after opt-in checkboxes.
   The read page comment composer (`#comment-form` + `static/javascript/comment_form.js`, only when `write_enabled`;
   `write_configured` alone shows an unlock link) shares that identity key. Top-level comments with numeric ids get a
-  "답글" button that moves the form into a `li.comment-reply-slot` after the thread; replies to replies are not offered.
+  "답글" button that moves the form into a `li.comment-reply-slot` after the thread. Replies with valid ids
+  get the same button, including newly inserted rows. Clicking plain comment content also selects the target.
+  Replies to replies use the selected reply's id/author and `mention: true` (DC `com_mention`).
   Success appends the comment client-side with time "방금" and bumps `.comment-count` instead of reloading.
   `vote.js` reads `GET /read/vote/options` (worker `vote_info`: app API `view_main.nonrecomm_use` and
   `view_info.recommend_captcha`, cached per post for 10 minutes because galleries can disable downvotes per 말머리) and shows or hides the downvote button from it.

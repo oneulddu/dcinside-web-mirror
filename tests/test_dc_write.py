@@ -1928,7 +1928,7 @@ def test_comment_success_payload_and_interval(setup, monkeypatch):
     response = comment(client, kind="minor")
     assert response.json == {"ok": True, "message": "댓글을 달았어요."}
     assert response.headers["Cache-Control"] == "no-store"
-    assert manager.calls == [("comment", {"gallery": "programming", "no": 123, "content": COMMENT["content"], "parent": None,
+    assert manager.calls == [("comment", {"gallery": "programming", "no": 123, "content": COMMENT["content"], "parent": None, "mention": False,
                                           "captcha": None, "session": {"type": "anonymous", "nickname": "ㅇㅇ", "password": "pw"}})]
     response = comment(client)
     assert response.status_code == 429 and response.json["retry_after"] == 10
@@ -1944,12 +1944,22 @@ def test_comment_reply_parent(setup, code, user_id):
     assert manager.calls[0][1]["parent"] == {"comment_no": 456, "user_id": user_id}
 
 
+def test_reply_to_reply_targets_selected_comment_as_mention(setup):
+    _, client, manager, _ = setup
+    unlock(client)
+    assert comment(client, parent_id="789", parent_author_code="reply_author", mention=True).json["ok"]
+    payload = manager.calls[0][1]
+    assert payload["parent"] == {"comment_no": 789, "user_id": "reply_author"}
+    assert payload["mention"] is True
+
+
 @pytest.mark.parametrize("field,value,expected", [
     ("pid", None, "board"), ("pid", "0", "board"), ("board", "../x", "board"),
     ("content", " ", "content"), ("content", "x" * 401, "content"), ("content", 3, "content"),
     ("nickname", "", "nickname"), ("nickname", "x" * 21, "nickname"),
     ("password", "x", "password"), ("password", "  ", "password"), ("password", "x" * 21, "password"),
     ("parent_id", "abc", "parent"), ("parent_id", True, "parent"), ("parent_author_code", 5, "parent"),
+    ("mention", True, "parent"), ("mention", "false", "parent"),
     ("captcha_key", "oops", "captcha"),
 ])
 def test_comment_validation(setup, field, value, expected):

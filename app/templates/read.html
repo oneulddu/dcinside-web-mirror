@@ -94,7 +94,7 @@
                 <div class="comment-meta">
                     {{ author_text(comment) }}
                     {{ post_time(comment.time) }}
-                    {%- if write_enabled|default(false) and not comment.is_reply and comment.id is string and comment.id.isdigit() %}
+                    {%- if write_enabled|default(false) and comment.id is string and comment.id.isascii() and comment.id.isdigit() and not comment.id.startswith('0') and comment.id|length <= 15 %}
                     <button class="comment-reply-btn" type="button" data-comment-reply aria-expanded="false" aria-controls="comment-form" aria-label="{{ comment.author }}의 댓글에 답글 달기">답글</button>
                     {%- endif %}
                     {%- if write_enabled|default(false) and comment.id is string and comment.id.isdigit() and is_guest(comment) %}

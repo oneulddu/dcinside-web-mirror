@@ -547,7 +547,8 @@ test('real library sends app.dcinside.com POSTs urlencoded while upload writes s
     const anonymous = {type:'anonymous',nickname:'offline-nick',password:'offline-pw'};
     const result = run([
       {op:'upvote', gallery:'programming', no:123},
-      {op:'comment', gallery:'programming', no:123, content:'offline comment', session:anonymous},
+      {op:'comment', gallery:'programming', no:123, content:'offline comment', session:anonymous,
+        parent:{comment_no:789, user_id:'reply_author'}, mention:true},
       {op:'delete', gallery:'programming', no:123, session:anonymous},
       {...write('offline image'), images:[{path:image,type:'image/png',name:'image1.png'}]},
     ], true, '', '', true, credentials);
@@ -564,7 +565,11 @@ test('real library sends app.dcinside.com POSTs urlencoded while upload writes s
       assert.equal(fields.get('id'), 'programming');
       assert.equal(fields.get('no'), '123');
     }
-    assert.equal(new URLSearchParams(appHost.find(post => post.url.endsWith('/api/comment_ok.php')).body).get('comment_memo'), 'offline comment');
+    const commentBody = new URLSearchParams(appHost.find(post => post.url.endsWith('/api/comment_ok.php')).body);
+    assert.equal(commentBody.get('comment_memo'), 'offline comment');
+    assert.equal(commentBody.get('mode'), 'com_mention');
+    assert.equal(commentBody.get('comment_no'), '789');
+    assert.equal(commentBody.get('reple_id'), 'reply_author');
     const upload = result.posts.filter(post => post.url === 'https://upload.dcinside.com/_app_write_api.php');
     assert.equal(upload.length, 1);
     assert.equal(upload[0].multipart, true);
