@@ -1712,12 +1712,15 @@ def reply_activity():
     except DocumentUnavailableError:
         return jsonify(ok=False), 503
     edges = []
+    comment_ids = []
     for row in comments:
         target, child = row.get("reply_to"), row.get("id")
-        if (re.fullmatch(r"[1-9][0-9]{0,14}", target or "")
-                and re.fullmatch(r"[1-9][0-9]{0,14}", child or "") and int(target) < int(child)):
+        if not re.fullmatch(r"[1-9][0-9]{0,14}", child or ""):
+            continue
+        comment_ids.append(child)
+        if re.fullmatch(r"[1-9][0-9]{0,14}", target or "") and int(target) < int(child):
             edges.append((target, child))
-    return jsonify(ok=True, replies=edges)
+    return jsonify(ok=True, replies=edges, comments=comment_ids)
 
 
 @bp.route("/read/comment", methods=["POST"])

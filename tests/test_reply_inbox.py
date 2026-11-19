@@ -42,7 +42,7 @@ def test_activity_only_returns_reply_edges_after_unlock(monkeypatch):
     result = client.get(path)
     assert calls == [(12, "test", "minor")]
     assert result.headers["Cache-Control"] == "no-store"
-    assert result.json == {"ok": True, "replies": [["30", "31"]]}
+    assert result.json == {"ok": True, "comments": ["31", "32", "33"], "replies": [["30", "31"]]}
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js required")

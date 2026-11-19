@@ -1995,8 +1995,15 @@
                 saveIdentity();
             }
             state.leaving = true;
+            var readPath = post.safePath(payload.read_url);
+            if (!modifyPid && readPath) {
+                var pid = new URL(readPath, root.location.href).searchParams.get("pid");
+                if (pid) document.dispatchEvent(new CustomEvent("mirror:post-written", {
+                    detail: { board: board, kind: kind, pid: pid, title: el.subject.value.trim() }
+                }));
+            }
             setStatus(modifyPid ? "수정했어요. 글로 이동해요." : "등록했어요. 목록으로 이동해요.", "success");
-            root.location.assign(post.safePath(payload.read_url) || post.safePath(payload.board_url) || backUrl);
+            root.location.assign(readPath || post.safePath(payload.board_url) || backUrl);
             return;
         }
         if (outcome.action === "captcha") {

@@ -320,9 +320,11 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   get the same button, including newly inserted rows. Clicking plain comment content also selects the target.
   Replies to replies use the selected reply's id/author and `mention: true` (DC `com_mention`).
   Unlocked DC pages show a browser-local reply inbox (`reply_inbox.js`). Only a successful
-  comment with a returned id is tracked (last 50/30 days); no nickname, password or shared DC
+  new post or comment with a returned id is tracked (last 50/30 days); no nickname, password or shared DC
   notification token is used. While visible and online, check at most one watched post per
-  minute via the gated `/read/reply-activity`; only comment-number pairs leave the route.
+  minute via the gated `/read/reply-activity`; only comment ids and reply-id pairs leave the route.
+  New-post success records the post before redirecting, never on modify. Own comments are skipped;
+  a reply to an owned comment in an owned post is one notification, not two.
   Mobile thread fallback is page-local; do not infer ownership from names or the PC post number.
   Success appends the comment client-side with time "방금" and bumps `.comment-count` instead of reloading.
   `vote.js` reads `GET /read/vote/options` (worker `vote_info`: app API `view_main.nonrecomm_use` and
