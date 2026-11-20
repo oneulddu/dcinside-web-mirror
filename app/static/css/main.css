@@ -1012,6 +1012,30 @@ select {
     margin-right: -10px;
 }
 
+/* 홈 화면 앱에서 iOS는 상태 표시줄 아래 내용을 넓게 흐리게 덮는다. 화면 맨 위에 붙은 화면 폭의 고정 요소가
+   배경색을 가지면 iOS가 그 색으로 상태 표시줄을 칠하고 흐림을 그리지 않는다(10px 이하 두께는 무시된다). */
+.standalone-top {
+    display: none;
+}
+
+@media (display-mode: standalone) {
+    .standalone-top {
+        display: block;
+        position: fixed;
+        z-index: 30;
+        top: 0;
+        right: 0;
+        left: 0;
+        height: 12px;
+        background: var(--bg);
+    }
+
+    /* 띠가 머리 버튼의 누르는 범위를 가리지 않게 그만큼 내린다. */
+    .shell {
+        padding-top: 6px;
+    }
+}
+
 .masthead-lead {
     display: flex;
     align-items: center;
