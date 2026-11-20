@@ -59,6 +59,8 @@
     </script>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link rel="icon" href="{{ static_url('favicon.svg') }}" type="image/svg+xml">
+    <link rel="manifest" href="{{ static_url('manifest.webmanifest') }}">
+    <link rel="apple-touch-icon" href="{{ static_url('icons/apple-touch-icon.png') }}">
     <link rel="stylesheet" href="{{ static_url('css/main.css') }}">
     <title>{{ title or "숨터" }}</title>
     {% if social_meta %}
@@ -225,10 +227,12 @@
                 <button type="button" class="site-foot-link" id="reply-inbox-read" hidden>모두 읽음</button>
                 <button type="button" class="site-foot-link" id="reply-inbox-clear" hidden>읽은 알림 지우기</button>
             </div>
-            <div id="reply-inbox-desktop" hidden>
-                <button type="button" class="site-foot-link" id="reply-inbox-desktop-toggle">브라우저 알림 켜기</button>
-                <p class="write-hint" id="reply-inbox-desktop-hint"></p>
+            {% if push_configured|default(false) %}
+            <div id="reply-inbox-push" data-worker="{{ static_url('javascript/push_sw.js') }}">
+                <button type="button" class="site-foot-link" id="reply-inbox-push-toggle" hidden>푸시 알림 켜기</button>
+                <p class="write-hint" id="reply-inbox-push-hint" aria-live="polite"></p>
             </div>
+            {% endif %}
         </div>
     </dialog>
     <script src="{{ static_url('javascript/reply_inbox.js') }}"></script>

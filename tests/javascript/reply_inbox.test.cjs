@@ -1,6 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { load, track, receive, drop, cursor } = require("../../app/static/javascript/reply_inbox.js");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+const { load, track, receive, drop, cursor, pushRows } = require("../../app/static/javascript/reply_inbox.js");
 
 test("a manually watched post starts from a baseline, keeps previews, and can be dropped", () => {
     const post = { board: "test", kind: "", pid: "70", id: "post" };
@@ -21,7 +24,61 @@ test("a manually watched post starts from a baseline, keeps previews, and can be
     assert.deepEqual([state.mine.map(row => row.id), state.inbox.length], [["20"], 3]);
     drop(state, post, true);
     assert.deepEqual([state.mine, state.inbox], [[], []]);
-    assert.equal(load(JSON.stringify({ ...state, desktop: true }), 14).desktop, true);
+});
+
+test("push sync rows carry each watch row's generation and highest known comment, and push state survives load", () => {
+    const post = { board: "test", kind: "minor", pid: "900", id: "post" };
+    const state = load(null, 10);
+    track(state, post, "내 글", 10);
+    track(state, { ...post, id: "10" }, "내 글", 11);
+    track(state, { ...post, id: "30" }, "내 글", 12);
+    track(state, { board: "other", kind: "", pid: "70", id: "post" }, "남의 글", 13, true);
+    receive(state, post, [["10", "12"]], 14, ["9", "10", "12"]);
+    assert.deepEqual(pushRows(state), [
+        { board: "other", kind: "", pid: "70", id: "post", title: "남의 글", at: 13, base: true, known: "0" },
+        { board: "test", kind: "minor", pid: "900", id: "30", title: "내 글", at: 12, base: false, known: "30" },
+        { board: "test", kind: "minor", pid: "900", id: "10", title: "내 글", at: 11, base: false, known: "12" },
+        { board: "test", kind: "minor", pid: "900", id: "post", title: "내 글", at: 10, base: false, known: "12" },
+    ]);
+    const push = { endpoint: "https://push.example/send/1", sig: "rows", synced: 15, tried: 16, rev: 17 };
+    assert.deepEqual(load(JSON.stringify({ ...state, push }), 20).push, push);
+    assert.deepEqual(load(JSON.stringify({ push: { endpoint: "http://push.example/1", synced: 99, rev: -3 } }), 20).push,
+        { endpoint: "", sig: "", synced: 20, tried: 0, rev: 0 });
+});
+
+function pushWorker(windows = []) {
+    const listeners = {}, shown = [], opened = [], focused = [], waits = [];
+    const self = {
+        location: { origin: "https://mir.example" },
+        addEventListener: (type, listener) => { listeners[type] = listener; },
+        registration: { showNotification: async (title, options) => { shown.push([title, options.body, options.tag, options.data.url]); } },
+        clients: { matchAll: async () => windows.map(url => ({ url, focus: async () => { focused.push(url); } })),
+            openWindow: async url => { opened.push(url); } },
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../../app/static/javascript/push_sw.js"), "utf8"), { self, URL });
+    const fire = (type, event) => { listeners[type]({ ...event, waitUntil: promise => waits.push(promise) }); return Promise.all(waits); };
+    return { shown, opened, focused,
+        push: data => fire("push", { data: data === null ? null : { json: () => JSON.parse(data) } }),
+        click: url => fire("notificationclick", { notification: { data: { url }, close() {} } }) };
+}
+
+test("the push worker shows contract payloads, falls back on broken ones, and opens only home or read pages", async () => {
+    const sw = pushWorker(["https://mir.example/read?board=test&pid=1#comment-5"]);
+    await sw.push(JSON.stringify({ title: "새 댓글 · 제목", body: "작성자: 내용", url: "/read?board=test&pid=1#comment-5", tag: "mirror:test:1" }));
+    await sw.push("{broken");
+    await sw.push(null);
+    await sw.push(JSON.stringify({ title: "새 답글 · 제목", body: "a: b", url: "https://evil.example/read?x", tag: "mirror:test:2" }));
+    assert.deepEqual(sw.shown, [
+        ["새 댓글 · 제목", "작성자: 내용", "mirror:test:1", "/read?board=test&pid=1#comment-5"],
+        ["숨터", "새 댓글이나 답글이 있어요.", "mirror:fallback", "/"],
+        ["숨터", "새 댓글이나 답글이 있어요.", "mirror:fallback", "/"],
+        ["새 답글 · 제목", "a: b", "mirror:test:2", "/"],
+    ]);
+    for (const url of ["/read?board=test&pid=1#comment-5", "/read?board=test&pid=2", "/", "//evil.example/read?x", "/write/lock", undefined])
+        await sw.click(url);
+    assert.deepEqual([sw.focused, sw.opened], [["https://mir.example/read?board=test&pid=1#comment-5"],
+        ["https://mir.example/read?board=test&pid=2", "https://mir.example/", "https://mir.example/",
+            "https://mir.example/", "https://mir.example/"]]);
 });
 
 test("a new post notifies for others' comments, preferring a single reply notification on overlap", () => {

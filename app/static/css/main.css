@@ -3335,11 +3335,12 @@ html[data-theme="dark"] .user-filter-dialog {
     -webkit-line-clamp: 2;
 }
 .reply-inbox-actions { display: flex; flex-wrap: wrap; }
-#reply-inbox-desktop {
+#reply-inbox-push {
     margin-top: var(--space-3);
     padding-top: var(--space-2);
     border-top: var(--rule) solid var(--line);
 }
+#reply-inbox-push-toggle:disabled { cursor: default; opacity: 0.6; }
 .comment-head {
     display: flex;
     align-items: flex-end;

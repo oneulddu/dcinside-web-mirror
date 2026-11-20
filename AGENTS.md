@@ -212,6 +212,26 @@ pm2 logs dc-mirror
   `<gall><no>_Firstcheck[_down]` cookie. A wrong code or expired key becomes `captcha_required` with a new key.
   App captchas stay for writes and person galleries because their noise is opaque. Vote captcha image URLs are
   `/write/captcha?kind=vote&board&key&pid&gallery_kind`.
+- Inbox Web Push (`app/services/push.py`) is configured only with `MIRROR_WRITE_KEY` and an https
+  `MIRROR_PUBLIC_BASE_URL` (the VAPID `sub`; never derived from a request); otherwise `/push/*` is 404.
+  `GET /push/key`, `POST /push/sync` and `POST /push/unsubscribe` sit in the write gate. The browser owns
+  watch intent, the server owns delivery progress: a sync replaces a subscription's rows, rows with an
+  unchanged `(board, kind, pid, id, at)` keep `known`/`base`, and a non-increasing `rev` is `stale`.
+  State is `instance/push_state.json` (`MIRROR_PUSH_STATE`; 0600, atomic, `flock` on the `.lock` sidecar):
+  the generated VAPID keypair plus at most 10 subscriptions of 50 rows. Keep that file across releases;
+  corrupt state answers `unavailable` and is never regenerated. Endpoints must be https on an allowlisted
+  push host (FCM, Mozilla, `*.push.apple.com`, `*.notify.windows.com`), checked again right before each
+  send; sends follow no redirects and ignore proxy settings. Payloads are encrypted by pinned
+  `pywebpush==2.5.0`. A new endpoint gets one welcome push (registrations at least 5s apart).
+  The poller is a daemon thread started by gunicorn `post_worker_init` and stopped (5s bound) in
+  `worker_exit`; `create_app()`, tests and `run.py` never start it. Leadership is a non-blocking `flock`
+  on the `.leader` sidecar, retried every 5s tick. One DC read per 30s at most, through `async_read`;
+  a post is due every 120s/600s/3600s by the age of its newest row (6h/3d). After the read it re-reads the
+  current rows, sends one push per subscription for all matches (reply to an own comment row beats a
+  post-row match; own comment rows are never pushed), then advances the evaluated rows. Stale or
+  incomplete reads only reschedule, a transient send failure keeps progress (a `base` post row still
+  takes its baseline), provider 404/410 deletes the subscription, a deleted post drops its rows, rows
+  expire after 30 days. Delivery is at-least-once. Never log endpoints, keys, names or comment text.
 
 ### Pokergosu Mirror
 
@@ -333,10 +353,19 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   sets the baseline: older comments are never notified, replies to owned comments still are. Turning it off removes
   only the post row. An inbox row's "알림 끄기" removes every watch row and entry of that post; there
   is no persistent mute, so a later own comment there is tracked again. "읽은 알림 지우기" drops read entries.
-  Browser notifications are opt-in (`desktop` in the same localStorage state plus granted permission):
-  only then hidden tabs keep checking, at least 180s apart across tabs and for 30 minutes after being
-  hidden, and the checking tab shows one `Notification` whose click focuses the tab and opens the inbox
-  instead of navigating. Nothing arrives once every tab is closed; there is no service worker or push.
+  Hidden tabs never poll. Closed-tab delivery is Web Push, offered in the dialog (`#reply-inbox-push`) only
+  when `push_configured`. Turning it on calls `Notification.requestPermission()` first in the tap handler
+  (iOS drops the gesture after an await), registers `static/javascript/push_sw.js`, subscribes with the key
+  from `/push/key` and POSTs `/push/sync`; a failed turn-on removes the subscription it made. The worker
+  keeps its default `/static/javascript/` scope, so it controls no page and `serviceWorker.ready` is never
+  used; it only handles `push` (always shows the payload, no network, no `fetch` handler) and
+  `notificationclick` (opens only `/` or `/read?...`). The page re-registers it on load while push is on.
+  `push` in the same localStorage state holds `{endpoint, sig, synced, tried, rev}`. Re-sync runs only while
+  push is on: when a row's `(board, kind, pid, id, at)` set changes, after 24h, or on load when the
+  browser's endpoint changed or vanished (then push shows off); at most once per 10s, no retry loop, a 410
+  turns push off. `#write-lock-form` turns push off first (bounded to 3s), because a locked browser has no
+  control left. `manifest.webmanifest` (standalone) and `static/icons/` exist for iPhone Home Screen
+  installs, which is the only way to get push on iOS; that app has its own storage, unlock and history.
   Mobile thread fallback is page-local; do not infer ownership from names or the PC post number.
   Success appends the comment client-side with time "방금" and bumps `.comment-count` instead of reloading.
   `vote.js` reads `GET /read/vote/options` (worker `vote_info`: app API `view_main.nonrecomm_use` and
@@ -429,6 +458,7 @@ Environment variables use the `MIRROR_` prefix:
 - `MIRROR_MEDIA_*`: Media proxy cache, size, streaming, redirect, and allowlist settings
 - `MIRROR_RECENT_*`: Recent-gallery cookie and server helper cache settings
 - `MIRROR_SECRET_KEY`: Flask secret key, required for safe production operation
+- `MIRROR_PUSH_STATE`: Inbox push state file (default `instance/push_state.json`); holds the VAPID private key
 
 Config classes live in `app/config.py`: `DevelopmentConfig` (`DEBUG=True`) and `ProductionConfig` (`DEBUG=False`).
 

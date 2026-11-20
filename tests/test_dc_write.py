@@ -490,13 +490,13 @@ def test_metadata_failure_and_no_recent_cookie(setup, monkeypatch):
 def test_context_globals(setup):
     app, client, _, _ = setup
     with app.test_request_context("/write"):
-        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": False, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS}
+        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": False, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS, "push_configured": False}
     unlock(client)
     cookie = client.get_cookie(service.COOKIE).value
     with app.test_request_context("/write", headers={"Cookie": f"mirror_write={cookie}"}):
-        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": True, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS}
+        assert routes.dc_write_context() == {"write_configured": True, "write_enabled": True, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS, "push_configured": False}
     with app.test_request_context("/poker"):
-        assert routes.dc_write_context() == {"write_configured": False, "write_enabled": False, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS}
+        assert routes.dc_write_context() == {"write_configured": False, "write_enabled": False, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS, "push_configured": False}
 
 
 ACCOUNT_STATUS = {"configured": True, "logged_in": True, "user_id": "public-user",

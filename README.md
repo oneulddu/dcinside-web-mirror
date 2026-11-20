@@ -262,7 +262,8 @@ mirror/
 | `MIRROR_TIMEOUT` | `60` | 요청 제한 시간 |
 | `MIRROR_LOG_LEVEL` | `info` | Gunicorn 로그 레벨 |
 | `MIRROR_SECRET_KEY` | — | 운영에서 반드시 설정 |
-| `MIRROR_PUBLIC_BASE_URL` | — | URL 미리보기와 배포 후 공개 경로 점검에 쓰는 HTTPS 기본 주소. 예: `https://example.com` |
+| `MIRROR_PUBLIC_BASE_URL` | — | URL 미리보기와 배포 후 공개 경로 점검에 쓰는 HTTPS 기본 주소. 예: `https://example.com`. 글쓰기 키와 함께 설정하면 알림함 푸시 알림도 켜진다 |
+| `MIRROR_PUSH_STATE` | `instance/push_state.json` | 푸시 알림 키와 구독을 보관하는 파일. 배포 간에 유지해야 한다 |
 
 </details>
 

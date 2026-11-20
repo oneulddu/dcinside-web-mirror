@@ -27,7 +27,7 @@ from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
 from .services.dc.search import normalize_search_pos
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
-from .services import dc_write, link_preview, youtube_meta
+from .services import dc_write, link_preview, push, youtube_meta
 from .services.recent import (
     RECENT_MAX_ITEMS,
     clear_recent_galleries,
@@ -1205,15 +1205,24 @@ def dc_write_context():
     is_dc = request.blueprint == "main"
     return {"write_configured": is_dc and dc_write.configured(),
             "write_enabled": is_dc and dc_write.enabled(),
+            "push_configured": is_dc and push.configured(current_app),
             "account_configured": is_dc and dc_write.account_configured(),
             "account_slots": dc_write.account_slots() if is_dc else [],
             "write_limits": dc_write.LIMITS}
 
 
-_WRITE_ENDPOINTS = {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote",
+_PUSH_ENDPOINTS = {"main.push_key", "main.push_sync", "main.push_unsubscribe"}
+_WRITE_ENDPOINTS = _PUSH_ENDPOINTS | {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote",
                     "main.read_vote_options", "main.read_comment", "main.reply_activity", "main.read_delete",
                     "main.read_comment_delete", "main.write_modify_load",
                     "main.write_account", "main.write_account_status", "main.write_account_login", "main.write_dccons"}
+
+
+@bp.before_app_request
+def hide_unconfigured_push():
+    # Even the app-wide visitor challenge must not advertise a disabled push route.
+    if request.endpoint in _PUSH_ENDPOINTS and not push.configured(current_app):
+        abort(404)
 
 
 @bp.before_request
@@ -1228,7 +1237,7 @@ def gate_dc_write():
         return jsonify(ok=False, code="locked"), 403
     if request.method == "POST":
         _reject_cross_origin_post()
-    if request.endpoint in {"main.write_account", "main.write_account_status", "main.write_dccons", "main.reply_activity"} and request.method in {"GET", "HEAD"}:
+    if request.endpoint in {"main.write_account", "main.write_account_status", "main.write_dccons", "main.reply_activity", "main.push_key"} and request.method in {"GET", "HEAD"}:
         # 주소창·즐겨찾기로 여는 계정 화면("none")은 받는다. 상태 JSON은 같은 사이트의 스크립트만 읽는다.
         allowed = (None, "same-origin", "none") if request.endpoint == "main.write_account" else (None, "same-origin")
         if request.headers.get("Sec-Fetch-Site") not in allowed:
@@ -1241,6 +1250,34 @@ def dc_write_no_store(response):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+@bp.errorhandler(push.PushError)
+def push_error(error):
+    return jsonify(ok=False, code=error.code), error.status
+
+
+def _push_json():
+    request.max_content_length = 64 * 1024
+    try:
+        return request.get_json(silent=True)
+    except (RequestEntityTooLarge, RecursionError):
+        raise push.PushError("invalid") from None
+
+
+@bp.get("/push/key")
+def push_key():
+    return jsonify(push.public_key())
+
+
+@bp.post("/push/sync")
+def push_sync():
+    return jsonify(push.sync(_push_json()))
+
+
+@bp.post("/push/unsubscribe")
+def push_unsubscribe():
+    return jsonify(push.unsubscribe(_push_json()))
 
 
 def _write_next(value):
@@ -1732,7 +1769,7 @@ def reply_activity():
         for row in sorted(newer, key=lambda row: int(row["id"]))[-100:]
     }
     return jsonify(ok=True, replies=edges, comments=comment_ids, previews=previews,
-                   complete=bool(data.get("_comments_complete", True)))
+                   complete=bool(data.get("_comments_complete", True)) and not data.get("_served_stale"))
 
 
 @bp.route("/read/comment", methods=["POST"])

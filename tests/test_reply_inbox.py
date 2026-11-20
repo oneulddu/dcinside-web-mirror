@@ -51,6 +51,20 @@ def test_activity_only_returns_reply_edges_after_unlock(monkeypatch):
         "33": {"author": "", "text": "이모티콘"}}
 
 
+def test_stale_complete_snapshot_is_not_a_browser_baseline(monkeypatch):
+    app = create_app()
+    app.config.update(TESTING=True, WRITE_KEY="inbox-test", SECRET_KEY="test")
+    client = app.test_client()
+    client.post("/write/unlock", data={"key": "inbox-test"}, headers={"Origin": "http://localhost"})
+
+    async def stale_read(*args, **kwargs):
+        return {"_comments_complete": True, "_served_stale": True}, [], []
+
+    monkeypatch.setattr(routes, "async_read", stale_read)
+    result = client.get("/read/reply-activity?board=test&pid=12")
+    assert result.status_code == 200 and result.json["complete"] is False
+
+
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js required")
 def test_browser_reply_inbox():
     subprocess.run(["node", "--test", str(Path(__file__).parent / "javascript/reply_inbox.test.cjs")], check=True)
