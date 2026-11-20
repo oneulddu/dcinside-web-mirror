@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import secrets
-import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -25,6 +24,7 @@ from pywebpush import WebPushException, webpush
 from .async_bridge import run_async
 from .core import async_read
 from .dc.api import DocumentNotFoundError
+from .state_file import lock_file as _lock_file, save as _save
 
 log = logging.getLogger(__name__)
 MAX_ROWS = 50
@@ -166,27 +166,6 @@ def _validate_state(state):
 
 def _state_path():
     return Path(current_app.config.get("PUSH_STATE") or Path(current_app.instance_path) / "push_state.json")
-
-
-def _lock_file(path, suffix):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return os.fdopen(os.open(str(path) + suffix, os.O_CREAT | os.O_RDWR, 0o600), "r+b")
-
-
-def _save(path, state):
-    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False, encoding="utf-8") as tmp:
-        try:
-            json.dump(state, tmp, separators=(",", ":"))
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            os.replace(tmp.name, path)
-            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        finally:
-            Path(tmp.name).unlink(missing_ok=True)
 
 
 @contextmanager

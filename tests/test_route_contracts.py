@@ -129,6 +129,7 @@ def test_screen_and_service_route_map_contract():
         "/push/sync": "main.push_sync",
         "/push/unsubscribe": "main.push_unsubscribe",
         "/read": "main.read",
+        "/read-state/sync": "main.read_state_sync",
         "/read/related": "main.read_related",
         "/read/reply-activity": "main.reply_activity",
         "/read/vote": "main.read_vote",

@@ -27,7 +27,8 @@ from .services.heung import get_heung_galleries, search_galleries
 from .services.html_sanitizer import prepare_read_html
 from .services.dc.search import normalize_search_pos
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
-from .services import dc_write, link_preview, push, youtube_meta
+from .services import dc_write, link_preview, push, read_sync, youtube_meta
+from .services.dc_links import BOARD_ID_RE
 from .services.recent import (
     RECENT_MAX_ITEMS,
     clear_recent_galleries,
@@ -41,7 +42,6 @@ from .services.time_labels import post_time_info
 
 bp = Blueprint("main", __name__)
 
-BOARD_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,80}$")
 ALLOWED_GALLERY_KINDS = {"normal", "minor", "mini", "person"}
 ALLOWED_NAV_MODES = {"ai"}
 DEFAULT_SEARCH_TYPE = "subject_m"
@@ -1214,14 +1214,16 @@ def dc_write_context():
 _PUSH_ENDPOINTS = {"main.push_key", "main.push_sync", "main.push_unsubscribe"}
 _WRITE_ENDPOINTS = _PUSH_ENDPOINTS | {"main.write", "main.write_unlock", "main.write_lock", "main.write_captcha", "main.read_vote",
                     "main.read_vote_options", "main.read_comment", "main.reply_activity", "main.read_delete",
-                    "main.read_comment_delete", "main.write_modify_load",
+                    "main.read_comment_delete", "main.write_modify_load", "main.read_state_sync",
                     "main.write_account", "main.write_account_status", "main.write_account_login", "main.write_dccons"}
 
 
 @bp.before_app_request
-def hide_unconfigured_push():
-    # Even the app-wide visitor challenge must not advertise a disabled push route.
+def hide_unconfigured_sync_routes():
+    # Even the app-wide visitor challenge must not advertise a disabled route.
     if request.endpoint in _PUSH_ENDPOINTS and not push.configured(current_app):
+        abort(404)
+    if request.endpoint == "main.read_state_sync" and not dc_write.configured():
         abort(404)
 
 
@@ -1253,16 +1255,22 @@ def dc_write_no_store(response):
 
 
 @bp.errorhandler(push.PushError)
-def push_error(error):
+@bp.errorhandler(read_sync.ReadSyncError)
+def state_error(error):
     return jsonify(ok=False, code=error.code), error.status
 
 
-def _push_json():
-    request.max_content_length = 64 * 1024
+def _state_json(limit, error_type):
+    request.max_content_length = limit
     try:
         return request.get_json(silent=True)
     except (RequestEntityTooLarge, RecursionError):
-        raise push.PushError("invalid") from None
+        raise error_type("invalid") from None
+
+
+@bp.post("/read-state/sync")
+def read_state_sync():
+    return jsonify(read_sync.sync(_state_json(192 * 1024, read_sync.ReadSyncError)))
 
 
 @bp.get("/push/key")
@@ -1272,12 +1280,12 @@ def push_key():
 
 @bp.post("/push/sync")
 def push_sync():
-    return jsonify(push.sync(_push_json()))
+    return jsonify(push.sync(_state_json(64 * 1024, push.PushError)))
 
 
 @bp.post("/push/unsubscribe")
 def push_unsubscribe():
-    return jsonify(push.unsubscribe(_push_json()))
+    return jsonify(push.unsubscribe(_state_json(64 * 1024, push.PushError)))
 
 
 def _write_next(value):

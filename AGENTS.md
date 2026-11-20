@@ -232,6 +232,12 @@ pm2 logs dc-mirror
   incomplete reads only reschedule, a transient send failure keeps progress (a `base` post row still
   takes its baseline), provider 404/410 deletes the subscription, a deleted post drops its rows, rows
   expire after 30 days. Delivery is at-least-once. Never log endpoints, keys, names or comment text.
+- `POST /read-state/sync` shares the write unlock and same-origin gate (no push configuration needed);
+  without a write key it returns 404 before the visitor check.
+  `instance/read_sync.json` (`MIRROR_READ_SYNC_STATE`, 0600, atomic replace under `.lock`) retains the
+  newest 1500 DC/Poker marks by read time, merging each key by maximum timestamp. Clients pull by
+  state ID and revision. A different ID, a missing ID with a positive revision, or an ahead-of-server
+  revision resets the cursor and requeues local history. Only unlocked DC pages sync.
 
 ### Pokergosu Mirror
 

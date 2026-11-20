@@ -2,6 +2,11 @@
     "use strict";
 
     var STORAGE_KEY = "read_posts_v1";
+    var SYNC_KEY = "read_posts_sync_v1";
+    var syncInFlight = false;
+    var syncStopped = false;
+    var lastSync = -Infinity;
+    var LAST_SYNC_KEY = "read_posts_last_sync_v1";
     var THEME_STORAGE_KEY = "mirror_theme_v1";
     var MEDIA_BLOCK_STORAGE_KEY = "mirror_media_block_mode_v1";
     var LEGACY_DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1";
@@ -48,7 +53,9 @@
     function saveStore(store) {
         try {
             window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+            return true;
         } catch (err) {
+            return false;
         }
     }
 
@@ -64,7 +71,8 @@
             return store;
         }
         entries.sort(function (a, b) {
-            return b[1] - a[1];
+            // Equal millisecond timestamps must prune identically on all devices.
+            return b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
         });
         var next = {};
         var i;
@@ -570,6 +578,95 @@
         return pid > 0 ? "poker:" + pid : null;
     }
 
+    function loadSyncMeta(store) {
+        var meta;
+        try {
+            meta = JSON.parse(window.localStorage.getItem(SYNC_KEY));
+        } catch (err) {
+        }
+        if (!meta || !Number.isSafeInteger(meta.rev) || meta.rev < 0 ||
+                (meta.id !== undefined && typeof meta.id !== "string") || !Array.isArray(meta.pending) ||
+                meta.pending.length > MAX_ENTRIES || new Set(meta.pending).size !== meta.pending.length ||
+                !meta.pending.every(function (key) { return typeof key === "string"; })) {
+            return { rev: 0, pending: Object.keys(store) };
+        }
+        return meta;
+    }
+
+    function saveSyncMeta(meta) {
+        try {
+            window.localStorage.setItem(SYNC_KEY, JSON.stringify(meta));
+        } catch (err) {
+        }
+    }
+
+    async function syncReadState(allowReset = true) {
+        var url = document.body && document.body.dataset.readSync;
+        if (!url || syncInFlight || syncStopped) return;
+        var store = pruneStore(loadStore());
+        var meta = loadSyncMeta(store);
+        var sent = {};
+        // Old DC /read URLs could leave malformed marks. Never let one poison a whole upload.
+        meta.pending.forEach(function (key) {
+            if (/^(?:[A-Za-z0-9_]{1,80}\|0*[1-9][0-9]*|poker:[1-9][0-9]{0,11})$/.test(key) &&
+                    Number.isSafeInteger(store[key]) && store[key] >= 0) sent[key] = store[key];
+        });
+        var now = Date.now();
+        try {
+            var saved = window.sessionStorage.getItem(LAST_SYNC_KEY);
+            if (saved !== null) lastSync = Math.max(lastSync, Number(saved) || 0);
+        } catch (err) {
+        }
+        if (!Object.keys(sent).length && now >= lastSync && now - lastSync < 30000) return;
+        syncInFlight = true;
+        lastSync = now;
+        try {
+            window.sessionStorage.setItem(LAST_SYNC_KEY, String(now));
+        } catch (err) {
+        }
+        var repeat = false;
+        try {
+            var body = JSON.stringify({ id: meta.id, since: meta.rev, items: sent });
+            var response = await window.fetch(url, {
+                method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+                body: body, keepalive: body.length < 64 * 1024 // validated keys make this JSON ASCII-only
+            });
+            if (!response.ok) {
+                syncStopped = true;
+                return;
+            }
+            var data = await response.json();
+            if (data.ok !== true || typeof data.id !== "string" || !data.id || !Number.isSafeInteger(data.rev) || data.rev < 0 ||
+                    typeof data.reset !== "boolean" || !data.items || typeof data.items !== "object" || Array.isArray(data.items)) {
+                syncStopped = true;
+                return;
+            }
+            // Reload both halves after the await: a sibling tab may have re-read a sent key.
+            store = loadStore();
+            meta = loadSyncMeta(store);
+            var pending = meta.pending.filter(function (key) { return store[key] !== sent[key]; });
+            Object.keys(data.items).forEach(function (key) {
+                if (!(key in store) || data.items[key] > store[key]) store[key] = data.items[key];
+            });
+            readStore = pruneStore(store);
+            if (!saveStore(readStore)) {
+                syncStopped = true;
+                return;
+            }
+            meta.id = data.id;
+            meta.rev = data.reset ? data.rev : Math.max(meta.rev, data.rev);
+            meta.pending = data.reset ? Object.keys(readStore) : pending.filter(function (key) { return key in readStore; });
+            saveSyncMeta(meta);
+            applyReadState(document, readStore);
+            repeat = data.reset && allowReset && meta.pending.length > 0;
+        } catch (err) {
+            syncStopped = true;
+        } finally {
+            syncInFlight = false;
+        }
+        if (repeat) await syncReadState(false);
+    }
+
     function markRead(key) {
         if (!key) {
             return;
@@ -578,7 +675,13 @@
         var store = loadStore();
         store[key] = Date.now();
         readStore = pruneStore(store);
-        saveStore(readStore);
+        if (saveStore(readStore)) {
+            var meta = loadSyncMeta(readStore);
+            meta.pending = meta.pending.filter(function (k) { return k !== key && k in readStore; });
+            meta.pending.push(key);
+            meta.pending = meta.pending.slice(-MAX_ENTRIES);
+            saveSyncMeta(meta);
+        }
     }
 
     function markCurrentRead() {
@@ -618,7 +721,7 @@
             if (!key) {
                 continue;
             }
-            var isRead = !!currentStore[key];
+            var isRead = Object.prototype.hasOwnProperty.call(currentStore, key);
             link.classList.toggle("is-read", isRead);
             var label = link.querySelector("[data-poker-read-label]");
             if (label) {
@@ -680,6 +783,7 @@
         wireMediaBlockControl();
         readStore = loadStore();
         markCurrentRead();
+        syncReadState();
         applyReadState(document, readStore);
         wireClickMarking();
         wireDynamicApply();
@@ -730,6 +834,7 @@
     document.addEventListener("visibilitychange", function () {
         if (document.visibilityState === "visible") {
             refreshReadState();
+            syncReadState();
             refreshMediaBlockMode(false);
         }
     });

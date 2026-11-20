@@ -264,6 +264,11 @@ mirror/
 | `MIRROR_SECRET_KEY` | — | 운영에서 반드시 설정 |
 | `MIRROR_PUBLIC_BASE_URL` | — | URL 미리보기와 배포 후 공개 경로 점검에 쓰는 HTTPS 기본 주소. 예: `https://example.com`. 글쓰기 키와 함께 설정하면 알림함 푸시 알림도 켜진다 |
 | `MIRROR_PUSH_STATE` | `instance/push_state.json` | 푸시 알림 키와 구독을 보관하는 파일. 배포 간에 유지해야 한다 |
+| `MIRROR_READ_SYNC_STATE` | `instance/read_sync.json` | 읽은 글 기록 파일(0600). 배포 간에 유지하는 것을 권장한다 |
+
+Safari, Mac 브라우저, iPhone 홈 화면 앱에서 각각 글쓰기 잠금을 풀고 DC 페이지를 열면 기존 읽음 기록이 합쳐진다.
+글마다 가장 최근에 읽은 시각을 기준으로 1,500개까지 보관한다. 포커고수에서는 기기에만 기록하고 다음 DC 페이지에서 전송한다.
+푸시 설정은 필요 없으며 테마, 필터, 메모, 알림함은 동기화하지 않는다.
 
 </details>
 

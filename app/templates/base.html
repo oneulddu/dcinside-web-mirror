@@ -83,7 +83,7 @@
 </head>
 {#- 상단 작성자 메뉴: 글쓰기 잠금을 풀었고 서버에 디시 계정이 있을 때만. 글쓰기·댓글·추천이 이 선택을 따른다. -#}
 {%- set author_menu = write_enabled|default(false) and account_slots|default([]) -%}
-<body class="{% block body_class %}{% endblock %}"{% if author_menu %} data-author-slots="{{ account_slots|join(' ') }}"{% endif %}>
+<body class="{% block body_class %}{% endblock %}"{% if write_enabled %} data-read-sync="{{ url_for('main.read_state_sync') }}"{% endif %}{% if author_menu %} data-author-slots="{{ account_slots|join(' ') }}"{% endif %}>
     <a class="skip-link" href="#content">본문 바로가기</a>
     <div class="standalone-top" aria-hidden="true"></div>
     <div class="shell">
