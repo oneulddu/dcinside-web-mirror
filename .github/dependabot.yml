@@ -1,0 +1,15 @@
+# Monthly GitHub Actions bumps in one PR. Vulnerable dependencies get separate
+# security PRs from the repository's Dependabot security updates setting.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"
