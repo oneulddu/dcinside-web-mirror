@@ -65,7 +65,12 @@
     <div class="section-band" aria-hidden="true"></div>
 
     <section class="comment-shell" aria-labelledby="comment-title">
-        <h2 id="comment-title">댓글 <span class="comment-count">{{ comments|length }}</span></h2>
+        <div class="comment-head">
+            <h2 id="comment-title">댓글 <span class="comment-count">{{ comments|length }}</span></h2>
+            {% if write_enabled|default(false) %}
+            <button class="site-foot-link" id="reply-inbox-watch" type="button" hidden>댓글 알림 받기</button>
+            {% endif %}
+        </div>
         {% if comments %}
         <div class="comment-search" role="search" aria-label="댓글 검색">
             <label class="sr-only" for="comment-search-input">댓글에서 찾기</label>

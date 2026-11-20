@@ -322,9 +322,21 @@ Routes use `async_bridge.run_async(coro)` to bridge Flask's sync context with as
   Unlocked DC pages show a browser-local reply inbox (`reply_inbox.js`). Only a successful
   new post or comment with a returned id is tracked (last 50/30 days); no nickname, password or shared DC
   notification token is used. While visible and online, check at most one watched post per
-  minute via the gated `/read/reply-activity`; only comment ids and reply-id pairs leave the route.
+  minute via the gated `/read/reply-activity`; comment ids and reply-id pairs leave the route, plus
+  `previews` (display author ≤40 chars, whitespace-collapsed text ≤80 chars or "이모티콘") only for the
+  newest 100 comments above the client's optional `after` cursor (`cursor()`: the lowest already-seen
+  number among that post's watch rows). Inbox rows show the preview under the post title.
   New-post success records the post before redirecting, never on modify. Own comments are skipped;
   a reply to an owned comment in an owned post is one notification, not two.
+  The read page `#reply-inbox-watch` toggles a post-level watch on any post; such rows carry `base`
+  until the first check with `complete: true` (the read payload's `_comments_complete`), which only
+  sets the baseline: older comments are never notified, replies to owned comments still are. Turning it off removes
+  only the post row. An inbox row's "알림 끄기" removes every watch row and entry of that post; there
+  is no persistent mute, so a later own comment there is tracked again. "읽은 알림 지우기" drops read entries.
+  Browser notifications are opt-in (`desktop` in the same localStorage state plus granted permission):
+  only then hidden tabs keep checking, at least 180s apart across tabs and for 30 minutes after being
+  hidden, and the checking tab shows one `Notification` whose click focuses the tab and opens the inbox
+  instead of navigating. Nothing arrives once every tab is closed; there is no service worker or push.
   Mobile thread fallback is page-local; do not infer ownership from names or the PC post number.
   Success appends the comment client-side with time "방금" and bumps `.comment-count` instead of reloading.
   `vote.js` reads `GET /read/vote/options` (worker `vote_info`: app API `view_main.nonrecomm_use` and

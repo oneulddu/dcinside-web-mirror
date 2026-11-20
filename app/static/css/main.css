@@ -3305,14 +3305,47 @@ html[data-theme="dark"] .user-filter-dialog {
     font: var(--type-meta);
 }
 
+#reply-inbox-status:focus { outline: none; }
+/* 글자 버튼은 inline-flex라 hidden 속성만으로는 숨지 않는다. */
+#reply-inbox [hidden],
+#reply-inbox-watch[hidden] { display: none; }
 #reply-inbox-list { list-style: none; padding: 0; }
+#reply-inbox-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    border-bottom: var(--rule) solid var(--line);
+}
 #reply-inbox-list a {
     display: block;
+    flex: 1;
+    min-width: 0;
     padding: var(--space-3) 0;
-    border-bottom: var(--rule) solid var(--line);
     overflow-wrap: anywhere;
 }
 #reply-inbox-list a[data-unread] { color: var(--accent); }
+#reply-inbox-list button { flex: none; white-space: nowrap; }
+.reply-inbox-preview {
+    display: -webkit-box;
+    margin-top: 2px;
+    overflow: hidden;
+    color: var(--muted);
+    font: var(--type-meta);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+.reply-inbox-actions { display: flex; flex-wrap: wrap; }
+#reply-inbox-desktop {
+    margin-top: var(--space-3);
+    padding-top: var(--space-2);
+    border-top: var(--rule) solid var(--line);
+}
+.comment-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
 .comment-item:target { outline: 1px solid var(--accent); }
 
 .ufd-error .user-filter-reveal {

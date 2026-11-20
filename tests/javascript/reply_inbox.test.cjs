@@ -1,6 +1,28 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { load, track, receive } = require("../../app/static/javascript/reply_inbox.js");
+const { load, track, receive, drop, cursor } = require("../../app/static/javascript/reply_inbox.js");
+
+test("a manually watched post starts from a baseline, keeps previews, and can be dropped", () => {
+    const post = { board: "test", kind: "", pid: "70", id: "post" };
+    const state = load(null, 10);
+    track(state, { ...post, id: "20" }, "남의 글", 10);
+    track(state, post, "남의 글", 11, true);
+    assert.equal(cursor(state, post), "20");
+    // 댓글을 다 받지 못한 응답은 기준선이 되지 않고, 기준선 확인에서도 내 댓글에 이미 달린 답글은 알린다.
+    assert.deepEqual(receive(state, post, [], 12, ["5", "20"], {}, false), []);
+    assert.deepEqual(receive(state, post, [["20", "22"]], 12, ["5", "20", "22", "25"]).map(row => [row.id, row.type]),
+        [["22", "reply"]]);
+    const added = receive(state, post, [["20", "22"], ["20", "31"]], 13, ["5", "20", "22", "25", "30", "31"],
+        { 30: { author: "가".repeat(50), text: "나".repeat(79) + "😀다" }, 31: { author: 7 } });
+    assert.deepEqual(added.map(row => [row.id, row.type, row.author.length, row.text]),
+        [["31", "reply", 0, ""], ["30", "comment", 40, "나".repeat(79) + "😀"]]);
+    assert.equal(cursor(state, post), "31");
+    drop(state, post, false);
+    assert.deepEqual([state.mine.map(row => row.id), state.inbox.length], [["20"], 3]);
+    drop(state, post, true);
+    assert.deepEqual([state.mine, state.inbox], [[], []]);
+    assert.equal(load(JSON.stringify({ ...state, desktop: true }), 14).desktop, true);
+});
 
 test("a new post notifies for others' comments, preferring a single reply notification on overlap", () => {
     const state = load(null, 10), otherBrowser = load(null, 10);

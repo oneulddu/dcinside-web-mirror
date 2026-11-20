@@ -30,8 +30,9 @@ def test_activity_only_returns_reply_edges_after_unlock(monkeypatch):
 
     async def read(pid, board, kind):
         calls.append((pid, board, kind))
-        return {}, [{"id": "31", "reply_to": "30", "author": "숨김", "contents": "본문"},
-                    {"id": "32", "parent_id": "30"}, {"id": "33", "reply_to": "0"}], []
+        return {"_comments_complete": False}, [{"id": "31", "reply_to": "30", "author": "숨김", "contents": "본문"},
+                    {"id": "32", "parent_id": "30", "author": "ㅇㅇ", "contents": " 첫 줄\n둘째 " + "가" * 90},
+                    {"id": "33", "reply_to": "0", "dccon": "https://example.invalid/a.png", "contents": ""}], []
 
     monkeypatch.setattr(routes, "async_read", read)
     path = "/read/reply-activity?board=test&kind=minor&pid=12"
@@ -42,7 +43,12 @@ def test_activity_only_returns_reply_edges_after_unlock(monkeypatch):
     result = client.get(path)
     assert calls == [(12, "test", "minor")]
     assert result.headers["Cache-Control"] == "no-store"
-    assert result.json == {"ok": True, "comments": ["31", "32", "33"], "replies": [["30", "31"]]}
+    assert result.json == {"ok": True, "comments": ["31", "32", "33"], "replies": [["30", "31"]], "previews": {},
+                           "complete": False}
+    assert client.get(path + "&after=x").status_code == 400
+    assert client.get(path + "&after=31").json["previews"] == {
+        "32": {"author": "ㅇㅇ", "text": ("첫 줄 둘째 " + "가" * 90)[:80]},
+        "33": {"author": "", "text": "이모티콘"}}
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js required")

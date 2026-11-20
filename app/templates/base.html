@@ -218,10 +218,17 @@
             <form method="dialog"><button class="header-text-link" type="submit">닫기</button></form>
         </div>
         <div class="ufd-body">
-            <p class="write-hint">이 브라우저에서 최근 30일 동안 쓴 글의 댓글과 내가 쓴 댓글의 답글을 사이트가 열려 있을 때 확인해요.</p>
-            <p id="reply-inbox-status" role="status"></p>
+            <p class="write-hint">이 브라우저에서 최근 30일 동안 쓴 글과 댓글, 글 화면에서 댓글 알림을 켠 글을 사이트가 열려 있을 때 확인해요.</p>
+            <p id="reply-inbox-status" role="status" tabindex="-1"></p>
             <ul id="reply-inbox-list"></ul>
-            <button type="button" class="site-foot-link" id="reply-inbox-read" hidden>모두 읽음</button>
+            <div class="reply-inbox-actions">
+                <button type="button" class="site-foot-link" id="reply-inbox-read" hidden>모두 읽음</button>
+                <button type="button" class="site-foot-link" id="reply-inbox-clear" hidden>읽은 알림 지우기</button>
+            </div>
+            <div id="reply-inbox-desktop" hidden>
+                <button type="button" class="site-foot-link" id="reply-inbox-desktop-toggle">브라우저 알림 켜기</button>
+                <p class="write-hint" id="reply-inbox-desktop-hint"></p>
+            </div>
         </div>
     </dialog>
     <script src="{{ static_url('javascript/reply_inbox.js') }}"></script>

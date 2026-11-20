@@ -1703,24 +1703,36 @@ def reply_activity():
     board = _normalize_board_id(request.args.get("board"), default="")
     kind = _normalize_gallery_kind(request.args.get("kind"))
     pid = request.args.get("pid", "")
-    if not re.fullmatch(r"[1-9][0-9]{0,14}", pid):
+    after = request.args.get("after")
+    if not re.fullmatch(r"[1-9][0-9]{0,14}", pid) or (after is not None and not re.fullmatch(r"[0-9]{1,15}", after)):
         abort(400)
     try:
-        _, comments, _ = run_async(async_read(int(pid), board, kind=kind))
+        data, comments, _ = run_async(async_read(int(pid), board, kind=kind))
     except DocumentNotFoundError:
         return jsonify(ok=False), 404
     except DocumentUnavailableError:
         return jsonify(ok=False), 503
     edges = []
     comment_ids = []
+    newer = []
     for row in comments:
         target, child = row.get("reply_to"), row.get("id")
         if not re.fullmatch(r"[1-9][0-9]{0,14}", child or ""):
             continue
         comment_ids.append(child)
+        if after is not None and int(child) > int(after):
+            newer.append(row)
         if re.fullmatch(r"[1-9][0-9]{0,14}", target or "") and int(target) < int(child):
             edges.append((target, child))
-    return jsonify(ok=True, replies=edges, comments=comment_ids)
+    # 미리보기는 브라우저가 이미 확인한 번호보다 새 댓글에만, 가장 새 100개까지만 붙인다.
+    previews = {
+        row["id"]: {"author": str(row.get("author") or "")[:40],
+                    "text": "이모티콘" if row.get("dccon") is not None
+                    else " ".join(str(row.get("contents") or "").split())[:80]}
+        for row in sorted(newer, key=lambda row: int(row["id"]))[-100:]
+    }
+    return jsonify(ok=True, replies=edges, comments=comment_ids, previews=previews,
+                   complete=bool(data.get("_comments_complete", True)))
 
 
 @bp.route("/read/comment", methods=["POST"])
