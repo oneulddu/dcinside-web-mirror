@@ -64,13 +64,12 @@
 
     <div class="section-band" aria-hidden="true"></div>
 
-    <section class="comment-shell" aria-labelledby="comment-title">
-        <div class="comment-head">
-            <h2 id="comment-title">댓글 <span class="comment-count">{{ comments|length }}</span></h2>
-            {% if write_enabled|default(false) %}
-            <button class="site-foot-link" id="reply-inbox-watch" type="button" hidden>댓글 알림 받기</button>
-            {% endif %}
-        </div>
+    <section class="comment-shell{% if write_enabled|default(false) %} comment-shell-watch{% endif %}" aria-labelledby="comment-title">
+        {#- h2는 섹션의 직계 자식이어야 한다. 스팸·이모티콘·차단 필터 스크립트가 h2 바로 뒤에 한 줄짜리 버튼을 넣는다. -#}
+        <h2 id="comment-title">댓글 <span class="comment-count">{{ comments|length }}</span></h2>
+        {% if write_enabled|default(false) %}
+        <button class="site-foot-link" id="reply-inbox-watch" type="button" hidden>댓글 알림 받기</button>
+        {% endif %}
         {% if comments %}
         <div class="comment-search" role="search" aria-label="댓글 검색">
             <label class="sr-only" for="comment-search-input">댓글에서 찾기</label>

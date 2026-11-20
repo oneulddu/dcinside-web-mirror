@@ -3341,11 +3341,15 @@ html[data-theme="dark"] .user-filter-dialog {
     border-top: var(--rule) solid var(--line);
 }
 #reply-inbox-push-toggle:disabled { cursor: default; opacity: 0.6; }
-.comment-head {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: var(--space-3);
+/* 제목 줄 오른쪽에 띄워 두어, 제목 바로 뒤에 들어오는 버튼 줄의 배치에 끼어들지 않는다.
+   top은 제목 글자 줄(위 여백 26px + 줄 높이 26px)의 가운데에 44px 버튼을 맞춘 값이다. */
+.comment-shell-watch { position: relative; }
+#reply-inbox-watch {
+    position: absolute;
+    top: 17px;
+    right: 0;
+    padding-right: 0;
+    white-space: nowrap;
 }
 .comment-item:target { outline: 1px solid var(--accent); }
 
