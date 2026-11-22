@@ -105,7 +105,24 @@
         return added;
     }
 
-    if (typeof module !== "undefined" && module.exports) module.exports = { load, track, receive, drop, cursor, pushRows };
+    // 열린 화면에서 누른 알림의 주소를 push_sw.js가 남겨 두면 가져가 이동한다. 탭이 여럿이어도 지우기에 성공한 한 곳만 간다.
+    const HANDOFF = "mirror-notification-open", HANDOFF_KEY = "/__mirror-notification-open";
+    async function follow(win) {
+        try {
+            if (!win.caches || !await win.caches.has(HANDOFF)) return false;
+            const cache = await win.caches.open(HANDOFF), answer = await cache.match(HANDOFF_KEY);
+            if (!answer || !await cache.delete(HANDOFF_KEY)) return false;
+            const { url, at } = await answer.json(), target = new URL(url, win.location.href);
+            if (target.origin !== win.location.origin || !(target.pathname === "/" || target.pathname === "/read")
+                || !(Math.abs(Date.now() - at) < 60000) || target.href === win.location.href) return false;
+            win.location.assign(target.href);
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    if (typeof module !== "undefined" && module.exports) module.exports = { load, track, receive, drop, cursor, pushRows, follow };
     const doc = root.document;
     if (!doc) return;
     const byId = name => doc.getElementById("reply-inbox" + name);
@@ -474,6 +491,15 @@
     root.addEventListener("online", () => schedule(1500));
     root.addEventListener("pageshow", () => { render(); schedule(1500); });
     root.addEventListener("pagehide", () => { clearTimeout(timer); clearTimeout(syncTimer); });
+    if (pushable) {
+        const followNow = () => { if (!doc.hidden) follow(root); };
+        nav.serviceWorker.addEventListener("message", event => { if (event.data === HANDOFF) followNow(); });
+        nav.serviceWorker.startMessages();
+        doc.addEventListener("visibilitychange", followNow);
+        root.addEventListener("focus", followNow);
+        root.addEventListener("pageshow", followNow);
+        followNow();
+    }
     render();
     schedule(1500);
     verify().catch(() => { /* 구독 확인에 실패해도 알림함은 그대로 쓴다. */ });

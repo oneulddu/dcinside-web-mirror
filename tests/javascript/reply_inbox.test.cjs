@@ -3,7 +3,22 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { load, track, receive, drop, cursor, pushRows } = require("../../app/static/javascript/reply_inbox.js");
+const { load, track, receive, drop, cursor, pushRows, follow } = require("../../app/static/javascript/reply_inbox.js");
+
+// 워커와 화면이 함께 쓰는 Cache Storage를 흉내 낸다.
+function fakeCaches() {
+    const stores = new Map();
+    return {
+        has: async name => stores.has(name),
+        open: async name => {
+            if (!stores.has(name)) stores.set(name, new Map());
+            const store = stores.get(name);
+            return { put: async (key, response) => { store.set(key, await response.text()); },
+                match: async key => store.has(key) ? new Response(store.get(key)) : undefined,
+                delete: async key => store.delete(key) };
+        },
+    };
+}
 
 test("a manually watched post starts from a baseline, keeps previews, and can be dropped", () => {
     const post = { board: "test", kind: "", pid: "70", id: "post" };
@@ -46,18 +61,21 @@ test("push sync rows carry each watch row's generation and highest known comment
         { endpoint: "", sig: "", synced: 20, tried: 0, rev: 0 });
 });
 
-function pushWorker(windows = []) {
-    const listeners = {}, shown = [], opened = [], focused = [], waits = [];
+function pushWorker(windows = [], caches = fakeCaches()) {
+    const listeners = {}, shown = [], opened = [], focused = [], posted = [], waits = [];
     const self = {
         location: { origin: "https://mir.example" },
         addEventListener: (type, listener) => { listeners[type] = listener; },
         registration: { showNotification: async (title, options) => { shown.push([title, options.body, options.tag, options.data.url]); } },
-        clients: { matchAll: async () => windows.map(url => ({ url, focus: async () => { focused.push(url); } })),
+        clients: { matchAll: async () => windows.map(url => ({ url, focus: async () => { focused.push(url); },
+            postMessage: message => { posted.push([url, message]); } })),
             openWindow: async url => { opened.push(url); } },
+        caches,
     };
-    vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../../app/static/javascript/push_sw.js"), "utf8"), { self, URL });
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../../app/static/javascript/push_sw.js"), "utf8"),
+        { self, URL, Response, Date, JSON });
     const fire = (type, event) => { listeners[type]({ ...event, waitUntil: promise => waits.push(promise) }); return Promise.all(waits); };
-    return { shown, opened, focused,
+    return { shown, opened, focused, posted,
         push: data => fire("push", { data: data === null ? null : { json: () => JSON.parse(data) } }),
         click: url => fire("notificationclick", { notification: { data: { url }, close() {} } }) };
 }
@@ -74,11 +92,26 @@ test("the push worker shows contract payloads, falls back on broken ones, and op
         ["숨터", "새 댓글이나 답글이 있어요.", "mirror:fallback", "/"],
         ["새 답글 · 제목", "a: b", "mirror:test:2", "/"],
     ]);
-    for (const url of ["/read?board=test&pid=1#comment-5", "/read?board=test&pid=2", "/", "//evil.example/read?x", "/write/lock", undefined])
-        await sw.click(url);
-    assert.deepEqual([sw.focused, sw.opened], [["https://mir.example/read?board=test&pid=1#comment-5"],
-        ["https://mir.example/read?board=test&pid=2", "https://mir.example/", "https://mir.example/",
-            "https://mir.example/", "https://mir.example/"]]);
+    await sw.click("/read?board=test&pid=1#comment-5");
+    assert.deepEqual([sw.focused, sw.opened], [["https://mir.example/read?board=test&pid=1#comment-5"], []]);
+    const closed = pushWorker();
+    for (const url of ["/read?board=test&pid=2", "/", "//evil.example/read?x", "/write/lock", undefined])
+        await closed.click(url);
+    assert.deepEqual(closed.opened, ["https://mir.example/read?board=test&pid=2", "https://mir.example/", "https://mir.example/",
+        "https://mir.example/", "https://mir.example/"]);
+});
+
+test("a notification tapped while the app shows another page moves exactly one open page to the comment", async () => {
+    const caches = fakeCaches(), page = "https://mir.example/board?id=test";
+    const sw = pushWorker([page, "https://mir.example/"], caches);
+    await sw.click("/read?board=test&pid=1#comment-5");
+    // iOS 홈 화면 앱은 openWindow로 주소를 바꾸지 않으므로 열린 화면이 직접 이동해야 한다.
+    assert.deepEqual([sw.opened, sw.focused, sw.posted.length], [[], [page], 2]);
+    const window = (href, assigned) => ({ caches, location: { href, origin: "https://mir.example", assign: url => assigned.push(url) } });
+    const moved = [], other = [];
+    assert.deepEqual(await Promise.all([follow(window(page, moved)), follow(window("https://mir.example/", other))]).then(r => r.filter(Boolean).length), 1);
+    assert.deepEqual(moved.concat(other), ["https://mir.example/read?board=test&pid=1#comment-5"]);
+    assert.equal(await follow(window(page, moved)), false);
 });
 
 test("a new post notifies for others' comments, preferring a single reply notification on overlap", () => {
