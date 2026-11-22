@@ -492,13 +492,19 @@
     root.addEventListener("pageshow", () => { render(); schedule(1500); });
     root.addEventListener("pagehide", () => { clearTimeout(timer); clearTimeout(syncTimer); });
     if (pushable) {
-        const followNow = () => { if (!doc.hidden) follow(root); };
-        nav.serviceWorker.addEventListener("message", event => { if (event.data === HANDOFF) followNow(); });
+        // TEMP-PUSH-DEBUG: 화면이 알림 주소를 가져가는지 접속 기록으로 확인한다.
+        const debug = (step, extra = {}) => root.fetch("/__push-debug?" + new URLSearchParams({ from: "page", step, ...extra }), { cache: "no-store" }).catch(() => {});
+        const followNow = trigger => {
+            if (doc.hidden) return;
+            root.caches?.has(HANDOFF).then(has => { if (has) debug("check", { trigger, has: String(has) }); }, e => debug("caches-fail", { e: String(e).slice(0, 120) }));
+            follow(root).then(moved => { if (moved) debug("moved", { trigger }); });
+        };
+        nav.serviceWorker.addEventListener("message", event => { debug("message", { data: String(event.data) }); if (event.data === HANDOFF) followNow("message"); });
         nav.serviceWorker.startMessages();
-        doc.addEventListener("visibilitychange", followNow);
-        root.addEventListener("focus", followNow);
-        root.addEventListener("pageshow", followNow);
-        followNow();
+        doc.addEventListener("visibilitychange", () => followNow("visible"));
+        root.addEventListener("focus", () => followNow("focus"));
+        root.addEventListener("pageshow", () => followNow("pageshow"));
+        followNow("load");
     }
     render();
     schedule(1500);

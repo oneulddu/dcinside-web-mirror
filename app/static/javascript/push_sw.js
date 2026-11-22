@@ -23,18 +23,24 @@ self.addEventListener("push", event => {
     }));
 });
 
+// TEMP-PUSH-DEBUG: 아이폰에서 알림 클릭이 어디서 멈추는지 접속 기록으로 확인한다.
+const debug = (step, extra = {}) => Promise.resolve().then(() => fetch("/__push-debug?" + new URLSearchParams({ from: "sw", step, ...extra }), { cache: "no-store" })).catch(() => {});
+
 self.addEventListener("notificationclick", event => {
     event.notification.close();
     const url = new URL(allowed(event.notification.data?.url), self.location.origin).href;
-    event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async windows => {
+    event.waitUntil(debug("click").then(() => self.clients.matchAll({ type: "window", includeUncontrolled: true })).then(async windows => {
+        await debug("windows", { n: windows.length, urls: windows.map(c => new URL(c.url).pathname + new URL(c.url).search).join(",").slice(0, 300),
+            vis: windows.map(c => c.visibilityState + ":" + c.focused).join(",") });
         const open = windows.find(client => client.url === url);
         if (open) return open.focus();
-        if (!windows.length) return self.clients.openWindow(url);
+        if (!windows.length) return self.clients.openWindow(url).then(r => debug("opened", { r: String(Boolean(r)) }), e => debug("open-fail", { e: String(e).slice(0, 120) }));
         // iOS 홈 화면 앱이 열려 있으면 openWindow는 앱만 앞으로 가져오고 주소는 그대로 둔다.
         // 화면이 워커 범위 밖이라 navigate()도 못 쓰므로, 주소를 남겨 두고 열린 화면이 직접 이동한다.
         const cache = await self.caches.open(HANDOFF);
         await cache.put(HANDOFF_KEY, new Response(JSON.stringify({ url, at: Date.now() })));
         windows.forEach(client => client.postMessage(HANDOFF));
-        return windows[0].focus().catch(() => { /* 포커스를 못 줘도 화면이 보이면 주소를 가져간다. */ });
+        await debug("stashed");
+        return windows[0].focus().then(() => debug("focused"), e => debug("focus-fail", { e: String(e).slice(0, 120) }));
     }));
 });
