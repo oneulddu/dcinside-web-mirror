@@ -36,8 +36,8 @@ class FakeManager:
 
 @pytest.fixture
 def setup(monkeypatch):
-    monkeypatch.delenv("MIRROR_DC_LOGIN_ID", raising=False)
-    monkeypatch.delenv("MIRROR_DC_LOGIN_PASSWORD", raising=False)
+    monkeypatch.setenv("MIRROR_DC_LOGIN_ID", "test-slot-one")
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD", "test-password")
     monkeypatch.delenv("MIRROR_DC_LOGIN_ID_2", raising=False)
     monkeypatch.delenv("MIRROR_DC_LOGIN_PASSWORD_2", raising=False)
     app = create_app()
@@ -487,8 +487,9 @@ def test_metadata_failure_and_no_recent_cookie(setup, monkeypatch):
     assert "Set-Cookie" not in response.headers
 
 
-def test_context_globals(setup):
+def test_context_globals(setup, monkeypatch):
     app, client, _, _ = setup
+    monkeypatch.delenv("MIRROR_DC_LOGIN_PASSWORD")
     with app.test_request_context("/write"):
         assert routes.dc_write_context() == {"write_configured": True, "write_enabled": False, "account_configured": False, "account_slots": [], "write_limits": service.LIMITS, "push_configured": False}
     unlock(client)
@@ -552,6 +553,7 @@ def test_account_login_requires_same_origin(setup, headers):
 
 def test_account_status_page_and_context_are_allowlisted(setup, monkeypatch):
     app, client, manager, contexts = setup
+    monkeypatch.delenv("MIRROR_DC_LOGIN_PASSWORD")
     monkeypatch.setenv("MIRROR_DC_LOGIN_ID", "secret-login-id")
     assert not service.account_configured()
     monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD", "secret-login-password")
@@ -713,6 +715,18 @@ def test_account_rejection_does_not_leak_upstream_identity(setup, caplog):
     assert "secret-login" not in response.get_data(as_text=True) + caplog.text
 
 
+@pytest.mark.parametrize("returned", [True, False])
+def test_account_captcha_rejection_is_classified_before_redaction(setup, caplog, returned):
+    _, client, manager, _ = setup
+    unlock(client)
+    cause = "secret-login-id 보안 문자"
+    manager.result = ({"ok": True, "data": {"result": False, "cause": cause}} if returned else
+                      {"ok": False, "error": {"name": "ApiError", "cause": cause}})
+    response = post(client, mode="account")
+    assert response.json["code"] == "captcha_required"
+    assert "secret-login" not in response.get_data(as_text=True) + caplog.text
+
+
 @pytest.mark.parametrize("path,op,fields", ACCOUNT_ACTIONS + [("/write/account/login", "account_login", {})])
 @pytest.mark.parametrize("mode", ["account", "anonymous"])
 @pytest.mark.parametrize("returned", [False, True])
@@ -853,6 +867,7 @@ def test_explicit_unconfigured_slot_never_calls_worker(setup, monkeypatch, path,
     suffix = "" if slot == "1" else "_2"
     # One credential alone is not a configured account.
     monkeypatch.setenv("MIRROR_DC_LOGIN_ID" + suffix, "private-id")
+    monkeypatch.delenv("MIRROR_DC_LOGIN_PASSWORD" + suffix, raising=False)
     unlock(client)
     payload = {"board": "programming", "mode": "account", **fields}
     response = (client.post(path, data={"payload": json.dumps(payload), "account": slot},
@@ -862,6 +877,15 @@ def test_explicit_unconfigured_slot_never_calls_worker(setup, monkeypatch, path,
     assert response.json == {"ok": False, "code": "invalid", "field": "mode",
                              "message": "계정을 다시 선택해 주세요."}
     assert manager.calls == []
+
+
+def test_omitted_account_requires_configured_default_slot(setup, monkeypatch):
+    _, client, manager, _ = setup
+    monkeypatch.delenv("MIRROR_DC_LOGIN_PASSWORD")
+    unlock(client)
+    response = post(client, mode="account")
+    assert response.status_code == 400 and response.json["code"] == "invalid" and response.json["field"] == "mode"
+    assert not manager.calls
 
 
 @pytest.mark.parametrize("path,op,fields,as_form", [row for row in ACCOUNT_SELECTOR_ROUTES if row[1] != "account_login"])
@@ -1092,9 +1116,13 @@ def test_slow_worker_diagnostics_separate_queue_and_execution(status_worker, mon
         with pytest.raises(service.WorkerUnavailable) as error:
             manager.request("vote_info", deadline=110, password="secret-password")
         assert error.value.sent is (outcome == "unavailable")
-        assert manager._process is None
+        if outcome == "ipc_timeout":  # selector expired before a single byte was written
+            assert manager._process is processes[-1] and processes[-1].alive
+        else:
+            assert manager._process is None
     else:
         manager.request("vote_info", deadline=110, password="secret-password")
+        assert 0 < processes[-1].request["budget_ms"] < 8000  # excludes queue and reply margin
     assert [record.getMessage() for record in caplog.records] == [
         f"Slow DC worker category=vote_info outcome={outcome} queue_seconds=2.000 execution_seconds=3.000",
     ]
@@ -1121,6 +1149,18 @@ def test_slow_worker_queue_timeout_keeps_inflight_process(status_worker, monkeyp
     assert [record.getMessage() for record in caplog.records] == [
         "Slow DC worker category=other outcome=queue_timeout queue_seconds=8.000 execution_seconds=0.000",
     ]
+
+
+def test_no_usable_budget_leaves_worker_and_pipe_untouched(status_worker, monkeypatch):
+    manager, processes = status_worker
+    manager.request("account_status")
+    process = processes[-1]
+    previous = process.request
+    monkeypatch.setattr(service.time, "monotonic", lambda: 100)
+    with pytest.raises(service.WorkerUnavailable) as exc:
+        manager.request("vote_info", deadline=100.0008)
+    assert exc.value.sent is False
+    assert manager._process is process and process.alive and process.request is previous
 
 
 def test_slow_status_snapshot_diagnostics(status_worker, monkeypatch, caplog):
@@ -1747,12 +1787,19 @@ def test_image_limits_in_write_context(setup):
 def test_worker_env_routes_only_worker_through_relay(monkeypatch):
     monkeypatch.setenv("NO_PROXY", "*")
     monkeypatch.setenv("https_proxy", "http://other:1")
+    for key in ("FLASK_SECRET_KEY", "MIRROR_WRITE_KEY", "NODE_AUTH_TOKEN", "MIRROR_DC_UNUSED",
+                "LC_TIME", "NODE_EXTRA_CA_CERTS", "MIRROR_DC_LOGIN_ID_2", "MIRROR_DC_LOGIN_PASSWORD_2"):
+        monkeypatch.setenv(key, "sentinel")
     env = service.worker_env("/state.json", "http://relay:secret@100.64.0.2:8899")
     assert env["NODE_USE_ENV_PROXY"] == "1"
     assert env["HTTPS_PROXY"] == env["HTTP_PROXY"] == "http://relay:secret@100.64.0.2:8899"
     assert "NO_PROXY" not in env and "https_proxy" not in env
     plain = service.worker_env("/state.json")
-    assert not set(plain) & set(service._PROXY_ENV) and plain["MIRROR_DC_APP_STATE"] == "/state.json"
+    assert not {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "NODE_USE_ENV_PROXY"} & plain.keys()
+    assert plain["MIRROR_DC_APP_STATE"] == "/state.json"
+    assert not {"FLASK_SECRET_KEY", "MIRROR_WRITE_KEY", "NODE_AUTH_TOKEN", "MIRROR_DC_UNUSED"} & plain.keys()
+    assert all(plain[key] == "sentinel" for key in (
+        "LC_TIME", "NODE_EXTRA_CA_CERTS", "MIRROR_DC_LOGIN_ID_2", "MIRROR_DC_LOGIN_PASSWORD_2"))
 
 
 @pytest.mark.parametrize("path", ["/write", "/read/vote"])
@@ -2344,7 +2391,7 @@ def test_new_post_html_options_poll_mapping_and_limits(setup):
     unlock(client)
     options = {"no_repost": True, "secret": True, "secret_password": "비밀번호", "auto_delete": "2099-01-01 00:05"}
     poll = {"title": "투표", "items": ["하나", "둘"], "multiple": 2, "preview": True, "end_date": "2099-01-01 00:01"}
-    body = "<b>굵게</b><table><tr><td>표</td></tr></table>"
+    body = '<b title="one=1">굵게</b><table><tr><td>one=1</td></tr></table>'
     response = post(client, body=body, html=True, options=options, poll=poll)
     assert response.json["ok"]
     assert manager.calls[0][1]["options"] == options
@@ -2387,6 +2434,7 @@ def test_modify_rejects_every_new_field_even_empty(setup, field, value):
 @pytest.mark.parametrize("icons", [
     [{"package_idx": True, "detail_idx": 2}], [{"package_idx": 1, "detail_idx": 0}],
     [{"package_idx": 1, "detail_idx": "2"}], [{"package_idx": 1}], ["bad"],
+    [{"package_idx": 1, "detail_idx": 2}] * 21,
 ])
 def test_dccon_reference_validation(setup, monkeypatch, icons):
     _, client, manager, _ = setup
@@ -2409,7 +2457,8 @@ def test_dccon_marker_order_and_validation(setup, monkeypatch, body, valid):
     monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD_2", "configured")
     unlock(client)
     icons = [{"package_idx": 1, "detail_idx": 2}, {"package_idx": 1, "detail_idx": 3}]
-    response = multipart(client, [PNG], mode="account", account="2", dccons=icons, body=body)
+    response = multipart(client, [PNG], mode="account", account="2",
+                         dccons=[dict(icon, extra="unsupported") for icon in icons], body=body)
     if valid:
         assert response.json["ok"]
         payload = manager.calls[0][1]

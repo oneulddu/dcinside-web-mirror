@@ -30,11 +30,15 @@ def _current(now):
     return datetime.fromtimestamp(float(now), tz=KST).replace(tzinfo=None)
 
 
-def _infer_year(month, day, current):
-    candidate = date(current.year, month, day)
-    if candidate > current.date() + timedelta(days=1):
-        candidate = candidate.replace(year=current.year - 1)
-    return candidate.year
+def with_recent_year(value, current):
+    for year in (current.year, current.year - 1):
+        try:
+            candidate = value.replace(year=year)
+        except ValueError:  # February 29 in a non-leap year
+            continue
+        if candidate <= current + timedelta(days=1):
+            return candidate
+    raise ValueError("no plausible year for this date")
 
 
 def parse_post_time(value, now=None):
@@ -60,7 +64,7 @@ def parse_post_time(value, now=None):
         match = _MD_RE.match(text)
         if match:
             month, day, hour, minute = match.groups()
-            year = _infer_year(int(month), int(day), current)
+            year = with_recent_year(date(2000, int(month), int(day)), current.date()).year
             if hour is None:
                 return datetime(year, int(month), int(day)), False
             return datetime(year, int(month), int(day), int(hour), int(minute)), True

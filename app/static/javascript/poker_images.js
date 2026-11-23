@@ -5,7 +5,9 @@
     // keep native lazy loading and the existing image-block controls.
     var states = new WeakMap();
     var queue = [];
-    var active = 0;
+    var active = new Set();
+    // Also checked by read_state.js (article body) and the comment hydrator.
+    var suspended = "data-body-image-retry-suspended";
 
     function source(image) {
         if (!image || image.tagName !== "IMG") return null;
@@ -14,12 +16,12 @@
     }
 
     function eligible(image, url) {
-        return image.isConnected && !image.hidden && source(image) === url &&
+        return image.isConnected && !image.hidden && image.getAttribute(suspended) === null && source(image) === url &&
             image.getAttribute("src") === url && !image.naturalWidth;
     }
 
     function drain() {
-        while (active < 2 && queue.length) {
+        while (active.size < 2 && queue.length) {
             var job = queue.shift();
             job.state.queued = false;
             if (!eligible(job.image, job.url)) continue;
@@ -29,13 +31,14 @@
 
     function start(job) {
         var state = job.state;
-        active += 1;
+        active.add(job);
         state.attempts += 1;
         // Hiding/navigation or a lost network may never emit load/error.
         var watchdog = setTimeout(function () {
             // Cancel this image's pending load before admitting another retry.
             // Do not cancel a source changed by another control in the meantime.
             if (job.image.getAttribute("src") === job.url && !job.image.naturalWidth) {
+                job.image.setAttribute(suspended, "1");
                 job.image.removeAttribute("src");
             }
             finish();
@@ -44,7 +47,7 @@
             if (state.finish !== finish) return;
             clearTimeout(watchdog);
             state.finish = null;
-            active -= 1;
+            active.delete(job);
             drain();
         }
         state.finish = finish;
@@ -75,4 +78,22 @@
         var state = states.get(event.target);
         if (state && state.finish) state.finish();
     }, true);
+
+    new MutationObserver(function (records) {
+        records.forEach(function (record) {
+            var image = record.target;
+            if (record.attributeName === "hidden" && image.hidden && image.getAttribute(suspended) !== null) {
+                // A subsequent explicit reveal may start a new retry cycle.
+                image.removeAttribute(suspended);
+                states.delete(image);
+            }
+        });
+        active.forEach(function (job) {
+            if (!job.image.isConnected && job.image.getAttribute("src") === job.url && !job.image.naturalWidth) {
+                job.image.removeAttribute("src");
+            }
+            if (!eligible(job.image, job.url)) job.state.finish();
+        });
+    }).observe(document.documentElement, { childList: true, subtree: true, attributes: true,
+        attributeFilter: ["hidden", "src"] });
 })();

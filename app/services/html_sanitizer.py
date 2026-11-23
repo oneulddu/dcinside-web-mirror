@@ -1,9 +1,11 @@
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
+import hashlib
 import re
+from threading import Lock
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
-from flask import current_app, url_for
+from flask import current_app, request, url_for
 
 from .dc_links import dcinside_internal_href
 from .highlight import highlight_soup_text
@@ -282,7 +284,67 @@ def sanitize_html_fragment(raw_html):
     return serialize_html_fragment(soup)
 
 
+READ_HTML_CACHE_BYTES = 2 * 1024 * 1024
+
+
+class _ReadHTMLCache:
+    def __init__(self):
+        self.entries = OrderedDict()
+        self.size = 0
+        self.lock = Lock()
+
+    def get(self, key):
+        with self.lock:
+            value = self.entries.get(key)
+            if value is not None:
+                self.entries.move_to_end(key)
+            return value
+
+    def put(self, key, markup):
+        value = markup.encode("utf-8")
+        size = len(key) + len(value)
+        if size > READ_HTML_CACHE_BYTES:
+            return
+        with self.lock:
+            if key in self.entries:
+                return
+            while self.size + size > READ_HTML_CACHE_BYTES:
+                old_key, old_value = self.entries.popitem(last=False)
+                self.size -= len(old_key) + len(old_value)
+            self.entries[key] = value
+            self.size += size
+
+
+def init_read_html_cache(app):
+    app.extensions["prepared_read_body"] = _ReadHTMLCache()
+
+
 def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
+    # Frame fields in a digest so the key retains neither raw markup nor signing material.
+    digest = hashlib.sha256()
+    for field in (board, str(pid), kind or "", request.url_root, current_app.secret_key or "", raw_html or "", *images):
+        encoded = field if isinstance(field, bytes) else field.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    key = digest.digest()
+    cache = current_app.extensions["prepared_read_body"]
+    cached = cache.get(key)
+    if cached is not None:
+        markup = cached.decode("utf-8")
+        if not search_keyword:
+            return markup
+        # Parse the already sanitized fragment, not upstream HTML. Only this
+        # request gets the highlighted tree; the cached bytes never change.
+        soup = parse_html_fragment("<div>" + markup + "</div>")
+        highlight_soup_text(soup, search_keyword)
+        return soup.div.decode_contents()
+    soup = _prepare_read_body(raw_html, images, board, pid, kind, current_app.secret_key)
+    markup = serialize_html_fragment(soup)
+    cache.put(key, markup)
+    return serialize_html_fragment(highlight_soup_text(soup, search_keyword)) if search_keyword else markup
+
+
+def _prepare_read_body(raw_html, images, board, pid, kind, signing_key):
     soup = parse_html_fragment(raw_html)
     # Deferred sources belong to the mirror, never to upstream markup. Clear
     # them before generating the trusted, signed preview thumbnails below.
@@ -290,7 +352,7 @@ def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
         for attr in ("data-body-image-src", "data-dccon-src", "data-preview-image-src"):
             img.attrs.pop(attr, None)
     normalize_twitter_blockquotes(soup)
-    normalize_og_wraps(soup)
+    normalize_og_wraps(soup, signing_key)
     rewrite_content_images(soup, images, board, pid, kind)
     rewrite_dcinside_links(soup)
     sanitize_html_tree(soup)
@@ -298,8 +360,7 @@ def prepare_read_html(raw_html, images, board, pid, kind, search_keyword=None):
     # Decide duplicates only after discarded markup and OG previews are gone.
     normalize_twitter_status_links(soup)
     mark_link_preview_targets(soup)
-    highlight_soup_text(soup, search_keyword)
-    return serialize_html_fragment(soup)
+    return soup
 
 
 def _class_tokens(tag):
@@ -316,7 +377,7 @@ def _find_og_text(anchor, class_names):
     return None
 
 
-def normalize_og_wraps(soup):
+def normalize_og_wraps(soup, signing_key):
     for anchor in list(soup.select("a.og-wrap")):
         href = str(anchor.get("href") or "").strip()
         if _is_bare_twitter_status_link(anchor, href) and _is_standalone_twitter_link(anchor):
@@ -359,7 +420,7 @@ def normalize_og_wraps(soup):
         image = anchor.find("img")
         raw_image_src = pick_soup_image_src(image) if image else None
         image_url = normalize_preview_image_url(raw_image_src, base_url=href)
-        image_token = preview_image_signature(image_url, current_app.secret_key) if image_url else None
+        image_token = preview_image_signature(image_url, signing_key) if image_url else None
         if image_url and image_token:
             media = soup.new_tag("span")
             media["class"] = ["link-preview-media"]

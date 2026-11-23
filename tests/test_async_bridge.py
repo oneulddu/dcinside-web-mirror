@@ -73,7 +73,7 @@ def test_background_loop_is_ready_only_after_it_starts(monkeypatch):
             assert entered.wait(timeout=5)
             try:
                 # A caller cannot receive a loop that is not accepting work yet.
-                assert not async_bridge._BACKGROUND_READY.is_set()
+                assert not async_bridge._BACKGROUND_READY.done()
                 others = [executor.submit(async_bridge.get_background_loop) for _ in range(7)]
             finally:
                 release.set()
@@ -84,3 +84,56 @@ def test_background_loop_is_ready_only_after_it_starts(monkeypatch):
     finally:
         release.set()
         async_bridge.shutdown_async_bridge()
+
+
+def test_loop_creation_failure_reaches_caller_and_allows_restart(monkeypatch):
+    async_bridge.shutdown_async_bridge()
+    def fail():
+        raise OSError("no loop")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(asyncio, "new_event_loop", fail)
+        with pytest.raises(OSError, match="no loop"):
+            async_bridge.get_background_loop()
+    async_bridge.shutdown_async_bridge()
+    try:
+        assert async_bridge.run_async(_value("new loop")) == "new loop"
+    finally:
+        async_bridge.shutdown_async_bridge()
+
+
+def test_close_failure_still_joins_worker(monkeypatch):
+    async_bridge.get_background_loop()
+    thread = async_bridge._BACKGROUND_THREAD
+    async def fail():
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr(async_bridge, "_close_shared_dc_api", fail)
+    with pytest.raises(RuntimeError, match="close failed"):
+        async_bridge.shutdown_async_bridge()
+    assert not thread.is_alive()
+
+
+def test_late_shutdown_does_not_abandon_live_worker(monkeypatch):
+    loop = async_bridge.get_background_loop()
+    shared = async_bridge.run_async(async_bridge._get_shared_dc_api())
+    entered = threading.Event()
+    release = threading.Event()
+
+    def block():
+        entered.set()
+        release.wait(timeout=5)
+
+    loop.call_soon_threadsafe(block)
+    try:
+        assert entered.wait(timeout=5)
+        with monkeypatch.context() as patch:
+            patch.setattr(async_bridge, "_BRIDGE_TIMEOUT", 0.01)
+            with pytest.raises(TimeoutError):
+                async_bridge.shutdown_async_bridge()
+        with pytest.raises(RuntimeError, match="stopping"):
+            async_bridge.get_background_loop()
+    finally:
+        release.set()
+        async_bridge.shutdown_async_bridge()
+    assert shared.session.closed

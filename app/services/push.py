@@ -122,7 +122,10 @@ def _row(raw):
     _require(raw.get("kind") in ("", "normal", "minor", "mini", "person"))
     _require(isinstance(raw.get("title"), str) and len(raw["title"]) <= 100)
     _require(type(raw.get("at")) is int and type(raw.get("base")) is bool)
-    return {k: raw[k] for k in ("board", "kind", "pid", "id", "at", "title", "base", "known")}
+    row = {k: raw[k] for k in ("board", "kind", "pid", "id", "at", "title", "base", "known")}
+    if row["kind"] == "normal":
+        row["kind"] = ""
+    return row
 
 
 def _post(r):
@@ -130,7 +133,30 @@ def _post(r):
 
 
 def _generation(r):
-    return (*_post(r), r["id"], r["at"])
+    return (*_post(r), r["id"], r.get("client_at", r["at"]))
+
+
+def _intent_id(row):
+    return _digest("|".join(map(str, _generation(row))))
+
+
+def _clamp_at(row, now):
+    if row["at"] > now:
+        # Retain the intent's identity, not its future polling/expiry date.
+        row.setdefault("client_at", row["at"])
+        row["at"] = now
+
+
+def _merge_generations(rows):
+    merged = {}
+    for row in rows:
+        key = _generation(row)
+        old = merged.get(key)
+        if old is not None:
+            row.update(known=str(max(int(old["known"]), int(row["known"]))),
+                       base=old["base"] and row["base"], checked=max(old["checked"], row["checked"]))
+        merged[key] = row
+    return list(merged.values())
 
 
 def _digest(endpoint):
@@ -149,7 +175,7 @@ def _new_state():
             "subscriptions": {}, "last_fetch": 0}
 
 
-def _validate_state(state):
+def _validate_and_normalize_state(state):
     key = Vapid.from_pem(state["private"].encode("ascii"))
     _require(isinstance(key.private_key.curve, ec.SECP256R1) and _public_key(key) == state["public"])
     subs = state["subscriptions"]
@@ -159,9 +185,16 @@ def _validate_state(state):
         _require(digest == _digest(info["endpoint"]) and type(record["rev"]) is int
                  and type(record["synced"]) is int and re.fullmatch(r"[a-f0-9]{32}", record["generation"]))
         _require(isinstance(record["rows"], list) and len(record["rows"]) <= MAX_ROWS)
+        expired = record.get("expired", {})
+        _require(isinstance(expired, dict) and len(record["rows"]) + len(expired) <= MAX_ROWS
+                 and all(re.fullmatch(r"[0-9a-f]{64}", key) and type(at) is int
+                         for key, at in expired.items()))
         for row in record["rows"]:
-            _row(row)
+            row.update(_row(row))
             _require(type(row["checked"]) is int)
+            _require("client_at" not in row or type(row["client_at"]) is int)
+            _clamp_at(row, record["synced"])
+        record["rows"] = _merge_generations(record["rows"])
 
 
 def _state_path():
@@ -177,7 +210,7 @@ def _state(*, create=False):
             try:
                 with path.open(encoding="utf-8") as source:
                     state = json.load(source)
-                _validate_state(state)
+                _validate_and_normalize_state(state)
             except FileNotFoundError:
                 if path.is_symlink():
                     raise PushError("unavailable") from None
@@ -232,8 +265,16 @@ def _send(subscription, private, payload):
 def _expire(subs, now):
     cutoff = now - 30 * DAY_MS
     for digest, record in list(subs.items()):
+        # A clamped intent can still look new to the client after its server
+        # lifetime ends. Keep only its identity until even its client date is
+        # too old, or until the client replaces it. Never schedule this marker.
+        expired = {k: at for k, at in record.get("expired", {}).items() if at >= cutoff}
+        for row in record["rows"]:
+            if "client_at" in row and row["at"] < cutoff <= row["client_at"]:
+                expired[_intent_id(row)] = row["client_at"]
+        record["expired"] = expired
         record["rows"] = [r for r in record["rows"] if r["at"] >= cutoff]
-        if not record["rows"] and record["synced"] < cutoff:
+        if not record["rows"] and not expired and record["synced"] < cutoff:
             del subs[digest]
 
 
@@ -266,17 +307,26 @@ def sync(body):
             if len(subs) >= MAX_SUBSCRIPTIONS:
                 del subs[min(subs, key=lambda k: subs[k]["synced"])]
         previous = {_generation(r): r for r in existing["rows"]} if existing else {}
+        expired = existing["expired"] if existing else {}
+        still_expired = {}
+        active = []
         for row in rows:
+            if expired and (key := _intent_id(row)) in expired:
+                still_expired[key] = expired[key]
+                continue
             old = previous.get(_generation(row))
             if old is not None:
-                row.update({k: old[k] for k in ("known", "base", "checked")})
+                row.update({k: old[k] for k in ("known", "base", "checked", "at", "client_at") if k in old})
             else:
                 row["checked"] = 0
                 if row["id"] != "post":
                     row.update(base=False, known=str(max(int(row["known"]), int(row["id"]))))
+            _clamp_at(row, now)
+            if row["at"] >= now - 30 * DAY_MS:
+                active.append(row)
         gen = existing["generation"] if existing else secrets.token_hex(16)
         subs[digest] = {"generation": gen, "subscription": info, "rev": rev, "synced": now,
-                        "rows": [r for r in rows if r["at"] >= now - 30 * DAY_MS]}
+                        "rows": _merge_generations(active), "expired": still_expired}
         private = state["private"]
     welcomed = False
     if existing is None:
@@ -330,7 +380,7 @@ def _reserve_post():
         due = {}
         for post, watches in posts.items():
             rows = [r for group in watches.values() for r in group]
-            checked = max(r["checked"] for r in rows)
+            checked = min(r["checked"] for r in rows)
             due[post] = checked + _interval(now - max(r["at"] for r in rows)) if checked else 0
         if not due or min(due.values()) > now:
             return None
@@ -392,23 +442,25 @@ def _commit(digest, gen, info, rows, outcome, highest):
                     row.update(base=False, known=str(max(int(row["known"]), highest)))
 
 
-def poll_step():
+def poll_step(stop=None):
     """One leader tick in an app context; no network while a state transaction is open."""
-    if not configured(current_app):
+    if (stop is not None and stop.is_set()) or not configured(current_app):
         return
     job = _reserve_post()
-    if not job:
+    if not job or (stop is not None and stop.is_set()):
         return
     post, watches, private = job
     board, kind, pid = post
     try:
-        data, raw_comments, _ = run_async(async_read(int(pid), board, kind=None if kind in ("", "normal") else kind))
+        data, raw_comments, _ = run_async(async_read(int(pid), board, kind=kind or None))
         if not data.get("_comments_complete") or data.get("_served_stale"):
             log.info("push poll board=%s pid=%s outcome=incomplete", board, pid)
             return
         comments = {int(c["id"]): c for c in raw_comments if NUMBER.fullmatch(c.get("id") or "")}
     except DocumentNotFoundError:
         for digest, gen, info, rows in watches:
+            if stop is not None and stop.is_set():
+                return
             _commit(digest, gen, info, rows, "not_found", 0)
         log.info("push poll board=%s pid=%s outcome=not_found", board, pid)
         return
@@ -418,6 +470,8 @@ def poll_step():
 
     highest = max(comments, default=0)
     for digest, gen, info, _ in watches:
+        if stop is not None and stop.is_set():
+            return
         with _state() as state:
             record = _current_record(state, digest, gen, info)
             if record is None:
@@ -428,6 +482,8 @@ def poll_step():
         payload, count = _matches(post, rows, comments)
         outcome = "no_match"
         if payload:
+            if stop is not None and stop.is_set():
+                return
             status = _send(info, private, payload)
             outcome = "gone" if status in (404, 410) else "accepted" if 200 <= status < 300 else "retry"
         # A post baseline observes this fetch independently of any matched reply's delivery.
@@ -455,7 +511,7 @@ def _poll_loop(app, stop):
                         else:
                             leader = candidate
                     if leader is not None:
-                        poll_step()
+                        poll_step(stop)
                 except Exception as exc:
                     log.error("push poll loop failure type=%s", type(exc).__name__)
                 stop.wait(5)

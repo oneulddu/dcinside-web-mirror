@@ -172,7 +172,7 @@
                 var image = images[i];
                 var showing = !blocked || overrides.get(image) === true;
                 if (showing) {
-                    if (!image.getAttribute("src")) {
+                    if (!image.getAttribute("src") && image.getAttribute("data-body-image-retry-suspended") === null) {
                         image.setAttribute("src", image.getAttribute("data-body-image-src"));
                     }
                 } else {

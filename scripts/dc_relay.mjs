@@ -30,7 +30,9 @@ export function authorized(header, token) {
   const match = /^Basic\s+([A-Za-z0-9+/=]+)$/.exec(String(header || '').trim());
   if (!match || !token) return false;
   const decoded = Buffer.from(match[1], 'base64').toString('utf8');
-  const secret = Buffer.from(decoded.slice(decoded.indexOf(':') + 1));
+  const separator = decoded.indexOf(':');
+  if (separator < 0) return false;
+  const secret = Buffer.from(decoded.slice(separator + 1));
   const expected = Buffer.from(token);
   return secret.length === expected.length && timingSafeEqual(secret, expected);
 }
@@ -39,12 +41,18 @@ export function normalizeAddress(address) {
   return String(address || '').replace(/^::ffff:/, '');
 }
 
-export function createRelay({ token, allowFrom, log = () => {} }) {
-  const server = net.createServer(client => {
+export function createRelay({ token, allowFrom, log = () => {}, connectUpstream = net.connect }) {
+  const server = net.createServer({ allowHalfOpen: true }, client => {
     const source = normalizeAddress(client.remoteAddress);
+    let upstream;
+    const abort = () => {
+      upstream?.destroy();
+      client.destroy();
+    };
     client.setTimeout(30000);
-    client.on('timeout', () => client.destroy());
-    client.on('error', () => {});
+    client.on('timeout', abort);
+    client.on('error', abort);
+    client.on('end', () => { if (!upstream) client.end(); });
     if (allowFrom.size && !allowFrom.has(source)) {
       log(`deny source ${source}`);
       client.destroy();
@@ -54,8 +62,8 @@ export function createRelay({ token, allowFrom, log = () => {} }) {
     const onData = chunk => {
       head = Buffer.concat([head, chunk]);
       const end = head.indexOf('\r\n\r\n');
+      if ((end < 0 ? head.length : end + 4) > 8192) return client.destroy();
       if (end < 0) {
-        if (head.length > 8192) client.destroy();
         return;
       }
       client.off('data', onData);
@@ -72,7 +80,7 @@ export function createRelay({ token, allowFrom, log = () => {} }) {
       if (!allowedTarget(target)) { log(`deny target ${String(target).slice(0, 80)}`); return reply(403, 'Forbidden'); }
       const [host] = target.split(':');
       let established = false;
-      const upstream = net.connect({ host, port: 443 }, () => {
+      upstream = connectUpstream({ host, port: 443, allowHalfOpen: true }, () => {
         established = true;
         client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         if (rest.length) upstream.write(rest);
@@ -81,13 +89,11 @@ export function createRelay({ token, allowFrom, log = () => {} }) {
         client.pipe(upstream);
         client.resume();
       });
-      upstream.setTimeout(120000, () => upstream.destroy());
+      upstream.setTimeout(120000, abort);
       upstream.on('error', () => {
         if (!established && !client.destroyed) reply(502, 'Bad Gateway');
-        else client.destroy();
+        else abort();
       });
-      upstream.on('close', () => client.destroy());
-      client.on('close', () => upstream.destroy());
       log(`connect ${host}`);
     };
     client.on('data', onData);

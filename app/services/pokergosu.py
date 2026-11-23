@@ -1,7 +1,9 @@
 """On-demand, bounded public Pokergosu reader. Independent of the DC event loop."""
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 import fcntl
 import json
 import math
@@ -23,6 +25,7 @@ MAX_HTML_BYTES = 4 * 1024 * 1024
 CACHE_LIMIT = 256
 TIMEOUT = 20
 COOLDOWN_SECONDS = 60
+MAX_RETRY_AFTER_SECONDS = 3600
 COOLDOWN_MESSAGE = "원본 요청이 잠시 제한됐어요. 잠시 후 다시 시도해 주세요."
 COMMENTS_BLOCKED_MESSAGE = "이전 댓글은 지금 원본에서 가져올 수 없어요. 원문에서 확인해 주세요."
 COMMENT_PAGE_SIZE = 25
@@ -35,9 +38,35 @@ logger = logging.getLogger(__name__)
 
 
 class PokerError(Exception):
-    def __init__(self, message="원본을 가져오지 못했어요. 잠시 후 다시 시도해 주세요.", status=502):
+    def __init__(self, message="원본을 가져오지 못했어요. 잠시 후 다시 시도해 주세요.", status=502, retry_at=None):
         super().__init__(message)
         self.status = status
+        self.retry_at = retry_at  # Monotonic; cached errors must not restart the wait.
+
+    @property
+    def retry_after(self):
+        if self.retry_at is not None:
+            return max(0, math.ceil(self.retry_at - time.monotonic()))
+
+
+class LocalBusy(PokerError):
+    """This worker's reader slots are busy, not a failure of this URL."""
+
+
+def _retry_after_seconds(header):
+    value = (header or '').strip()
+    if value.isascii() and value.isdecimal():
+        digits = value.lstrip('0')
+        if len(digits) > len(str(MAX_RETRY_AFTER_SECONDS)):
+            return MAX_RETRY_AFTER_SECONDS
+        return min(int(digits or '0'), MAX_RETRY_AFTER_SECONDS)
+    try:
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=timezone.utc)
+        return min(MAX_RETRY_AFTER_SECONDS, max(0, math.ceil(date.timestamp() - time.time())))
+    except (ValueError, OverflowError, TypeError, OSError):
+        return 0
 
 
 def _class(name):
@@ -220,15 +249,17 @@ def parse_post(raw, pid):
         if content is None:
             continue
         parents = node.xpath(f'ancestor::*[{_class("child-comments")}]')
-        parent = _first(parents[-1].xpath(f'preceding-sibling::*[{_class("comment")}]')) if parents else None
+        parent = _first(parents[-1].xpath(f'preceding-sibling::*[{_class("comment")}][1]')) if parents else None
         comments.append(dict(id=cid, parent_id=parent.get('id') if parent is not None else None,
                              is_reply=bool(parents), author=_text(_first(node.xpath('.//button[not(@title)]//p'))) or None,
                              time=_text(_first(node.xpath(f'.//*[{_class("numbertime")}]'))), html=_inner(content)))
     total_node = _first(tree.xpath('//*[@id="comment"]'))
     total_text = ' '.join(total_node.itertext()) if total_node is not None else ''
-    total = _number(total_text) if re.search(r'댓글\s*수\s*\d', total_text) else None
+    match = re.search(r'댓글\s*수\s*(\d[\d,]*)', total_text)
+    total = int(match[1].replace(',', '')) if match else None
     partial = total is None or total != len(comments)
     comment_page = _comment_page(total_node, not partial)
+    partial = partial or comment_page != 1
     return dict(id=pid, title=title, author=author, time=stamp,
                 view_count=next((_number(_text(e)) for e in meta if '조회 수' in _text(e)), None),
                 voteup_count=next((_number(_text(e)) for e in meta if '추천 수' in _text(e)), None),
@@ -311,7 +342,7 @@ def parse_comment_api(raw, pid, page):
                 comments_next_page=page - 1 if page > 1 else None)
 
 
-@dataclass
+@dataclass(frozen=True)
 class CacheEntry:
     fresh_until: float = 0.0
     stale_until: float = 0.0
@@ -328,6 +359,7 @@ class Reader:
         self.slots = threading.BoundedSemaphore(2)
         self.cooldown_until = 0.0
         self.comments_blocked_until = 0.0
+        self.retry_windows = {}
         self.last_start = 0.0
         self.pace_lock = threading.Lock()
         self.sessions = threading.local()
@@ -342,52 +374,74 @@ class Reader:
         # 글·목록 읽기 전체를 멈추는 짧은 쿨다운과 따로 둔다.
         self.comments_block_seconds = max(0, float(os.getenv('MIRROR_POKER_COMMENTS_BLOCK_SECONDS', '21600')))
 
-    def _upstream_state(self, action):
+    def _upstream_state(self, action, retry_after=0):
         """Check limits, attempt a paced start, or set a cooldown/comment block under flock."""
         def update(state):
             now = time.time()
             # Clamp shared wall-clock values so a clock step backwards cannot turn
             # into a long sleep or cooldown outside the HTTP timeout.
-            cooldown = min(max(self.cooldown_until, state.get('cooldown_until', 0)), now + COOLDOWN_SECONDS)
-            comments_blocked = min(max(self.comments_blocked_until, state.get(COMMENT_BLOCK_KEY, 0)),
-                                   now + self.comments_block_seconds)
+            def gate(key, local_until, base, setting):
+                # Persist the accepted window with its deadline so reopening the file
+                # preserves longer hints but clock-step repair still bounds ordinary gates.
+                window_key = key + '_window'
+                window = min(MAX_RETRY_AFTER_SECONDS, max(self.retry_windows.get(window_key, 0),
+                                                          state.get(window_key, 0)))
+                until = min(max(local_until, state.get(key, 0)), now + max(base, window))
+                if setting and now + max(base, retry_after) >= until:
+                    until = now + max(base, retry_after)
+                    window = retry_after if retry_after > base else 0
+                self.retry_windows[window_key] = window
+                return until
+
+            cooldown = gate('cooldown_until', self.cooldown_until, COOLDOWN_SECONDS, action == 'cooldown')
+            comments_blocked = gate(COMMENT_BLOCK_KEY, self.comments_blocked_until,
+                                    self.comments_block_seconds, action == 'block_comments')
             last = min(max(self.last_start, state.get('last_start', 0)), now)
-            if action == 'cooldown':
-                cooldown = max(cooldown, now + COOLDOWN_SECONDS)
-            elif action == 'block_comments':
-                comments_blocked = max(comments_blocked, now + self.comments_block_seconds)
             # 차단 원인은 같은 시각의 상태로 한 번에 정한다. 댓글 요청은 전송 직전까지 댓글 차단도 본다.
             comments_request = action in ('check_comments', 'start_comments')
-            blocked = ('cooldown' if cooldown > now
-                       else 'comments' if comments_request and comments_blocked > now else None)
+            blocked = ('comments' if comments_request and comments_blocked > now
+                       else 'cooldown' if cooldown > now else None)
             starting = action in ('start', 'start_comments')
             delay = min(0.3, max(0, last + 0.3 - now)) if starting else 0
             if starting and not blocked and not delay:
                 last = now
             self.cooldown_until, self.comments_blocked_until, self.last_start = cooldown, comments_blocked, last
-            return ({'cooldown_until': cooldown, COMMENT_BLOCK_KEY: comments_blocked, 'last_start': last},
-                    (blocked, delay, comments_blocked > now))
+            until = comments_blocked if blocked == 'comments' or action == 'block_comments' else cooldown
+            retry_at = time.monotonic() + max(0, until - now)
+            return ({'cooldown_until': cooldown, COMMENT_BLOCK_KEY: comments_blocked, 'last_start': last,
+                     **self.retry_windows},
+                    (blocked, delay, comments_blocked > now, retry_at))
 
         with self.pace_lock:
             if not self.state_failed:
                 try:
                     self.state_file.parent.mkdir(parents=True, exist_ok=True)
                     with self.state_file.open('a+', encoding='utf-8') as handle:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                        handle.seek(0)
-                        try:
-                            state = json.loads(handle.read(4096))
-                            if not isinstance(state, dict):
+                        checking = action in ('check', 'check_comments')
+                        while True:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_SH if checking else fcntl.LOCK_EX)
+                            handle.seek(0)
+                            try:
+                                state = json.loads(handle.read(4096))
+                                if not isinstance(state, dict):
+                                    state = {}
+                                state = {key: value for key, value in state.items()
+                                         if key in ('cooldown_until', COMMENT_BLOCK_KEY, 'last_start',
+                                                    'cooldown_until_window', COMMENT_BLOCK_KEY + '_window')
+                                         and type(value) in (int, float) and math.isfinite(value) and value >= 0}
+                            except (ValueError, UnicodeError, OverflowError):
                                 state = {}
-                            state = {key: value for key, value in state.items()
-                                     if key in ('cooldown_until', COMMENT_BLOCK_KEY, 'last_start')
-                                     and type(value) in (int, float) and math.isfinite(value) and value >= 0}
-                        except (ValueError, UnicodeError, OverflowError):
-                            state = {}
-                        state, result = update(state)
+                            updated, result = update(state)
+                            if all(state.get(k, 0) == v for k, v in updated.items()):
+                                return result
+                            if not checking:
+                                break
+                            # Exceptional clock-step repair. Re-read under EX: another worker
+                            # may have started or recorded a challenge during the upgrade.
+                            checking = False
                         handle.seek(0)
                         handle.truncate()
-                        json.dump(state, handle)
+                        json.dump(updated, handle)
                         handle.flush()
                         return result
                 except OSError:
@@ -398,11 +452,11 @@ class Reader:
             return result
 
     def _check_upstream(self, action):
-        blocked, delay, _ = self._upstream_state(action)
+        blocked, delay, _, retry_at = self._upstream_state(action)
         if blocked == 'comments':
-            raise PokerError(COMMENTS_BLOCKED_MESSAGE, 503)
+            raise PokerError(COMMENTS_BLOCKED_MESSAGE, 503, retry_at)
         if blocked:
-            raise PokerError(COOLDOWN_MESSAGE, 503)
+            raise PokerError(COOLDOWN_MESSAGE, 503, retry_at)
         return delay
 
     def comments_blocked(self):
@@ -427,6 +481,20 @@ class Reader:
             except Exception:
                 logger.debug('Pokergosu session close failed', exc_info=True)
 
+    def _check_response_gate(self, response, comments):
+        challenge = response.headers.get('cf-mitigated') == 'challenge'
+        if not challenge and response.status_code not in (403, 429):
+            return
+        self._discard_session()
+        hint = _retry_after_seconds(response.headers.get('Retry-After'))
+        action = 'block_comments' if comments else 'cooldown'
+        _, _, _, retry_at = self._upstream_state(action, hint)
+        error = PokerError(COMMENTS_BLOCKED_MESSAGE if comments else COOLDOWN_MESSAGE, 503, retry_at)
+        logger.warning('Pokergosu %s (%s); pausing for %ds',
+                       'comment pages blocked upstream' if comments else 'upstream limited',
+                       'challenge' if challenge else response.status_code, error.retry_after)
+        raise error
+
     def _fetch(self, path):
         # 원본은 이전 댓글 요청만 따로 확인 화면으로 막을 수 있다.
         comments = path.startswith(COMMENT_API_PREFIX) or 'cpage=' in urlsplit(path).query
@@ -437,7 +505,7 @@ class Reader:
             headers = {'Accept': 'application/json, text/plain, */*', 'Referer': f'{BASE_URL}/{board_id}/{pid}'}
         self._check_upstream('check_comments' if comments else 'check')
         if not self.slots.acquire(timeout=1):
-            raise PokerError("요청이 많아요. 잠시 후 다시 시도해 주세요.", 503)
+            raise LocalBusy("요청이 많아요. 잠시 후 다시 시도해 주세요.", 503, time.monotonic() + 1)
         try:
             while delay := self._check_upstream('start_comments' if comments else 'start'):
                 time.sleep(delay)
@@ -453,21 +521,7 @@ class Reader:
             options = {'headers': headers} if headers else {}
             response = self._session().get(BASE_URL + path, timeout=TIMEOUT, allow_redirects=False,
                                            content_callback=receive, **options)
-            if size > MAX_HTML_BYTES:
-                self._discard_session()
-                raise PokerError("원본 페이지가 너무 커서 가져오지 못했어요.")
-            if response.headers.get('cf-mitigated') == 'challenge' or response.status_code in (403, 429):
-                self._discard_session()
-                reason = 'challenge' if response.headers.get('cf-mitigated') == 'challenge' else response.status_code
-                if comments:
-                    # 글·목록은 정상이므로 전체를 멈추지 않고 댓글 페이지 요청만 쉰다.
-                    self._upstream_state('block_comments')
-                    logger.warning('Pokergosu comment pages blocked upstream (%s); pausing them for %ds',
-                                   reason, self.comments_block_seconds)
-                    raise PokerError(COMMENTS_BLOCKED_MESSAGE, 503)
-                self._upstream_state('cooldown')
-                logger.warning('Pokergosu upstream limited (%s); cooling down for %ds', reason, COOLDOWN_SECONDS)
-                raise PokerError(COOLDOWN_MESSAGE, 503)
+            self._check_response_gate(response, comments)
             if response.status_code in (301, 302, 303, 307, 308) and is_login_redirect(response.headers.get('location')):
                 raise PokerError("원본 로그인이 필요한 게시판이에요. 원문에서 확인해 주세요.", 403)
             if response.status_code in (404, 410):
@@ -478,32 +532,53 @@ class Reader:
                 raise PokerError()
             return b''.join(chunks)
         except requests.RequestsError as exc:
+            if exc.response is not None:
+                self._check_response_gate(exc.response, comments)
             self._discard_session()
+            if size > MAX_HTML_BYTES:
+                raise PokerError("원본 페이지가 너무 커서 가져오지 못했어요.") from exc
             raise PokerError() from exc
         finally:
             self.slots.release()
 
     def get(self, key, path, parser, ttl):
-        with self.lock:
-            now = time.monotonic()
-            cached = self.cache.get(key)
-            if cached and (cached.fresh_until > now or cached.error_until > now):
+        owned = None
+        try:
+            with self.lock:
+                now = time.monotonic()
+                cached = self.cache.get(key)
+                hit = cached and (cached.fresh_until > now or cached.error_until > now)
+                if not hit:
+                    future = self.flights.get(key)
+                    if future is None:
+                        owned = Future()
+                        self.flights[key] = owned
+            if hit:
                 return self._result(cached)
-            future = self.flights.get(key)
-            owner = future is None
-            if owner:
-                future = self.flights[key] = Future()
-        if not owner:
-            try:
-                entry = future.result(timeout=TIMEOUT + 5)
-            except FutureTimeout as exc:
-                with self.lock:
-                    cached = self.cache.get(key)
+            if owned is not None:
+                entry = self._refresh(key, path, parser, ttl)
+                owned.set_result(entry)
+            else:
+                try:
+                    entry = future.result(timeout=TIMEOUT + 5)
+                except FutureTimeout as exc:
+                    with self.lock:
+                        cached = self.cache.get(key)
                     if cached and cached.value is not None and cached.stale_until > time.monotonic():
                         return self._stale(cached.value)
-                raise PokerError() from exc
-            return self._result(entry)
+                    raise PokerError() from exc
+        finally:
+            if owned is not None:
+                with self.lock:
+                    if not owned.done():
+                        owned.set_exception(PokerError())
+                    if self.flights.get(key) is owned:
+                        del self.flights[key]
+        return self._result(entry)
+
+    def _refresh(self, key, path, parser, ttl):
         value, error = None, None
+        cacheable = True
         try:
             raw = self._fetch(path)
             try:
@@ -516,36 +591,32 @@ class Reader:
             if key[0] == 'board' and key[2] == 1 and not value['posts']:
                 logger.warning("Pokergosu empty first board page for %r", key)
         except PokerError as exc:
-            error = (str(exc), exc.status)
+            error = (str(exc), exc.status, exc.retry_at)
+            cacheable = not isinstance(exc, LocalBusy)
         except Exception:
             logger.exception("Pokergosu parse failed for %r", key)
-            error = ("원본 페이지를 처리하지 못했어요.", 502)
-        finally:
-            with self.lock:
-                now = time.monotonic()
-                previous = self.cache.get(key)
-                if error:
-                    entry = CacheEntry(error_until=now + 10, error=error)
-                    if (error[1] in (502, 503) and previous and previous.value is not None
-                            and previous.stale_until > now):
-                        entry.value = previous.value
-                        entry.stale_until = previous.stale_until
-                else:
-                    entry = CacheEntry(fresh_until=now + ttl,
-                                       stale_until=now + ttl + self.stale_seconds, value=value)
-                self.cache = {k: v for k, v in self.cache.items()
-                              if max(v.stale_until, v.error_until) > now}
-                # Drop expired successes even if their negative-cache entry lives on.
-                for retained in self.cache.values():
-                    if retained.stale_until <= now:
-                        retained.value = None
+            error = ("원본 페이지를 처리하지 못했어요.", 502, None)
+        with self.lock:
+            now = time.monotonic()
+            previous = self.cache.get(key)
+            if error:
+                until = now + 10
+                if error[2] is not None:
+                    until = min(until, error[2])
+                entry = CacheEntry(error_until=until, error=error)
+                if (error[1] in (502, 503) and previous and previous.stale_until > now):
+                    entry = replace(entry, value=previous.value, stale_until=previous.stale_until)
+            else:
+                entry = CacheEntry(fresh_until=now + ttl,
+                                   stale_until=now + ttl + self.stale_seconds, value=value)
+            if cacheable:
+                self.cache = {k: replace(v, value=None) if v.value is not None and v.stale_until <= now else v
+                              for k, v in self.cache.items() if max(v.stale_until, v.error_until) > now}
                 self.cache.pop(key, None)
                 if len(self.cache) >= CACHE_LIMIT:
                     self.cache.pop(next(iter(self.cache)))
                 self.cache[key] = entry
-                self.flights.pop(key, None)
-                future.set_result(entry)
-        return self._result(entry)
+        return entry
 
     @staticmethod
     def _stale(value):
@@ -556,12 +627,13 @@ class Reader:
     @classmethod
     def _result(cls, entry):
         """Fresh data omits `stale`; only transient-error fallback sets it True."""
+        value = entry.value
         if entry.error:
-            if (entry.error[1] in (502, 503) and entry.value is not None
+            if (entry.error[1] in (502, 503) and value is not None
                     and entry.stale_until > time.monotonic()):
-                return cls._stale(entry.value)
+                return cls._stale(value)
             raise PokerError(*entry.error)
-        return deepcopy(entry.value)
+        return deepcopy(value)
 
     @staticmethod
     def _prepare(data, prepare):

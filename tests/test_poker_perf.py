@@ -1,6 +1,7 @@
 """Cache, preparation, transport reuse, and shared limiter regression tests."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+from email.utils import formatdate
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -144,6 +145,59 @@ def test_zero_stale_disables_fallback(monkeypatch, clock):
         reader.board(1)
 
 
+def test_interrupted_fetch_does_not_publish_a_success(monkeypatch):
+    reader = pg.Reader()
+    def interrupt(path):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(reader, '_fetch', interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        reader.board(1)
+    monkeypatch.setattr(reader, '_fetch', lambda path: (FIXTURES / 'board.html').read_bytes())
+    assert len(reader.board(1)['posts']) == 2
+
+
+def test_slow_cache_copy_does_not_block_other_cached_pages(monkeypatch):
+    reader = pg.Reader()
+    monkeypatch.setattr(reader, '_fetch', lambda path: (FIXTURES / 'board.html').read_bytes())
+    for page in (1, 2):
+        reader.board(page)
+    entered, release = threading.Event(), threading.Event()
+    original = pg.deepcopy
+    def slow_copy(value):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        return original(value)
+    monkeypatch.setattr(pg, 'deepcopy', slow_copy)
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(reader.board, 1)
+        try:
+            assert entered.wait(2)
+            assert pool.submit(reader.board, 2).result(2)['posts']
+        finally:
+            release.set()
+        assert first.result(2)['posts']
+
+
+def test_interrupted_cache_publication_wakes_waiters_and_releases_key(monkeypatch, clock):
+    reader = pg.Reader()
+    flights = []
+    def fetch(path):
+        flights.extend(reader.flights.values())
+        def interrupt():
+            monkeypatch.setattr(clock, 'monotonic', clock.time)
+            raise KeyboardInterrupt
+        monkeypatch.setattr(clock, 'monotonic', interrupt)
+        return (FIXTURES / 'board.html').read_bytes()
+    monkeypatch.setattr(reader, '_fetch', fetch)
+    with pytest.raises(KeyboardInterrupt):
+        reader.board(1)
+    with pytest.raises(pg.PokerError):
+        flights[0].result(timeout=0)
+    monkeypatch.setattr(reader, '_fetch', lambda path: (FIXTURES / 'board.html').read_bytes())
+    assert reader.board(1)['posts']
+
+
 def test_failed_refresh_still_coalesces_and_copies(monkeypatch, clock):
     reader = pg.Reader()
     monkeypatch.setattr(reader, '_fetch', lambda path: (FIXTURES / 'board.html').read_bytes())
@@ -196,7 +250,8 @@ def install_session(monkeypatch, outcomes=None):
             body = (FIXTURES / 'board.html').read_bytes()
             if kwargs['content_callback'](body) != len(body):
                 raise pg.requests.RequestsError('write aborted')
-            return SimpleNamespace(status_code=outcome, headers={})
+            status, headers = outcome if isinstance(outcome, tuple) else (outcome, {})
+            return SimpleNamespace(status_code=status, headers=headers)
 
     monkeypatch.setattr(pg.requests, 'Session', Session)
     return sessions, starts
@@ -214,6 +269,21 @@ def test_shared_cooldown_between_readers(monkeypatch, clock, tmp_path):
     clock.now = 1061
     second._fetch('/hand?page=1')
     assert len(starts) == 2
+
+
+@pytest.mark.parametrize('header,wait', [('120', 120), (formatdate(1120, usegmt=True), 120),
+                                        ('99999999999999999', 3600), ('bad date', 60), ('1', 60)])
+def test_retry_after_controls_origin_admission_and_http_hint(monkeypatch, clock, header, wait):
+    _, starts = install_session(monkeypatch, [(429, {'Retry-After': header}), 200])
+    monkeypatch.setattr(poker_routes, 'reader', pg.Reader())
+    client = create_app().test_client()
+    assert client.get('/poker/free').headers['Retry-After'] == str(wait)
+    monkeypatch.setattr(poker_routes, 'reader', pg.Reader())  # Reopen the shared gate.
+    clock.now += wait - 1
+    assert client.get('/poker/free/list').headers['Retry-After'] == '1'
+    assert starts == [1000]
+    clock.now += 1
+    assert client.get('/poker/free/list').status_code == 200
 
 
 def test_comment_page_challenge_pauses_only_comment_pages(monkeypatch, clock, tmp_path, caplog):
@@ -266,6 +336,21 @@ def test_old_cpage_block_record_does_not_pause_comment_api(monkeypatch, clock, t
     assert len(starts) == 1
 
 
+def test_read_only_comment_check_shares_lock_without_rewriting(monkeypatch, clock, tmp_path):
+    path = tmp_path / 'upstream.json'
+    original = '{\n  "comment_api_blocked_until": 2000\n}\n'
+    path.write_text(original)
+    locks = []
+    flock = pg.fcntl.flock
+    def lock(fd, mode):
+        locks.append(mode)
+        return flock(fd, mode)
+    monkeypatch.setattr(pg.fcntl, 'flock', lock)
+    assert pg.Reader().comments_blocked()
+    assert path.read_text() == original
+    assert locks == [pg.fcntl.LOCK_SH]
+
+
 def test_comment_api_request_looks_like_the_upstream_page(monkeypatch):
     seen = []
 
@@ -296,6 +381,20 @@ def test_page_challenge_still_cools_down_comment_pages(monkeypatch, clock):
         reader._fetch(pg.comment_api_path('best', 123, 1))
     assert str(exc.value) == pg.COOLDOWN_MESSAGE and len(starts) == 1
     assert reader.comments_blocked() is False
+
+
+def test_comment_block_reason_survives_overlapping_global_gate(monkeypatch, clock):
+    install_session(monkeypatch, [403, 429])
+    reader = pg.Reader()
+    monkeypatch.setattr(poker_routes, 'reader', reader)
+    client = create_app().test_client()
+    path = '/poker/free/123/comments?cpage=1'
+    assert client.get(path).json['code'] == 'comments_blocked'
+    assert client.get('/poker/free').headers['Retry-After'] == '60'
+    clock.now = 1011  # A fresh gate check, not the first URL's cached reply.
+    response = client.get(path)
+    assert response.status_code == 503 and response.json['code'] == 'comments_blocked'
+    assert response.headers['Retry-After'] == '21589'
 
 
 def test_shared_start_pacing_between_readers(monkeypatch, clock):
@@ -397,8 +496,27 @@ def test_busy_slots_return_stale(monkeypatch, clock):
     reader = pg.Reader()
     reader.board(1)
     clock.now += 21
-    monkeypatch.setattr(reader, 'slots', SimpleNamespace(acquire=lambda **kwargs: False))
-    assert reader.board(1)['stale']
+    with monkeypatch.context() as busy:
+        busy.setattr(reader, 'slots', SimpleNamespace(acquire=lambda **kwargs: False))
+        assert reader.board(1)['stale']
+        with pytest.raises(pg.PokerError) as exc:
+            reader.board(2)
+        assert exc.value.retry_after == 1
+    assert 'stale' not in reader.board(1)
+    assert reader.board(2)['posts']
+
+
+def test_gate_retry_after_counts_down_and_expires_with_gate(monkeypatch, clock):
+    install_session(monkeypatch, [429, 200])
+    monkeypatch.setattr(poker_routes, 'reader', pg.Reader())
+    client = create_app().test_client()
+    assert client.get('/poker/free').headers['Retry-After'] == '60'
+    clock.now += 58
+    assert client.get('/poker/free/list').headers['Retry-After'] == '2'
+    clock.now += 1
+    assert client.get('/poker/free').headers['Retry-After'] == '1'
+    clock.now += 1
+    assert client.get('/poker/free/list').status_code == 200
 
 
 @pytest.mark.parametrize('path,fixture_name', [('/poker/free/123', 'post.html'),

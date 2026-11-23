@@ -97,7 +97,7 @@
         lastCheckedAt: 0,
         lastItems: null,
         generation: 0,
-        refreshing: false,
+        cancelRefresh: null,
         bar: null,
         hiddenSince: 0,
         baseTitle: ""
@@ -180,7 +180,7 @@
 
     function render() {
         var bar = ensureBar();
-        if (!bar || state.refreshing) {
+        if (!bar || state.cancelRefresh) {
             return;
         }
         var button = bar.querySelector(".board-updates-btn");
@@ -284,7 +284,7 @@
         })
             .then(function (response) {
                 return response.json().then(function (payload) {
-                    if (payload && payload.code === "visitor_check_required") {
+                    if (generation === state.generation && payload && payload.code === "visitor_check_required") {
                         state.visitorCheck = true;
                         render();
                     }
@@ -310,6 +310,7 @@
             })
             .then(function () {
                 clearTimeout(timeout);
+                if (generation !== state.generation) return;
                 if (state.controller === controller) {
                     state.controller = null;
                 }
@@ -319,6 +320,7 @@
 
     function listReplaced() {
         state.generation += 1;
+        if (state.cancelRefresh) state.cancelRefresh();
         state.lastItems = null;
         abortCheck();
         render();
@@ -330,27 +332,34 @@
             root.location.reload();
             return;
         }
-        if (state.refreshing) {
+        if (state.cancelRefresh) {
             return;
         }
         var bar = ensureBar();
         var button = bar.querySelector(".board-updates-btn");
         var list = boardList();
-        state.refreshing = true;
+        state.cancelRefresh = cancel;
         button.disabled = true;
         button.textContent = "불러오는 중…";
         list.setAttribute("aria-busy", "true");
         var url = new URL(root.location.href);
         url.searchParams.set("refresh", "1");
-        var generation = state.generation;
         // 응답이나 본문 수신이 멈춰도 버튼이 영영 잠기지 않게 본문 읽기까지 시간 제한을 둔다.
         var controller = typeof AbortController === "function" ? new AbortController() : null;
-        var timedOut = false;
+        function release() {
+            clearTimeout(timeout);
+            state.cancelRefresh = null;
+            list.setAttribute("aria-busy", "false");
+            button.disabled = false;
+        }
+        function cancel() {
+            release();
+            if (controller) controller.abort();
+            render();
+        }
         var timeout = setTimeout(function () {
-            timedOut = true;
-            if (controller) {
-                controller.abort();
-            }
+            cancel();
+            button.textContent = "새로고침하지 못했어요. 다시 시도";
         }, REQUEST_TIMEOUT_MS);
         fetch(url.toString(), {
             credentials: "same-origin",
@@ -360,7 +369,7 @@
             .then(function (response) {
                 if (!response.ok) {
                     return response.json().then(function (payload) {
-                        if (payload && payload.code === "visitor_check_required") {
+                        if (state.cancelRefresh === cancel && payload && payload.code === "visitor_check_required") {
                             state.visitorCheck = true;
                             clearTimeout(state.timer);
                         }
@@ -370,16 +379,14 @@
                 return response.text();
             })
             .then(function (html) {
-                if (timedOut) {
-                    throw new Error("refresh timed out");
-                }
+                if (state.cancelRefresh !== cancel) return;
                 var next = new DOMParser().parseFromString(html, "text/html").getElementById("board-list");
                 var current = boardList();
-                if (!next || !current || generation !== state.generation) {
+                if (!next || !current) {
                     throw new Error("board list missing");
                 }
+                release();
                 current.replaceWith(next);
-                state.refreshing = false;
                 document.dispatchEvent(new CustomEvent("mirror:board-refreshed", { detail: { root: next } }));
                 var heading = document.querySelector(".masthead-board-head h1");
                 if (heading) {
@@ -388,19 +395,12 @@
                 }
             })
             .catch(function () {
-                state.refreshing = false;
-                var current = boardList();
-                if (current) {
-                    current.setAttribute("aria-busy", "false");
-                }
-                button.disabled = false;
+                if (state.cancelRefresh !== cancel) return;
+                release();
                 button.textContent = "새로고침하지 못했어요. 다시 시도";
                 if (state.visitorCheck) {
                     render();
                 }
-            })
-            .then(function () {
-                clearTimeout(timeout);
             });
     }
 
@@ -420,6 +420,8 @@
             scheduleFromLastCheck();
         });
         root.addEventListener("pagehide", function () {
+            state.generation += 1;
+            if (state.cancelRefresh) state.cancelRefresh();
             clearTimeout(state.timer);
             state.timer = null;
             abortCheck();

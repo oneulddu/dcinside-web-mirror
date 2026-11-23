@@ -43,13 +43,18 @@ def _error(error, source_url, page, board_id, search=None):
         params.update(s=search['s'], v=search['v'])
     return_url = url_for('poker.search' if search else 'poker.board', board_id=board_id, **params)
     if request.endpoint == 'poker.board':
-        return_url = url_for('poker.board', board_id=board_id, page=1) if page > 1 else url_for('poker.index')
+        if page > 1:
+            return_url = url_for('poker.board', board_id=board_id, page=1)
+        else:
+            return_url = url_for('main.index' if board_id == DEFAULT_BOARD else 'poker.index')
+    elif request.endpoint == 'poker.search':
+        return_url = url_for('poker.board', board_id=board_id, page=1)
     response = make_response(render_template('poker/error.html', title=BOARDS[board_id]['label'] + ' · 포커 · 숨터', message=str(error),
         status=error.status, source_url=source_url, return_url=return_url,
         retry_url=request.path + '?' + urlencode(params), search=search, **_context(board_id)), error.status)
     response.headers['Cache-Control'] = 'no-store'
-    if error.status == 503:
-        response.headers['Retry-After'] = '60'
+    if error.status == 503 and error.retry_at is not None:
+        response.headers['Retry-After'] = str(error.retry_after)
     return response
 
 
@@ -108,13 +113,13 @@ def search(board_id):
     return response
 
 
-def _list_response(payload, status=200):
+def _list_response(payload, status=200, retry_after=None):
     response = jsonify(payload)
     response.status_code = status
     response.headers['Cache-Control'] = 'no-store'
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    if status == 503:
-        response.headers['Retry-After'] = '60'
+    if status == 503 and retry_after is not None:
+        response.headers['Retry-After'] = str(retry_after)
     return response
 
 
@@ -138,7 +143,7 @@ def post_list(board_id):
         data = (reader.search(page, board_id=board_id, s=search['s'], v=search['v']) if search
                 else reader.board(page, board_id=board_id))
     except PokerError as exc:
-        return _list_response({'error': str(exc)}, exc.status)
+        return _list_response({'error': str(exc)}, exc.status, exc.retry_after)
     fragment = render_template('poker/_post_list.html', data=data, page=page,
                                current_pid=current_pid, mode='read', search=search, **context)
     payload = {'html': fragment, 'page': page}
@@ -193,7 +198,7 @@ def comments(board_id, pid):
         payload = {'error': str(exc)}
         if str(exc) == COMMENTS_BLOCKED_MESSAGE:
             payload['code'] = 'comments_blocked'
-        return _list_response(payload, exc.status)
+        return _list_response(payload, exc.status, exc.retry_after)
     rows = []
     for comment in data['comments']:
         rows.append({'id': comment['id'], 'html': render_template('poker/_comment.html', comment=comment)})

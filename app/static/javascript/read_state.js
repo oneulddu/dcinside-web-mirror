@@ -5,8 +5,12 @@
     var SYNC_KEY = "read_posts_sync_v1";
     var syncInFlight = false;
     var syncStopped = false;
+    var pageActive = true;
+    var retryAt = 0, retryDelay = 0, retryTimer;
     var lastSync = -Infinity;
     var LAST_SYNC_KEY = "read_posts_last_sync_v1";
+    // 이 문서에서 동시에 보내는 푸시 요청에도 keepalive 용량을 남긴다.
+    var PAGEHIDE_MAX_BYTES = 32 * 1024;
     var THEME_STORAGE_KEY = "mirror_theme_v1";
     var MEDIA_BLOCK_STORAGE_KEY = "mirror_media_block_mode_v1";
     var LEGACY_DCCON_BLOCK_STORAGE_KEY = "mirror_dccon_block_v1";
@@ -600,24 +604,43 @@
         }
     }
 
-    async function syncReadState(allowReset = true) {
+    function validMark(store, key) {
+        return /^(?:[A-Za-z0-9_]{1,80}\|(?=[0-9]{1,15}$)0*[1-9][0-9]*|poker:[1-9][0-9]{0,11})$/.test(key)
+            && Number.isSafeInteger(store[key]) && store[key] >= 0;
+    }
+
+    function scheduleReadRetry() {
+        window.clearTimeout(retryTimer);
+        retryTimer = window.setTimeout(function () {
+            if (document.visibilityState === "visible") syncReadState();
+        }, Math.max(0, retryAt - Date.now()));
+    }
+
+    async function syncReadState(allowReset = true, leaving = false) {
         var url = document.body && document.body.dataset.readSync;
         if (!url || syncInFlight || syncStopped) return;
         var store = pruneStore(loadStore());
         var meta = loadSyncMeta(store);
         var sent = {};
         // Old DC /read URLs could leave malformed marks. Never let one poison a whole upload.
-        meta.pending.forEach(function (key) {
-            if (/^(?:[A-Za-z0-9_]{1,80}\|0*[1-9][0-9]*|poker:[1-9][0-9]{0,11})$/.test(key) &&
-                    Number.isSafeInteger(store[key]) && store[key] >= 0) sent[key] = store[key];
-        });
+        meta.pending.forEach(function (key) { if (validMark(store, key)) sent[key] = store[key]; });
+        if (Object.keys(sent).length !== meta.pending.length) {
+            meta.pending = Object.keys(sent);
+            saveSyncMeta(meta);
+        }
         var now = Date.now();
+        if (now < retryAt) {
+            if (!leaving && document.visibilityState === "visible") scheduleReadRetry();
+            return;
+        }
         try {
             var saved = window.sessionStorage.getItem(LAST_SYNC_KEY);
             if (saved !== null) lastSync = Math.max(lastSync, Number(saved) || 0);
         } catch (err) {
         }
-        if (!Object.keys(sent).length && now >= lastSync && now - lastSync < 30000) return;
+        if (!Object.keys(sent).length && (leaving || (!retryDelay && now >= lastSync && now - lastSync < 30000))) return;
+        var body = JSON.stringify({ id: meta.id, since: meta.rev, items: sent });
+        if (leaving && new Blob([body]).size > PAGEHIDE_MAX_BYTES) return;
         syncInFlight = true;
         lastSync = now;
         try {
@@ -626,20 +649,19 @@
         }
         var repeat = false;
         try {
-            var body = JSON.stringify({ id: meta.id, since: meta.rev, items: sent });
             var response = await window.fetch(url, {
                 method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-                body: body, keepalive: body.length < 64 * 1024 // validated keys make this JSON ASCII-only
+                body: body, keepalive: leaving
             });
             if (!response.ok) {
+                if (response.status >= 500 || response.status === 408 || response.status === 429) throw Error("retry");
                 syncStopped = true;
                 return;
             }
             var data = await response.json();
             if (data.ok !== true || typeof data.id !== "string" || !data.id || !Number.isSafeInteger(data.rev) || data.rev < 0 ||
                     typeof data.reset !== "boolean" || !data.items || typeof data.items !== "object" || Array.isArray(data.items)) {
-                syncStopped = true;
-                return;
+                throw Error("invalid sync reply");
             }
             // Reload both halves after the await: a sibling tab may have re-read a sent key.
             store = loadStore();
@@ -650,21 +672,23 @@
             });
             readStore = pruneStore(store);
             if (!saveStore(readStore)) {
-                syncStopped = true;
-                return;
+                throw Error("cannot save marks");
             }
             meta.id = data.id;
             meta.rev = data.reset ? data.rev : Math.max(meta.rev, data.rev);
-            meta.pending = data.reset ? Object.keys(readStore) : pending.filter(function (key) { return key in readStore; });
+            meta.pending = (data.reset ? Object.keys(readStore) : pending).filter(function (key) { return validMark(readStore, key); });
             saveSyncMeta(meta);
             applyReadState(document, readStore);
             repeat = data.reset && allowReset && meta.pending.length > 0;
+            retryAt = retryDelay = 0;
         } catch (err) {
-            syncStopped = true;
+            retryDelay = Math.min(60000, retryDelay ? retryDelay * 2 : 1000);
+            retryAt = Date.now() + retryDelay;
+            if (pageActive && document.visibilityState === "visible") scheduleReadRetry();
         } finally {
             syncInFlight = false;
         }
-        if (repeat) await syncReadState(false);
+        if (repeat && !leaving) await syncReadState(false);
     }
 
     function markRead(key) {
@@ -811,11 +835,19 @@
     // 뒤로 가기로 bfcache에서 복원되면 스크립트가 다시 실행되지 않는다.
     // 그동안 다른 탭이나 상세 화면에서 늘어난 읽음 기록을 즉시 반영한다.
     window.addEventListener("pageshow", function (event) {
+        pageActive = true;
         if (event.persisted) {
             applyTheme(loadTheme(), false);
             refreshReadState();
+            syncReadState();
             refreshMediaBlockMode(false);
         }
+    });
+
+    window.addEventListener("pagehide", function () {
+        pageActive = false;
+        if (retryTimer) window.clearTimeout(retryTimer);
+        syncReadState(false, true);
     });
 
     // 다른 탭에서 글을 읽은 경우 저장소 변경을 즉시 반영한다.

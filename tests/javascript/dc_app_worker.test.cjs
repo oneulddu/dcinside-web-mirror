@@ -26,7 +26,10 @@ export const APP = {};
 const updateText = '앱을 계속 이용하시려면 스토어에서 최신 버전으로 업데이트해 주세요.';
 const diagText = 'DC rejection private-login-id-2 private-password-2 private-login-id private-password ' + '거절'.repeat(150);
 function rejection(marker) {
-  const cause = marker.startsWith('update_') ? updateText : diagText;
+  if (marker === 'text_fields') return {result:false, msg:'private-msg', message:'private-message',
+    details:{text:'private-detail'}, diag_cause:'private-diag', carrier_vpn_ban:'true'};
+  const cause = marker.startsWith('update_') ? updateText
+    : marker.startsWith('captcha_') ? '보안 문자 private-login-id' : diagText;
   if (marker.endsWith('_throw')) throw Object.assign(new Error(cause), {name:'ApiError', cause});
   if (marker.endsWith('_dcerror')) throw Object.assign(new Error(cause), {name:'DCInsideError'});
   if (marker.endsWith('_return')) return {result:false, cause};
@@ -35,11 +38,15 @@ function rejection(marker) {
 // request line is decoded, without a worker option or a real ten-second wait.
 let now = Date.now();
 Date.now = () => now;
+let tick = 0;
+Object.defineProperty(performance, 'now', {value:() => tick});
 const parse = JSON.parse;
 JSON.parse = (text, ...args) => {
   const value = parse(text, ...args);
   if (value && typeof value === 'object' && typeof value.testAdvanceMs === 'number') {
     now += value.testAdvanceMs;
+    tick += value.testAdvanceMs;
+    now += value.testWallShiftMs ?? 0;
     delete value.testAdvanceMs;
   }
   return value;
@@ -73,6 +80,7 @@ export class DCInside {
           trace('otpToken');
         }
         const failure = process.env[second ? 'WORKER_TEST_LOGIN_2' : 'WORKER_TEST_LOGIN'];
+        if (failure === 'captcha_api') throw Object.assign(new Error('보안 문자를 입력해 주세요.'), {name:'ApiError'});
         if (failure === 'update') throw Object.assign(new Error(id + password + updateText), {name:'ApiError',cause:id + password + updateText});
         if (failure !== 'success' && options.otp !== '123456' && options.captcha?.code !== 'answer') {
           throw Object.assign(new Error(id + password), {
@@ -88,6 +96,7 @@ export class DCInside {
       if (session !== null && session.type !== 'login') throw new Error('Wrong vote session');
       const userId = session?.userId ?? null;
       trace('vote:' + userId);
+      if (gallery === 'stall') return this.http.fetch('stall');
       const failure = rejection(gallery);
       if (failure) return failure;
       if (gallery === 'expired') {
@@ -213,6 +222,9 @@ export class DCInside {
       },
       list: async () => {
         trace('dccons:' + this.session?.userId);
+        if (process.env.WORKER_TEST_LOGIN === 'large_dccons') return {
+          tab:[{package_idx:1}], list:[[{package_idx:1, detail_idx:1, img:'한'.repeat(135000)}]],
+        };
         return {result:'true',tab:[{package_idx:10,title:'꾸러미'},{package_idx:20,title:'다른 꾸러미'}],
           list:[[{package_idx:20,detail_idx:22,title:'둘',img:'https://dcimg5.dcinside.com/dccon.php?no=22'}],
             [{package_idx:10,detail_idx:11,title:'하나',img:'https://dcimg5.dcinside.com/dccon.php?no=11'}]]};
@@ -256,7 +268,17 @@ export class DCInside {
     this.http = { post: async (url, fields, options) => {
       if (process.env.WORKER_TEST_POSTS) appendFileSync(process.env.WORKER_TEST_POSTS, JSON.stringify({url, fields, options}) + '\\n');
       return {result:true};
-    }, context: {relogin: async () => { trace('automaticRelogin'); return true; }}, fetch: async url => {
+    }, context: {relogin: async () => { trace('automaticRelogin'); return true; }}, fetch: async (url, init) => {
+      if (url.includes('stall')) {
+        if (!init?.signal) throw new Error('Unbudgeted fetch');
+        await new Promise((resolve, reject) => {
+          const fallback = setTimeout(resolve, 1500);
+          init.signal.addEventListener('abort', () => {
+            clearTimeout(fallback);
+            reject(init.signal.reason);
+          }, {once:true});
+        });
+      }
       if (url.includes('badtype')) return new Response('html', {headers:{'content-type':'text/html'}});
       if (url.includes('oversize')) return new Response(new Uint8Array(204801), {headers:{'content-type':'image/png'}});
       return new Response(new Uint8Array([1,2,3]), {headers:{'content-type':'image/png'}});
@@ -280,6 +302,11 @@ globalThis.fetch = async (url, init = {}) => {
     body, urlencoded:init.body instanceof URLSearchParams, multipart:init.body instanceof FormData,
   }) + '\\n');
   const target = new URL(url);
+  if (target.host === 'app.dcinside.com' && new URLSearchParams(body).get('app_id') === 'rejected-app') {
+    const yesterday = Date.now() - 86400000;
+    Date.now = () => yesterday;
+    return Response.json({result:false,cause:'certification'});
+  }
   if (request.method === 'POST' && target.host === 'app.dcinside.com') return Response.json({result:'true'});
   if (request.method === 'POST' && target.href === 'https://upload.dcinside.com/_app_vote_upload.php')
     return Response.json({result:'true',cause:'offline-poll-key'});
@@ -337,6 +364,28 @@ function run(requests, seed = false, login = '', login2 = '', real = false, cred
 }
 
 const write = subject => ({ op:'write', session:{type:'anonymous', nickname:'private-nickname', password:'private-password'}, gallery:'programming', subject, body:'line1\nline2 <script>', validateOnly:true });
+
+test('budget aborts pending metadata and votes without losing login or replaying the vote', () => {
+  const {replies, trace} = run([{op:'account_login'},
+    {op:'captcha', kind:'article', gallery:'stall', key:'a'.repeat(16), budget_ms:100},
+    {op:'upvote', session:{type:'login'}, gallery:'stall', no:1, budget_ms:200},
+    {op:'account_status'}], false, 'success');
+  assert.equal(replies[1].error.reason, 'deadline');
+  assert.equal(replies[1].error.sent, false);
+  assert.equal(replies[2].error.reason, 'deadline');
+  assert.notEqual(replies[2].error.sent, false);
+  assert.equal(replies[3].data.logged_in, true);
+  assert.equal(trace.filter(value => value === 'vote:public-user').length, 1);
+});
+
+test('future persisted issue time cannot keep a write waiting beyond one settle interval', () => {
+  const {replies, trace} = run([{...write('one'), budget_ms:50},
+    {...write('two'), testAdvanceMs:8001, budget_ms:500}], true, '', '', false,
+    {restored:true, appIdIssuedAt:Date.now() + 86400000});
+  assert.equal(replies[0].error.sent, false);
+  assert.equal(replies[1].ok, true);
+  assert.equal(trace.filter(op => op === 'write').length, 1);
+});
 
 test('new HTML/settings and anonymous poll map before write, with an official poll placeholder', () => {
   const result = run([{...write('features'), html:true, body:'<b>굵게</b>',
@@ -412,7 +461,7 @@ test('dccon insert uses pinned account and emits blocks in marker order', () => 
 test('dccon listing maps tab/list by package id, caches per slot and expires after three minutes', () => {
   const request = account => ({op:'dccons',session:{type:'login',account}});
   const result = run([request('1'),request('1'),{...request('2'),testAdvanceMs:10001},
-    {...request('1'),testAdvanceMs:180001}], false, 'success', 'success');
+    {...request('1'),testAdvanceMs:180001,testWallShiftMs:-86400000}], false, 'success', 'success');
   assert(result.replies.every(reply => reply.ok));
   assert.deepEqual(result.replies[0].data.packages, [
     {package_idx:10,title:'꾸러미',icons:[{detail_idx:11,title:'하나',image_url:'https://dcimg5.dcinside.com/dccon.php?no=11'}]},
@@ -421,6 +470,13 @@ test('dccon listing maps tab/list by package id, caches per slot and expires aft
   assert.equal(result.trace.filter(line => line === 'dccons:public-user').length, 2);
   assert.equal(result.trace.filter(line => line === 'dccons:public-user-2').length, 1);
   assert(!result.trace.some(line => line === 'write' || line.startsWith('dccon:')));
+});
+
+test('oversized dccons get a structured rejection and retain the account session', () => {
+  const {replies} = run([{op:'account_login', otp:'123456'}, {op:'dccons', session:{type:'login'}},
+    {op:'account_status'}], false, 'large_dccons');
+  assert.equal(replies[1].error.name, 'ReplyTooLarge');
+  assert.equal(replies[2].data.logged_in, true);
 });
 
 test('anonymous dccons and missing or repeated dccon markers are refused before DC calls', () => {
@@ -637,6 +693,37 @@ test('credential restore restricts existing file permissions', () => {
   assert.equal(result.state.restored, true);
 });
 
+test('account captcha rejections cross IPC only as a fixed category', () => {
+  const {replies} = run([{op:'account_login'}, ...['captcha_throw', 'captcha_return'].map(gallery =>
+    ({op:'upvote', gallery, no:1, session:{type:'login'}}))], false, 'success');
+  for (const reply of replies.slice(1)) assert.equal(reply.error.name, 'CaptchaRequiredError');
+});
+
+test('account result:false projects only public rejection fields', () => {
+  const {replies} = run([{op:'upvote', gallery:'text_fields', no:1, session:{type:'login'}}], false, 'success');
+  assert.deepEqual(replies[0].data, {result:false, cause:'디시에서 요청을 받지 않았어요.', carrier_vpn_ban:true});
+});
+
+test('explicit and lazy login classify an answered ApiError captcha before blocking the slot', () => {
+  for (const first of [{op:'account_login'}, {op:'upvote', gallery:'g', no:1, session:{type:'login'}}]) {
+    const {replies} = run([first, {op:'account_status'}], false, 'captcha_api');
+    assert.equal(replies[0].error.name, 'LoginNeeded');
+    assert.equal(replies[0].error.reason, 'captcha');
+    assert.match(replies[0].error.captcha_key, /^[0-9a-f]{16}$/);
+    assert.equal(replies[1].data.blocked, true);
+    assert.equal(replies[1].data.reason, 'captcha');
+  }
+});
+
+test('a rejected mature app ID is refreshed even when the wall clock steps back', () => {
+  const credentials = {androidId:'123',securityToken:'456',fid:'offline-fid',refreshToken:'offline-refresh',
+    clientToken:'offline-client-token',appId:'rejected-app',appIdIssuedAt:Date.now() - 30000};
+  const result = run([{op:'upvote', gallery:'g', no:1}], true, '', '', true, credentials);
+  // The offline app verification endpoint always answers update_required.
+  assert.equal(result.replies[0].error.reason, 'update_required');
+  assert(result.posts.some(post => post.url.endsWith('/auth/mobile_app_verification')));
+});
+
 test('only known anonymous API errors expose causes; unconfigured login is rejected', () => {
   const result = run([write('captcha'), write('unknown'), { ...write('login'), session:{type:'login'} }]);
   assert.deepEqual(result.replies[0].error, { name:'CaptchaRequiredError', cause:'보안 코드 입력', status:null });
@@ -817,7 +904,7 @@ for (const op of ['upvote', 'downvote']) {
   test(op + ' lazy login shares the cross-slot cooldown without voting or changing slots', () => {
     const result = run([
       {op:'account_login',account:'1'}, accountVote('2'), {op:'account_status'},
-      accountVote('2', {testAdvanceMs:10000}),
+      accountVote('2', {testAdvanceMs:10000, testWallShiftMs:-86400000}),
     ], false, 'success', 'success');
     assert.deepEqual(result.replies[1].error, {name:'LoginCooldown',retry_after:10,sent:false});
     assert.equal(result.replies[2].data.accounts['1'].logged_in, true);

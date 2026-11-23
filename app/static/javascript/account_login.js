@@ -114,6 +114,7 @@
                 return;
             }
             if (payload.reason === "captcha") {
+                showOtp(false);
                 setStatus(message || "보이는 문자를 입력하고 로그인해 주세요.", "error");
                 showCaptcha(payload.captcha_key);
                 return;

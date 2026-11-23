@@ -52,6 +52,13 @@ def test_missing_or_ambiguous_pagination_does_not_invent_pages():
     assert pg.parse_post(duplicate_active, 123)['comment_page'] is None
 
 
+def test_comment_label_not_first_number_and_later_page_stays_partial():
+    raw = page_fixture(2).replace('댓글 수 <span>49'.encode(), '2페이지 댓글 수 <span>21'.encode())
+    data = pg.parse_post(raw, 123)
+    assert data['comment_count'] == 21
+    assert data['comments_partial'] and data['comments_next_page'] == 1
+
+
 def test_comment_reader_preserves_post_cache_and_keys_by_page_and_board(monkeypatch):
     reader = pg.Reader()
     calls = []
@@ -216,7 +223,7 @@ def test_comment_fetch_failure_is_json(monkeypatch, status):
     assert response.status_code == status
     assert response.get_json() == {'error': '댓글을 가져오지 못했어요.'}
     if status == 503:
-        assert response.headers['Retry-After'] == '60'
+        assert 'Retry-After' not in response.headers
 
 
 def test_initial_read_fetches_no_extra_comment_pages(monkeypatch):

@@ -1,9 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
 from html import escape
+from email.message import Message
+from io import BytesIO
 import threading
 from pathlib import Path
 import shutil
 import subprocess
+from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 import pytest
@@ -11,6 +15,7 @@ import pytest
 from app import create_app, poker_routes
 from app.services import poker_media as media
 from app.services import pokergosu as pg
+from app.services.media_proxy import ResolvedMediaTarget
 
 SRC = 'https://www.ipokergosu.com/img2/example.webp'
 
@@ -106,3 +111,70 @@ def test_browser_image_retry_state_machine():
     result = subprocess.run([node, str(Path(__file__).parent / 'javascript/poker_images.test.cjs')],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_slow_dns_spends_the_image_budget_before_http(monkeypatch):
+    now = [0]
+    def resolve(*args, **kwargs):
+        now[0] += media.IMAGE_DEADLINE_SECONDS
+        return ResolvedMediaTarget('https', 'ipokergosu.com', 443, 'ipokergosu.com', ('8.8.8.8',))
+    monkeypatch.setattr(media, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(media, 'resolve_media_target', resolve)
+    monkeypatch.setattr(media._MediaSession, 'get', lambda *a, **kw: pytest.fail('deadline passed'))
+    with create_app().test_request_context('/'):
+        response = media.build_image_response(SRC, media.signature(SRC))
+    assert response.status_code == 504 and response.headers['Cache-Control'] == 'no-store'
+
+
+def test_each_pinned_attempt_spends_the_remaining_budget(monkeypatch):
+    now, attempts = [0], []
+    def resolve(url, **kwargs):
+        now[0] = 18
+        host = urlsplit(url).hostname
+        return ResolvedMediaTarget('https', host, 443, host, ('8.8.8.8', '1.1.1.1', '8.8.4.4'))
+    def send(adapter, request, **kwargs):
+        attempts.append(kwargs['timeout'].total)
+        now[0] += 1
+        raise media.requests.Timeout()
+    monkeypatch.setattr(media, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(media, 'resolve_media_target', resolve)
+    monkeypatch.setattr(media.requests.adapters.HTTPAdapter, 'send', send)
+    with create_app().test_request_context('/'):
+        assert media.build_image_response(SRC, media.signature(SRC)).status_code == 504
+    assert attempts == [2, 1]
+
+
+def test_pooled_images_repin_each_request_and_isolate_upstream_cookies(monkeypatch):
+    # Replace only DNS and socket I/O; requests must still prepare the GET and select the TLS pool.
+    addresses = iter(['8.8.8.8', '1.1.1.1', '1.1.1.1', None])
+    def resolve(url, *, require_allowed_media_host):
+        assert not require_allowed_media_host
+        host = urlsplit(url).hostname
+        ip = next(addresses)
+        return ResolvedMediaTarget('https', host, 443, host, (ip,)) if ip else None
+    seen, pools = [], []
+    def send(adapter, request, **kwargs):
+        assert kwargs['verify'] and not kwargs['proxies']
+        pool = adapter.get_connection_with_tls_context(request, verify=True)
+        pools.append(pool)
+        seen.append((adapter, request.headers['Host'], pool.host, pool.assert_hostname,
+                     pool.conn_kw['server_hostname'], request.headers.get('Cookie')))
+        response = media.requests.Response()
+        response.status_code = 200
+        response.headers['Content-Type'] = 'image/png'
+        response.raw = BytesIO(b'\x89PNG\r\n\x1a\nimage')
+        headers = Message()
+        headers['Set-Cookie'] = 'private=first-user; Domain=ipokergosu.com; Path=/'
+        response.raw._original_response = SimpleNamespace(msg=headers)
+        return response
+    monkeypatch.setattr(media, 'resolve_media_target', resolve)
+    monkeypatch.setattr(media.requests.adapters.HTTPAdapter, 'send', send)
+    with create_app().test_request_context('/'):
+        for url, status in [(SRC, 200), (SRC, 200), (SRC.replace('www.', ''), 200), (SRC, 400)]:
+            assert media.build_image_response(url, media.signature(url)).status_code == status
+    assert seen[0][0] is seen[1][0] is seen[2][0]
+    assert len(set(pools)) == 3
+    assert [r[1:] for r in seen] == [
+        ('www.ipokergosu.com', '8.8.8.8', 'www.ipokergosu.com', 'www.ipokergosu.com', None),
+        ('www.ipokergosu.com', '1.1.1.1', 'www.ipokergosu.com', 'www.ipokergosu.com', None),
+        ('ipokergosu.com', '1.1.1.1', 'ipokergosu.com', 'ipokergosu.com', None)]

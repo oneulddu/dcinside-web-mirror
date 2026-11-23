@@ -5,6 +5,7 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 import lxml.etree
 import lxml.html
 
+from ..time_labels import with_recent_year
 from .models import Comment, DocumentIndex, Image
 
 _KST = timezone(timedelta(hours=9))
@@ -1054,7 +1055,7 @@ class ParserMixin:
 
     def __prepare_document_content(self, doc_content):
         for adv in doc_content.xpath("div[@class='adv-groupin']"):
-            adv.getparent().remove(adv)
+            adv.drop_tree()
         for adv in doc_content.xpath(".//img"):
             src = adv.get("src", "")
             if (
@@ -1062,7 +1063,7 @@ class ParserMixin:
                 and not adv.get("data-original")
                 and not self.__is_placeholder_document_image_src(src)
             ):
-                adv.getparent().remove(adv)
+                adv.drop_tree()
         return doc_content
 
     def __pick_document_image_src(self, el):
@@ -1297,8 +1298,7 @@ class ParserMixin:
         query_items.append(("preview", "1"))
         return parsed._replace(query=urlencode(query_items)).geturl()
 
-    def __parse_poll_summary(self, text):
-        parsed = lxml.html.document_fromstring(text or "")
+    def __parse_poll_summary(self, parsed):
         title = self.__first_text(parsed, "//*[contains(@class, 'vote-tit-inner')]") or "투표"
         meta = [
             " ".join(node.text_content().split())
@@ -1318,6 +1318,8 @@ class ParserMixin:
             count = " ".join(node.xpath("string(.//*[contains(@class, 'vote-ct')])").split())
             if option:
                 results.append({"option": option, "percent": percent, "count": count})
+        if title == "투표" and not (meta or participant or options or results):
+            return None
         return {
             "title": title,
             "meta": meta,
@@ -1377,11 +1379,12 @@ class ParserMixin:
         return comment
 
     def __parse_time(self, time): 
-        def fill_missing_year(parsed):
-            value = parsed.replace(year=today.year)
-            if value > today + timedelta(days=1):
-                value = value.replace(year=today.year - 1)
-            return value
+        def parse_yearless(fmt):
+            # strptime's implicit 1900 rejects Feb 29 before inference.
+            value = datetime.strptime("2000." + time, "%Y." + fmt)
+            if ":" not in time:
+                value = value.replace(hour=23, minute=59, second=59)
+            return with_recent_year(value, today)
 
         try:
             # DC 시각은 KST 벽시계라 서버 시간대와 관계없이 KST 날짜로 채운다.
@@ -1390,10 +1393,10 @@ class ParserMixin:
                 if time.find(":") > 0:
                     return datetime.strptime(time, "%H:%M").replace(year=today.year, month=today.month, day=today.day)
                 else:
-                    return fill_missing_year(datetime.strptime(time, "%m.%d").replace(hour=23, minute=59, second=59))
+                    return parse_yearless("%m.%d")
             elif len(time) <= 11:
                 if time.find(":") > 0:
-                    return fill_missing_year(datetime.strptime(time, "%m.%d %H:%M"))
+                    return parse_yearless("%m.%d %H:%M")
                 else:
                     try:
                         return datetime.strptime(time, "%y.%m.%d").replace(hour=23, minute=59, second=59)
@@ -1403,7 +1406,7 @@ class ParserMixin:
                 if time.count(".") >= 2:
                     return datetime.strptime(time, "%Y.%m.%d %H:%M")
                 else:
-                    return fill_missing_year(datetime.strptime(time, "%m.%d %H:%M:%S"))
+                    return parse_yearless("%m.%d %H:%M:%S")
             else:
                 if "." in time:
                     return datetime.strptime(time, "%Y.%m.%d %H:%M:%S")

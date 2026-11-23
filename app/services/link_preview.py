@@ -48,8 +48,8 @@ _url_locks = tuple(threading.Lock() for _ in range(64))
 _probe_rate = {"window_start": 0.0, "used": 0}
 _probe_rate_lock = threading.Lock()
 _preview_concurrency = threading.BoundedSemaphore(PREVIEW_MAX_CONCURRENCY)
-_preview_dns_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="link-preview-dns")
-_preview_dns_slot = threading.BoundedSemaphore(1)
+_preview_dns_executor = ThreadPoolExecutor(max_workers=PREVIEW_MAX_CONCURRENCY, thread_name_prefix="link-preview-dns")
+_preview_dns_slot = threading.BoundedSemaphore(PREVIEW_MAX_CONCURRENCY)
 
 
 class _PreviewDeadlineExceeded(Exception):
@@ -267,8 +267,12 @@ def _resolve_target(url):
 
 
 def _resolve_target_with_deadline(url, started_at):
-    if not _preview_dns_slot.acquire(timeout=_check_deadline(started_at)):
-        raise _PreviewDeadlineExceeded
+    waited_for_slot = not _preview_dns_slot.acquire(blocking=False)
+    if waited_for_slot and not _preview_dns_slot.acquire(timeout=max(0, _deadline_remaining(started_at))):
+        return RATE_LIMITED
+    if _deadline_remaining(started_at) <= 0:
+        _preview_dns_slot.release()
+        return RATE_LIMITED
     try:
         future = _preview_dns_executor.submit(_resolve_target, url)
     except BaseException:
@@ -276,11 +280,14 @@ def _resolve_target_with_deadline(url, started_at):
         raise
     try:
         target = future.result(timeout=_check_deadline(started_at))
-    except FutureTimeoutError as exc:
+        _check_deadline(started_at)
+    except (FutureTimeoutError, _PreviewDeadlineExceeded) as exc:
         if future.cancel():
             _preview_dns_slot.release()
+        # Don't negative-cache a lookup whose DNS budget was cut by our own queue.
+        if waited_for_slot:
+            return RATE_LIMITED
         raise _PreviewDeadlineExceeded from exc
-    _check_deadline(started_at)
     return target
 
 
@@ -310,7 +317,7 @@ def _read_limited_image(response, started_at):
 
     raw_length = (response.headers.get("Content-Length") or "").strip()
     if raw_length:
-        if not raw_length.isdigit() or int(raw_length) > PREVIEW_IMAGE_MAX_BYTES:
+        if not (raw_length.isascii() and raw_length.isdigit()) or int(raw_length) > PREVIEW_IMAGE_MAX_BYTES:
             return None
 
     chunks = []
@@ -486,8 +493,8 @@ def _fetch_uncached(url, started_at=None):
             _check_deadline(started_at)
 
             target = _resolve_target_with_deadline(current_url, started_at)
-            if target is None:
-                return None
+            if target is None or target is RATE_LIMITED:
+                return target
             _check_deadline(started_at)
 
             status_code, headers, body = _request_preview_target(
@@ -554,8 +561,8 @@ def fetch_preview_image(url):
                 return RATE_LIMITED
 
             target = _resolve_target_with_deadline(current_url, started_at)
-            if target is None:
-                return None
+            if target is None or target is RATE_LIMITED:
+                return target
             status_code, headers, image = _request_preview_image_target(
                 current_url,
                 target,

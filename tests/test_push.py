@@ -398,6 +398,56 @@ def test_expiry_and_least_recently_synced_eviction(inbox):
     assert inbox.sync([], rev=1, endpoint=endpoints[0]).json["created"]
 
 
+def test_future_row_expires_from_first_observation_not_each_sync(inbox):
+    watch = row(at=NOW + 100 * DAY)
+    inbox.sync([watch])
+    inbox.comments = [comment("10")]
+    inbox.poll()
+    inbox.now += 29 * DAY
+    inbox.sync([watch], rev=2)
+    inbox.poll(2 * DAY)
+    inbox.sent.clear()
+    for rev in (3, 4):
+        assert inbox.sync([watch], rev=rev).json["ok"]
+        inbox.poll(30_000)
+    assert not inbox.sent
+    assert len(inbox.reads) == 1
+
+
+def test_legacy_normal_kind_keeps_progress_and_shares_due_read(inbox):
+    inbox.sync([row(kind="")])
+    inbox.comments = [comment("10")]
+    inbox.poll()
+    stored = json.loads(inbox.path.read_text())
+    next(iter(stored["subscriptions"].values()))["rows"][0]["kind"] = "normal"
+    inbox.path.write_text(json.dumps(stored))
+    inbox.sent.clear()
+    inbox.sync([row(kind=""), row("2", kind="normal")], rev=2)
+    inbox.poll(29_999)
+    assert len(inbox.reads) == 1
+    inbox.poll(1)
+    assert len(inbox.reads) == 2
+    assert not inbox.sent  # Adding a watch must not replay comment 10.
+    inbox.poll(30_000)
+    assert len(inbox.reads) == 2
+
+
+def test_stop_between_deliveries_keeps_unsent_progress(inbox):
+    inbox.sync([row()])
+    inbox.now += 5000
+    inbox.sync([row()], endpoint=ENDPOINT + "2")
+    inbox.sent.clear()
+    inbox.comments = [comment("10")]
+    stop = push.threading.Event()
+    inbox.on_send = stop.set
+    with inbox.app.app_context():
+        push.poll_step(stop)
+    assert len(inbox.sent) == 1
+    inbox.poll(120_000)
+    assert {endpoint for endpoint, _ in inbox.sent} == {ENDPOINT, ENDPOINT + "2"}
+    assert len(inbox.sent) == 2
+
+
 def test_reloading_worker_retries_leadership_and_survives_bad_state(inbox, caplog):
     inbox.sync([row()])
     good = inbox.path.read_bytes()

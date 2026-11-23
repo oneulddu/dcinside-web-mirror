@@ -36,13 +36,14 @@ COOKIE = "mirror_write"
 COOKIE_AGE = 180 * 24 * 60 * 60
 LIMITS = dict(subject_max=40, body_max=10000, comment_max=400, nickname_max=20, password_min=2, password_max=20,
               image_max_count=10, image_max_bytes=10 * 1024 * 1024, image_total_bytes=30 * 1024 * 1024,
-              poll_title_max=40, poll_item_max=30, poll_items_max=20,
+              poll_title_max=40, poll_item_max=30, poll_items_max=20, dccon_max_count=20,
               video_max_count=3, video_max_bytes=20 * 1024 * 1024,
               upload_total_bytes=30 * 1024 * 1024)
 IMAGE_TOTAL_MESSAGE = "사진은 모두 합쳐 30MB까지 올릴 수 있어요."
 CAPTCHA_KEY = re.compile(r"^[0-9a-f]{16}$")
 MAX_IMAGE = 200 * 1024
 WORKER_SLOW_SECONDS = 1.0
+WORKER_REPLY_MARGIN_MS = 500  # unwind, persist device state, encode and drain stdout
 _logger = logging.getLogger(__name__)
 
 
@@ -80,6 +81,26 @@ def _future_date(value, *, five_minutes=False):
     return date > datetime.now(ZoneInfo("Asia/Seoul")) and (not five_minutes or date.minute % 5 == 0)
 
 
+_EVENT_ASSIGNMENT = re.compile(r"\bon\w+\s*=", re.I)
+# Scan ordinary start/end tags, skipping quoted values as units (they may
+# contain '>'). For ambiguous or incomplete markup keep the conservative check.
+_TAG_OR_OPEN = re.compile(
+    r"""</?[a-zA-Z][\w:-]*(?:\s+[^\s"'`<>=/]+(?:\s*=\s*(?:"[^"<]*"|'[^'<]*'|[^\s"'`=<>]+))?)*\s*/?>|<""",
+    re.ASCII)
+_QUOTED_ATTR = re.compile(r""""[^"]*"|'[^']*'""")
+
+
+def _has_event_attribute(body):
+    if not _EVENT_ASSIGNMENT.search(body):
+        return False
+    for tag in _TAG_OR_OPEN.finditer(body):
+        if tag[0] == "<":
+            return bool(_EVENT_ASSIGNMENT.search(body, tag.start()))
+        if _EVENT_ASSIGNMENT.search(_QUOTED_ATTR.sub('""', tag[0])):
+            return True
+    return False
+
+
 def new_post_fields(data, *, account):
     """Validate new-post-only JSON before creating uploads or contacting DC."""
     def invalid(field, message):
@@ -90,7 +111,8 @@ def new_post_fields(data, *, account):
         invalid("body", "HTML 사용 여부를 다시 선택해 주세요.")
     if html and isinstance(data.get("body"), str):
         body = unescape(data["body"])
-        if re.search(r"<\s*(?:script|iframe|object|embed|form)\b|\bon\w+\s*=", body, re.I) or re.search(
+        if _has_event_attribute(data["body"]) or _has_event_attribute(body) or re.search(
+                r"<\s*(?:script|iframe|object|embed|form)\b", body, re.I) or re.search(
                 r"javascript\s*:", re.sub(r"[\x00-\x20]", "", body), re.I):
             invalid("body", "HTML에 스크립트, 외부 삽입 요소나 실행 가능한 속성을 넣을 수 없어요.")
     options = data.get("options", {})
@@ -119,15 +141,17 @@ def new_post_fields(data, *, account):
         if "end_date" in poll and not _future_date(poll["end_date"]):
             invalid("poll", "투표 마감은 서울 시간 기준 미래 시각으로 입력해 주세요.")
     dccons = data.get("dccons", [])
-    if not isinstance(dccons, list) or (dccons and not account) or any(
+    if not isinstance(dccons, list) or len(dccons) > LIMITS["dccon_max_count"] or (dccons and not account) or any(
             not isinstance(icon, dict) or any(type(icon.get(key)) is not int or not 1 <= icon[key] <= 9007199254740991
                                               for key in ("package_idx", "detail_idx")) for icon in dccons):
         invalid("dccons", "디시콘은 로그인한 계정에서 올바른 항목을 선택해 주세요.")
     # Pass only supported fields; credentials and arbitrary library options never cross this boundary.
     result = {}
-    for key in ("html", "options", "poll", "dccons"):
+    for key in ("html", "options", "poll"):
         if key in data:
             result[key] = data[key]
+    if "dccons" in data:
+        result["dccons"] = [{"package_idx": icon["package_idx"], "detail_idx": icon["detail_idx"]} for icon in dccons]
     return result
 
 
@@ -355,7 +379,15 @@ class WorkerManager:
                     os.set_blocking(process.stdin.fileno(), False)
                     os.set_blocking(process.stdout.fileno(), False)
                 identifier = secrets.token_hex(12)
-                pending = memoryview((json.dumps(dict(payload, id=identifier, op=op)) + "\n").encode())
+                remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                budget_ms = remaining_ms - min(WORKER_REPLY_MARGIN_MS, (remaining_ms + 1) // 2)
+                if budget_ms <= 0:
+                    outcome = "queue_timeout"
+                    raise WorkerUnavailable(sent=False)
+                # The epoch cap also charges pipe transfer and cold Node startup;
+                # the worker uses a monotonic timer once it receives the line.
+                pending = memoryview((json.dumps(dict(payload, id=identifier, op=op, budget_ms=budget_ms,
+                                                      expires_ms=int(time.time() * 1000) + budget_ms)) + "\n").encode())
                 received = bytearray()
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdin, selectors.EVENT_WRITE)
@@ -394,7 +426,10 @@ class WorkerManager:
             except (OSError, ValueError, WorkerUnavailable):
                 if outcome == "exception":
                     outcome = "unavailable"
-                self._discard()
+                # A deadline before the first byte leaves the pipe synchronized.
+                # Partial frames, broken pipes and invalid replies still require teardown.
+                if sent or outcome not in ("queue_timeout", "ipc_timeout"):
+                    self._discard()
                 raise WorkerUnavailable(sent=sent) from None
         finally:
             with self._metadata_lock:
@@ -413,12 +448,15 @@ class WorkerManager:
                 )
 
 
-_PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "NODE_USE_ENV_PROXY")
+_WORKER_ENV = frozenset({
+    "PATH", "HOME", "LANG", "TZ", "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "NODE_USE_SYSTEM_CA", "NODE_ICU_DATA",
+    "MIRROR_DC_LOGIN_ID", "MIRROR_DC_LOGIN_PASSWORD", "MIRROR_DC_LOGIN_ID_2", "MIRROR_DC_LOGIN_PASSWORD_2",
+})
 
 
 def worker_env(state, proxy=None):
     """Worker environment. With a proxy, every worker request (DC and app_id issuance) goes through it."""
-    env = {key: value for key, value in os.environ.items() if key not in _PROXY_ENV}
+    env = {key: value for key, value in os.environ.items() if key in _WORKER_ENV or key.startswith("LC_")}
     env["MIRROR_DC_APP_STATE"] = state
     if proxy:
         env.update(NODE_USE_ENV_PROXY="1", HTTPS_PROXY=proxy, HTTP_PROXY=proxy)
@@ -622,22 +660,26 @@ def perform(op, **payload):
         cause = error.get("cause") if not result.get("ok") else data.get("cause")
         cause = cause if isinstance(cause, str) else ""
         name = error.get("name")
+        answered = name == "ApiError" or (result.get("ok") and data.get("result") in (False, "false"))
+        captcha = name == "CaptchaRequiredError" or (answered and re.search(
+            r"captcha|보안\s?(?:코드|문자)|자동\s?입력|코드가\s?설정된\s?갤러리", cause, re.I))
+        if captcha:
+            message = cause if payload.get("session", {}).get("type") != "login" else ""
+            return {"ok": False, "code": "captcha_required", "message": message or "보안 코드를 입력해 주세요."}, 200
         if payload.get("session", {}).get("type") == "login" and cause and cause not in (
                 "stale", "잠시후 다시 이용해주세요.", "잠시 후 다시 시도해 주세요."):
-            cause = "보안 코드를 입력해 주세요." if name == "CaptchaRequiredError" else "디시에서 요청을 받지 않았어요."
+            cause = "디시에서 요청을 받지 않았어요."
         if op == "modify" and name == "WorkerError" and error.get("sent") is False and cause == "stale":
             return {"ok": False, "code": "rejected", "reason": "stale",
                     "message": "글이 그사이 바뀌었어요. 수정 화면을 다시 열어 주세요."}, 200
-        if error.get("sent") is False and name not in ("ApiError", "CaptchaRequiredError"):
+        if error.get("sent") is False and name != "ApiError":
             return unavailable(), 503
-        if name == "CaptchaRequiredError" or (cause and re.search(r"captcha|보안\s?코드|자동\s?입력|코드가\s?설정된\s?갤러리", cause, re.I)):
-            return {"ok": False, "code": "captcha_required", "message": cause or "보안 코드를 입력해 주세요."}, 200
         if cause == "잠시후 다시 이용해주세요.":
             return {"ok": False, "code": "retry", "message": cause, "retry_after": 30}, 429
         # 짧은 시간에 여러 번 보내면 디시가 이 문구로 막는다. 거절이 아니라 기다렸다가 다시 보낼 일이다.
         if re.fullmatch(r"잠시\s?후\s?다시\s?시도해\s?주세요\.?", cause):
             return {"ok": False, "code": "retry", "message": cause, "retry_after": 30}, 429
-        if name == "ApiError" or (result.get("ok") and data.get("result") in (False, "false")):
+        if answered:
             rejected = {"ok": False, "code": "rejected", "message": cause or "디시에서 글을 받지 않았어요.", "cause": cause}
             # 디시가 접속 위치(서버 IP)를 VPN·통신사 차단 대상으로 본 경우다. 다시 눌러도 같다.
             if error.get("vpn_ban") is True or data.get("carrier_vpn_ban") in (True, "true"):

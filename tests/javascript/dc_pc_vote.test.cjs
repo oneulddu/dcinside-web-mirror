@@ -61,7 +61,7 @@ test('view form keeps every hidden value and reads the captcha direction', async
   assert.throws(() => parseViewForm('<html></html>', 7));
 });
 
-test('captcha session cookies, form values and answer are sent once to the PC vote endpoint', async () => {
+test('captcha session cookies, form values and answer are sent once to the PC vote endpoint', async t => {
   const { pcVoteCaptcha, pcVote } = await load();
   const calls = [];
   const original = globalThis.fetch;
@@ -83,6 +83,7 @@ test('captcha session cookies, form values and answer are sent once to the PC vo
     assert.equal(image.captcha, 'none');
     assert.equal(calls[0].url, 'https://gall.dcinside.com/mgallery/board/view/?id=ai_utilize&no=126474');
     assert.match(calls[1].init.headers.get('cookie'), /ci_c=token123/);
+    t.mock.method(Date, 'now', () => 9999999999999); // wall clock jumps do not expire a session
     const result = await pcVote({ gallery: 'ai_utilize', no: 126474, pc: { key: 'a'.repeat(16), code: ' ab12 ', galltype: 'M' } }, 'D');
     assert.deepEqual(result, { result: true, count: 12 });
     const vote = calls[2];
@@ -126,4 +127,40 @@ test('PC vote rejections keep DC wording and wrong answers ask for a new captcha
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test('view and image reads cancel oversized chunked bodies without trusting Content-Length', async t => {
+  const {pcVoteCaptcha} = await load();
+  let target, cancelled;
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (target === 'image' && String(url).includes('/view/')) return new Response('<form id="_view_form_"></form>');
+    let left = 20;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (left-- > 0) controller.enqueue(new Uint8Array(128 * 1024));
+        else controller.close();
+      },
+      cancel() { cancelled = true; },
+    }), {headers:{'Content-Type':target === 'image' ? 'image/png' : 'text/html'}});
+  });
+  for (target of ['view', 'image']) {
+    cancelled = false;
+    await assert.rejects(pcVoteCaptcha({gallery:'g', no:1, galltype:'G', key:'a'.repeat(16)}), /too large/);
+    assert(cancelled);
+  }
+});
+
+test('PC view and image share the operation deadline', async t => {
+  const {pcVoteCaptcha} = await load();
+  const operation = new AbortController();
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).includes('/view/')) {
+      operation.abort(new Error('operation expired'));
+      return new Response('<form id="_view_form_"></form>');
+    }
+    init.signal.throwIfAborted();
+    return new Response(palettePng(), {headers:{'content-type':'image/png'}});
+  });
+  await assert.rejects(pcVoteCaptcha({gallery:'g', no:1, galltype:'G', key:'c'.repeat(16)}, operation.signal),
+    /operation expired/);
 });

@@ -15,6 +15,7 @@ from flask import Blueprint, abort, current_app, jsonify, make_response, redirec
 from .services.async_bridge import run_async
 from .services.dc.api import BoardUnavailableError, DocumentNotFoundError, DocumentUnavailableError
 from .services.core import (
+    BoardUpdatesUnavailable,
     async_board_precise_times,
     async_board_updates,
     async_index_with_head_categories,
@@ -22,9 +23,10 @@ from .services.core import (
     async_related_after_position,
     RelatedPositionUnavailableError,
     format_display_time,
+    invalidate_read_cache,
 )
 from .services.heung import get_heung_galleries, search_galleries
-from .services.html_sanitizer import prepare_read_html
+from .services.html_sanitizer import init_read_html_cache, prepare_read_html
 from .services.dc.search import normalize_search_pos
 from .services.media_proxy import build_media_response, build_movie_response, normalize_media_url_shape
 from .services import dc_write, link_preview, push, read_sync, youtube_meta
@@ -366,7 +368,7 @@ def _target_post_ids_arg(name="ids", limit=60):
         post_id = raw_id.strip()
         if not post_id or post_id in seen:
             continue
-        if not post_id.isdigit():
+        if not (post_id.isascii() and post_id.isdigit()):
             abort(400)
         seen.add(post_id)
         ids.append(post_id)
@@ -874,10 +876,10 @@ def board_updates():
     else:
         try:
             response = jsonify(run_async(async_board_updates(board, kind=kind)))
-        except BoardUnavailableError:
+        except BoardUpdatesUnavailable as exc:
             response = jsonify(ok=False, error="board_updates_unavailable")
             response.status_code = 503
-            response.headers["Retry-After"] = "60"
+            response.headers["Retry-After"] = str(exc.retry_after)
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
@@ -944,7 +946,7 @@ def media():
 @bp.route("/movie")
 def movie():
     movie_no = (request.args.get("no") or "").strip()
-    if not movie_no.isdigit():
+    if not (movie_no.isascii() and movie_no.isdigit()):
         abort(400)
     board, pid, kind = _media_request_context()
     return build_movie_response(movie_no, board, pid, kind=kind)
@@ -1194,6 +1196,7 @@ def read_related():
 
 
 def register_routes(app):
+    init_read_html_cache(app)
     app.add_template_global(board_url, "board_url")
     app.add_template_global(read_url, "read_url")
     app.register_blueprint(bp)
@@ -1219,11 +1222,11 @@ _WRITE_ENDPOINTS = _PUSH_ENDPOINTS | {"main.write", "main.write_unlock", "main.w
 
 
 @bp.before_app_request
-def hide_unconfigured_sync_routes():
+def hide_unconfigured_write_routes():
     # Even the app-wide visitor challenge must not advertise a disabled route.
     if request.endpoint in _PUSH_ENDPOINTS and not push.configured(current_app):
         abort(404)
-    if request.endpoint == "main.read_state_sync" and not dc_write.configured():
+    if request.endpoint in _WRITE_ENDPOINTS and not dc_write.configured():
         abort(404)
 
 
@@ -1231,8 +1234,6 @@ def hide_unconfigured_sync_routes():
 def gate_dc_write():
     if request.endpoint not in _WRITE_ENDPOINTS:
         return None
-    if not dc_write.configured():
-        abort(404)
     if request.endpoint not in {"main.write_unlock", "main.write_lock"} and not dc_write.enabled():
         if request.endpoint == "main.write" and request.method == "GET":
             return redirect(url_for("main.write_unlock", next=request.full_path.rstrip("?")), code=302)
@@ -1349,14 +1350,15 @@ def _write_captcha_answer(data):
 def _write_json_request():
     if not request.is_json:
         return None
-    data = request.get_json(silent=True)
+    try:
+        data = request.get_json(silent=True)
+    except RecursionError:
+        return None
     return data if isinstance(data, dict) else None
 
 
 def _write_account_slot(data):
-    if "account" not in data:
-        return "1"
-    slot = data["account"]
+    slot = data.get("account", "1")
     return slot if isinstance(slot, str) and slot in dc_write.account_slots() else None
 
 
@@ -1375,7 +1377,7 @@ def write_account_status():
 @bp.route("/write/dccons")
 def write_dccons():
     slot = _write_account_slot(request.args)
-    if slot is None or slot not in dc_write.account_slots():
+    if slot is None:
         return _write_invalid("mode", "계정을 다시 선택해 주세요.")
     result, status = dc_write.perform("dccons", session={"type": "login", "account": slot})
     if result["ok"]:
@@ -1444,6 +1446,9 @@ def _write_result(op, board, kind, **payload):
         "ok" if result["ok"] else result["code"], result.get("reason", "-"), (cause or "-")[:200])
     if result["ok"]:
         data = result.pop("data")
+        if op in ("modify", "delete", "upvote", "downvote", "comment", "comment_delete"):
+            invalidate_read_cache(board, payload["no"], comments_only=op in ("comment", "comment_delete"),
+                                  deleted=op == "delete")
         if op in ("write", "modify", "delete"):
             params = {"board": board}
             _add_kind_param(params, kind)
@@ -1551,7 +1556,7 @@ def write():
     if request.mimetype == "multipart/form-data":
         try:
             data = json.loads(request.form.get("payload", ""))
-        except ValueError:
+        except (ValueError, RecursionError):
             data = None
         if not isinstance(data, dict):
             data = None

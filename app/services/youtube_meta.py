@@ -11,9 +11,25 @@ import re
 import threading
 import time
 
-import requests
+from requests import RequestException, Session, Timeout
 
 from .cache_utils import cache_get, cache_set_after_insert, env_int
+
+
+class MetadataSession(threading.local, Session):
+    """One pool per thread; cookies from a metadata lookup never survive it."""
+
+    def __init__(self):
+        Session.__init__(self)
+
+    def request(self, *args, **kwargs):
+        try:
+            return super().request(*args, **kwargs)
+        finally:
+            self.cookies.clear()
+
+
+requests = MetadataSession()
 
 YOUTUBE_FRAME0_URL = "https://i.ytimg.com/vi/{}/frame0.jpg"
 YOUTUBE_SHORTS_PROBE_URL = "https://www.youtube.com/shorts/{}"
@@ -97,7 +113,7 @@ def _probe_timeout(deadline):
         return SIZE_PROBE_TIMEOUT
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise requests.Timeout("YouTube metadata deadline exceeded")
+        raise Timeout("YouTube metadata deadline exceeded")
     return min(SIZE_PROBE_TIMEOUT, remaining)
 
 
@@ -139,7 +155,7 @@ def probe_frame0_size(video_id, deadline=None):
             return None
         width, height = dimensions
         return {"width": width, "height": height}
-    except (requests.RequestException, OSError):
+    except (RequestException, OSError):
         return None
     finally:
         close = getattr(response, "close", None)
@@ -160,7 +176,7 @@ def probe_shorts_orientation(video_id, deadline=None):
         if response.status_code == 200:
             return {"width": 9, "height": 16}
         return None
-    except requests.RequestException:
+    except RequestException:
         return None
     finally:
         close = getattr(response, "close", None)

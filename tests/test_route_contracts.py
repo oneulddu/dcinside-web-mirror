@@ -53,6 +53,44 @@ async def _board_payload(*args, **kwargs):
     ], []
 
 
+@pytest.fixture
+def unlocked():
+    app = create_app()
+    app.config.update(WRITE_KEY="key", SECRET_KEY="test")
+    client = app.test_client()
+    headers = {"Origin": "http://localhost"}
+    client.post("/write/unlock", headers=headers, data={"key": "key"})
+    return client, headers
+
+
+def test_omitted_account_requires_configured_slot_one(unlocked, monkeypatch):
+    client, headers = unlocked
+    monkeypatch.setattr(routes.dc_write, "account_slots", lambda: ["2"])
+    monkeypatch.setattr(routes.dc_write, "perform", lambda *a, **kw: pytest.fail("worker contacted"))
+    response = client.post("/read/delete", json={"board": "test", "pid": 123, "mode": "account"}, headers=headers)
+    assert response.status_code == 400
+    assert response.json["field"] == "mode"
+
+
+@pytest.mark.parametrize("path", ["/board/times?board=test&ids=９", "/movie?no=²"])
+def test_non_ascii_ids_rejected_before_fetch(path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("unexpected fetch")
+    monkeypatch.setattr(routes, "run_async", forbidden)
+    monkeypatch.setattr(routes, "build_movie_response", forbidden)
+    assert create_app().test_client().get(path).status_code == 400
+
+
+@pytest.mark.parametrize("multipart", [True, False])
+def test_deep_json_is_invalid_write_request(unlocked, multipart):
+    client, headers = unlocked
+    nested = '{"v":' + "[" * 10000 + "]" * 10000 + "}"
+    response = client.post("/write", headers=headers, data={"payload": nested} if multipart else nested,
+                           content_type="multipart/form-data" if multipart else "application/json")
+    assert response.status_code == 400
+    assert response.json["code"] == "invalid"
+
+
 async def _read_payload(*args, **kwargs):
     return (
         {
@@ -69,6 +107,44 @@ async def _read_payload(*args, **kwargs):
         [],
         [],
     )
+
+
+def test_read_reuses_prepared_body_without_sharing_highlights(monkeypatch):
+    from app.services import html_sanitizer
+
+    monkeypatch.setattr(routes, "async_read", _read_payload)
+    client = create_app().test_client()
+    path = "/read?board=test&pid=123"
+    assert client.get(path).status_code == 200
+
+    def redundant(*args):
+        pytest.fail("repeated preparation of the same read body")
+    monkeypatch.setattr(html_sanitizer, "sanitize_html_tree", redundant)
+    marked = BeautifulSoup(client.get(path + "&serval=fixture").data, "html.parser")
+    assert marked.select_one("p > mark.search-highlight").text == "fixture"
+    assert b'<mark class="search-highlight">' not in client.get(path).data
+
+
+def test_prepared_body_cache_evicts_by_serialized_size(monkeypatch):
+    from app.services import html_sanitizer
+
+    monkeypatch.setattr(html_sanitizer, "READ_HTML_CACHE_BYTES", 1024)
+    with create_app().test_request_context("/read"):
+        def render(label):
+            return html_sanitizer.prepare_read_html("<p>" + label * 200 + "</p>", [], "test", 123, None)
+
+        first = render("가")
+        second = render("나")  # Each fits; the two UTF-8 fragments together do not.
+        original = html_sanitizer.sanitize_html_tree
+        misses = []
+
+        def prepare(soup):
+            misses.append(soup.get_text())
+            return original(soup)
+        monkeypatch.setattr(html_sanitizer, "sanitize_html_tree", prepare)
+        assert render("나") == second
+        assert render("가") == first
+        assert misses == ["가" * 200]
 
 
 def _gallery_payload():

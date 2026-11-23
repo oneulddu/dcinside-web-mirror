@@ -18,11 +18,6 @@ compress = Compress()
 
 
 def _init_response_compression(app):
-    app.config.setdefault("COMPRESS_REGISTER", False)
-    app.config.setdefault(
-        "COMPRESS_MIMETYPES",
-        ["text/html", "application/json", "text/css", "application/javascript", "text/javascript"],
-    )
     compress.init_app(app)
 
     @app.after_request
@@ -106,10 +101,9 @@ def create_app():
     app = Flask(__name__, instance_relative_config=True)
     env = os.getenv("MIRROR_ENV", "production").strip().lower()
     if env == "development":
-        app.config.from_object(DevelopmentConfig)
+        app.config.from_object(DevelopmentConfig())
     else:
-        app.config.from_object(ProductionConfig)
-    app.config.from_prefixed_env("MIRROR")
+        app.config.from_object(ProductionConfig())
     app.add_template_filter(highlight_search_term, "highlight_search")
     app.add_template_filter(linkify_comment_text, "linkify_comment")
     app.jinja_env.globals["post_time_info"] = post_time_info

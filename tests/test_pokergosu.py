@@ -13,8 +13,10 @@ from app import poker_routes
 from app.services import pokergosu as pg, poker_media as media
 from app.services.html_sanitizer import sanitize_html_fragment
 from app.services.link_preview import preview_image_signature
+from app.services.media_proxy import ResolvedMediaTarget
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'pokergosu'
+IMAGE_TARGET = ResolvedMediaTarget('https', 'www.ipokergosu.com', 443, 'www.ipokergosu.com', ('8.8.8.8',))
 
 
 @pytest.mark.parametrize('host', ['youtube.com', 'www.youtube.com', 'youtube-nocookie.com',
@@ -164,12 +166,20 @@ def test_cache_copy_expiry_and_bounded_capacity(monkeypatch):
     data['posts'].clear()
     assert len(r.board(1)['posts']) == 2
     assert len(calls) == 1
-    r.cache[('board', 'free', 1)].fresh_until = 0
+    now = time.monotonic()
+    monkeypatch.setattr(pg, 'time', SimpleNamespace(monotonic=lambda: now + 21))
     assert len(r.board(1)['posts']) == 2
     assert len(calls) == 2
     monkeypatch.setattr(pg, 'CACHE_LIMIT', 2)
     r.board(2); r.board(3)
     assert len(r.cache) == 2
+
+
+def test_reply_uses_nearest_preceding_comment():
+    raw = fixture('post').replace(b'<div class="comment" id="C1">',
+                                  b'<div class="comment" id="C0"></div><div class="comment" id="C1">')
+    reply = next(c for c in pg.parse_post(raw, 123)['comments'] if c['id'] == 'C2')
+    assert reply['parent_id'] == 'C1'
 
 
 def test_duplicate_requests_share_one_fetch(monkeypatch):
@@ -256,7 +266,7 @@ def test_sanitizer_strips_active_content_and_signs_only_approved_images():
         <img src="https://www.ipokergosu.com/img2/test.webp" onerror="evil()" data-dccon-src="/media?src=evil">
         <img src="https://evil.test/track"><iframe src="https://evil.test"></iframe>
         <a aria-label="title"><span>링크가 아닌 댓글</span></a><a href="javascript:alert(1)">bad</a><a href="/free/123">내부 글</a>
-        <a href="/strategy/123">다른 게시판</a>'''
+        <a href="/strategy/123" target="_blank">다른 게시판</a>'''
         soup = BeautifulSoup(media.prepare_html(raw), 'html.parser')
         assert not soup.select('script,style,iframe,[onclick],[onerror],[style]')
         assert not soup.select('a[aria-label=title]')
@@ -268,6 +278,7 @@ def test_sanitizer_strips_active_content_and_signs_only_approved_images():
         assert q['sig'][0] == media.signature(q['src'][0])
         assert soup.find('a', string='내부 글')['href'] == '/poker/free/123'
         assert soup.find('a', string='다른 게시판')['href'] == '/poker/strategy/123'
+        assert not soup.find('a', string='다른 게시판').has_attr('target')
         assert not soup.find('a', string='bad').has_attr('href')
         assert not BeautifulSoup(sanitize_html_fragment('<img src="/poker/media?src=x">'), 'html.parser').img
 
@@ -292,26 +303,34 @@ def test_media_rejects_nonpublic_dns(monkeypatch):
 
 def test_media_redirect_mime_and_size_guards(monkeypatch):
     state = {'status': 200, 'headers': {'Content-Type': 'image/webp'}, 'body': b'RIFF1234WEBPimage'}
+    from urllib3.exceptions import ProtocolError, ReadTimeoutError, SSLError
+    class Raw:
+        def read1(self, size):
+            if isinstance(state['body'], Exception):
+                raise state['body']
+            body, self.sent = b'' if getattr(self, 'sent', False) else state['body'], True
+            return body
     class Upstream:
-        def __init__(self): self.status_code = state['status']; self.headers = state['headers']
+        def __init__(self): self.status_code = state['status']; self.headers = state['headers']; self.raw = Raw()
         def __enter__(self): return self
         def __exit__(self, *a): pass
         def iter_content(self, *a): yield state['body']
-    class Session:
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-        def mount(self, *a): pass
-        def get(self, url, **kw):
-            assert kw['allow_redirects'] is False
-            return Upstream()
-    monkeypatch.setattr(media, 'resolve_media_target', lambda *a, **k: object())
-    monkeypatch.setattr(media, 'PinnedMediaAdapter', lambda *a: object())
-    monkeypatch.setattr(media.requests, 'Session', Session)
+    def get(self, url, **kw):
+        assert kw['allow_redirects'] is False
+        return Upstream()
+    monkeypatch.setattr(media, 'resolve_media_target', lambda *a, **k: IMAGE_TARGET)
+    monkeypatch.setattr(media._MediaSession, 'get', get)
     app = create_app()
     with app.test_request_context('/'):
         src = 'https://www.ipokergosu.com/img2/test.webp'
         def call(): return media.build_image_response(src, media.signature(src))
         assert call().status_code == 200
+        state['headers']['Content-Encoding'] = 'gzip'
+        assert call().status_code == 415
+        del state['headers']['Content-Encoding']
+        for err in (ReadTimeoutError(None, '', 'timeout'), ProtocolError('reset'), SSLError('tls')):
+            state['body'] = err
+            assert call().status_code == 502
         state['status'] = 302
         assert call().status_code == 502
         state['status'] = 200; state['body'] = b'<svg onload="evil()">'
@@ -339,14 +358,8 @@ def test_media_deadline_stops_trickling_upstream(monkeypatch):
         def __exit__(self, *a): pass
         def iter_content(self, *a):
             raise AssertionError('read1 must be used when the raw stream supports it')
-    class Session:
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-        def mount(self, *a): pass
-        def get(self, url, **kw): return Upstream()
-    monkeypatch.setattr(media, 'resolve_media_target', lambda *a, **k: object())
-    monkeypatch.setattr(media, 'PinnedMediaAdapter', lambda *a: object())
-    monkeypatch.setattr(media.requests, 'Session', Session)
+    monkeypatch.setattr(media, 'resolve_media_target', lambda *a, **k: IMAGE_TARGET)
+    monkeypatch.setattr(media._MediaSession, 'get', lambda *args, **kwargs: Upstream())
     monkeypatch.setattr(media, 'IMAGE_DEADLINE_SECONDS', 0.3)
     app = create_app()
     with app.test_request_context('/'):
@@ -392,10 +405,12 @@ def test_route_errors_and_partial_comments(monkeypatch):
     monkeypatch.setattr(poker_routes.reader, 'board', fail)
     response = client.get('/poker/free')
     assert response.status_code == 503
-    assert response.headers['Retry-After'] == '60'
+    assert 'Retry-After' not in response.headers  # Unknown cause has no known wait.
     assert response.headers['Cache-Control'] == 'no-store'
     soup = BeautifulSoup(client.get('/poker/free?page=2').data, 'html.parser')
     assert soup.find('a', string='돌아가기')['href'] == '/poker/free?page=1'
+    home_board = BeautifulSoup(client.get('/poker/best?page=1').data, 'html.parser')
+    assert home_board.find('a', string='돌아가기')['href'] == '/'
     data = pg.parse_post(fixture('post'), 123)
     data['comments_partial'] = True; data['comment_count'] = 100
     monkeypatch.setattr(poker_routes.reader, 'post',
@@ -413,12 +428,17 @@ def test_empty_list_and_changed_markup_are_distinct():
         pg.parse_board('<title>자유 게시판</title><table><tr><td>다른 표</td></tr></table>'.encode(), 1)
 
 
-def test_real_curl_callback_aborts_oversize_without_caching_success(monkeypatch):
+@pytest.mark.parametrize('status,challenge,comments', [(200, False, False), (429, False, False),
+                                                      (403, False, True), (200, True, False)])
+def test_real_curl_callback_aborts_oversize_without_caching_success(monkeypatch, status, challenge, comments):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     payload = fixture('board') + b' ' * 262144
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200)
+            self.send_response(status)
+            self.send_header('Retry-After', '120')
+            if challenge:
+                self.send_header('cf-mitigated', 'challenge')
             self.send_header('Content-Length', str(len(payload)))
             self.end_headers()
             try:
@@ -434,9 +454,16 @@ def test_real_curl_callback_aborts_oversize_without_caching_success(monkeypatch)
     monkeypatch.setattr(pg, 'MAX_HTML_BYTES', len(fixture('board')) + 1)
     reader = pg.Reader()
     try:
-        with pytest.raises(pg.PokerError):
-            reader.board(1)
-        assert reader.cache[('board', 'free', 1)].value is None
+        with pytest.raises(pg.PokerError) as exc:
+            reader.comment_page(123, 1) if comments else reader.board(1)
+        if status == 200 and not challenge:
+            assert exc.value.status == 502 and '너무 커서' in str(exc.value)
+        else:
+            assert exc.value.status == 503
+            assert exc.value.retry_after == (21600 if comments else 120)
+            assert reader.comments_blocked() == comments
+            assert (reader.cooldown_until > time.time()) != comments
+        assert all(entry.value is None for entry in reader.cache.values())
     finally:
         server.shutdown()
         server.server_close()

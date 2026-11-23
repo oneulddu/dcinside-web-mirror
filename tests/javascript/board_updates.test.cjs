@@ -144,3 +144,25 @@ test("HTML refresh is marked and visitor rejection stops both refresh retry and 
     assert.equal(h.reloads(), 1);
     assert.equal(h.requests.length, 2);
 });
+
+test("pagehide discards late poll results without restarting the timer", async () => {
+    const h = browserHarness();
+    h.nextTimer(); h.events.pagehide();
+    answer(h.requests[0], {code: "visitor_check_required"}, 403);
+    await settle();
+    assert.equal(h.timers.size, 0);
+    h.events.pageshow({persisted:true});
+    assert.equal(h.timers.size, 1);
+});
+
+test("replacing the list releases manual refresh and ignores its late error", async () => {
+    const h = browserHarness();
+    h.button().events.click();
+    h.events["mirror:board-refreshed"]();
+    assert.equal(h.list.attrs["aria-busy"], "false");
+    assert.equal(h.button().disabled, false);
+    answer(h.requests[0], {code: "visitor_check_required"}, 403);
+    await settle();
+    assert.equal(h.button().textContent, "");
+    assert.equal(h.timers.size, 1);
+});

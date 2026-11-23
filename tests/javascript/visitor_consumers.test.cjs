@@ -11,10 +11,11 @@ const rejection = { status: 403, payload: {
 } };
 
 // Run the real scripts and submit listeners with a small DOM, as in the other VM harnesses.
-function harness(script, modify = false) {
+function harness(script, modify = false, setup = () => {}) {
     const nodes = new Map(), requests = [], timers = [], navigations = [];
     let response = rejection;
-    let captchaHides = 0;
+    let captchaHides = 0, challenge = null, changeAuthor;
+    const events = {};
     class Element {
         constructor() {
             this.attrs = {}; this.events = {}; this.value = ""; this.textContent = "";
@@ -68,24 +69,114 @@ function harness(script, modify = false) {
     };
     const context = {
         document, URLSearchParams, console,
-        addEventListener() {},
+        addEventListener(type, cb) { events[type] = cb; },
         location: { assign: url => navigations.push(url), reload: () => navigations.push("reload") },
         setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {},
     };
     vm.createContext(context);
     vm.runInContext(fs.readFileSync(path.join(root, "dc_post_client.js"), "utf8"), context);
     context.MirrorDcPost.createCaptcha = () => ({
-        answer: () => null, hide: () => captchaHides++, setDisabled() {}, setSource() {},
+        answer: () => challenge, show: data => { challenge = {...data, code:"abcd"}; },
+        hide() { captchaHides++; challenge = null; }, setDisabled() {}, setSource() {},
     });
+    context.MirrorDcPost.onAuthorChange = cb => { changeAuthor = cb; };
     context.MirrorDcPost.postJson = (url, body) => {
         requests.push({ url, body });
         return Promise.resolve(response);
     };
+    setup(node, context);
     vm.runInContext(fs.readFileSync(path.join(root, script), "utf8"), context);
-    return { node, document, requests, timers, navigations, captchaHides: () => captchaHides,
+    return { node, document, requests, timers, navigations, commentForm: context.MirrorCommentForm, captchaHides: () => captchaHides,
+        events, changeAuthor: mode => changeAuthor(mode), challenge: () => challenge,
         respondWith: value => { response = value; } };
 }
 async function flush() { for (let i = 0; i < 5; i++) await new Promise(setImmediate); }
+
+for (const prefix of ["write", "comment"]) {
+    test(`${prefix} never reuses a pending or late captcha after changing author`, async () => {
+        const h = harness(prefix + "_form.js");
+        h.respondWith({status:200, payload:{code:"captcha_required", captcha:{key:"0123456789abcdef"}}});
+        h.node(prefix + "-form").fire("submit"); await flush();
+        assert.ok(h.challenge());
+        h.changeAuthor("account:1");
+        assert.equal(h.challenge(), null);
+        h.node(prefix + "-form").fire("submit");
+        h.changeAuthor("account:2");
+        await flush();
+        assert.equal(h.challenge(), null);
+        assert.equal(h.requests[1].body.account, "1");
+        assert.equal(h.requests[1].body.captcha_code, undefined);
+    });
+}
+
+test("delete retry keeps the button disabled until cooldown expires", async () => {
+    const h = harness("post_manage.js");
+    h.respondWith({status:429, payload:{code:"retry", retry_after:3}});
+    h.node("[data-post-delete]").fire("click");
+    h.node("#owner-password").value = "secret";
+    h.node(".owner-form").fire("submit");
+    await flush();
+    assert.equal(h.node(".owner-submit").disabled, true);
+    h.timers[0]();
+    assert.equal(h.node(".owner-submit").disabled, false);
+});
+
+test("captcha replaces OTP and the next login submits no OTP", async () => {
+    const h = harness("account_login.js", false, (node, ctx) => {
+        const form = node("account-1"); form.attrs["data-account"] = "1";
+        for (const id of ["status","otp-field","otp","otp-error","submit"]) node("account-1-" + id);
+        ctx.document.querySelectorAll = () => [form];
+    });
+    h.node("account-1-otp").value = "123456";
+    h.respondWith({status:200, payload:{code:"login_needed", reason:"captcha", captcha_key:"0123456789abcdef"}});
+    h.node("account-1").fire("submit"); await flush();
+    assert.equal(h.node("account-1-otp-field").hidden, true);
+    assert.equal(h.node("account-1-otp").value, "");
+    h.node("account-1").fire("submit"); await flush();
+    assert.equal(h.requests[1].body.otp, undefined);
+    assert.equal(h.requests[1].body.captcha.code, "abcd");
+});
+
+test("unchecking remember password removes only the stored password before submitting", () => {
+    const data = new Map([["mirror_write_identity_v1", JSON.stringify({nickname:"guest", password:" secret "})]]);
+    const h = harness("comment_form.js", false, (_, ctx) => {
+        ctx.localStorage = {getItem:k => data.get(k), setItem:(k,v) => data.set(k,v), removeItem:k => data.delete(k)};
+    });
+    const box = h.node("comment-remember-password");
+    assert.equal(h.commentForm.hasDraft(), true);
+    h.node("comment-content").value = "";
+    assert.equal(h.commentForm.hasDraft(), false, "remembered identity alone is not a draft");
+    h.node("comment-content").value = " ";
+    assert.equal(h.commentForm.hasDraft(), true);
+    assert.equal(box.checked, true);
+    box.checked = false; box.fire("change");
+    assert.deepEqual(JSON.parse(data.get("mirror_write_identity_v1")), {nickname:"guest"});
+    assert.equal(h.node("comment-password").value, " secret ");
+});
+
+test("changing only the post format prompts before leaving", () => {
+    const h = harness("write_form.js", false, node => node("write-html"));
+    const event = {preventDefault() { this.prevented = true; }};
+    h.events.beforeunload(event); assert.ok(!event.prevented);
+    h.node("write-html").checked = true;
+    h.events.beforeunload(event); assert.ok(event.prevented);
+});
+
+test("a dccon response received while closed is ready when reopened", async () => {
+    let resolve, requests = 0;
+    const h = harness("write_form.js", false, (node, ctx) => {
+        for (const id of ["add","panel","close","picker","package","status","grid"]) node("write-dccon-" + id);
+        node("write-dccon-panel").hidden = true;
+        ctx.MirrorDcPost.authorMode = () => "account:1";
+        ctx.fetch = () => { requests++; return new Promise(r => { resolve = r; }); };
+    });
+    h.node("write-dccon-add").fire("click");
+    h.node("write-dccon-close").fire("click");
+    resolve({json: async () => ({ok:true, packages:[]})}); await flush();
+    h.node("write-dccon-add").fire("click");
+    assert.match(h.node("write-dccon-status").textContent, /없어요/);
+    assert.equal(requests, 1);
+});
 
 function assertNotSent(h, status) {
     assert.match(status.textContent, /전송하지 않았.*새로고침/);

@@ -11,6 +11,7 @@ import pytest
 from app import create_app, routes
 from app.services import core
 from app.services.dc.api import API, BoardUnavailableError
+from app.services.singleflight import Flight
 
 
 @pytest.fixture(autouse=True)
@@ -127,12 +128,19 @@ def test_failure_headers_and_failure_cache_expiry(client, origin):
         response = client.get("/board/updates?board=test")
         assert response.status_code == 503
         assert response.json == {"ok": False, "error": "board_updates_unavailable"}
-        assert response.headers["Retry-After"] == "60"
+        assert response.headers["Retry-After"] == "3"
         assert_headers(response)
     assert len(origin["calls"]) == 1
-    origin.update(failure=False, now=1061.0)
-    assert client.get("/board/updates?board=test").status_code == 200
+    origin["now"] = 1003.0
+    assert client.get("/board/updates?board=test").headers["Retry-After"] == "6"
+    origin.update(failure=False, now=1008.0)
+    delayed = client.get("/board/updates?board=test")
+    assert (delayed.status_code, delayed.headers["Retry-After"]) == (503, "1")
     assert len(origin["calls"]) == 2
+    origin["now"] += 1
+    assert client.get("/board/updates?board=test").status_code == 200
+    origin.update(failure=True, now=1070.0)
+    assert client.get("/board/updates?board=test").headers["Retry-After"] == "3"
 
 
 @pytest.mark.parametrize("query", ["", "board=", "board=%20", "board=../test",
@@ -218,6 +226,39 @@ async def test_cache_is_bounded_and_keys_include_kind(monkeypatch, origin):
 def test_ambiguous_empty_is_unavailable(client, origin):
     origin.update(empty=True, has_next=None)
     assert client.get("/board/updates?board=test").status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_updates_recover_after_shared_page_owner_cancelled(origin, monkeypatch):
+    started, joined = asyncio.Event(), asyncio.Event()
+    async with core.dc_api_context() as api:
+        wait = Flight.wait
+        board = api.board
+
+        async def observed_wait(self, *args):
+            joined.set()
+            return await wait(self, *args)
+
+        async def interrupted_board(**kwargs):
+            if not started.is_set():
+                started.set()
+                await asyncio.Event().wait()
+            async for row in board(**kwargs):
+                yield row
+
+        monkeypatch.setattr(Flight, "wait", observed_wait)
+        monkeypatch.setattr(api, "board", interrupted_board)
+        owner = asyncio.create_task(core._fetch_board_page(api, 1, "test", 0))
+        await asyncio.wait_for(started.wait(), 1)
+        updates = asyncio.create_task(core.async_board_updates("test"))
+        await asyncio.wait_for(joined.wait(), 1)
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+        with pytest.raises(BoardUnavailableError):
+            await updates
+        origin["now"] += 3
+        assert (await core.async_board_updates("test"))["items"][0]["id"] == "100"
 
 
 @pytest.mark.asyncio

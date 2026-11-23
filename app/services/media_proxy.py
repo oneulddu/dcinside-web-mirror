@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import ipaddress
 import logging
 import os
@@ -15,7 +15,8 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 import requests
 from requests.adapters import HTTPAdapter
-from flask import Response, stream_with_context, url_for
+from flask import Response, url_for
+from werkzeug.wsgi import ClosingIterator
 
 
 def _env_int(name, default):
@@ -35,6 +36,7 @@ def _safe_int(value, default):
 HTTP_TIMEOUT = _env_int("MIRROR_HTTP_TIMEOUT", 20)
 MEDIA_CACHE_MAX_AGE = _env_int("MIRROR_MEDIA_CACHE_MAX_AGE", 86400)
 MEDIA_MAX_BYTES = _env_int("MIRROR_MEDIA_MAX_BYTES", 50 * 1024 * 1024)
+MOVIE_PLAYER_MAX_BYTES = 4 * 1024 * 1024
 MEDIA_CHUNK_BYTES = max(_env_int("MIRROR_MEDIA_CHUNK_BYTES", 256 * 1024), 16 * 1024)
 MEDIA_STREAMING_MIN_BYTES = max(_env_int("MIRROR_MEDIA_STREAMING_MIN_BYTES", 1024 * 1024), 0)
 MEDIA_REDIRECT_LIMIT = _env_int("MIRROR_MEDIA_REDIRECT_LIMIT", 3)
@@ -55,6 +57,20 @@ _PUBLIC_HOST_CACHE = {}
 _PUBLIC_HOST_CACHE_LOCK = threading.Lock()
 _MEDIA_SPOOL_MEMORY_BYTES = 1024 * 1024
 _PINNED_ADDRESS_ATTEMPT_LIMIT = 2
+# IANA special-purpose registries: do not rely on the runtime's version of
+# is_global to exclude non-public destinations from a pinned connection.
+_NONPUBLIC_V4 = tuple(map(ipaddress.IPv4Network, (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16",
+    "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+)))
+_PUBLIC_V4_EXCEPTIONS = frozenset(map(ipaddress.IPv4Address, ("192.0.0.9", "192.0.0.10")))
+_GLOBAL_UNICAST_V6 = ipaddress.IPv6Network("2000::/3")
+_NONPUBLIC_V6_UNICAST = tuple(map(ipaddress.IPv6Network, ("2001::/23", "2001:db8::/32", "3fff::/20")))
+_PUBLIC_V6_EXCEPTIONS = tuple(map(ipaddress.IPv6Network, (
+    "2001:1::1/128", "2001:1::2/128", "2001:1::3/128", "2001:3::/32",
+    "2001:4:112::/48", "2001:20::/28", "2001:30::/28",
+)))
 _MEDIA_SLOW_SECONDS = 2
 _LOGGER = logging.getLogger(__name__)
 
@@ -168,12 +184,19 @@ class PinnedMediaAdapter(HTTPAdapter):
         raise UnsafeMediaAddress("no validated media address")
 
 
+class _MediaSession(requests.Session):
+    def get_redirect_target(self, resp):
+        # We revalidate redirects ourselves. Even with allow_redirects=False,
+        # requests otherwise buffers the redirect body to prepare Response.next.
+        return None
+
+
 def _media_http_session():
     session = getattr(_MEDIA_SESSION_LOCAL, "session", None)
     if session is not None:
         return session
 
-    session = requests.Session()
+    session = _MediaSession()
     session.trust_env = False
     _MEDIA_SESSION_LOCAL.session = session
     return session
@@ -252,6 +275,22 @@ def is_allowed_media_host(hostname):
     return any(host == suffix or host.endswith(f".{suffix}") for suffix in MEDIA_ALLOWED_HOST_SUFFIXES)
 
 
+def _is_public_address(ip):
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return _is_public_address(ip.ipv4_mapped)
+        # Includes neither translation/compatible prefixes nor local or multicast space.
+        if ip not in _GLOBAL_UNICAST_V6:
+            return False
+        if any(ip in net for net in _NONPUBLIC_V6_UNICAST) and not any(ip in net for net in _PUBLIC_V6_EXCEPTIONS):
+            return False
+        if ip.sixtofour is not None and not _is_public_address(ip.sixtofour):
+            return False
+    elif ip not in _PUBLIC_V4_EXCEPTIONS and any(ip in net for net in _NONPUBLIC_V4):
+        return False
+    return ip.is_global
+
+
 def _resolve_public_hostname(hostname):
     try:
         infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
@@ -265,7 +304,7 @@ def _resolve_public_hostname(hostname):
             ip = ipaddress.ip_address(address)
         except ValueError:
             return False
-        if not ip.is_global:
+        if not _is_public_address(ip):
             return False
     return True
 
@@ -392,7 +431,7 @@ def resolve_media_target(raw_url, base_url=None, *, require_allowed_media_host=T
             parsed_address = ipaddress.ip_address(address)
         except ValueError:
             return None
-        if not parsed_address.is_global:
+        if not _is_public_address(parsed_address):
             return None
         normalized_address = str(parsed_address)
         if normalized_address not in addresses:
@@ -463,7 +502,7 @@ def normalize_range_header(value):
     range_header = (value or "").strip()
     if not range_header or len(range_header) > 100:
         return None
-    if not re.fullmatch(r"bytes=\d*-\d*(?:,\d*-\d*)*", range_header):
+    if not re.fullmatch(r"bytes=\d*-\d*(?:,\d*-\d*)*", range_header, re.ASCII):
         return None
     return range_header
 
@@ -492,49 +531,71 @@ def is_identity_content_encoding(content_encoding):
     return not value or value == "identity"
 
 
-def read_limited_media_body(upstream, timing=None):
+def _read_limited_body(upstream, max_bytes, timing=None):
     total = 0
     chunks = []
+    for chunk in _media_chunks(upstream, timing):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def read_limited_media_body(upstream, timing=None):
     try:
-        for chunk in _media_chunks(upstream, timing):
-            if not chunk:
-                continue
-            total += len(chunk)
-            if total > MEDIA_MAX_BYTES:
-                return None, 413
-            chunks.append(chunk)
-        return b"".join(chunks), None
+        body = _read_limited_body(upstream, MEDIA_MAX_BYTES, timing)
+        return (None, 413) if body is None else (body, None)
     except (requests.RequestException, OSError):
         return None, 502
     finally:
         upstream.close()
 
 
-def stream_media_body(upstream, max_bytes=None, timing=None):
+def _owned_media_body(chunks, resource, timing, phase):
+    cleanup = ExitStack()
+    cleanup.callback(resource.close)
+
+    def generate():
+        started = time.monotonic()
+        body_started = timing.body_seconds if timing is not None else 0.0
+        try:
+            yield from chunks
+        finally:
+            cleanup.close()
+            if timing is not None:
+                timing.log_stream(phase, started, body_started)
+
+    # WSGI may close the iterable without ever entering generate()'s finally.
+    return ClosingIterator(generate(), cleanup.close)
+
+
+def _limited_stream_chunks(upstream, max_bytes, timing):
     remaining = max(_safe_int(MEDIA_MAX_BYTES if max_bytes is None else max_bytes, 0), 0)
-    started = time.monotonic()
-    body_started = timing.body_seconds if timing is not None else 0.0
-    try:
-        for chunk in _media_chunks(upstream, timing):
-            if not chunk:
-                continue
-            if remaining <= 0:
-                break
-            if len(chunk) > remaining:
-                yield chunk[:remaining]
-                remaining = 0
-                break
-            yield chunk
-            remaining -= len(chunk)
-    finally:
-        upstream.close()
-        if timing is not None:
-            timing.log_stream("upstream_stream", started, body_started)
+    for chunk in _media_chunks(upstream, timing):
+        if not chunk:
+            continue
+        if remaining <= 0:
+            break
+        if len(chunk) > remaining:
+            yield chunk[:remaining]
+            break
+        yield chunk
+        remaining -= len(chunk)
+
+
+def _set_media_policy_headers(response):
+    response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return response
 
 
 def build_streaming_media_response(upstream, content_type, content_length=None, timing=None):
     response = Response(
-        stream_with_context(stream_media_body(upstream, max_bytes=content_length, timing=timing)),
+        _owned_media_body(_limited_stream_chunks(upstream, content_length, timing), upstream, timing, "upstream_stream"),
         status=upstream.status_code,
         direct_passthrough=True,
     )
@@ -546,9 +607,7 @@ def build_streaming_media_response(upstream, content_type, content_length=None, 
         if value:
             response.headers[header] = value
     response.headers.setdefault("Accept-Ranges", "bytes")
-    response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    return response
+    return _set_media_policy_headers(response)
 
 
 def read_limited_media_spool(upstream, timing=None):
@@ -572,24 +631,9 @@ def read_limited_media_spool(upstream, timing=None):
         upstream.close()
 
 
-def stream_spooled_media_body(spool, timing=None):
-    started = time.monotonic()
-    body_started = timing.body_seconds if timing is not None else 0.0
-    try:
-        while True:
-            chunk = spool.read(MEDIA_CHUNK_BYTES)
-            if not chunk:
-                break
-            yield chunk
-    finally:
-        spool.close()
-        if timing is not None:
-            timing.log_stream("spool_stream", started, body_started)
-
-
 def build_spooled_media_response(spool, content_length, upstream, content_type, timing=None):
     response = Response(
-        stream_with_context(stream_spooled_media_body(spool, timing=timing)),
+        _owned_media_body(iter(lambda: spool.read(MEDIA_CHUNK_BYTES), b""), spool, timing, "spool_stream"),
         status=upstream.status_code,
         direct_passthrough=True,
     )
@@ -600,9 +644,7 @@ def build_spooled_media_response(spool, content_length, upstream, content_type, 
         if value:
             response.headers[header] = value
     response.headers.setdefault("Accept-Ranges", "bytes")
-    response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    return response
+    return _set_media_policy_headers(response)
 
 
 def build_head_media_response(upstream, content_type, content_length=None):
@@ -617,9 +659,7 @@ def build_head_media_response(upstream, content_type, content_length=None):
             if value:
                 response.headers[header] = value
         response.headers.setdefault("Accept-Ranges", "bytes")
-        response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
+        return _set_media_policy_headers(response)
     finally:
         upstream.close()
 
@@ -633,7 +673,7 @@ def parse_media_content_length(headers):
     if raw_value in (None, ""):
         return None, None
     values = [part.strip() for part in str(raw_value).split(",")]
-    if not values or any(not value.isdigit() for value in values):
+    if any(not (value.isascii() and value.isdigit()) for value in values):
         return None, 502
     if any(len(value) > 20 for value in values):
         return None, 413
@@ -760,9 +800,7 @@ def build_media_response(src, board, pid, kind=None, range_header=None, head_onl
         response = Response(body or b"", status=upstream.status_code)
         response.headers["Content-Type"] = content_type
         response.content_length = len(body or b"")
-        response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
+        return _set_media_policy_headers(response)
 
 
 def movie_player_candidates(movie_no, board, pid, kind=None):
@@ -780,8 +818,8 @@ def movie_player_candidates(movie_no, board, pid, kind=None):
     ]
 
 
-def parse_movie_media(text):
-    soup = BeautifulSoup(text or "", "lxml")
+def parse_movie_media(body, encoding=None):
+    soup = BeautifulSoup(body, "lxml", from_encoding=encoding)
     video = soup.find("video")
     source = video.find("source") if video else soup.find("source")
     source_url = source.get("src") if source else None
@@ -794,7 +832,8 @@ def parse_movie_media(text):
 
 
 def fetch_movie_media(movie_no, board, pid, kind=None):
-    if not str(movie_no or "").isdigit():
+    movie_no = str(movie_no or "")
+    if not (movie_no.isascii() and movie_no.isdigit()):
         return None
     for candidate_url, headers in movie_player_candidates(movie_no, board, pid, kind=kind):
         url = candidate_url
@@ -806,6 +845,7 @@ def fetch_movie_media(movie_no, board, pid, kind=None):
                     headers=headers,
                     timeout=HTTP_TIMEOUT,
                     allow_redirects=False,
+                    stream=True,
                 )
                 if getattr(response, "is_redirect", False):
                     next_url = normalize_media_url_shape(response.headers.get("Location"), base_url=url)
@@ -813,13 +853,16 @@ def fetch_movie_media(movie_no, board, pid, kind=None):
                         break
                     url = next_url
                     continue
-                if response.status_code >= 400 or not response.text:
+                if response.status_code >= 400:
                     break
-                media = parse_movie_media(response.text)
+                body = _read_limited_body(response, MOVIE_PLAYER_MAX_BYTES)
+                if not body:
+                    break
+                media = parse_movie_media(body, response.encoding)
                 if media:
                     return media
                 break
-            except requests.RequestException:
+            except (requests.RequestException, OSError):
                 break
             finally:
                 if response is not None:
@@ -971,7 +1014,7 @@ body { display: flex; align-items: center; justify-content: center; font: 14px/1
 def build_movie_response(movie_no, board, pid, kind=None):
     media = fetch_movie_media(movie_no, board, pid, kind=kind)
     if not media:
-        return Response(movie_error_html(), status=502, mimetype="text/html")
+        return Response(movie_error_html(), status=502, mimetype="text/html", headers={"Cache-Control": "no-store"})
     response = Response(movie_html(media, board, pid, kind=kind), mimetype="text/html")
     response.headers["Cache-Control"] = f"public, max-age={MEDIA_CACHE_MAX_AGE}"
     response.headers["X-Content-Type-Options"] = "nosniff"

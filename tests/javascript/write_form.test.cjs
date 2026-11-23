@@ -57,6 +57,9 @@ test("사진은 형식·장당 크기·장수·합계를 넘는 것만 빼고 �
     assert.match(full.message, /3장까지라 1장/);
     assert.equal(form.pickImages([], [file("x.png", "image/png", 0)], imageLimits).accepted.length, 0);
     assert.equal(form.pickImages([], [file("x.webp", "", 10)], imageLimits).accepted.length, 1);
+    const combined = form.pickImages([], [file("big.png", "image/png", 51), file("fits.png", "image/png", 50)],
+        {...imageLimits, upload_total_bytes: 200}, 150);
+    assert.deepEqual(Array.from(combined.accepted, f => f.name), ["fits.png"]);
 });
 
 test("사진 줄은 커서 자리에 한 줄씩 들어가고 커서는 다음 줄로 간다", () => {

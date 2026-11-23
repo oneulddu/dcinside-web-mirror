@@ -1,5 +1,7 @@
 // PC 웹 추천. 워커(worker.mjs)가 불러 쓴다. DC 앱 API와 달리 PC 쿠키 세션을 쓴다.
 const MAX_IMAGE = 200 * 1024;
+const MAX_VIEW_BYTES = 2 * 1024 * 1024;
+const MAX_VOTE_BYTES = 64 * 1024;
 
 // 앱 보안 문자는 노이즈가 불투명해 읽기 어렵다. 보안 문자가 필요한 추천은 PC 화면과 같은 방식으로 보낸다.
 // PC 보안 문자 답은 PC 접속 쿠키에 묶이므로, 문자 이미지를 받은 쿠키를 key로 잠깐 보관했다가 그대로 쓴다.
@@ -30,9 +32,26 @@ function storeCookies(jar, response) {
 async function pcFetch(url, jar, init = {}) {
   const headers = new Headers({ 'User-Agent': PC_UA, 'Accept-Language': 'ko-KR,ko;q=0.9', ...init.headers });
   if (jar.size) headers.set('Cookie', [...jar].map(([name, value]) => name + '=' + value).join('; '));
-  const response = await fetch(url, { ...init, headers, redirect: 'manual', signal: AbortSignal.timeout(20000) });
+  const timeout = AbortSignal.timeout(20000);
+  const response = await fetch(url, { ...init, headers, redirect: 'manual',
+    signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
   storeCookies(jar, response);
   return response;
+}
+
+async function readBytes(response, limit) {
+  if (Number(response.headers.get('content-length')) > limit) {
+    await response.body?.cancel();
+    throw new Error('PC response too large');
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body ?? []) {
+    size += chunk.byteLength;
+    if (size > limit) throw new Error('PC response too large');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, size);
 }
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", apos: "'" };
@@ -107,34 +126,41 @@ function crc32(buffer) {
 }
 
 function prunePcSessions() {
-  const now = Date.now();
+  const now = performance.now();
   for (const [key, session] of pcSessions) if (session.expires <= now) pcSessions.delete(key);
   while (pcSessions.size >= PC_SESSION_MAX) pcSessions.delete(pcSessions.keys().next().value);
 }
 
-export async function pcVoteCaptcha(input) {
+export async function pcVoteCaptcha(input, signal) {
   pcInput(input);
   const jar = new Map();
-  const view = await pcFetch(pcViewUrl(input), jar);
-  if (view.status !== 200) throw Object.assign(new Error('PC view unavailable'), { name: 'HTTPError', status: view.status });
-  const { fields, captcha } = parseViewForm(await view.text(), input.no);
+  const view = await pcFetch(pcViewUrl(input), jar, { signal });
+  if (view.status !== 200) {
+    await view.body?.cancel();
+    throw Object.assign(new Error('PC view unavailable'), { name: 'HTTPError', status: view.status });
+  }
+  const { fields, captcha } = parseViewForm((await readBytes(view, MAX_VIEW_BYTES)).toString('utf8'), input.no);
   const query = new URLSearchParams({ gall_id: input.gallery, kcaptcha_type: 'recommend', time: String(Date.now()), _GALLTYPE_: input.galltype });
-  const response = await pcFetch(PC_HOST + '/kcaptcha/image_v3/?' + query, jar, { headers: { Referer: pcViewUrl(input) } });
+  const response = await pcFetch(PC_HOST + '/kcaptcha/image_v3/?' + query, jar, { signal, headers: { Referer: pcViewUrl(input) } });
   const contentType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-  const body = Buffer.from(await response.arrayBuffer());
-  if (response.status !== 200 || !/^image\/[a-z0-9.+-]+$/.test(contentType) || !body.length || body.length > MAX_IMAGE) throw new Error('Invalid captcha image');
+  if (response.status !== 200 || !/^image\/[a-z0-9.+-]+$/.test(contentType)) {
+    await response.body?.cancel();
+    throw new Error('Invalid captcha image');
+  }
+  const body = await readBytes(response, MAX_IMAGE);
+  if (!body.length) throw new Error('Invalid captcha image');
   prunePcSessions();
-  pcSessions.set(input.key, { jar, fields, gallery: input.gallery, no: input.no, galltype: input.galltype, expires: Date.now() + PC_SESSION_TTL });
+  pcSessions.set(input.key, { jar, fields, gallery: input.gallery, no: input.no, galltype: input.galltype, expires: performance.now() + PC_SESSION_TTL });
   return { content_type: contentType, base64: clearTranslucentNoise(body).toString('base64'), captcha };
 }
 
-export async function pcVote(input, mode) {
+export async function pcVote(input, mode, signal) {
   const pc = input.pc || {};
   pcInput({ gallery: input.gallery, no: input.no, galltype: pc.galltype, key: pc.key });
   if (typeof pc.code !== 'string' || !pc.code.trim() || pc.code.length > 10) throw new Error('Invalid PC vote request');
   const session = pcSessions.get(pc.key);
   pcSessions.delete(pc.key);
-  if (!session || session.expires <= Date.now() || session.gallery !== input.gallery || session.no !== input.no || session.galltype !== pc.galltype) {
+  if (!session || session.expires <= performance.now() || session.gallery !== input.gallery || session.no !== input.no || session.galltype !== pc.galltype) {
     // 아무것도 보내지 않았다. 새 문자를 받아 다시 입력하게 한다.
     throw Object.assign(new Error('expired'), { name: 'CaptchaRequiredError', cause: '보안 문자가 만료됐어요. 새 문자를 입력해 주세요.', sent: false });
   }
@@ -144,11 +170,11 @@ export async function pcVote(input, mode) {
   const body = new URLSearchParams(session.fields);
   for (const [name, value] of Object.entries({ ci_t: token, id: input.gallery, no: String(input.no), mode, code_recommend: pc.code.trim(), _GALLTYPE_: session.galltype, link_id: input.gallery })) body.append(name, value);
   const response = await pcFetch(PC_HOST + '/board/recommend/vote', session.jar, {
-    method: 'POST',
+    method: 'POST', signal,
     body,
     headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest', Origin: PC_HOST, Referer: pcViewUrl(session) },
   });
-  const text = (await response.text()).trim();
+  const text = (await readBytes(response, MAX_VOTE_BYTES)).toString('utf8').trim();
   const parts = text.split('||');
   if (response.status === 200 && parts[0] === 'true') return { result: true, count: /^[0-9,]+$/.test(parts[1] || '') ? Number(parts[1].replace(/,/g, '')) : null };
   if (response.status === 200 && parts[0] === 'false') {

@@ -21,6 +21,7 @@ _JSON_ENDPOINTS = frozenset({
     "main.board_updates", "main.board_times", "main.youtube_size", "main.embed_link_preview",
     "main.read_related", "main.read_vote_options", "main.read_vote", "main.read_comment",
     "main.read_delete", "main.read_comment_delete", "main.write_modify_load",
+    "main.write_account_status", "main.write_account_login", "main.write_dccons", "main.reply_activity",
     "main.push_key", "main.push_sync", "main.push_unsubscribe", "main.read_state_sync",
     "poker.post_list", "poker.comments",
 })

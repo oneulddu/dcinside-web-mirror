@@ -68,3 +68,12 @@ def test_stale_complete_snapshot_is_not_a_browser_baseline(monkeypatch):
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js required")
 def test_browser_reply_inbox():
     subprocess.run(["node", "--test", str(Path(__file__).parent / "javascript/reply_inbox.test.cjs")], check=True)
+
+
+@pytest.mark.parametrize("path", ["/write/unlock", "/poker/free/search"])
+def test_nonwriting_pages_load_notification_consumer_without_inbox_controls(path):
+    app = create_app()
+    app.config.update(TESTING=True, WRITE_KEY="key", VISITOR_CHECK=False)
+    page = html.fromstring(app.test_client().get(path).data)
+    assert page.xpath('//script[contains(@src,"/reply_inbox.js")]')
+    assert not page.xpath('//*[@id="reply-inbox-open"]')

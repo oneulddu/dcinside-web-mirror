@@ -10,6 +10,17 @@ const root = path.resolve(__dirname, "../..");
 const source = fs.readFileSync(path.join(root, "app/static/javascript/poker_post_list.js"), "utf8");
 const BASE_HREF = "https://mirror.test/poker/hand/123?page=3";
 
+// Board tabs scroll inside their own strip, not relative to the page's offset parent.
+{
+    const nav = fs.readFileSync(path.join(root, "app/templates/poker/_nav.html"), "utf8")
+        .match(/<script>([\s\S]*?)<\/script>/)[1];
+    const tab = { offsetLeft: 950, offsetWidth: 70, getBoundingClientRect: () => ({left: 850, right: 920}) };
+    const strip = { scrollLeft: 100, scrollWidth: 900, clientWidth: 320, querySelector: () => tab,
+        getBoundingClientRect: () => ({left: 600}) };
+    vm.runInNewContext(nav, {document: {getElementById: () => strip}});
+    assert.equal(strip.scrollLeft, 330);
+}
+
 function kebab(name) {
     return String(name).replace(/[A-Z]/g, (char) => "-" + char.toLowerCase());
 }

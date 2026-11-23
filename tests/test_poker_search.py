@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from flask import template_rendered, url_for
@@ -98,8 +99,8 @@ def test_search_stale_and_failed_parser_negative_cache(monkeypatch, app):
     reader = pg.Reader()
     monkeypatch.setattr(reader, '_fetch', lambda path: fixture('search'))
     reader.search(1, board_id='free', s=1, v='검색')
-    entry = reader.cache[('search', 'free', 1, '검색', 1)]
-    entry.fresh_until = 0
+    now = pg.time.monotonic()
+    monkeypatch.setattr(pg, 'time', SimpleNamespace(monotonic=lambda: now + 61))
     calls = []
     monkeypatch.setattr(reader, '_fetch', lambda path: calls.append(path) or b'<p>broken</p>')
     assert reader.search(1, board_id='free', s=1, v='검색')['stale'] is True
@@ -124,6 +125,9 @@ def test_invalid_search_renders_preserved_context_without_fetch_or_recent(monkey
     assert template == 'poker/board.html'
     assert context['data'] == {'posts': [], 'has_next': False}
     assert context['search_error']
+    assert b'id="poker-search-error"' in response.data
+    assert b'class="board-search-summary"' not in response.data
+    assert '검색 결과가 없어요'.encode() not in response.data
     assert context['search']['v'] == parse_qs(query, keep_blank_values=True).get('v', [''])[0].strip()
     assert context['search']['s'] in range(1, 6)
     assert client.get_cookie(recent.RECENT_COOKIE_NAME) is None
@@ -180,12 +184,16 @@ def test_error_retry_and_return_preserve_search(monkeypatch, app, contexts, stat
     assert response.status_code == status
     assert response.headers['Cache-Control'] == 'no-store'
     if status == 503:
-        assert response.headers['Retry-After'] == '60'
+        assert 'Retry-After' not in response.headers
     context = contexts[-1][1]
-    for key in ('retry_url', 'return_url'):
-        assert parse_qs(urlsplit(context[key]).query) == {'page': ['3'], 's': ['2'], 'v': ['한 글&+']}
+    query = {'page': ['3'], 's': ['2'], 'v': ['한 글&+']}
+    assert parse_qs(urlsplit(context['retry_url']).query) == query
     assert urlsplit(context['retry_url']).path == path
-    assert urlsplit(context['return_url']).path == '/poker/free/search'
+    if method == 'search':
+        assert context['return_url'] == '/poker/free?page=1'
+    else:
+        assert urlsplit(context['return_url']).path == '/poker/free/search'
+        assert parse_qs(urlsplit(context['return_url']).query) == query
     assert client.get_cookie(recent.RECENT_COOKIE_NAME) is None
 
 

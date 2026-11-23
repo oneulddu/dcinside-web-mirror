@@ -43,6 +43,10 @@ def test_linkify_comment_text_escapes_comment_html():
     assert '<a href="https://example.com"' in rendered
 
 
+def test_plain_multiline_comment_keeps_breaks_without_trusting_markup():
+    assert str(linkify_comment_text("<i>첫째</i>\n둘째 & 끝")) == "&lt;i&gt;첫째&lt;/i&gt;<br>둘째 &amp; 끝"
+
+
 def test_linkify_comment_text_rewrites_dcinside_url_to_internal_route():
     app = create_app()
 

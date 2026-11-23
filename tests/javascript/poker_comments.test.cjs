@@ -147,10 +147,11 @@ test('failure preserves rows and retry starts at failed cursor',async()=>{
   await h.resolve(2,payload(1,['C1'],3)); assert.equal(h.section.dataset.commentsComplete,'1');
 });
 test('upstream comment block ends collection as partial without retry or more requests',async()=>{
-  const h=harness({next:2,total:3,ids:['C3']}); await h.resolve(0,payload(2,['C2'],3)); await h.advance(1000);
+  const h=harness({next:2,total:2,ids:['C3']}); await h.resolve(0,payload(2,['C2'],2)); await h.advance(1000);
   await h.resolve(1,{error:'이전 댓글은 지금 원본에서 가져올 수 없어요.',code:'comments_blocked'},{status:503});
   assert.deepEqual(h.ids(),['C2','C3']); assert.equal(h.retry.hidden,true);
   assert.equal(h.section.dataset.commentsState,'done'); assert.equal(h.section.dataset.commentsComplete,'0');
+  assert.equal(h.noticeText.textContent,'이전 댓글은 지금 원본에서 가져올 수 없어요.');
   await h.advance(60000); assert.equal(h.requests.length,2);
 });
 test('timeout and stale response never mutate rows or overwrite successful retry',async()=>{
@@ -207,5 +208,7 @@ test('initial zero images can receive blocked image, reveal once, keep override 
   const button=container.children[0]; button.dispatchEvent({type:'click',preventDefault(){}}); assert.equal(img.getAttribute('src'),'/poker/media?src=x&sig=y');
   h.document.dispatchEvent({type:'poker:comments-added'}); assert.equal(container.children.length,2); assert.equal(img.hidden,false);
   h.document.documentElement.dataset.mediaBlockMode='none'; h.document.mutate(); assert.equal(button.hidden,true);
+  img.removeAttribute('src'); img.setAttribute('data-body-image-retry-suspended','1');
+  h.document.dispatchEvent({type:'poker:comments-added'}); assert.equal(img.getAttribute('src'),null);
 });
 (async()=>{for(const {name,fn} of cases){try{await fn();}catch(e){console.error(name);throw e;}}console.log('poker_comments_contract=passed ('+cases.length+')');})().catch(e=>{console.error(e);process.exitCode=1;});

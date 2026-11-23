@@ -79,7 +79,8 @@ def test_keep_newest_1500_and_clamp_far_future(browser, monkeypatch):
     {"since": 0, "items": []}, {"since": 0, "items": {"a|1": -1}},
     {"since": 0, "items": {"a|1": True}}, {"since": 0, "items": {"a|1": 1.5}},
     *({"since": 0, "items": {key: 1}} for key in [
-        "a|0", "a|+1", "a|١", "a|1|2", "a-b|1", "a" * 81 + "|1", "poker:1234567890123", "poker:0"]),
+        "a|0", "a|+1", "a|١", "a|1|2", "a-b|1", "a" * 81 + "|1", "a|" + "0" * 15 + "1",
+        "poker:1234567890123", "poker:0"]),
     {"since": 0, "items": {f"a|{n+1}": n for n in range(1501)}},
 ])
 def test_invalid_body_never_writes(browser, body):
@@ -143,6 +144,17 @@ def test_symlink_never_used_even_if_target_is_valid(browser, tmp_path):
     target.write_bytes(initial)
     assert browser.sync(0, {"a|1": 1}).status_code == 503
     assert browser.path.is_symlink() and target.read_bytes() == initial
+
+
+def test_legacy_overlong_pid_does_not_lock_valid_marks(browser):
+    state_id = browser.sync(0, {"abc|2": 5}).json["id"]
+    state = json.loads(browser.path.read_text())
+    state["items"]["abc|0000000000000001"] = [4, 2]
+    state["rev"] = 2
+    browser.path.write_text(json.dumps(state))
+    assert browser.sync(0, {}, id=state_id).json == {
+        "ok": True, "id": state_id, "rev": 2, "reset": False, "items": {"abc|2": 5}}
+    assert json.loads(browser.path.read_text())["items"] == {"abc|2": [5, 1]}
 
 
 def test_browser_sync_contract():

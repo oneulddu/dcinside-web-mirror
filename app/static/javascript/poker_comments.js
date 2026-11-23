@@ -241,14 +241,14 @@
             updateNotice();
         }
 
-        function finish() {
+        function finish(blockedReason) {
             setState("done");
             if (statusBox) {
                 statusBox.hidden = true;
             }
             hideRetry();
             // 원본 전체 개수와 모은 개수가 같을 때만 다 불러왔다고 말한다.
-            var complete = !mismatch && total !== null && count === total;
+            var complete = !blockedReason && !mismatch && total !== null && count === total;
             section.dataset.commentsComplete = complete ? "1" : "0";
             if (complete) {
                 if (notice) {
@@ -260,7 +260,8 @@
                 setText(live, "댓글 " + formatNumber(total) + "개를 모두 불러왔어요.");
             } else {
                 updateNotice();
-                setText(live, "댓글 일부만 불러왔어요. 원문에서 전체 댓글을 확인해 주세요.");
+                if (blockedReason) setText(noticeText, blockedReason);
+                setText(live, blockedReason || "댓글 일부만 불러왔어요. 원문에서 전체 댓글을 확인해 주세요.");
             }
         }
 
@@ -450,7 +451,7 @@
                 if (result.failed) {
                     if (result.final) {
                         cursor = null;
-                        finish();
+                        finish(result.failed);
                         return;
                     }
                     fail(result.failed);

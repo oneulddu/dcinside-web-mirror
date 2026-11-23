@@ -44,8 +44,9 @@
     var partial = input.getAttribute("data-partial") === "true";
 
     // 차단·도배 필터가 숨긴 댓글은 찾은 개수에 넣지 않는다.
+    var hiddenClasses = ["comment-spam-hidden", "is-user-filtered", "comment-dccon-block-hidden"];
     function hiddenByOthers(item) {
-        return item.classList.contains("comment-spam-hidden") || item.classList.contains("is-user-filtered");
+        return hiddenClasses.some(name => item.classList.contains(name));
     }
 
     function apply() {
@@ -59,7 +60,8 @@
             }
         });
         list.classList.toggle("is-searching", Boolean(query));
-        status.textContent = statusText(query, count, partial);
+        var text = statusText(query, count, partial);
+        if (status.textContent !== text) status.textContent = text;
     }
 
     input.addEventListener("input", apply);
@@ -70,12 +72,20 @@
             apply();
         }
     });
-    // 댓글을 달거나 지우면 찾는 중인 결과를 다시 맞춘다. 클래스만 바꾸므로 다시 불리지 않는다.
+    // 답글 입력칸의 글자 수·오류 안내, 검색 자체의 클래스 변경은 검색 결과에 영향이 없다.
     if (typeof root.MutationObserver === "function") {
-        new root.MutationObserver(function () {
-            if (input.value) {
+        new root.MutationObserver(function (changes) {
+            if (input.value && changes.some(function (change) {
+                var node = change.target.nodeType === 1 ? change.target : change.target.parentElement;
+                if (!node || node.closest(".comment-reply-slot, #comment-form")) return false;
+                if (change.type !== "attributes") return true;
+                if (node.parentElement !== list || !node.classList.contains("comment-item")) return false;
+                var previous = (change.oldValue || "").split(/\s+/);
+                return hiddenClasses.some(name => previous.includes(name)) !== hiddenByOthers(node);
+            })) {
                 apply();
             }
-        }).observe(list, { childList: true, subtree: true, characterData: true });
+        }).observe(list, { childList: true, subtree: true, characterData: true,
+            attributeFilter: ["class"], attributeOldValue: true });
     }
 })(typeof window !== "undefined" ? window : globalThis);

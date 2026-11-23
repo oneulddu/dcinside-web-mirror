@@ -83,9 +83,6 @@ def linkify_comment_text(value):
         pieces.append(str(escape(trailing)))
         last = end
 
-    if not pieces:
-        return escape(text)
-
     pieces.append(str(escape(text[last:])))
     return Markup("".join(pieces).replace("\n", "<br>"))
 

@@ -241,6 +241,7 @@
     function startRetry(seconds, message) {
         clearTimeout(state.retryTimer);
         state.retryUntil = Date.now() + seconds * 1000;
+        sync();
         setStatus((message ? message + " " : "") + seconds + "초 뒤에 다시 삭제할 수 있어요.", "error");
         state.retryTimer = setTimeout(function () {
             state.retryUntil = 0;

@@ -228,6 +228,73 @@ def test_read_page_renders_new_comments_while_reusing_body(cached_post, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_modify_detaches_old_read_and_prevents_late_cache_fill(cached_post, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    version = "original"
+
+    async def document(*args, **kwargs):
+        snapshot = version
+        if snapshot == "original":
+            entered.set()
+            await release.wait()
+        return {"html": snapshot}, [], []
+
+    monkeypatch.setattr(core, "_read_document_with_api", document)
+    monkeypatch.setattr(routes.dc_write, "perform", lambda *a, **kw: ({"ok": True, "data": {}}, 200))
+    app = create_app()
+    app.config.update(WRITE_KEY="key", SECRET_KEY="test")
+    client = app.test_client()
+    headers = {"Origin": "http://localhost"}
+    client.post("/write/unlock", data={"key": "key"}, headers=headers)
+    old = asyncio.create_task(core.async_read(123, "test"))
+    await asyncio.wait_for(entered.wait(), 1)
+    try:
+        response = client.post("/write", json=dict(board="test", pid=123, password="pw",
+                               subject="new", body="modified", fingerprint="0"*64), headers=headers)
+        assert response.json["ok"]
+        version = "modified"
+        fresh = await asyncio.wait_for(core.async_read(123, "test"), 1)
+        assert fresh[0]["html"] == "modified"
+    finally:
+        release.set()
+        await asyncio.gather(old, return_exceptions=True)
+    assert (await core.async_read(123, "test"))[0]["html"] == "modified"
+
+
+@pytest.mark.parametrize("path,fields,expected", [
+    ("/read/vote", {}, "reload"), ("/read/vote", {"direction": "down"}, "reload"),
+    ("/read/delete", {}, "reload"), ("/read/comment", {"content": "new"}, "refresh"),
+    ("/read/comment/delete", {"comment_id": 1}, "refresh"),
+    ("/read/delete", {}, "uncertain"),
+])
+def test_mutation_outcome_controls_next_read(cached_post, monkeypatch, path, fields, expected):
+    state, _ = cached_post
+    monkeypatch.setattr(routes, "run_async", asyncio.run)
+    app = create_app()
+    app.config.update(WRITE_KEY="key", SECRET_KEY="test")
+    client = app.test_client()
+    headers = {"Origin": "http://localhost"}
+    client.post("/write/unlock", data={"key": "key"}, headers=headers)
+    read_url = "/read?board=test&pid=123"
+    assert client.get(read_url).status_code == 200
+    result = ({"ok": False, "code": "uncertain"}, 503) if expected == "uncertain" else ({"ok": True, "data": {}}, 200)
+    monkeypatch.setattr(routes.dc_write, "perform", lambda *a, **kw: result)
+    response = client.post(path, json=dict(board="test", kind="minor", pid=123, password="pw",
+                                           nickname="writer", **fields), headers=headers)
+    assert response.status_code == result[1]
+    async def unavailable(*args, **kwargs):
+        raise core.dc_api.DocumentUnavailableError("unavailable")
+    monkeypatch.setattr(core, "_read_document_with_api", unavailable)
+    state["rows"] = [comment(2, "updated comment")]
+    read = client.get(read_url)
+    if expected == "reload":
+        assert read.status_code == 503  # No stale body, even after origin failure.
+    else:
+        assert read.status_code == 200
+        assert ("updated comment" in read.text) == (expected == "refresh")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("prefer_mobile", [True, False])
 @pytest.mark.parametrize("payload, complete", [
     ({}, False),

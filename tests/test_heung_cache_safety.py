@@ -5,8 +5,37 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from requests import Response, Session
 
-from app.services import heung
+from app.services import heung, youtube_meta
+
+
+@pytest.mark.parametrize("source", ["heung", "youtube"])
+def test_metadata_lookups_reuse_transport_not_cookies(monkeypatch, source):
+    adapters = []
+    proxy = "http://metadata-proxy.invalid:8080"
+    monkeypatch.setenv("https_proxy", proxy)
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.setenv("NO_PROXY", "")
+
+    def send(session, request, **kwargs):
+        adapters.append(session.get_adapter(request.url))
+        assert kwargs["proxies"]["https"] == proxy
+        assert "Cookie" not in request.headers
+        session.cookies.set("probe", "discard")
+        response = Response()
+        response.status_code = 200
+        response._content = b"<div id='heung_gall_all_lyr'></div>"
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(Session, "send", send)
+    for _ in range(2):
+        if source == "heung":
+            heung._fetch_heung_galleries()
+        else:
+            youtube_meta.probe_shorts_orientation("abcdefghijk")
+    assert adapters[0] is adapters[1]
 
 
 def test_empty_heung_refresh_preserves_stale_memory_and_file_cache(monkeypatch):

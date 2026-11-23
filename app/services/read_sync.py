@@ -24,19 +24,19 @@ class ReadSyncError(Exception):
         self.status = 400 if code == "invalid" else 503
 
 
-def _valid_key(key):
+def _valid_key(key, *, legacy=False):
     if re.fullmatch(r"poker:[1-9][0-9]{0,11}", key):
         return True
     board, _, pid = key.partition("|")
-    return BOARD_ID_RE.fullmatch(board) and re.fullmatch(r"0*[1-9][0-9]*", pid)
+    return (legacy or len(pid) <= 15) and BOARD_ID_RE.fullmatch(board) and re.fullmatch(r"0*[1-9][0-9]*", pid)
 
 
 def _uint(value):
     return type(value) is int and value >= 0
 
 
-def _items(value):
-    return isinstance(value, dict) and len(value) <= MAX_ITEMS and all(_valid_key(k) for k in value)
+def _items(value, *, legacy=False):
+    return isinstance(value, dict) and len(value) <= MAX_ITEMS and all(_valid_key(k, legacy=legacy) for k in value)
 
 
 def _load(path):
@@ -46,10 +46,10 @@ def _load(path):
         with path.open(encoding="utf-8") as source:
             state = json.load(source)
     except FileNotFoundError:
-        return None
+        return None, False
     if (not isinstance(state, dict) or set(state) != {"id", "rev", "items"}
             or not isinstance(state["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", state["id"])
-            or not _uint(state["rev"]) or not _items(state["items"])):
+            or not _uint(state["rev"]) or not _items(state["items"], legacy=True)):
         raise ValueError("invalid state")
     seen = set()
     for entry in state["items"].values():
@@ -57,7 +57,10 @@ def _load(path):
                 or not _uint(entry[1]) or not 0 < entry[1] <= state["rev"] or entry[1] in seen):
             raise ValueError("invalid entry")
         seen.add(entry[1])
-    return state
+    obsolete = [k for k in state["items"] if not _valid_key(k)]
+    for key in obsolete:
+        del state["items"][key]
+    return state, bool(obsolete)
 
 
 def sync(payload):
@@ -69,7 +72,7 @@ def sync(payload):
     try:
         with state_file.lock_file(path, ".lock") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            state = _load(path)
+            state, migrated = _load(path)
             created = state is None
             if created:
                 state = {"id": secrets.token_hex(16), "rev": 0, "items": {}}
@@ -86,7 +89,7 @@ def sync(payload):
                 if key not in items or at > items[key][0]:
                     rev += 1
                     items[key] = [at, rev]
-            if created or rev != state["rev"]:
+            if created or migrated or rev != state["rev"]:
                 if len(items) > MAX_ITEMS:
                     newest = sorted(items, key=lambda k: (-items[k][0], k))[:MAX_ITEMS]
                     items = {k: items[k] for k in newest}

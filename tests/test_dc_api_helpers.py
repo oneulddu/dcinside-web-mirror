@@ -190,9 +190,9 @@ def test_document_content_helpers_keep_lazy_images_and_drop_ads():
     doc_content = lxml.html.fromstring(
         """
         <div class="thum-txtin">
-          <div class="adv-groupin">광고</div>
+          <div class="adv-groupin">광고</div>앞
           <p>본문</p>
-          <img src="https://nstatic.dcinside.com/ad.jpg">
+          <img src="https://nstatic.dcinside.com/ad.jpg">뒤
           <img data-gif="https://images.dcinside.com/post.gif" src="https://images.dcinside.com/post-thumb.jpg">
           <img src="https://img.iacstatic.co.kr/ad.jpg">
         </div>
@@ -203,7 +203,7 @@ def test_document_content_helpers_keep_lazy_images_and_drop_ads():
     images = api._API__document_images(cleaned, "test", "123")
 
     assert "광고" not in cleaned.text_content()
-    assert api._API__document_contents_text(cleaned) == "본문"
+    assert cleaned.text_content().split() == ["앞", "본문", "뒤"]
     assert [image.src for image in images] == ["https://images.dcinside.com/post.gif"]
     assert images[0].board_id == "test"
     assert images[0].document_id == "123"
@@ -327,6 +327,8 @@ async def test_repair_placeholder_images_uses_pc_change_gif_fallback_image():
     )
 
     async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
+        if not url.endswith("/idolism/1206783"):
+            return 302, {"Location": "/idolism/1206783"}, ""
         return (
             200,
             {},
@@ -512,6 +514,8 @@ async def test_replace_poll_iframes_handles_relative_poll_src():
 
     async def fake_request_text(method, url, headers=None, data=None, cookies=None, cooldown_scope=None):
         requests.append((method, url))
+        if url.endswith("preview=1"):
+            return 302, {"Location": "/poll/result"}, ""
         return (
             200,
             {},
@@ -529,7 +533,10 @@ async def test_replace_poll_iframes_handles_relative_poll_src():
 
     await api._API__replace_poll_iframes(doc_content)
 
-    assert requests == [("GET", "https://m.dcinside.com/poll?vote_id=123&preview=1")]
+    assert requests == [
+        ("GET", "https://m.dcinside.com/poll?vote_id=123&preview=1"),
+        ("GET", "https://m.dcinside.com/poll/result"),
+    ]
     assert doc_content.xpath("string(.//*[contains(@class, 'dc-poll-title')])") == "오늘의 투표"
     assert doc_content.xpath(".//a[contains(@class, 'dc-poll-link')]/@href") == [
         "https://m.dcinside.com/poll?vote_id=123"
@@ -591,7 +598,7 @@ async def test_comments_mobile_partial_failure_falls_back_to_pc_with_remaining_l
         yield _DummyComment("1")
         raise RuntimeError("mobile page failed")
 
-    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         pc_calls.append((num, start_page, kind))
         yield _DummyComment("1")
         yield _DummyComment("2")
@@ -614,7 +621,7 @@ async def test_comments_mobile_partial_failure_falls_back_to_pc_with_remaining_l
 async def test_comments_pc_duplicates_are_skipped_on_mobile_fallback():
     api = API.__new__(API)
 
-    async def partial_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def partial_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         yield _DummyComment("1")
         raise RuntimeError("pc page failed")
 
@@ -642,7 +649,7 @@ async def test_comments_pc_fetch_expands_limit_to_cover_mobile_duplicates():
         yield _DummyComment("2")
         raise RuntimeError("mobile page failed")
 
-    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         pc_calls.append(num)
         yield _DummyComment("1")
         yield _DummyComment("2")

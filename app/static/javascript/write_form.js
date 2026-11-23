@@ -24,7 +24,7 @@
     }
 
     // 새로 고른 파일 중 넣을 수 있는 것만 고른다. 형식은 서버가 파일 내용으로 다시 확인한다.
-    function pickImages(existing, incoming, limits) {
+    function pickImages(existing, incoming, limits, videoBytes = 0) {
         var accepted = [];
         var skipped = { type: 0, size: 0, count: 0, total: 0 };
         var total = existing.reduce(function (sum, file) {
@@ -38,7 +38,7 @@
                 skipped.size += 1;
             } else if (existing.length + accepted.length >= limits.image_max_count) {
                 skipped.count += 1;
-            } else if (total + file.size > limits.image_total_bytes) {
+            } else if (total + file.size > limits.image_total_bytes || videoBytes + total + file.size > limits.upload_total_bytes) {
                 skipped.total += 1;
             } else {
                 accepted.push(file);
@@ -514,7 +514,7 @@
     var state = { sending: false, retryUntil: 0, retryTimer: null, leaving: false, initial: "", images: [], caret: null,
         originals: [], fingerprint: "", originalHead: null, loaded: !modifyPid,
         // 새 글 전용: 동영상 파일, 고른 디시콘({package_idx, detail_idx, title, image_url}), 계정별 디시콘 목록.
-        videos: [], dccons: [], dcconCache: {}, dcconLoading: "" };
+        videos: [], dccons: [], dcconCache: {}, dcconLoading: new Set() };
     var nextImageId = 1;
     var storage = null;
     try {
@@ -530,6 +530,7 @@
         : (modifyPid ? "anonymous" : post.authorMode());
     // 로그인한 계정의 닉네임. 작성자 안내에 붙인다.
     var authorNames = {};
+    var authorGeneration = 0;
 
     function isAccount() {
         return state.mode.indexOf("account:") === 0;
@@ -541,8 +542,10 @@
     }
 
     function draftSnapshot() {
-        return [el.subject.value, el.body.value, headValue(), state.images.length, state.originals.length,
-            state.videos.length, state.dccons.length, pollOpen()].join("\u0000");
+        return JSON.stringify([el.subject.value, el.body.value, headValue(), state.images.map(item => item.id),
+            state.originals.map(item => item.index), state.videos.map(file => [file.name, file.size, file.lastModified]),
+            state.dccons.map(item => [item.slot, item.package_idx, item.detail_idx]), pollOpen() ? pollPayload() : null,
+            el.html?.checked, el.autoDelete?.checked, optionsPayload()]);
     }
 
     function newImages() {
@@ -941,10 +944,7 @@
         if (state.sending || !files || !files.length) {
             return;
         }
-        var current = newImages().map(function (item) {
-            return item.file;
-        });
-        var picked = pickImages(current, files, limits);
+        var picked = pickImages(newImageFiles(), files, limits, uploadBytes(state.videos));
         var firstNumber = state.images.length + 1;
         picked.accepted.forEach(function (file) {
             var item = { id: nextImageId++, file: file, url: URL.createObjectURL(file), checked: false, broken: false };
@@ -1471,10 +1471,10 @@
             renderDcconPackages();
             return;
         }
-        if (state.dcconLoading === slot) {
+        if (state.dcconLoading.has(slot)) {
             return;
         }
-        state.dcconLoading = slot;
+        state.dcconLoading.add(slot);
         el.dcconPicker.hidden = true;
         el.dcconGrid.textContent = "";
         setDcconStatus("디시콘을 불러오고 있어요.");
@@ -1488,15 +1488,12 @@
         }, function () {
             return null;
         }).then(function (payload) {
-            if (state.dcconLoading === slot) {
-                state.dcconLoading = "";
-            }
-            // 기다리는 사이 상단 메뉴에서 다른 계정을 골랐으면 그 계정 목록을 따로 받는다.
+            state.dcconLoading.delete(slot);
+            if (payload && payload.ok === true && Array.isArray(payload.packages)) state.dcconCache[slot] = payload.packages;
             if (accountSlot() !== slot || el.dcconPanel.hidden) {
                 return;
             }
-            if (payload && payload.ok === true && Array.isArray(payload.packages)) {
-                state.dcconCache[slot] = payload.packages;
+            if (state.dcconCache[slot]) {
                 renderDcconPackages();
                 return;
             }
@@ -1891,6 +1888,7 @@
             body: el.body.value
         };
         // 보낼 때의 작성자를 붙잡아 둔다. 결과를 받기 전에 상단 메뉴를 바꿔도 바뀌지 않는다.
+        var sentGeneration = authorGeneration;
         state.sentAccount = isAccount();
         if (state.sentAccount) {
             body.mode = "account";
@@ -1975,11 +1973,11 @@
                     : "파일을 다 올리기 전에 연결이 끊겼어요. 글은 등록되지 않았어요. 다시 등록해 주세요.", "error");
                 return;
             }
-            handle(post.interpret(result.status, result.payload));
+            handle(post.interpret(result.status, result.payload), sentGeneration);
         });
     }
 
-    function handle(outcome) {
+    function handle(outcome, sentGeneration) {
         var payload = outcome.payload || {};
         var message = typeof payload.message === "string" ? payload.message : "";
         if (outcome.action === "visitor_check_required") {
@@ -2007,6 +2005,10 @@
             return;
         }
         if (outcome.action === "captcha") {
+            if (sentGeneration !== authorGeneration) {
+                setStatus("작성자가 바뀌어 이전 작성자의 문자 확인을 취소했어요.", "error");
+                return;
+            }
             setStatus(message || "보이는 문자를 입력하고 다시 등록해 주세요.", "error");
             // 캡챠 칸이 같은 안내를 보여 주므로 상태 줄은 화면 낭독기에만 남긴다.
             el.status.classList.add("sr-only");
@@ -2092,6 +2094,13 @@
     // 새 글은 상단 작성자 메뉴(다른 탭 포함)를 따른다. 써 둔 내용과 닉네임·비밀번호 칸 값은 그대로 둔다.
     if (!modifyPid) {
         post.onAuthorChange(function (mode) {
+            if (mode !== state.mode) {
+                authorGeneration++;
+                if (captcha && captcha.answer()) {
+                    captcha.hide();
+                    if (!state.sending) setStatus("");
+                }
+            }
             state.mode = mode;
             clearErrors();
             applyMode();

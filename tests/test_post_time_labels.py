@@ -35,6 +35,22 @@ def test_date_only_value_does_not_gain_a_clock():
     assert ":" not in info["label"]
 
 
+@pytest.mark.parametrize(("year", "iso"), [(2024, "2024-02-29"), (2025, "2024-02-29"), (2026, "")])
+def test_yearless_leap_day_only_uses_plausible_year(year, iso, monkeypatch):
+    from app.services.dc import parsers
+    from app.services.dc.api import API
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(year, 3, 1, tzinfo=tz)
+
+    monkeypatch.setattr(parsers, "datetime", FrozenDatetime)
+    parsed = API.__new__(API)._API__parse_time("02.29 12:34:56")
+    assert (parsed.isoformat() if parsed else "") == (iso + "T12:34:56" if iso else "")
+    assert post_time_info("02.29", now=FrozenDatetime.now(KST))["iso"] == iso
+
+
 def test_parser_date_only_marker_is_not_shown_as_a_clock():
     # 파서는 날짜만 있는 원문(예: 댓글 "25.12.31")에 23:59:59를 붙인다.
     raw = format_display_time(datetime(2025, 12, 31, 23, 59, 59))

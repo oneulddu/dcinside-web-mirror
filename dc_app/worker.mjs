@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pcVote, pcVoteCaptcha } from './pc_vote.mjs';
 
 const statePath = process.env.MIRROR_DC_APP_STATE || resolve(dirname(fileURLToPath(import.meta.url)), '../instance/dc_app_credentials.json');
@@ -11,6 +12,21 @@ const statePath = process.env.MIRROR_DC_APP_STATE || resolve(dirname(fileURLToPa
 APP.versionCode = '100190';
 APP.versionName = '5.3.20';
 const dc = new DCInside({ http: { timeout: 45000 } });
+// One line runs to completion before the next can use this mutable client.
+let operationSignal;
+const fetchApp = dc.http.fetch;
+dc.http.fetch = function (url, init = {}) {
+  if (!operationSignal) return fetchApp.call(this, url, init);
+  return fetchApp.call(this, url, { ...init, signal: AbortSignal.any([
+    operationSignal, init.signal ?? AbortSignal.timeout(45000),
+  ]) });
+};
+function checkNotSent() {
+  if (operationSignal?.aborted) throw Object.assign(new Error('Deadline'), { name: 'TimeoutError', sent: false });
+}
+function interrupted(error) {
+  return operationSignal?.aborted && ['AbortError', 'TimeoutError'].includes(error.name);
+}
 // certification_login is an answered rejection, not a transport failure.
 // Returning false makes Http.send throw rather than replay the mutation.
 dc.http.context.relogin = async () => false;
@@ -44,6 +60,13 @@ let lastLoginAttempt = null;
 let loginAttempted = false; // Reset for each serialized request, including lazy login.
 const LOGIN_INTERVAL_MS = 10000;
 const ACCOUNT_MUTATIONS = new Set(['upvote', 'downvote', 'write', 'comment', 'delete', 'comment_delete', 'modify']);
+function captchaRejection(value) {
+  return [value?.cause, value?.message, value?.msg].some(text => typeof text === 'string'
+    && /captcha|보안\s?(?:코드|문자)|자동\s?입력|코드가\s?설정된\s?갤러리/i.test(text));
+}
+function isCaptchaError(error) {
+  return error.name === 'CaptchaRequiredError' || (error.name === 'ApiError' && captchaRejection(error));
+}
 function updateRequired(value) {
   return value?.reason === 'update_required'
     || [value?.cause, value?.message].some(text => typeof text === 'string' && /최신\s?버전으로\s?업데이트/.test(text));
@@ -84,7 +107,7 @@ async function accountLogin(input = {}) {
   const state = accounts[account];
   // Both explicit and lazy login share this clock. Rejection must not change
   // the session/failure state or extend the interval.
-  const now = Date.now();
+  const now = performance.now();
   const remaining = lastLoginAttempt === null ? 0 : LOGIN_INTERVAL_MS - (now - lastLoginAttempt);
   if (remaining > 0) throw Object.assign(new Error('Login cooldown'), {
     name: 'LoginCooldown', retry_after: Math.ceil(remaining / 1000), sent: false,
@@ -103,21 +126,39 @@ async function accountLogin(input = {}) {
     state.reason = null;
     return { result: true, account, ...accountFields(account) };
   } catch (error) {
+    if (interrupted(error)) {
+      error.sent = false; // Explicit or lazy login has not submitted the mutation.
+      throw error;
+    }
     state.blocked = true;
     state.reason = updateRequired(error) ? 'update_required' : error.name === 'OtpRequiredError' ? 'otp'
-      : error.name === 'CaptchaRequiredError' ? 'captcha' : 'failed';
+      : isCaptchaError(error) ? 'captcha' : 'failed';
     throw loginNeeded(state.reason, account);
   }
 }
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = ms => delay(ms, undefined, { signal: operationSignal });
 const MAX_IMAGE = 200 * 1024;
 const MAX_UPLOAD = 10 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 const IMAGE_NAME = /^[A-Za-z0-9_-]+\.(jpg|png|gif|webp)$/;
 const COMMENT_MAX = 400;
+const MAX_WRITE_ICONS = 20;
+let observedIssuedAt;
+let issuedTick;
+function appIdAge() {
+  const issued = dc.auth.exportCredentials()?.appIdIssuedAt;
+  if (!Number.isFinite(issued) || !issued) return Infinity;
+  const now = performance.now();
+  if (observedIssuedAt !== issued) {
+    observedIssuedAt = issued;
+    issuedTick = now - Math.max(0, Date.now() - issued);
+  }
+  return now - issuedTick;
+}
 try {
   const credentials = JSON.parse(await readFile(statePath, 'utf8'));
   dc.auth.importCredentials(credentials);
+  appIdAge();
   await chmod(statePath, 0o600);
 } catch (error) {
   if (error.code !== 'ENOENT') process.stderr.write('DC credential restore failed\n');
@@ -145,9 +186,22 @@ async function saveCredentials() {
 async function settled() {
   await dc.auth.appId();
   await saveCredentials();
-  const issued = dc.auth.exportCredentials()?.appIdIssuedAt;
-  if (issued) await sleep(Math.max(0, 8000 - (Date.now() - issued)));
+  const wait = 8000 - appIdAge();
+  if (wait > 0) await sleep(wait);
 }
+
+// Http's app_id refresh normally sleeps inside the library for a recently
+// issued ID. Use the same settle policy with an interruptible, bounded wait.
+dc.http.context.refreshAppId = async () => {
+  const wait = dc.auth.appIdSettleMs - appIdAge();
+  if (dc.auth.appIdValue && wait > 0) {
+    await sleep(wait);
+    return dc.auth.appIdValue;
+  }
+  // The library's refresh helper would recheck wall time and reuse the rejected ID.
+  dc.auth.appIdValue = null;
+  return dc.auth.appId();
+};
 
 async function captchaImage(input) {
   if (!['article', 'comment', 'recommend', 'login'].includes(input.kind) || !/^[0-9a-f]{16}$/.test(input.key)
@@ -192,7 +246,7 @@ async function uploadedImages(input) {
 async function writeContent(input) {
   const images = await uploadedImages(input);
   const icons = input.dccons ?? [];
-  if (!Array.isArray(icons) || (icons.length && input.session?.type !== 'login') || icons.some(icon =>
+  if (!Array.isArray(icons) || icons.length > MAX_WRITE_ICONS || (icons.length && input.session?.type !== 'login') || icons.some(icon =>
     !icon || !Number.isSafeInteger(icon.package_idx) || icon.package_idx < 1
       || !Number.isSafeInteger(icon.detail_idx) || icon.detail_idx < 1)) throw invalidMutation();
   const videos = input.videos ?? [];
@@ -259,7 +313,7 @@ async function prepareWrite(input, content, videos) {
     // Insert calls use the pinned login session, but content follows marker order.
     const icons = [];
     for (const icon of input.dccons ?? []) {
-      const result = acceptedPrestep(await dc.dccons.insert(icon));
+      const result = acceptedPrestep(await dc.dccons.insert({ package_idx: icon.package_idx, detail_idx: icon.detail_idx }));
       if (typeof result.img_tag !== 'string' || !result.img_tag) throw invalidMutation();
       icons.push({ type: 'dccon', tag: result.img_tag, detailIdx: icon.detail_idx, packageIdx: icon.package_idx });
     }
@@ -297,15 +351,33 @@ async function prepareWrite(input, content, videos) {
 
 async function dcconPackages(account) {
   const state = accounts[account];
-  if (state.dccons && state.dccons.expires > Date.now()) return state.dccons.data;
+  if (state.dccons && state.dccons.expires > performance.now()) return state.dccons.data;
   const result = acceptedPrestep(await dc.dccons.list());
-  const packages = (result.tab ?? []).filter(tab => Number.isSafeInteger(tab.package_idx) && tab.package_idx > 0)
-    .map(tab => ({ package_idx: tab.package_idx, title: tab.title ?? '',
-      icons: (result.list ?? []).flat().filter(icon => icon.package_idx === tab.package_idx
-        && Number.isSafeInteger(icon.detail_idx) && icon.detail_idx > 0 && typeof icon.img === 'string')
-        .map(icon => ({ detail_idx: icon.detail_idx, title: icon.title ?? '', image_url: icon.img })) }));
-  const data = { result: true, packages };
-  state.dccons = { expires: Date.now() + 180000, data };
+  const groups = new Map();
+  // Charge each projected record (including JSON escaping and separators)
+  // once. Leave room in Python's 400000-byte frame for the IPC envelope.
+  let remaining = 399900;
+  const charge = record => {
+    remaining -= Buffer.byteLength(JSON.stringify(record)) + 1;
+    if (remaining < 0) throw Object.assign(new Error('DCcon list too large'), { name: 'ReplyTooLarge', sent: false });
+  };
+  for (const tab of result.tab ?? []) {
+    if (!Number.isSafeInteger(tab.package_idx) || tab.package_idx < 1 || groups.has(tab.package_idx)) continue;
+    const pack = { package_idx: tab.package_idx, title: tab.title ?? '', icons: [] };
+    charge(pack);
+    groups.set(tab.package_idx, pack);
+  }
+  for (const row of result.list ?? []) {
+    for (const icon of Array.isArray(row) ? row : [row]) {
+      const pack = groups.get(icon.package_idx);
+      if (!pack || !Number.isSafeInteger(icon.detail_idx) || icon.detail_idx < 1 || typeof icon.img !== 'string') continue;
+      const entry = { detail_idx: icon.detail_idx, title: icon.title ?? '', image_url: icon.img };
+      charge(entry);
+      pack.icons.push(entry);
+    }
+  }
+  const data = { result: true, packages: [...groups.values()] };
+  state.dccons = { expires: performance.now() + 180000, data };
   return data;
 }
 
@@ -446,7 +518,7 @@ async function dispatch(input) {
   if (input.op === 'account_status') return accountStatus();
   if (input.op === 'account_login') return accountLogin(input);
   if (input.op === 'captcha') return captchaImage(input);
-  if (input.op === 'pc_vote_captcha') return pcVoteCaptcha(input);
+  if (input.op === 'pc_vote_captcha') return pcVoteCaptcha(input, operationSignal);
   // 글 하나를 앱 API로 열어 이 갤러리의 추천 설정만 읽는다. 투표는 보내지 않는다.
   if (input.op === 'vote_info') {
     if (!/^[A-Za-z0-9_]{1,80}$/.test(input.gallery) || !Number.isSafeInteger(input.no) || input.no < 1) throw new Error('Invalid vote info request');
@@ -484,7 +556,7 @@ async function dispatch(input) {
   // PC 쿠키 세션은 유동 추천만 지원한다. 계정 추천을 유동으로 보내면 안 된다.
   if (input.pc !== undefined && ['upvote', 'downvote'].includes(input.op)) {
     if (account) throw invalidMutation();
-    return pcVote(input, input.op === 'upvote' ? 'U' : 'D');
+    return pcVote(input, input.op === 'upvote' ? 'U' : 'D', operationSignal);
   }
   let content;
   let comment;
@@ -532,6 +604,7 @@ async function dispatch(input) {
         throw error;
       }
       if (prepared.rejection) return prepared.rejection;
+      checkNotSent();
       return await dc.articles.write({ gallery: input.gallery, articleNo: input.no, subject: input.subject,
         headText: input.head, captcha: input.captcha, useGalleryNickname: false, ...prepared });
     }
@@ -540,6 +613,7 @@ async function dispatch(input) {
       writeNoRepost = input.options?.no_repost === true;
     }
     const send = () => {
+      checkNotSent();
       if (input.op === 'delete') return dc.articles.delete(input.gallery, input.no);
       if (input.op === 'comment_delete') return dc.comments.delete(input.gallery, input.no, input.comment_no);
       if (input.op === 'write') return dc.articles.write({ gallery: input.gallery, subject: input.subject, ...preparedWrite, headText: input.head, captcha: input.captcha, validateOnly: input.validateOnly === true, useGalleryNickname: false });
@@ -554,9 +628,13 @@ async function dispatch(input) {
       return await send();
     } catch (error) {
       // 새로 받은 app_id가 자리 잡기 전이면 디시가 이 문구로 거절한다. 받지 않은 요청이라 한 번만 다시 보낸다.
-      const issued = dc.auth.exportCredentials()?.appIdIssuedAt;
-      if (error.cause !== '잠시후 다시 이용해주세요.' || !issued || Date.now() - issued >= 20000) throw error;
-      await sleep(3000);
+      if (error.cause !== '잠시후 다시 이용해주세요.' || appIdAge() >= 20000) throw error;
+      try {
+        await sleep(3000);
+      } catch (waitError) {
+        waitError.sent = false; // The first send received a definite rejection.
+        throw waitError;
+      }
       return await send();
     }
   } finally {
@@ -574,27 +652,42 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
   loginAttempted = false;
   try {
     input = JSON.parse(line);
+    if (Number.isFinite(input.budget_ms)) {
+      const ms = Math.min(input.budget_ms, (input.expires_ms ?? Infinity) - Date.now());
+      operationSignal = ms > 0 ? AbortSignal.timeout(ms) : AbortSignal.abort();
+      checkNotSent();
+    }
     let data = await handle(input);
     if ([false, 'false'].includes(data?.result)) {
       if (updateRequired(data)) throw Object.assign(new Error('Update required'), { reason: 'update_required' });
-      data = { ...data, ...diagnostic(input, data.cause) };
-      if (input.session?.type === 'login' && typeof data.cause === 'string'
-          && !['stale', '잠시후 다시 이용해주세요.', '잠시 후 다시 시도해 주세요.'].includes(data.cause)) {
-        data.cause = '디시에서 요청을 받지 않았어요.';
+      if (input.session?.type === 'login' && captchaRejection(data)) {
+        throw Object.assign(new Error('Captcha required'), { name: 'CaptchaRequiredError' });
+      }
+      if (input.session?.type === 'login') {
+        const cause = ['stale', '잠시후 다시 이용해주세요.', '잠시 후 다시 시도해 주세요.'].includes(data.cause)
+          ? data.cause : '디시에서 요청을 받지 않았어요.';
+        data = { result: false, cause, ...diagnostic(input, data.cause),
+          ...([true, 'true', 1, '1'].includes(data.carrier_vpn_ban) ? { carrier_vpn_ban: true } : {}) };
       }
     }
     result = { id: input.id, ok: true, data };
   } catch (error) {
-    if (updateRequired(error)) {
+    if (interrupted(error)) {
+      result = { id: input.id, ok: false, error: { name: 'WorkerError', reason: 'deadline',
+        ...(!ACCOUNT_MUTATIONS.has(input.op) || error.sent === false ? { sent: false } : {}) } };
+    } else if (updateRequired(error)) {
       // Only a fixed category crosses the login/error sanitization boundary.
       result = { id: input?.id ?? null, ok: false, error: { name: 'WorkerError', reason: 'update_required' } };
+    } else if (input?.session?.type === 'login' && isCaptchaError(error)) {
+      result = { id: input.id, ok: false, error: { name: 'CaptchaRequiredError', cause: '보안 코드를 입력해 주세요.',
+        ...(error.sent === false ? { sent: false } : {}) } };
     } else {
       const apiError = ['ApiError', 'CaptchaRequiredError', 'AuthExpiredError'].includes(error.name);
       const raw = Array.isArray(error.response) ? error.response[0] : error.response;
       const vpnBan = apiError && raw && typeof raw === 'object' && [true, 'true', 1, '1'].includes(raw.carrier_vpn_ban);
       const account = input?.session?.type === 'login';
       result = { id: input?.id ?? null, ok: false, error: {
-        name: apiError || error.name === 'HTTPError' ? error.name : 'WorkerError',
+        name: apiError || ['HTTPError', 'ReplyTooLarge'].includes(error.name) ? error.name : 'WorkerError',
         cause: apiError && typeof error.cause === 'string' ? error.cause
           : error.name === 'WorkerError' && error.sent === false && error.cause === 'stale' ? 'stale' : '',
         status: Number.isInteger(error.status) ? error.status : null,
@@ -603,7 +696,7 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
         ...diagnostic(input, error.cause),
       } };
       if (account && apiError && !['잠시후 다시 이용해주세요.', '잠시 후 다시 시도해 주세요.'].includes(result.error.cause)) {
-        result.error.cause = error.name === 'CaptchaRequiredError' ? '보안 코드를 입력해 주세요.' : '디시에서 요청을 받지 않았어요.';
+        result.error.cause = '디시에서 요청을 받지 않았어요.';
       }
       if (error.name === 'LoginNeeded') result.error = {
         name: 'LoginNeeded', reason: error.reason, account: error.account, sent: false,
@@ -615,5 +708,6 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       if (error.name === 'AccountInvalid') result.error = { name: 'AccountInvalid', sent: false };
     }
   }
+  operationSignal = undefined;
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

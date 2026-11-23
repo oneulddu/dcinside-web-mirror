@@ -6,7 +6,9 @@ const code = fs.readFileSync(path.join(__dirname, '../../app/static/javascript/p
 function harness() {
   const handlers = {}, timers = new Map(), writes = []; let now = 0, serial = 0;
   const document = { addEventListener(type, fn, capture) { assert.equal(capture, true); handlers[type] = fn; } };
+  let notify;
   vm.runInNewContext(code, { document, WeakMap, Math: { random: () => 0 },
+    MutationObserver: class { constructor(fn) {notify=fn;} observe() {} },
     setTimeout(fn, delay) { timers.set(++serial, {fn, at: now + delay}); return serial; },
     clearTimeout(id) { timers.delete(id); }
   });
@@ -14,7 +16,7 @@ function harness() {
     const attrs = {'data-body-image-src':url, src:url};
     return {tagName:'IMG',hidden:false,isConnected:true,naturalWidth:0,
       getAttribute(k) { return attrs[k] ?? null; },
-      setAttribute(k,v) {attrs[k]=v; writes.push(this);},
+      setAttribute(k,v) {attrs[k]=v; if(k==='src') writes.push(this);},
       removeAttribute(k) {delete attrs[k];}
     };
   }
@@ -27,7 +29,7 @@ function harness() {
     }
     now=end;
   }
-  return {image,advance,writes,emit(type,target) {handlers[type]({target});}};
+  return {image,advance,writes,notify,emit(type,target) {handlers[type]({target});}};
 }
 // A burst of failed body/comment images eventually recovers, at most two at a time.
 {
@@ -61,8 +63,18 @@ for(const mutate of [n=>{n.hidden=true;n.removeAttribute('src');},n=>{n.isConnec
   h.advance(1500);assert.equal(h.writes.length,2);
   h.advance(35000);assert.equal(h.writes.length,4);
   assert.equal(images[0].getAttribute('src'),null);assert.equal(images[1].getAttribute('src'),null);
+  assert.equal(images[0].getAttribute('data-body-image-retry-suspended'),'1');
   h.advance(35000);assert.equal(h.writes.length,6);
   assert.equal(images[2].getAttribute('src'),null);assert.equal(images[3].getAttribute('src'),null);
   assert.equal(images.filter(n=>n.getAttribute('src')).length,2);
+}
+// Blocking or removing an active image admits the next job without waiting for its watchdog.
+{
+  const h=harness(),images=Array.from({length:4},()=>h.image());images.forEach(n=>h.emit('error',n));
+  h.advance(1500);images[0].hidden=true;images[0].removeAttribute('src');images[1].isConnected=false;
+  h.notify([{target:images[0],attributeName:'hidden'}]);assert.equal(h.writes.length,4);
+  assert.equal(images[1].getAttribute('src'),null);
+  h.advance(35000);images[2].hidden=true;h.notify([{target:images[2],attributeName:'hidden'}]);
+  assert.equal(images[2].getAttribute('data-body-image-retry-suspended'),null);
 }
 console.log('poker_images: burst recovery, retry cap, blocking, inserted comments and stalled requests passed');

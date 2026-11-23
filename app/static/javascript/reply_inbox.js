@@ -40,7 +40,7 @@
         if (!valid(ref, true) || state.mine.some(row => sameRow(row, ref))) return;
         state.inbox = state.inbox.filter(row => !sameRow(row, ref));
         state.mine.unshift({ board: ref.board, kind: ref.kind, pid: ref.pid, id: ref.id,
-            title: title.slice(0, 100), at: now, checked: 0, floor: ref.id === POST ? "0" : ref.id, seen: [],
+            title: short(title, 100), at: now, checked: 0, floor: ref.id === POST ? "0" : ref.id, seen: [],
             ...(base ? { base: true } : {}) });
         state.mine.length = Math.min(50, state.mine.length);
     }
@@ -114,8 +114,15 @@
             if (!answer || !await cache.delete(HANDOFF_KEY)) return false;
             const { url, at } = await answer.json(), target = new URL(url, win.location.href);
             if (target.origin !== win.location.origin || !(target.pathname === "/" || target.pathname === "/read")
-                || !(Math.abs(Date.now() - at) < 60000) || target.href === win.location.href) return false;
-            win.location.assign(target.href);
+                || !(Math.abs(Date.now() - at) < 60000)) return false;
+            const current = new URL(win.location.href);
+            if (current.pathname === target.pathname && current.search === target.search) {
+                win.history.replaceState(win.history.state, "", target.href);
+                if (win.MirrorCommentForm?.hasDraft?.()) {
+                    const anchor = win.document.getElementById(target.hash.slice(1)) || win.document.getElementById("comment-title");
+                    anchor?.scrollIntoView();
+                } else win.location.reload();
+            } else win.location.assign(target.href);
             return true;
         } catch (_) {
             return false;
@@ -125,6 +132,19 @@
     if (typeof module !== "undefined" && module.exports) module.exports = { load, track, receive, drop, cursor, pushRows, follow };
     const doc = root.document;
     if (!doc) return;
+    const nav = root.navigator;
+    if (nav.serviceWorker && root.caches) {
+        const followNow = () => { if (!doc.hidden) follow(root); };
+        nav.serviceWorker.addEventListener("message", event => {
+            if (event.data === HANDOFF + ":ready?") event.ports[0]?.postMessage(HANDOFF);
+            else if (event.data === HANDOFF) followNow();
+        });
+        nav.serviceWorker.startMessages();
+        doc.addEventListener("visibilitychange", followNow);
+        root.addEventListener("focus", followNow);
+        root.addEventListener("pageshow", followNow);
+        followNow();
+    }
     const byId = name => doc.getElementById("reply-inbox" + name);
     const button = byId("-open"), dialog = byId("");
     if (!button || !dialog) return;
@@ -134,7 +154,7 @@
     const title = () => doc.querySelector(".article-head h1")?.textContent || "";
     let problem = "", notice = "", busy = false, stopped = false, timer;
     // 푸시는 서버가 설정되어 있고(#reply-inbox-push), 브라우저가 서비스 워커 푸시를 지원할 때만 쓴다.
-    const nav = root.navigator, pushBox = byId("-push");
+    const pushBox = byId("-push");
     const pushable = Boolean(pushBox) && root.isSecureContext === true && "serviceWorker" in nav
         && "PushManager" in root && "Notification" in root;
     // 워커는 /static/javascript/ 범위에 있어 이 화면을 제어하지 않는다. 등록은 그 범위로 찾는다.
@@ -268,6 +288,7 @@
                 const latest = read();
                 latest.mine = latest.mine.filter(row => !samePost(row, post));
                 save(latest);
+                resync();
             } else {
                 if (!response.ok) throw Error();
                 const data = await response.json();
@@ -313,24 +334,27 @@
         const registration = await nav.serviceWorker.getRegistration(scope);
         return registration ? registration.pushManager.getSubscription() : null;
     }
-    function keep(endpoint, sig) {
-        const state = read();
-        state.push = { ...state.push, endpoint, sig, synced: Date.now() };
-        save(state);
-    }
     function forget() {
         const state = read();
-        state.push = { ...state.push, endpoint: "", sig: "", synced: 0 };
+        state.push = { ...state.push, endpoint: "", sig: "", synced: 0, rev: state.push.rev + 1 };
         save(state);
     }
-    async function sync(sub) {
+    async function sync(sub, stored) {
         const state = read(), rows = pushRows(state), keys = sub.toJSON().keys;
+        if (state.push.endpoint !== stored) return { current: false };
         const rev = Math.max(Date.now(), state.push.rev + 1);
         state.push = { ...state.push, rev, tried: Date.now() };
         save(state);
         const result = await send("/push/sync", { subscription: { endpoint: sub.endpoint,
             keys: { p256dh: keys.p256dh, auth: keys.auth } }, rev, rows });
-        return { ...result, ok: result.status === 200 && result.data?.ok === true, sig: signature(rows) };
+        const latest = read(), sig = signature(rows);
+        const current = latest.push.endpoint === stored && latest.push.rev === rev;
+        const ok = current && result.status === 200 && result.data?.ok === true && !result.data.stale;
+        if (ok) {
+            latest.push = { ...latest.push, endpoint: sub.endpoint, sig, synced: Date.now() };
+            save(latest);
+        }
+        return { ...result, current, ok, sig };
     }
 
     async function enable(asked) {
@@ -343,13 +367,13 @@
         // 서버 키가 바뀌었으면 남은 구독으로는 새로 구독할 수 없어 먼저 지운다.
         await (await registration.pushManager.getSubscription())?.unsubscribe();
         const sub = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key(answer.data.key) });
-        const result = await sync(sub);
+        const result = await sync(sub, "");
+        if (!result.current || result.data?.stale) return "failed";
         if (!result.ok) {
             // 서버가 받지 않은 구독을 남기지 않는다. 지우지 못해도 다음에 켤 때 위에서 다시 지운다.
             await sub.unsubscribe().catch(() => {});
             return failure(result);
         }
-        keep(sub.endpoint, result.sig);
         return !result.data.created ? "enabled" : result.data.welcomed ? "welcomed" : "quiet";
     }
     // 화면에서는 먼저 꺼진 것으로 기록하고 서버에 바로 알린다. 브라우저 구독 조회나 삭제가
@@ -397,12 +421,10 @@
                 pushNote = PUSH.lost;
                 return;
             }
-            const result = await sync(sub).catch(error => { failed = sig; throw error; });
+            const result = await sync(sub, stored).catch(error => { failed = sig; throw error; });
+            if (!result.current) return;
             failed = result.ok ? null : result.sig;
-            // 보내는 사이 이 탭이나 다른 탭에서 끄거나 새로 켠 상태를 늦은 응답으로 덮어쓰지 않는다.
-            const current = read().push.endpoint === stored;
-            if (result.ok && current) keep(sub.endpoint, result.sig);
-            if (result.status === 410 && current) {
+            if (result.status === 410) {
                 forget();
                 pushNote = PUSH.lost;
                 await sub.unsubscribe();
@@ -491,15 +513,6 @@
     root.addEventListener("online", () => schedule(1500));
     root.addEventListener("pageshow", () => { render(); schedule(1500); });
     root.addEventListener("pagehide", () => { clearTimeout(timer); clearTimeout(syncTimer); });
-    if (pushable) {
-        const followNow = () => { if (!doc.hidden) follow(root); };
-        nav.serviceWorker.addEventListener("message", event => { if (event.data === HANDOFF) followNow(); });
-        nav.serviceWorker.startMessages();
-        doc.addEventListener("visibilitychange", followNow);
-        root.addEventListener("focus", followNow);
-        root.addEventListener("pageshow", followNow);
-        followNow();
-    }
     render();
     schedule(1500);
     verify().catch(() => { /* 구독 확인에 실패해도 알림함은 그대로 쓴다. */ });

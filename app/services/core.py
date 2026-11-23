@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import re
 import threading
@@ -53,6 +54,7 @@ BOARD_PAGE_CACHE_MAX_ITEMS = 2048
 BOARD_INDEX_CACHE_MAX_ITEMS = 2048
 BOARD_TIME_CACHE_MAX_ITEMS = BOARD_PAGE_CACHE_MAX_ITEMS
 BOARD_UPDATES_CACHE_TTL = 60
+BOARD_UPDATES_FAILURE_TTL = 3
 BOARD_UPDATES_CACHE_MAX_ITEMS = 512
 READ_CACHE_MAX_ITEMS = 512
 LATEST_ID_CACHE_MAX_ITEMS = 512
@@ -338,12 +340,24 @@ async def _wait_for_read_flight(flight):
     return _copy_read_payload(payload)
 
 
+class _BoardFlightCancelled(dc_api.BoardUnavailableError):
+    pass
+
+
+class BoardUpdatesUnavailable(dc_api.BoardUnavailableError):
+    def __init__(self, retry_after):
+        super().__init__("board updates unavailable")
+        self.retry_after = retry_after
+
+
 async def _load_board_once(key, load, timeout=None):
     with claim_flight(_BOARD_INFLIGHT, _BOARD_INFLIGHT_LOCK, key) as (flight, is_owner):
         try:
             if not is_owner:
                 payload, error = await flight.wait(timeout)
                 if error is not None:
+                    if isinstance(error, asyncio.CancelledError):
+                        raise _BoardFlightCancelled("shared board fetch cancelled") from error
                     if isinstance(error, dc_api.BoardUnavailableError):
                         raise dc_api.BoardUnavailableError(str(error)) from error
                     raise dc_api.BoardUnavailableError("concurrent board fetch failed") from error
@@ -387,6 +401,28 @@ def _board_index_cache_key(
 
 def _read_cache_key(api_id, board, kind=None, recommend=0, search_type=None, search_keyword=None, head_id=None):
     return board, kind or "", str(api_id)
+
+
+def invalidate_read_cache(board, pid, *, comments_only=False, deleted=False):
+    def discard_variants(cache):
+        # The mutation API addresses gallery + number; readers can omit the
+        # kind hint or supply it. Related lists also have a context suffix.
+        for key in list(cache):
+            if key[:3:2] == (board, str(pid)):
+                del cache[key]
+
+    # The flight object is the per-key generation. New reads cannot join it,
+    # and the displaced owner cannot publish into the next generation's caches.
+    with _READ_INFLIGHT_LOCK:
+        discard_variants(_READ_INFLIGHT)
+        with _READ_CACHE_LOCK:
+            discard_variants(_READ_CACHE)
+        if not comments_only:
+            with _READ_STALE_CACHE_LOCK:
+                discard_variants(_READ_STALE_CACHE)
+        if deleted:
+            with _INITIAL_RELATED_CACHE_LOCK:
+                discard_variants(_INITIAL_RELATED_CACHE)
 
 
 class RelatedPositionUnavailableError(RuntimeError):
@@ -534,7 +570,7 @@ async def async_board_updates(board, kind=None):
 
     async def load():
         cached = _cache_get(_BOARD_UPDATES_CACHE, _BOARD_UPDATES_CACHE_LOCK, key)
-        if cached is not None:
+        if cached is not None and (cached["ok"] or cached["retry_at"] > time.time()):
             return cached
         try:
             # /board supplies its default search type even without a keyword.
@@ -573,16 +609,25 @@ async def async_board_updates(board, kind=None):
                     for row in rows
                 ],
             }
-        except Exception:
+        except Exception as error:
             logger.warning("board updates unavailable board=%s", board, exc_info=True)
-            result = {"ok": False, "error": "board_updates_unavailable"}
+            delay = BOARD_UPDATES_FAILURE_TTL
+            if cached is not None and not isinstance(error, _BoardFlightCancelled):
+                delay = min(BOARD_UPDATES_CACHE_TTL, 2 * cached["delay"])
+            result = {"ok": False, "delay": delay, "retry_at": time.time() + delay}
+        # Retain the prior delay beyond retry_at so the next failed probe
+        # backs off. A success replaces it; idle boards age out normally.
         _cache_set(_BOARD_UPDATES_CACHE, _BOARD_UPDATES_CACHE_LOCK, key, result,
-                   BOARD_UPDATES_CACHE_TTL, BOARD_UPDATES_CACHE_MAX_ITEMS)
+                   BOARD_UPDATES_CACHE_TTL if result["ok"] else delay + BOARD_UPDATES_CACHE_TTL,
+                   BOARD_UPDATES_CACHE_MAX_ITEMS)
         return result
 
-    result = await _load_board_once(("updates", key), load)
+    try:
+        result = await _load_board_once(("updates", key), load)
+    except _BoardFlightCancelled as exc:
+        raise BoardUpdatesUnavailable(BOARD_UPDATES_FAILURE_TTL) from exc
     if not result["ok"]:
-        raise dc_api.BoardUnavailableError("board updates unavailable")
+        raise BoardUpdatesUnavailable(max(1, math.ceil(result["retry_at"] - time.time())))
     return {**result, "items": _copy_rows(result["items"])}
 
 
@@ -969,72 +1014,31 @@ async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=No
                 timeout=READ_FETCH_TIMEOUT,
             )
             body_from_cache = bool(payload[0].pop("_body_from_cache", False))
-            if not body_from_cache and not notice and not search_keyword:
-                _store_initial_related(
-                    _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id),
-                    payload[0].get("related_posts", []),
-                )
             body_cache_payload = _copy_read_payload_for_cache(payload)
-            if _is_read_payload_cacheable(payload):
-                cache_payload = body_cache_payload
-            else:
-                cache_payload = None
-            body_expires_at = None
-            if body_from_cache:
-                with _READ_STALE_CACHE_LOCK:
-                    entry = _READ_STALE_CACHE.get(cache_key)
-                    if entry is None or entry["expires_at"] <= time.time():
-                        cache_payload = None
-                    else:
-                        body_expires_at = entry["expires_at"]
-            if READ_CACHE_TTL > 0 and cache_payload is not None:
-                _cache_set(
-                    _READ_CACHE,
-                    _READ_CACHE_LOCK,
-                    cache_key,
-                    cache_payload,
-                    READ_CACHE_TTL,
-                    READ_CACHE_MAX_ITEMS,
-                    expires_at_limit=body_expires_at,
-                )
-            if READ_STALE_TTL > 0 and body_from_cache:
-                # Retain the latest comment snapshot without extending the
-                # original body lifetime or resurrecting an evicted entry.
-                with _READ_STALE_CACHE_LOCK:
-                    entry = _READ_STALE_CACHE.get(cache_key)
-                    if entry is not None and entry["expires_at"] > time.time():
-                        entry["value"] = body_cache_payload
-            elif READ_STALE_TTL > 0:
-                _cache_set(
-                    _READ_STALE_CACHE,
-                    _READ_STALE_CACHE_LOCK,
-                    cache_key,
-                    body_cache_payload,
-                    READ_STALE_TTL,
-                    READ_CACHE_MAX_ITEMS,
-                )
+            with _READ_INFLIGHT_LOCK:
+                if _READ_INFLIGHT.get(cache_key) is not flight:
+                    raise dc_api.DocumentUnavailableError("document changed during fetch")
+                if not body_from_cache and not notice and not search_keyword:
+                    _store_initial_related(
+                        _initial_related_key(api_id, board, kind, recommend, search_type, search_keyword, head_id),
+                        payload[0].get("related_posts", []),
+                    )
+                _store_read_snapshot(cache_key, body_cache_payload, body_from_cache)
             flight.value = body_cache_payload
             return payload
-        except asyncio.TimeoutError as exc:
-            stale = _cache_get(_READ_STALE_CACHE, _READ_STALE_CACHE_LOCK, cache_key)
-            if stale is not None:
-                stale_payload = _copy_read_payload(stale)
-                stale_payload[0]["_served_stale"] = True
-                flight.value = _copy_read_payload(stale_payload)
-                logger.warning("serving cached document after comment refresh timeout: board=%s document=%s", board, api_id)
-                return stale_payload
-            timeout_error = dc_api.DocumentUnavailableError("document fetch timed out")
-            flight.error = timeout_error
-            raise timeout_error from exc
-        except dc_api.DocumentUnavailableError as exc:
-            stale = _cache_get(_READ_STALE_CACHE, _READ_STALE_CACHE_LOCK, cache_key)
+        except (asyncio.TimeoutError, dc_api.DocumentUnavailableError) as exc:
+            with _READ_INFLIGHT_LOCK:
+                if _READ_INFLIGHT.get(cache_key) is not flight:
+                    raise dc_api.DocumentUnavailableError("document changed during fetch") from exc
+                stale = _cache_get(_READ_STALE_CACHE, _READ_STALE_CACHE_LOCK, cache_key)
             if stale is not None:
                 stale_payload = _copy_read_payload(stale)
                 stale_payload[0]["_served_stale"] = True
                 flight.value = _copy_read_payload(stale_payload)
                 logger.warning("serving stale document after upstream failure: board=%s document=%s", board, api_id)
                 return stale_payload
-            flight.error = exc
+            if isinstance(exc, asyncio.TimeoutError):
+                raise dc_api.DocumentUnavailableError("document fetch timed out") from exc
             raise
         except asyncio.CancelledError:
             flight.error = dc_api.DocumentUnavailableError("document fetch was cancelled")
@@ -1042,6 +1046,24 @@ async def _async_read_body(api_id, board, kind=None, recommend=0, search_type=No
         except Exception as exc:
             flight.error = exc
             raise
+
+
+def _store_read_snapshot(key, payload, body_from_cache):
+    expires_at = None
+    if body_from_cache:
+        # Comment refreshes never extend the original body's lifetime.
+        with _READ_STALE_CACHE_LOCK:
+            entry = _READ_STALE_CACHE.get(key)
+            if entry is None or entry["expires_at"] <= time.time():
+                return
+            expires_at = entry["expires_at"]
+            entry["value"] = payload
+    elif READ_STALE_TTL > 0:
+        _cache_set(_READ_STALE_CACHE, _READ_STALE_CACHE_LOCK, key,
+                   payload, READ_STALE_TTL, READ_CACHE_MAX_ITEMS)
+    if READ_CACHE_TTL > 0 and _is_read_payload_cacheable(payload):
+        _cache_set(_READ_CACHE, _READ_CACHE_LOCK, key, payload,
+                   READ_CACHE_TTL, READ_CACHE_MAX_ITEMS, expires_at_limit=expires_at)
 
 
 async def async_index_with_head_categories(

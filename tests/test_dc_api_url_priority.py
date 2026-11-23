@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 import time
 
@@ -528,6 +529,80 @@ def test_retry_after_http_date_is_supported(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["minor", "mini", "person"])
+async def test_cross_kind_redirect_to_confirmed_missing_document(kind):
+    api = API.__new__(API)
+    pc = api._API__build_pc_view_urls("test", "123", kind)[0]
+    pretty = "https://gall.dcinside.com/board/test/123"
+
+    async def request(method, url, **kwargs):
+        if url == pc:
+            return 302, {"Location": pretty}, ""
+        if url == pretty:
+            return 410, {}, ""
+        return 200, {}, f'<script>location.href="{pc}"</script>'
+
+    api._API__request_text = request
+    with pytest.raises(dc_api.DocumentNotFoundError):
+        await api.document("test", "123", kind=kind)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", [
+    "https://elsewhere.invalid/404", "ftp://gall.dcinside.com/path",
+    "https://m.dcinside.com/missing-login", "/board/test/123",
+])
+async def test_unresolved_redirect_does_not_confirm_deletion(target):
+    api = API.__new__(API)
+    start = "https://m.dcinside.com/board/test/123"
+    calls = []
+
+    async def request(method, url, **kwargs):
+        calls.append(url)
+        if url == start:
+            return 302, {"Location": target}, ""
+        return 404, {}, ""
+
+    api._API__request_text = request
+    with pytest.raises(dc_api.DocumentUnavailableError):
+        await api.document("test", "123")
+    assert not any("elsewhere" in url or url.startswith("ftp:") for url in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("board", "path"), [
+    ("test", "/board/test/123;unrelated"), ("board", "/board/123"),
+    ("mini", "/mini/123"), ("test", "/board/test/123//"),
+])
+async def test_redirect_to_ambiguous_404_is_not_deletion(board, path):
+    api = API.__new__(API)
+    target = "https://gall.dcinside.com" + path
+
+    async def request(method, url, **kwargs):
+        return (404, {}, "") if url == target else (302, {"Location": target}, "")
+
+    api._API__request_text = request
+    with pytest.raises(dc_api.DocumentUnavailableError):
+        await api.document(board, "123")
+
+
+@pytest.mark.asyncio
+async def test_meta_refresh_cannot_expand_queue_indefinitely():
+    api = API.__new__(API)
+    calls = []
+
+    async def request(method, url, **kwargs):
+        calls.append(url)
+        if len(calls) > 6:
+            pytest.fail("redirect budget exceeded")
+        return 200, {}, f'<meta http-equiv="refresh" content="0;url=/next/{len(calls)}">'
+
+    api._API__request_text = request
+    parsed, _, _ = await api._API__fetch_parsed_from_urls(["https://m.dcinside.com/start"])
+    assert parsed is None
+
+
+@pytest.mark.asyncio
 async def test_document_all_explicit_not_found_responses_raise_not_found():
     class FakeResponse:
         status = 404
@@ -742,7 +817,7 @@ async def test_concurrent_requests_never_send_disallowed_session_cookies(monkeyp
     reading_body = asyncio.Event()
     release_body = asyncio.Event()
     received_cookies = []
-    original_text = aiohttp.ClientResponse.text
+    original_text = dc_api._DCResponse.text
 
     async def text(response, *args, **kwargs):
         if response.url.path == "/set":
@@ -750,7 +825,7 @@ async def test_concurrent_requests_never_send_disallowed_session_cookies(monkeyp
             reading_body.set()
         return await original_text(response, *args, **kwargs)
 
-    monkeypatch.setattr(aiohttp.ClientResponse, "text", text)
+    monkeypatch.setattr(dc_api._DCResponse, "text", text)
 
     async def set_cookies(request):
         response = web.StreamResponse()
@@ -810,6 +885,145 @@ def test_list_urls_prefer_mobile_before_pc():
     urls = api._API__build_list_urls("aoegame", 1, recommend=False, kind=None)
     assert urls[0].startswith("https://m.dcinside.com/")
     assert any(url.startswith("https://gall.dcinside.com/") for url in urls[1:])
+
+
+@pytest.mark.asyncio
+async def test_chunked_text_byte_limit_and_charset(monkeypatch):
+    monkeypatch.setattr(dc_api, "DC_TEXT_MAX_BYTES", 4)
+
+    async def handle(request):
+        response = web.StreamResponse(headers={"Content-Type": "text/html; charset=euc-kr"})
+        await response.prepare(request)
+        await response.write("한글".encode("euc-kr"))
+        if request.path == "/large":
+            await response.write(b"!")
+        return response
+
+    app = web.Application()
+    app.router.add_get("/{size}", handle)
+    async with TestServer(app) as server, API() as api:
+        assert (await api._API__request_text("GET", str(server.make_url("/small"))))[2] == "한글"
+        with pytest.raises(ValueError, match="byte limit"):
+            await api._API__request_text("GET", str(server.make_url("/large")))
+
+
+@pytest.mark.asyncio
+async def test_pc_context_falls_back_after_whitespace_page():
+    api = API.__new__(API)
+
+    async def request(method, url, **kwargs):
+        if "/mgallery/" in url:
+            return 200, {}, "<input id='e_s_n_o' value='ok'><input id='_GALLTYPE_' value='M'>"
+        return 200, {}, "  \n"
+
+    api._API__request_text = request
+    context = await api._API__get_pc_comment_context("test", "123")
+    assert context["e_s_n_o"] == "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("authority", "scheme", "allowed"), [
+    ("gall.dcinside.com", "https", True), ("gall.dcinside.com:443", "https", True),
+    ("gall.dcinside.com:80", "http", True), ("gall.dcinside.com:80", "https", False),
+    ("someone@gall.dcinside.com:443", "https", False),
+])
+async def test_pc_context_follows_only_allowed_pretty_view_redirects(authority, scheme, allowed):
+    api = API.__new__(API)
+    calls = []
+
+    async def request(method, url, **kwargs):
+        calls.append(url)
+        if url.endswith("/test/123"):
+            return 200, {}, "<input id='e_s_n_o' value='ok'><input id='_GALLTYPE_' value='M'>"
+        return 302, {"Location": f"{scheme}://{authority}/test/123"}, ""
+
+    api._API__request_text = request
+    if allowed:
+        context = await api._API__get_pc_comment_context("test", "123")
+        assert context["e_s_n_o"] == "ok"
+        assert context["referer"] == calls[-1]
+    else:
+        with pytest.raises(RuntimeError, match="pc comment context"):
+            await api._API__get_pc_comment_context("test", "123")
+        assert not any(url.endswith("/test/123") for url in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["duplicate", "http", "timeout", "json"])
+async def test_failed_pc_page_keeps_total_on_mobile_fallback(failure):
+    api = API.__new__(API)
+
+    async def request(method, url, data=None, **kwargs):
+        if method == "GET":
+            return 200, {}, "<input id='e_s_n_o' value='ok'><input id='_GALLTYPE_' value='G'>"
+        if url.startswith("https://m."):
+            return 200, {}, (
+                "<html><body><ul class='all-comment-lst'><li class='comment' no='102' m_no='1'>"
+                "<div class='ginfo-area'><button class='nick'>author</button></div>"
+                "<p class='txt'>row</p><span class='date'>09.26 12:00</span></li></ul></body></html>"
+            )
+        if data["comment_page"] == "2":
+            if failure == "http":
+                return 503, {}, ""
+            if failure == "timeout":
+                raise TimeoutError()
+            if failure == "json":
+                return 200, {}, "{"
+        return 200, {}, json.dumps({
+            "total_cnt": 2, "comments": [{"no": "102", "memo": "row"}], "pagination": "<a>2</a>",
+        })
+
+    api._API__request_text = request
+    status = {}
+    rows = [row.id async for row in api.comments("test", "123", prefer_mobile=False, status_collector=status)]
+    assert rows == ["102"]
+    assert not status["complete"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("pager", "complete"), [
+    ("<span>다음</span>", True),
+    ("<a href='#' aria-disabled='true'>다음</a>", True),
+    ("<a onclick=\"viewComments(2,'D')\">다음</a>", False),
+])
+async def test_pc_one_page_snapshot_distinguishes_disabled_next(pager, complete):
+    api = API.__new__(API)
+
+    async def request(method, url, **kwargs):
+        if method == "GET":
+            return 200, {}, "<input id='e_s_n_o' value='ok'><input id='_GALLTYPE_' value='G'>"
+        if url.startswith("https://m."):
+            return 503, {}, ""
+        return 200, {}, json.dumps({"total_cnt": 1, "comments": [{"no": "102"}], "pagination": pager})
+
+    api._API__request_text = request
+    status = {}
+    rows = [row.id async for row in api.comments("test", "123", prefer_mobile=False, status_collector=status)]
+    assert rows == ["102"]
+    assert status["complete"] == complete
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefer_mobile", [True, False])
+async def test_pc_visible_page_block_cannot_confirm_a_partial_total(prefer_mobile):
+    api = API.__new__(API)
+
+    async def request(method, url, data=None, **kwargs):
+        if method == "GET":
+            return 200, {}, "<input id='e_s_n_o' value='ok'><input id='_GALLTYPE_' value='G'>"
+        if url.startswith("https://m."):
+            return 503, {}, ""
+        page = data["comment_page"]
+        return 200, {}, json.dumps({
+            "total_cnt": 11, "comments": [{"no": page, "memo": "row"}],
+            "pagination": "<a>10</a><a onclick=\"viewComments(11,'D')\">다음</a>",
+        })
+
+    api._API__request_text = request
+    status = {}
+    rows = [row.id async for row in api.comments("test", "123", prefer_mobile=prefer_mobile, status_collector=status)]
+    assert rows == [str(n) for n in range(1, 11)]
+    assert not status["complete"]
 
 
 def test_list_urls_keep_recommend_flag_on_mobile_first():
@@ -1198,7 +1412,7 @@ async def test_board_invalidates_stale_cached_list_url_pattern(monkeypatch):
     cached_url, cached_pattern = api._API__get_cached_list_url(original_urls, cache_key)
 
     assert [row.id for row in rows] == ["123"]
-    assert seen_url_batches == [[stale_url], original_urls]
+    assert seen_url_batches == [[stale_url], [url for url in original_urls if url != stale_url]]
     assert cached_url == fallback_url
     assert cached_pattern == "normal"
     _clear_board_kind_cache()
@@ -1581,7 +1795,7 @@ async def test_comments_accept_validated_empty_pc_snapshot_without_mobile_fallba
     api = API.__new__(API)
     mobile_calls = []
 
-    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         if False:
             yield None
 
@@ -1607,7 +1821,7 @@ async def test_comments_preserve_remaining_limit_and_skip_duplicates_on_mobile_f
         def __init__(self, cid):
             self.id = cid
 
-    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         yield DummyComment("1")
         raise RuntimeError("transient pc failure")
 
@@ -1706,27 +1920,27 @@ def _make_fake_request_text(responses):
 @pytest.mark.parametrize(
     ("start_html", "expected_text"),
     [
-        ("<script>location.href='https://example.com/target';</script>", "ready"),
-        ("<script>if (true) { window.location.href='https://example.com/target'; }</script>", "guarded-ready"),
-        ("<script>window.top.location.href='https://example.com/target';</script>", "window-top-ready"),
-        ("<script>document.location='https://example.com/target';</script>", "document-assignment-ready"),
-        ("<script>window.top.location.assign('https://example.com/target');</script>", "assign-ready"),
-        ('<meta content="0;url=https://example.com/target" http-equiv="refresh">', "meta-ready"),
+        ("<script>location.href='/target';</script>", "ready"),
+        ("<script>if (true) { window.location.href='/target'; }</script>", "guarded-ready"),
+        ("<script>window.top.location.href='/target';</script>", "window-top-ready"),
+        ("<script>document.location='/target';</script>", "document-assignment-ready"),
+        ("<script>window.top.location.assign('/target');</script>", "assign-ready"),
+        ('<meta content="0;url=/target" http-equiv="refresh">', "meta-ready"),
     ],
 )
 async def test_fetch_parsed_from_urls_follows_top_level_redirect_variants(start_html, expected_text):
     api = API.__new__(API)
 
     responses = {
-        "https://example.com/start": f"<html><head>{start_html}</head><body></body></html>",
-        "https://example.com/target": f"<html><body><div id='ok'>{expected_text}</div></body></html>",
+        "https://m.dcinside.com/start": f"<html><head>{start_html}</head><body></body></html>",
+        "https://m.dcinside.com/target": f"<html><body><div id='ok'>{expected_text}</div></body></html>",
     }
 
     api._API__request_text = _make_fake_request_text(responses)
 
-    parsed, _, used_url = await api._API__fetch_parsed_from_urls(["https://example.com/start"])
+    parsed, _, used_url = await api._API__fetch_parsed_from_urls(["https://m.dcinside.com/start"])
 
-    assert used_url == "https://example.com/target"
+    assert used_url == "https://m.dcinside.com/target"
     assert parsed.xpath("string(//*[@id='ok'])") == expected_text
 
 
@@ -1736,17 +1950,17 @@ async def test_fetch_parsed_from_urls_follows_top_level_redirect_after_large_pre
 
     long_prefix = "<!--{}-->".format("x" * 6000)
     responses = {
-        "https://example.com/start": (
-            f"<html><head>{long_prefix}<meta http-equiv='refresh' content='0;url=https://example.com/target'></head></html>"
+        "https://m.dcinside.com/start": (
+            f"<html><head>{long_prefix}<meta http-equiv='refresh' content='0;url=/target'></head></html>"
         ),
-        "https://example.com/target": "<html><body><div id='ok'>late-meta-ready</div></body></html>",
+        "https://m.dcinside.com/target": "<html><body><div id='ok'>late-meta-ready</div></body></html>",
     }
 
     api._API__request_text = _make_fake_request_text(responses)
 
-    parsed, _, used_url = await api._API__fetch_parsed_from_urls(["https://example.com/start"])
+    parsed, _, used_url = await api._API__fetch_parsed_from_urls(["https://m.dcinside.com/start"])
 
-    assert used_url == "https://example.com/target"
+    assert used_url == "https://m.dcinside.com/target"
     assert parsed.xpath("string(//*[@id='ok'])") == "late-meta-ready"
 
 
@@ -2145,7 +2359,7 @@ async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_fails():
         if False:
             yield None
 
-    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         yield DummyComment("pc-comment")
 
     api._API__comments_from_mobile = failing_mobile
@@ -2168,7 +2382,7 @@ async def test_comments_prefer_mobile_falls_back_to_pc_when_mobile_yields_nothin
         if False:
             yield None
 
-    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         yield DummyComment("pc-comment")
 
     api._API__comments_from_mobile = empty_mobile
@@ -2191,7 +2405,7 @@ async def test_comments_prefer_mobile_falls_back_to_pc_after_partial_mobile_fail
         yield DummyComment("1")
         raise RuntimeError("mobile page 2 failed")
 
-    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         assert num == 2
         yield DummyComment("1")
         yield DummyComment("2")
@@ -2243,7 +2457,7 @@ async def test_comments_prefer_mobile_falls_back_to_pc_after_mobile_ends_prematu
         </body></html>
         """
 
-    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         assert num == 3
         yield DummyComment("1")
         yield DummyComment("2")
@@ -2285,7 +2499,7 @@ async def test_comments_prefer_mobile_stops_without_pc_fallback_when_pagination_
         </body></html>
         """
 
-    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fake_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         raise AssertionError("mobile comments with parsed rows should not require pc fallback")
         if False:
             yield DummyComment("pc")
@@ -2324,7 +2538,7 @@ async def test_mobile_comment_rows_accept_classless_comment_items():
         </body></html>
         """
 
-    async def fail_pc(board_id, document_id, num=-1, start_page=1, kind=None):
+    async def fail_pc(board_id, document_id, num=-1, start_page=1, kind=None, stats=None):
         raise AssertionError("classless mobile comments should not require pc fallback")
         if False:
             yield None

@@ -1,13 +1,16 @@
 import base64
+import ipaddress
 import json
 import socket
 import ssl
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
+from types import SimpleNamespace
 
 from bs4 import BeautifulSoup
 import pytest
@@ -50,19 +53,15 @@ class ExplodingUpstream(DummyUpstream):
         raise OSError("upstream disconnected")
 
 
-class DummyMovieResponse:
+class DummyMovieResponse(DummyUpstream):
+    encoding = "utf-8"
+
     def __init__(self, text, status_code=200, headers=None):
-        self.text = text
-        self.status_code = status_code
-        self.headers = headers or {}
-        self.closed = False
+        super().__init__([text.encode()], headers, status_code)
 
     @property
     def is_redirect(self):
         return self.status_code in {301, 302, 303, 307, 308} and bool(self.headers.get("Location"))
-
-    def close(self):
-        self.closed = True
 
 
 class DummyPreviewResponse:
@@ -721,6 +720,75 @@ def test_link_preview_concurrency_limit_returns_503(monkeypatch):
     assert response.headers["Retry-After"] == "10"
 
 
+def test_previews_with_overlapping_dns_lookups_both_succeed(monkeypatch):
+    resolving = threading.Barrier(2)
+
+    def resolve(url, **kwargs):
+        resolving.wait(timeout=2)
+        return _preview_target(url)
+
+    monkeypatch.setattr(link_preview, "_preview_cache", {})
+    monkeypatch.setattr(link_preview, "resolve_media_target", resolve)
+    _install_preview_responses(monkeypatch, [
+        DummyPreviewResponse(b"<title>Ready</title>") for _ in range(2)
+    ])
+    _reset_link_preview_rate(monkeypatch)
+    with ThreadPoolExecutor(max_workers=2) as requests:
+        previews = list(requests.map(link_preview.fetch_preview, [
+            "https://first-preview.test/", "https://second-preview.test/",
+        ]))
+    assert [preview["title"] for preview in previews] == ["Ready", "Ready"]
+
+
+def test_dns_contention_is_retryable_without_poisoning_preview(monkeypatch):
+    slot = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(link_preview, "_preview_dns_slot", slot)
+    monkeypatch.setattr(link_preview, "_preview_cache", {})
+    monkeypatch.setattr(link_preview, "resolve_media_target", lambda url, **kw: _preview_target(url))
+    _install_preview_responses(monkeypatch, [DummyPreviewResponse(b"<title>Recovered</title>")])
+    _reset_link_preview_rate(monkeypatch)
+    client = create_app().test_client()
+    route = "/embed/link-preview?url=https://busy-preview.test/"
+    with slot, monkeypatch.context() as waiting:
+        deadline = 0.05
+        waiting.setattr(link_preview, "PREVIEW_DEADLINE_SECONDS", deadline)
+        started = time.monotonic()
+        busy = client.get(route)
+        assert time.monotonic() - started >= deadline
+    assert busy.status_code == 503
+    assert busy.headers["Cache-Control"] == "no-store"
+    assert not link_preview._preview_cache
+    assert client.get(route).get_json()["title"] == "Recovered"
+
+
+def test_lookup_with_budget_depleted_by_local_slot_wait_is_not_cached(monkeypatch):
+    now = [1.0]
+
+    def acquire(blocking=True, timeout=None):
+        if not blocking:
+            return False
+        now[0] += 0.300
+        return True
+
+    def lookup_result(timeout):
+        if timeout < 0.180:
+            now[0] += timeout
+            raise TimeoutError
+        pytest.fail("DNS lookup got a new deadline after the slot wait")
+
+    monkeypatch.setattr(link_preview, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(link_preview, "PREVIEW_DEADLINE_SECONDS", 0.400)
+    monkeypatch.setattr(link_preview, "_preview_cache", {})
+    monkeypatch.setattr(link_preview, "_preview_dns_slot", SimpleNamespace(acquire=acquire, release=lambda: None))
+    future = SimpleNamespace(result=lookup_result, cancel=lambda: False)
+    monkeypatch.setattr(link_preview._preview_dns_executor, "submit", lambda *_: future)
+    _reset_link_preview_rate(monkeypatch)
+    response = create_app().test_client().get("/embed/link-preview?url=https://depleted-budget.test/")
+    assert response.status_code == 503
+    assert response.headers["Cache-Control"] == "no-store"
+    assert not link_preview._preview_cache
+
+
 def test_link_preview_route_status_and_cache_contract(monkeypatch):
     monkeypatch.setattr(routes.link_preview, "is_valid_preview_url", lambda url: url.startswith("https://"))
 
@@ -968,6 +1036,42 @@ def test_media_route_rejects_unknown_length_streams_when_limit_exceeded(monkeypa
     assert response.status_code == 413
     assert upstream.iterated == 2
     assert upstream.closed is True
+
+
+@pytest.mark.parametrize(("method", "size", "partial"), [
+    ("GET", 4, False), ("GET", 6, False), ("GET", 4, True),
+    ("GET", None, True), ("HEAD", None, False),
+])
+def test_media_sandboxes_svg_in_every_representation(monkeypatch, method, size, partial):
+    headers = {"Content-Type": "image/svg+xml"}
+    if size is not None:
+        headers["Content-Length"] = str(size)
+    upstream = DummyUpstream([b"x" * (size or 4)], headers, 206 if partial else 200)
+    monkeypatch.setattr(media_proxy, "MEDIA_STREAMING_MIN_BYTES", 5)
+    monkeypatch.setattr(media_proxy, "fetch_media_response", lambda *a, **kw: (upstream, None))
+    response = create_app().test_client().open("/media?src=https://images.dcinside.com/a.svg", method=method)
+    try:
+        assert response.status_code == upstream.status_code
+        assert response.headers["Content-Security-Policy"] == "default-src 'none'; sandbox"
+    finally:
+        response.close()
+
+
+@pytest.mark.parametrize("spooled", [False, True])
+def test_wsgi_media_body_close_before_iteration_releases_resource(spooled):
+    import io
+    app = create_app()
+    upstream = DummyUpstream([b"x"])
+    resource = io.BytesIO(b"x") if spooled else upstream
+    with app.test_request_context() as ctx:
+        if spooled:
+            response = media_proxy.build_spooled_media_response(resource, 1, upstream, "video/mp4")
+        else:
+            response = media_proxy.build_streaming_media_response(upstream, "video/mp4", 1)
+        body = response(ctx.request.environ, lambda *_: None)
+        body.close()
+    assert resource.closed
+    assert not upstream.iterated
 
 
 def test_media_route_buffers_unknown_length_streams_within_limit(monkeypatch):
@@ -1461,6 +1565,31 @@ def test_resolve_media_target_keeps_ipv4_fallback_when_ipv6_is_listed_first(monk
     assert target.addresses == ("2606:4700:4700::1111", "93.184.216.34")
 
 
+@pytest.mark.parametrize("address", [
+    "::ffff:100.64.0.1", "100.127.255.254", "224.0.0.1", "ff0e::1",
+    "64:ff9b::808:808", "64:ff9b:1:abcd::1", "2002:6440:1::1",
+])
+def test_special_use_addresses_are_never_public_targets(monkeypatch, address):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: [(0, 0, 0, "", (address, 443))])
+    monkeypatch.setattr(media_proxy, "_PUBLIC_HOST_CACHE", {})
+    assert not media_proxy.is_public_hostname("images.dcinside.com")
+    assert media_proxy.resolve_media_target("https://preview.test/", require_allowed_media_host=False) is None
+
+
+@pytest.mark.parametrize(("address", "allowed"), [
+    ("192.0.0.8", False), ("192.0.0.9", True), ("192.0.0.10", True),
+    ("192.88.99.2", False), ("::ffff:192.0.0.8", False), ("::8.8.8.8", False),
+    ("2001:2::1", False), ("2001:3::1", True), ("3fff::1", False),
+    ("8.8.8.8", True), ("2606:4700:4700::1111", True),
+])
+def test_pinned_target_policy_even_when_runtime_reports_global(monkeypatch, address, allowed):
+    # Simulate a permissive ipaddress release, independent of the test host.
+    monkeypatch.setattr(type(ipaddress.ip_address(address)), "is_global", property(lambda _: True))
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: [(0, 0, 0, "", (address, 443))])
+    target = media_proxy.resolve_media_target("https://images.dcinside.com/")
+    assert (target is not None) is allowed
+
+
 def test_media_route_rejects_non_dcinside_source_before_fetch(monkeypatch):
     def fail_fetch(*args, **kwargs):
         raise AssertionError("invalid media source must be rejected before fetch")
@@ -1577,7 +1706,7 @@ def test_media_http_session_clears_upstream_cookie_state(monkeypatch):
             return "ok"
 
     fake_session = FakeSession()
-    monkeypatch.setattr(media_proxy.requests, "Session", lambda: fake_session)
+    monkeypatch.setattr(media_proxy, "_MediaSession", lambda: fake_session)
 
     assert media_proxy._http_get("https://images.dcinside.com/test.jpg") == "ok"
     assert fake_session.sent_cookie_state == {}
@@ -2367,7 +2496,8 @@ def test_movie_route_renders_same_origin_video_player(monkeypatch):
     """
     requests_seen = []
 
-    def fake_get(url, headers=None, timeout=None, allow_redirects=None):
+    def fake_get(url, headers=None, timeout=None, allow_redirects=None, stream=False):
+        assert stream
         requests_seen.append((url, headers, allow_redirects))
         return DummyMovieResponse(movie_html)
 
@@ -2414,6 +2544,28 @@ def test_movie_player_rejects_unsafe_redirect_without_following(monkeypatch):
     assert len(calls) == 1
     assert calls[0][1]["allow_redirects"] is False
     assert redirect.closed is True
+
+
+def test_movie_player_rejects_oversized_stream_and_does_not_cache_failure(monkeypatch):
+    html = '<video><source src="https://images.dcinside.com/v.mp4"></video>'
+    monkeypatch.setattr(media_proxy, "MOVIE_PLAYER_MAX_BYTES", len(html))
+    upstream = DummyMovieResponse(html, headers={"Content-Length": "1"})
+    upstream.chunks += [b"x", b"unread"]
+    monkeypatch.setattr(media_proxy, "movie_player_candidates", lambda *a, **kw: [("https://gall.dcinside.com/", {})])
+    monkeypatch.setattr(media_proxy, "_http_get", lambda *a, **kw: upstream)
+    response = create_app().test_client().get("/movie?no=123")
+    assert response.status_code == 502
+    assert response.headers["Cache-Control"] == "no-store"
+    assert upstream.closed and upstream.iterated == 2
+
+
+def test_decimal_fields_reject_non_ascii_digits_before_read_or_fetch(monkeypatch):
+    assert media_proxy.normalize_range_header("bytes=１-４") is None
+    assert media_proxy.parse_media_content_length({"Content-Length": "４"}) == (None, 502)
+    image = DummyPreviewResponse(b"jpeg", headers={"Content-Type": "image/jpeg", "Content-Length": "４"})
+    assert link_preview._read_limited_image(image, time.monotonic()) is None
+    monkeypatch.setattr(media_proxy, "_http_get", lambda *a, **kw: pytest.fail("invalid movie id fetched"))
+    assert media_proxy.fetch_movie_media("１２３", "test", 456) is None
 
 
 def test_movie_player_revalidates_each_safe_redirect_hop(monkeypatch):

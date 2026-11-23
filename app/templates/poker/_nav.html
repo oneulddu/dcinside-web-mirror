@@ -26,9 +26,10 @@
         if (!active || row.scrollWidth <= row.clientWidth) {
             return;
         }
-        var right = active.offsetLeft + active.offsetWidth;
-        if (right > row.clientWidth - 28) {
-            row.scrollLeft = active.offsetLeft - 20;
+        var item = active.getBoundingClientRect();
+        var left = row.getBoundingClientRect().left;
+        if (item.left < left || item.right > left + row.clientWidth - 28) {
+            row.scrollLeft += item.left - left - 20;
         }
     })();
 </script>

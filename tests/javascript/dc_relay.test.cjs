@@ -23,6 +23,38 @@ async function withRelay(options, run) {
 }
 
 const basic = secret => 'Basic ' + Buffer.from('relay:' + secret).toString('base64');
+const tunnelHead = `CONNECT app.dcinside.com:443 HTTP/1.1\r\nProxy-Authorization: ${basic('secret')}\r\n\r\n`;
+
+test('client FIN reaches upstream and the complete buffered reply reaches client', async () => {
+  const bytes = 'a'.repeat(4 * 1024 * 1024);
+  const target = net.createServer({allowHalfOpen:true}, socket => {
+    let body = '';
+    socket.on('data', chunk => { body += chunk; });
+    socket.on('end', () => socket.end(body === 'request' ? bytes : 'bad request'));
+  });
+  await new Promise(resolve => target.listen(0, '127.0.0.1', resolve));
+  try {
+    await withRelay({token:'secret', allowFrom:new Set(['127.0.0.1']),
+      connectUpstream: (opts, cb) => net.connect({...opts, host:'127.0.0.1', port:target.address().port}, cb)},
+    async port => {
+      const socket = net.connect(port, '127.0.0.1');
+      socket.end(tunnelHead + 'request');
+      const chunks = [];
+      for await (const chunk of socket) chunks.push(chunk);
+      assert(Buffer.concat(chunks).equals(Buffer.from('HTTP/1.1 200 Connection Established\r\n\r\n' + bytes)));
+    });
+  } finally {
+    await new Promise(resolve => target.close(resolve));
+  }
+});
+
+test('upstream connection error closes the tunnel with a complete 502 reply', async () => {
+  await withRelay({token:'secret', allowFrom:new Set(['127.0.0.1']), connectUpstream: () => {
+    const socket = new net.Socket();
+    process.nextTick(() => socket.destroy(new Error('connect failed')));
+    return socket;
+  }}, async port => assert.match(await connect(port, tunnelHead), /^HTTP\/1\.1 502[\s\S]*\r\n\r\n$/));
+});
 
 test('relay allows only DC and app registration hosts on 443', async () => {
   const { allowedTarget } = await load();
@@ -36,6 +68,7 @@ test('relay checks the token in constant time form', async () => {
   const { authorized } = await load();
   assert.equal(authorized(basic('secret'), 'secret'), true);
   assert.equal(authorized(basic('secreT'), 'secret'), false);
+  assert.equal(authorized('Basic ' + Buffer.from('secret').toString('base64'), 'secret'), false);
   assert.equal(authorized('Bearer secret', 'secret'), false);
   assert.equal(authorized(undefined, 'secret'), false);
 });
@@ -43,6 +76,7 @@ test('relay checks the token in constant time form', async () => {
 test('relay rejects bad auth, bad targets, non-CONNECT and unknown sources before connecting upstream', async () => {
   await withRelay({ token: 'secret', allowFrom: new Set(['127.0.0.1']) }, async port => {
     assert.match(await connect(port, 'CONNECT app.dcinside.com:443 HTTP/1.1\r\n\r\n'), /^HTTP\/1.1 407/);
+    assert.equal(await connect(port, `CONNECT app.dcinside.com:443 HTTP/1.1\r\nX-Padding: ${'a'.repeat(8192)}\r\n\r\n`), '');
     assert.match(await connect(port, `CONNECT evil.com:443 HTTP/1.1\r\nProxy-Authorization: ${basic('secret')}\r\n\r\n`), /^HTTP\/1.1 403/);
     assert.match(await connect(port, `GET http://app.dcinside.com/ HTTP/1.1\r\nProxy-Authorization: ${basic('secret')}\r\n\r\n`), /^HTTP\/1.1 405/);
   });

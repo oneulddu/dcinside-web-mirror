@@ -13,7 +13,7 @@ CHALLENGE_MARKER = "visitor-check-message"
 @pytest.fixture
 def app():
     app = create_app()
-    app.config.update(VISITOR_CHECK=True, TESTING=True, SECRET_KEY="visitor-test-secret")
+    app.config.update(VISITOR_CHECK=True, TESTING=True, WRITE_KEY="key", SECRET_KEY="visitor-test-secret")
     return app
 
 
@@ -123,11 +123,22 @@ def test_js_page_fetch_is_json_not_challenge(app, headers):
 JSON_PATHS = [
     "/board/updates", "/board/times", "/read/related", "/read/vote/options",
     "/embed/youtube-size", "/embed/link-preview",
+    "/write/account/status", "/write/dccons", "/read/reply-activity",
     "/poker/free/list", "/poker/free/123/comments",
 ]
 MEDIA_PATHS = ["/media", "/movie", "/embed/link-preview-image", "/write/captcha", "/poker/media"]
 POST_PATHS = ["/write", "/read/vote", "/read/comment", "/read/delete",
-              "/read/comment/delete", "/write/modify/load"]
+              "/read/comment/delete", "/write/modify/load", "/write/account/login"]
+
+
+def test_disabled_write_routes_hidden_before_visitor_check(app):
+    app.config["WRITE_KEY"] = ""
+    client = app.test_client()
+    for rule in app.url_map.iter_rules():
+        if rule.rule.startswith(("/write", "/push/", "/read-state/", "/read/")) and rule.rule != "/read/related":
+            method = "GET" if "GET" in rule.methods else "POST"
+            response = client.open(rule.rule, method=method, headers=PAGE_HEADERS)
+            assert response.status_code == 404, rule.rule
 
 
 @pytest.mark.parametrize("path", JSON_PATHS)

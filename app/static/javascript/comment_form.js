@@ -84,6 +84,7 @@
     // mode: 상단 작성자 메뉴의 값. 기억한 계정이 서버에 없으면 빈 값으로 두고 다시 고르게 한다.
     var state = { sending: false, retryUntil: 0, retryTimer: null, parent: null, sentAnswer: false,
         mode: post.authorMode(), names: {} };
+    var authorGeneration = 0;
 
     function accountSlot() {
         return post.modeAccount(state.mode);
@@ -198,6 +199,10 @@
         if (el.rememberPassword.checked && el.password.value) {
             data.password = el.password.value;
         }
+        storeIdentity(data);
+    }
+
+    function storeIdentity(data) {
         try {
             if (data.nickname || data.password) {
                 storage.setItem(IDENTITY_KEY, JSON.stringify(data));
@@ -387,6 +392,10 @@
             return;
         }
         if (outcome.action === "captcha") {
+            if (sent.generation !== authorGeneration) {
+                setStatus("작성자가 바뀌어 이전 작성자의 문자 확인을 취소했어요.", "error");
+                return;
+            }
             setStatus(state.sentAnswer
                 ? "입력한 문자가 맞지 않아요. 새 문자를 입력하고 다시 등록해 주세요."
                 : (message || "보이는 문자를 입력하고 다시 등록해 주세요."), "error");
@@ -446,6 +455,7 @@
         }
         // 보낼 때 고른 계정을 붙잡아 둔다. 결과를 받기 전에 선택을 바꿔도 바뀌지 않는다.
         var account = accountSlot();
+        var sentGeneration = authorGeneration;
         var values = { content: el.content.value, nickname: el.nickname.value, password: el.password.value, account: Boolean(account) };
         var problem = validateComment(values, limits);
         if (problem) {
@@ -485,7 +495,8 @@
         post.postJson("/read/comment", body, 45000).then(function (result) {
             state.sending = false;
             sync();
-            handle(post.interpret(result.status, result.payload), { content: values.content, nickname: body.nickname, account: account });
+            handle(post.interpret(result.status, result.payload), { content: values.content, nickname: body.nickname,
+                account: account, generation: sentGeneration });
             sync();
         });
     }
@@ -515,6 +526,11 @@
     });
     el.rememberPassword.addEventListener("change", function () {
         el.passwordHint.hidden = !el.rememberPassword.checked;
+        if (!el.rememberPassword.checked && storage) {
+            var saved = readIdentity();
+            delete saved.password;
+            storeIdentity(saved);
+        }
     });
     var code = document.getElementById("comment-captcha-code");
     if (code) {
@@ -555,6 +571,13 @@
     });
     // 상단 작성자 메뉴(다른 탭 포함)를 따른다. 써 둔 댓글과 닉네임·비밀번호 칸 값은 그대로 둔다.
     post.onAuthorChange(function (mode) {
+        if (mode !== state.mode) {
+            authorGeneration++;
+            if (captcha && captcha.answer()) {
+                captcha.hide();
+                if (!state.sending) setStatus("");
+            }
+        }
         state.mode = mode;
         clearErrors();
         applyMode();
@@ -566,6 +589,11 @@
         });
     }
     restoreIdentity();
+    var initialNickname = el.nickname.value, initialPassword = el.password.value;
+    root.MirrorCommentForm.hasDraft = function () {
+        return Boolean(state.sending || state.parent || el.content.value || captcha?.answer()
+            || el.nickname.value !== initialNickname || el.password.value !== initialPassword);
+    };
     applyMode();
     updateLength();
     sync();

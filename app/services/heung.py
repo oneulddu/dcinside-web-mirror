@@ -7,10 +7,11 @@ import threading
 import time
 from urllib.parse import parse_qs, quote, urlparse
 
-import requests
 from bs4 import BeautifulSoup
 
+from .youtube_meta import MetadataSession
 
+requests = MetadataSession()
 logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 INSTANCE_DIR = os.path.join(BASE_DIR, "instance")

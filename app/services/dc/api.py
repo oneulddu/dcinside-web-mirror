@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse, urlsplit
 
 import aiohttp
 import lxml.html
@@ -20,6 +20,7 @@ from app.services.cache_utils import cache_get as _shared_cache_get
 from app.services.cache_utils import cache_prune as _shared_cache_prune
 from app.services.cache_utils import cache_set_after_insert
 from app.services.cache_utils import env_int
+from app.services.dc_links import GALLERY_KIND_BY_PC_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,51 @@ HTTP_TIMEOUT = env_int("MIRROR_HTTP_TIMEOUT", 20)
 BOARD_KIND_CACHE_TTL = max(env_int("MIRROR_BOARD_KIND_CACHE_TTL", 21600), 0)
 BOARD_KIND_CACHE_MAX_ITEMS = 2048
 DC_CONN_LIMIT = max(env_int("MIRROR_DC_CONN_LIMIT", 20), 1)
+DC_MAX_REDIRECTS = 5
+DC_TEXT_MAX_BYTES = 8 * 1024 * 1024
+DC_REDIRECT_HOSTS = {"m.dcinside.com", "gall.dcinside.com", "search.dcinside.com"}
+
+
+def _document_endpoint(url):
+    # Keep path parameters and extra slashes significant for deletion evidence.
+    parsed = urlsplit(url)
+    path = parsed.path.removesuffix("/")
+    if parsed.hostname not in DC_REDIRECT_HOSTS:
+        return None
+    if parsed.hostname != "m.dcinside.com":
+        if re.fullmatch(r"/(?:(?:mgallery|mini|person)/)?board/view", path):
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            ids, numbers = query.get("id", []), query.get("no", [])
+            return (ids[0], numbers[0]) if len(ids) == len(numbers) == 1 else None
+        match = re.fullmatch(r"/board/([A-Za-z0-9_]+)/([0-9]+)", path)
+        if not match:
+            match = re.fullmatch(r"/([A-Za-z0-9_]+)/([0-9]+)", path)
+            if match and (match[1] == "board" or match[1] in GALLERY_KIND_BY_PC_PREFIX):
+                return None
+    else:
+        match = re.fullmatch(r"/(?:board|mini)/([A-Za-z0-9_]+)/([0-9]+)", path)
+    return match.groups() if match else None
+
+
+def _has_next_comment_link(pagination, page):
+    if "다음" not in pagination:
+        return False
+    pager = lxml.html.fragment_fromstring(pagination, create_parent="div")
+    for link in pager.xpath(".//a[@href] | .//*[@onclick]"):
+        if (link.text_content().strip() != "다음" or "disabled" in link.attrib
+                or link.get("aria-disabled", "").lower() == "true"
+                or "disabled" in link.get("class", "").split()):
+            continue
+        href = link.get("href", "")
+        handler = link.get("onclick") or href
+        match = re.search(r"\bviewComments\(\s*([0-9]+)\s*[,)]", handler)
+        if match and int(match[1]) > page:
+            return True
+        query = parse_qs(urlparse(href).query)
+        if any((to_optional_int(value) or 0) > page
+               for key in ("page", "comment_page") for value in query.get(key, ())):
+            return True
+    return False
 
 
 def _env_seconds(name, default):
@@ -133,6 +179,20 @@ _DOCUMENT_NOT_FOUND_PHRASES = (
 
 from .models import Comment, Document, DocumentIndex, Image
 from .parsers import ParserMixin, has_gallery_image_icon, has_gallery_video_icon, to_int
+
+
+class _DCResponse(aiohttp.ClientResponse):
+    async def text(self, encoding=None, errors="strict"):
+        # Count decompressed bytes, even for chunked responses. Keep aiohttp's
+        # charset handling but don't let text() first buffer an unlimited body.
+        if self._body is None:
+            body = bytearray()
+            async for chunk in self.content.iter_chunked(64 * 1024):
+                if len(body) + len(chunk) > DC_TEXT_MAX_BYTES:
+                    raise ValueError("DC response exceeds text byte limit")
+                body.extend(chunk)
+            self._body = bytes(body)
+        return await super().text(encoding=encoding, errors=errors)
 
 
 class _SessionCookieJar(aiohttp.CookieJar):
@@ -210,6 +270,7 @@ class API(ParserMixin):
             ttl_dns_cache=DC_DNS_CACHE_TTL,
         )
         self.session = aiohttp.ClientSession(
+            response_class=_DCResponse,
             headers=GET_HEADERS,
             cookies={"_ga": "GA1.2.693521455.1588839880"},
             cookie_jar=_SessionCookieJar(),
@@ -588,10 +649,10 @@ class API(ParserMixin):
                     headers=request_headers,
                     data=data,
                     cookies=cookies,
-                    **({"allow_redirects": False} if self._is_notice_url(url) else {}),
+                    allow_redirects=False,
                 ) as res:
                     observed_status = res.status
-                    text = await res.text()
+                    text = "" if res.status == 429 else await res.text()
                     status = res.status
                     response_headers = dict(res.headers)
                 upstream_finished = time.monotonic()
@@ -842,9 +903,25 @@ class API(ParserMixin):
         failure_outcomes=None,
         cooldown_namespace=None,
         classify_not_found=False,
+        extract=None,
     ):
         queue = list(urls)
+        redirects = {}
+        missing = set()
+        document_endpoints = ({_document_endpoint(url) for url in urls} - {None}) if classify_not_found else set()
         idx = 0
+
+        def schedule_redirect(raw_target, immediate=False):
+            target = self.__normalize_redirect_url(url, raw_target) if raw_target else None
+            if not target or (target not in queue and len(queue) >= len(urls) + DC_MAX_REDIRECTS):
+                raise ValueError("invalid or excessive DC redirect")
+            redirects[url] = (target, status)
+            if target not in queue:
+                queue.insert(idx if immediate else len(queue), target)
+            elif immediate and target in queue[idx:]:
+                queue.remove(target)
+                queue.insert(idx, target)
+
         while idx < len(queue):
             url = queue[idx]
             idx += 1
@@ -857,14 +934,13 @@ class API(ParserMixin):
                     url,
                     cooldown_scope=cooldown_scope,
                 )
-                if 300 <= status < 400 and self._is_notice_url(url):
+                if 300 <= status < 400:
                     location = response_headers.get("Location") or response_headers.get("location")
-                    if location:
-                        target = self.__normalize_redirect_url(url, location)
-                        if target not in queue and len(queue) < len(urls) + 5:
-                            queue.append(target)
+                    schedule_redirect(location, immediate=not self._is_notice_url(url))
                     continue
-                if classify_not_found and status in {404, 410}:
+                can_confirm_missing = classify_not_found and _document_endpoint(url) in document_endpoints
+                if can_confirm_missing and status in {404, 410}:
+                    missing.add(url)
                     if failure_outcomes is not None:
                         failure_outcomes.append((host, "not_found", status))
                     continue
@@ -880,7 +956,13 @@ class API(ParserMixin):
                 parsed = lxml.html.fromstring(text)
                 # Real pages contain dormant login/navigation functions too.
                 # A valid content payload takes precedence over script matches.
-                usable = validator is None or validator(parsed, text, url)
+                if extract is not None:
+                    value = extract(parsed)
+                    if value:
+                        return value, text, url
+                    usable = False
+                else:
+                    usable = validator is None or validator(parsed, text, url)
                 if validator and usable and (
                     (self._is_notice_url(url) and bool(parsed.xpath("//*[@id='notice_list']")))
                     or self.__has_board_rows(parsed)
@@ -889,15 +971,13 @@ class API(ParserMixin):
                     return parsed, text, url
                 redirect_url = self.__extract_top_level_redirect_url(text)
                 if redirect_url:
-                    redirect_url = self.__normalize_redirect_url(url, redirect_url)
-                    if redirect_url and redirect_url not in queue:
-                        queue.append(redirect_url)
-                    if failure_outcomes is not None:
-                        failure_outcomes.append((host, "redirect", status))
+                    schedule_redirect(redirect_url)
                     continue
                 if not usable:
                     if failure_outcomes is not None:
-                        outcome = "not_found" if classify_not_found and self.__is_explicit_not_found_response(status, text) else "unusable"
+                        outcome = "not_found" if can_confirm_missing and self.__is_explicit_not_found_response(status, text) else "unusable"
+                        if outcome == "not_found":
+                            missing.add(url)
                         failure_outcomes.append((host, outcome, status))
                     continue
                 return parsed, text, url
@@ -909,6 +989,16 @@ class API(ParserMixin):
                 if failure_outcomes is not None:
                     failure_outcomes.append((host, "request_error", None))
                 continue
+        # A redirect is not deletion evidence of its own. Every branch must
+        # lead to a verified missing post, not a cycle or an unrelated 404.
+        if failure_outcomes is not None:
+            for source, (target, status) in redirects.items():
+                for _ in range(DC_MAX_REDIRECTS - 1):
+                    if target not in redirects:
+                        break
+                    target = redirects[target][0]
+                if target not in missing:
+                    failure_outcomes.append((urlparse(source).hostname, "unresolved_redirect", status))
         return None, "", None
 
     def _is_notice_url(self, url):
@@ -917,6 +1007,12 @@ class API(ParserMixin):
 
     def __normalize_redirect_url(self, current_url, redirect_url):
         normalized_url = urljoin(current_url, redirect_url)
+        parsed = urlsplit(normalized_url)
+        if (parsed.scheme not in {"http", "https"} or parsed.hostname not in DC_REDIRECT_HOSTS
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port not in {None, 443 if parsed.scheme == "https" else 80}):
+            raise ValueError("invalid DC redirect destination")
+        normalized_url = parsed._replace(netloc=parsed.hostname, fragment="").geturl()
         current_parsed = urlparse(current_url)
         current_query = parse_qs(current_parsed.query)
         if self._is_notice_url(current_url):
@@ -1030,7 +1126,7 @@ class API(ParserMixin):
                 if parsed is None:
                     self.__invalidate_list_url_pattern(cache_key)
                     parsed, text, used_url = await self.__fetch_parsed_from_urls(
-                        list_urls,
+                        [url for url in list_urls if url != cached_url],
                         validator=validator,
                         cooldown_namespace="board",
                     )
@@ -1196,28 +1292,18 @@ class API(ParserMixin):
         return precise_times
 
     async def __pc_document_media_sources(self, board_id, document_id, kind=None):
-        for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
-            try:
-                status, _, text = await self.__request_text("GET", url)
-            except Exception:
-                continue
-            if status >= 400 or not text:
-                continue
-            try:
-                parsed = lxml.html.fromstring(text)
-            except Exception:
-                continue
+        def extract(parsed):
             containers = parsed.xpath("//div[contains(@class, 'writing_view_box')]")
             if not containers:
                 containers = parsed.xpath("//div[@class='thum-txtin']")
             if not containers:
                 containers = parsed.xpath("//div[contains(@class, 'thum-txt-area')]")
-            if not containers:
-                continue
-            sources = self.__real_document_media_sources(containers[0])
-            if sources:
-                return sources
-        return []
+            return self.__real_document_media_sources(containers[0]) if containers else []
+
+        sources, _, _ = await self.__fetch_parsed_from_urls(
+            self.__build_pc_view_urls(board_id, document_id, kind=kind), extract=extract,
+        )
+        return sources or []
     async def __repair_placeholder_images_from_pc(self, doc_content, board_id, document_id, kind=None):
         if not self.__has_placeholder_document_images(doc_content):
             return doc_content
@@ -1272,15 +1358,9 @@ class API(ParserMixin):
             poll_src = self.__normalize_poll_url(src)
             if not poll_src:
                 continue
-            try:
-                status, _, text = await self.__request_text("GET", self.__poll_preview_url(poll_src))
-                poll = self.__parse_poll_summary(text) if status < 400 else None
-            except Exception:
-                try:
-                    status, _, text = await self.__request_text("GET", poll_src)
-                    poll = self.__parse_poll_summary(text) if status < 400 else None
-                except Exception:
-                    poll = None
+            poll, _, _ = await self.__fetch_parsed_from_urls(
+                [self.__poll_preview_url(poll_src), poll_src], extract=self.__parse_poll_summary,
+            )
             card = self.__poll_card_element(poll_src, poll=poll)
             card.tail = iframe.tail
             iframe.getparent().replace(iframe, card)
@@ -1409,35 +1489,31 @@ class API(ParserMixin):
             return None
 
     async def __get_pc_comment_context(self, board_id, document_id, kind=None):
-        for url in self.__build_pc_view_urls(board_id, document_id, kind=kind):
-            try:
-                status, _, text = await self.__request_text(
-                    "GET",
-                    url,
-                    cooldown_scope="comments:gall.dcinside.com",
-                )
-            except Exception:
-                continue
-            if status >= 400 or not text:
-                continue
-            parsed = lxml.html.fromstring(text)
+        def extract(parsed):
             e_s_n_o = parsed.xpath("string(//input[@id='e_s_n_o']/@value)").strip()
             gall_type = parsed.xpath("string(//input[@id='_GALLTYPE_']/@value)").strip()
             if not e_s_n_o or not gall_type:
-                continue
+                return None
             return {
-                "referer": url,
                 "e_s_n_o": e_s_n_o,
                 "board_type": parsed.xpath("string(//input[@id='board_type']/@value)").strip(),
                 "_GALLTYPE_": gall_type,
                 "secret_article_key": parsed.xpath("string(//input[@id='secret_article_key']/@value)").strip(),
             }
-        raise RuntimeError("pc comment context not found")
-    async def __comments_from_pc(self, board_id, document_id, num=-1, start_page=1, kind=None):
+        context, _, url = await self.__fetch_parsed_from_urls(
+            self.__build_pc_view_urls(board_id, document_id, kind=kind),
+            extract=extract, cooldown_namespace="comments",
+        )
+        if context is None:
+            raise RuntimeError("pc comment context not found")
+        return {**context, "referer": url}
+
+    async def __comments_from_pc(self, board_id, document_id, num, start_page, kind, stats):
         if num == 0:
             return
         context = await self.__get_pc_comment_context(board_id, document_id, kind=kind)
         seen_ids = set()
+        expected_total = None
 
         for page in range(start_page, 999999):
             payload = {
@@ -1476,16 +1552,23 @@ class API(ParserMixin):
                 data = json.loads(body)
             except Exception as exc:
                 raise RuntimeError("pc comment fetch returned invalid json") from exc
-            if not isinstance(data, dict) or "comments" not in data:
+            if not isinstance(data, dict):
+                raise RuntimeError("pc comment fetch returned an invalid payload")
+            total_count = to_optional_int(data.get("total_cnt"))
+            if total_count is not None:
+                stats["expected_total"] = max(total_count, expected_total) if expected_total is not None else total_count
+                if expected_total is not None and total_count != expected_total:
+                    raise RuntimeError("pc comment total changed")
+                expected_total = total_count
+            if "comments" not in data:
                 raise RuntimeError("pc comment fetch returned an invalid payload")
             comments = data["comments"]
-            total_count = to_optional_int(data.get("total_cnt"))
             if comments is None and total_count == 0:
                 comments = []
             if not isinstance(comments, list):
                 raise RuntimeError("pc comment fetch returned an invalid comment list")
             if not comments:
-                if seen_ids or (total_count is not None and total_count > 0):
+                if seen_ids or expected_total != 0:
                     raise RuntimeError("pc comment fetch ended early")
                 break
 
@@ -1512,6 +1595,9 @@ class API(ParserMixin):
                 except ValueError:
                     continue
             if page >= max_page:
+                if ((start_page == 1 and expected_total is not None and len(seen_ids) != expected_total)
+                        or _has_next_comment_link(pagination, page)):
+                    raise RuntimeError("pc comment pagination ended early")
                 break
 
     async def __comments_from_mobile(self, board_id, document_id, num=-1, start_page=1, fail_fast=False):
@@ -1663,6 +1749,7 @@ class API(ParserMixin):
                 num=pc_fetch_num,
                 start_page=start_page,
                 kind=kind,
+                stats=pc_stats,
             )
             async for comment in self.__deduped_comments(
                 pc_comments,
@@ -1708,7 +1795,9 @@ class API(ParserMixin):
                 skip_seen=True,
             ):
                 yield comment
-            if status_collector is not None:
+            if status_collector is not None and (
+                pc_stats.get("expected_total") is None or len(yielded_ids) == pc_stats["expected_total"]
+            ):
                 status_collector.update({"complete": True, "source": "mobile"})
         except Exception as exc:
             logger.info(

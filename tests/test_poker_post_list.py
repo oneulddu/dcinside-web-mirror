@@ -101,7 +101,7 @@ def test_failure_is_json_and_not_an_empty_list(monkeypatch, status):
     assert 'html' not in response.get_json()
     assert response.headers['Cache-Control'] == 'no-store'
     if status == 503:
-        assert response.headers['Retry-After'] == '60'
+        assert 'Retry-After' not in response.headers
 
 
 def test_read_never_waits_for_board_and_exposes_canonical_fallback(monkeypatch):

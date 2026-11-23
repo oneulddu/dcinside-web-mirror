@@ -35,6 +35,23 @@ def test_production_uses_configured_secret_key(monkeypatch):
     assert app.config["SECRET_KEY"] == "stable-secret"
 
 
+def test_factory_loads_only_explicit_typed_environment_settings(monkeypatch):
+    monkeypatch.setenv("MIRROR_ENV", "production")
+    monkeypatch.setenv("MIRROR_SECRET_KEY", "123")
+    monkeypatch.setenv("MIRROR_WRITE_KEY", "false")
+    monkeypatch.setenv("MIRROR_VISITOR_CHECK", "no")
+    monkeypatch.setenv("MIRROR_COMPRESS_MIMETYPES", '["application/json"]')
+    monkeypatch.setenv("MIRROR_COMPRESS_REGISTER", "off")
+    monkeypatch.setenv("MIRROR_DC_LOGIN_PASSWORD", "worker-only")
+    config = create_app().config
+    assert config["SECRET_KEY"] == "123"
+    assert config["WRITE_KEY"] == "false"
+    assert config["VISITOR_CHECK"] is False
+    assert config["COMPRESS_MIMETYPES"] == ["application/json"]
+    assert config["COMPRESS_REGISTER"] is False
+    assert "DC_LOGIN_PASSWORD" not in config
+
+
 def test_static_url_adds_mtime_version(monkeypatch):
     monkeypatch.setenv("MIRROR_ENV", "development")
     app = create_app()
